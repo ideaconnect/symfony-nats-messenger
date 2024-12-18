@@ -1,0 +1,11 @@
+framework:
+    messenger:
+        # Uncomment this (and the failed transport below) to send failed messages to this transport for later handling.
+        # failure_transport: failed
+
+        transports:
+            async: 'nats-jetstream://admin:password@localhost:4222/stream/messages'
+
+        routing:
+            # Route your messages to the transports
+            'App\Async\TestMessage': async

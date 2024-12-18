@@ -1,0 +1,24 @@
+{
+    "name": "idct/symfony-nats-messenger",
+    "description": "Symfony NATS (JetStream) Messenger Bridge",
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "IDCT\\NatsMessenger\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "IDCT Bartosz Pachołek",
+            "email": "bartosz+github@idct.tech"
+        }
+    ],
+    "minimum-stability": "stable",
+    "require": {
+        "symfony/framework-bundle": "^7.2",
+        "symfony/messenger": "^7.2",
+        "idct/nats-jetstream-php": "dev-main",
+        "symfony/uid": "^7.2"
+    }
+}
