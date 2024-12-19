@@ -6,6 +6,8 @@ use Basis\Nats\Client;
 use Basis\Nats\Configuration;
 use Basis\Nats\Consumer\Consumer;
 use Basis\Nats\Message\Ack;
+use Basis\Nats\Message\Msg;
+use Basis\Nats\Message\Nak;
 use Basis\Nats\Queue;
 use Basis\Nats\Stream\Stream;
 use Exception;
@@ -51,6 +53,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
         $messages = $this->queue->fetchAll($this->configuration['batching']);
 
         $envelopes = [];
+
+        /** @var Msg */
         foreach ($messages as $message) {
             if (empty($message->payload->body)) {
                 continue;
@@ -58,12 +62,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
 
 
             try {
-                $message->client = $this->client;
-                $message->ack();
                 $decoded = igbinary_unserialize($message->payload->body);
-                $envelopes[] = $decoded;
-            } catch (Exception) {
+                $envelope = $decoded->with(new TransportMessageIdStamp($message->replyTo));
+                $envelopes[] = $envelope;
+            } catch (Exception $e) {
                 $message->nack();
+                throw $e;
             }
         }
 
@@ -72,19 +76,38 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
 
     public function ack(Envelope $envelope): void
     {
-
+        $id = $this->findReceivedStamp($envelope)->getId();
+        var_dump($id);
+        $this->client->connection->sendMessage(new Ack([
+            'subject' => $id
+        ]));
     }
 
     public function reject(Envelope $envelope): void
     {
-
+        $id = $this->findReceivedStamp($envelope)->getId();
+        $this->client->connection->sendMessage(new Nak([
+            'subject' => $id,
+            'delay' => 0, //TODO
+        ]));
     }
 
     public function getMessageCount(): int
     {
         $info = json_decode($this->consumer->info()->body);
         return $info->num_pending;
+    }
 
+    private function findReceivedStamp(Envelope $envelope): TransportMessageIdStamp
+    {
+        /** @var RedisReceivedStamp|null $redisReceivedStamp */
+        $receivedStamp = $envelope->last(TransportMessageIdStamp::class);
+
+        if (null === $receivedStamp) {
+            throw new LogicException('No ReceivedStamp found on the Envelope.');
+        }
+
+        return $receivedStamp;
     }
 
     protected function buildFromDsn(#[\SensitiveParameter] string $dsn, array $options = []): void
