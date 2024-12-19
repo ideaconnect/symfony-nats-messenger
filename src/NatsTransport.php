@@ -77,7 +77,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
     public function ack(Envelope $envelope): void
     {
         $id = $this->findReceivedStamp($envelope)->getId();
-        var_dump($id);
         $this->client->connection->sendMessage(new Ack([
             'subject' => $id
         ]));
