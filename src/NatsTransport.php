@@ -13,11 +13,13 @@ use Basis\Nats\Stream\Stream;
 use Exception;
 use InvalidArgumentException;
 use LogicException;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Contracts\Service\Attribute\Required;
 
 class NatsTransport implements TransportInterface, MessageCountAwareInterface
 {
@@ -43,7 +45,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
     {
         $uuid = (string) Uuid::v4();
         $envelope = $envelope->with(new TransportMessageIdStamp($uuid));
-        $encodedMessage = igbinary_serialize($envelope);
+        try {
+            $encodedMessage = igbinary_serialize($envelope);
+        } catch (Exception $e) {
+            file_put_contents('/var/applog/shit.log', get_class($envelope->getMessage()) . PHP_EOL, FILE_APPEND );
+            throw $e;
+        }
         $this->client->publish($this->topic, $encodedMessage, 'r-' . $uuid);
         return $envelope;
     }
