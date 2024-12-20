@@ -48,7 +48,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
         try {
             $encodedMessage = igbinary_serialize($envelope);
         } catch (Exception $e) {
-            file_put_contents('/var/applog/shit.log', get_class($envelope->getMessage()) . PHP_EOL, FILE_APPEND );
             throw $e;
         }
         $this->client->publish($this->topic, $encodedMessage, 'r-' . $uuid);
@@ -67,18 +66,24 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
                 continue;
             }
 
-
             try {
                 $decoded = igbinary_unserialize($message->payload->body);
                 $envelope = $decoded->with(new TransportMessageIdStamp($message->replyTo));
                 $envelopes[] = $envelope;
             } catch (Exception $e) {
-                $message->nack();
+                $this->sendNak($message->replyTo);
                 throw $e;
             }
         }
 
         return $envelopes;
+    }
+
+    protected function sendNak($id) {
+        $this->client->connection->sendMessage(new Nak([
+            'subject' => $id,
+            'delay' => 0, //TODO
+        ]));
     }
 
     public function ack(Envelope $envelope): void
@@ -92,10 +97,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
     public function reject(Envelope $envelope): void
     {
         $id = $this->findReceivedStamp($envelope)->getId();
-        $this->client->connection->sendMessage(new Nak([
-            'subject' => $id,
-            'delay' => 0, //TODO
-        ]));
+        $this->sendNak($id);
     }
 
     public function getMessageCount(): int
