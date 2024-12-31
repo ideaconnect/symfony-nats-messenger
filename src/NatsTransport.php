@@ -50,7 +50,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
         } catch (Exception $e) {
             throw $e;
         }
-        $this->client->publish($this->topic, $encodedMessage, 'r-' . $uuid);
+
+        $this->stream->put($this->topic, $encodedMessage);
         return $envelope;
     }
 
