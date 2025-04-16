@@ -15,6 +15,7 @@ use InvalidArgumentException;
 use LogicException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
@@ -48,7 +49,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
         try {
             $encodedMessage = igbinary_serialize($envelope);
         } catch (Exception $e) {
-            throw $e;
+            $realError = $envelope->last(ErrorDetailsStamp::class);
+            throw new Exception($realError->getExceptionMessage());
         }
 
         $this->stream->put($this->topic, $encodedMessage);
