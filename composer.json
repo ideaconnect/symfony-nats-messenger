@@ -18,7 +18,7 @@
     "require": {
         "symfony/framework-bundle": "^7.2",
         "symfony/messenger": "^7.2",
-        "idct/nats-jetstream-php": "dev-main",
+        "basis-company/nats": "dev-main",
         "symfony/uid": "^7.2"
     }
 }

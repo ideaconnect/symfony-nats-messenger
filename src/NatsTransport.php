@@ -13,14 +13,12 @@ use Basis\Nats\Stream\Stream;
 use Exception;
 use InvalidArgumentException;
 use LogicException;
-use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
 use Symfony\Component\Uid\Uuid;
-use Symfony\Contracts\Service\Attribute\Required;
 
 class NatsTransport implements TransportInterface, MessageCountAwareInterface
 {
