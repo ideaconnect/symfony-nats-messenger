@@ -18,7 +18,7 @@
     "require": {
         "symfony/framework-bundle": "^7.2",
         "symfony/messenger": "^7.2",
-        "basis-company/nats": "dev-main",
+        "basis-company/nats": "^1",
         "symfony/uid": "^7.2"
     }
 }
