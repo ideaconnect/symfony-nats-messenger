@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20  # Set explicit timeout for the entire job
 
     strategy:
       matrix:
@@ -110,6 +111,7 @@ jobs:
         composer install --prefer-dist --no-progress --no-suggest
 
     - name: Run functional tests
+      timeout-minutes: 10  # Set explicit timeout for functional tests
       env:
         APP_ENV: test
         NATS_DSN: nats://localhost:4222
@@ -124,6 +126,7 @@ jobs:
         ./run_tests.sh
 
     - name: Run benchmark tests
+      timeout-minutes: 5  # Set explicit timeout for benchmark tests
       env:
         APP_ENV: test
         NATS_DSN: nats://localhost:4222
