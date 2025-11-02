@@ -19,6 +19,8 @@ class NatsSetupContext implements Context
     private ?Process $natsProcess = null;
     private ?Process $setupProcess = null;
     private ?Process $consumerProcess = null;
+    /** @var Process[] */
+    private array $consumerProcesses = [];
     private string $testStreamName = 'test_stream';
     private string $testSubject = 'test.messages';
     private bool $shouldNatsBeRunning = false;
@@ -353,7 +355,8 @@ class NatsSetupContext implements Context
                 $consumer = $stream->getConsumer('client');
                 $consumerInfo = $consumer->info();
 
-                $pendingMessages = $consumerInfo->num_pending ?? $consumerInfo->pending ?? 0;
+                // For NATS JetStream, use num_ack_pending which represents messages waiting for acknowledgment
+                $pendingMessages = $consumerInfo->num_ack_pending ?? $consumerInfo->num_pending ?? $consumerInfo->pending ?? 0;
 
                 if ($pendingMessages !== $count) {
                     throw new \RuntimeException(
@@ -514,6 +517,96 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * @When I start :consumerCount consumers that each process :messagesPerConsumer messages
+     */
+    public function iStartConsumersThatEachProcessMessages(int $consumerCount, int $messagesPerConsumer): void
+    {
+        $this->consumerProcesses = [];
+
+        for ($i = 1; $i <= $consumerCount; $i++) {
+            $command = [
+                'php',
+                'bin/console',
+                'messenger:consume',
+                'test_transport',
+                '--limit=' . $messagesPerConsumer,
+                '--time-limit=30', // Give more time for processing and acknowledgment
+                '--sleep=0.1',
+                '--env=test',
+                '-vv'
+            ];
+
+            $process = new Process($command, __DIR__ . '/../..');
+            $process->setTimeout(60); // Longer timeout
+            $process->start();
+
+            $this->consumerProcesses[] = $process;
+
+            // Add a small delay between starting consumers to avoid race conditions
+            usleep(100000); // 100ms
+        }
+    }
+
+    /**
+     * @When I wait for the consumers to finish
+     */
+    public function iWaitForTheConsumersToFinish(): void
+    {
+        if (empty($this->consumerProcesses)) {
+            throw new \RuntimeException('No consumer processes started');
+        }
+
+        // Wait for all consumer processes to finish
+        foreach ($this->consumerProcesses as $index => $process) {
+            $process->wait();
+
+            if (!$process->isSuccessful()) {
+                $output = $process->getOutput();
+                $errorOutput = $process->getErrorOutput();
+
+                throw new \RuntimeException(
+                    sprintf(
+                        'Consumer process %d failed. Exit code: %d. Output: %s. Error: %s',
+                        $index + 1,
+                        $process->getExitCode(),
+                        $output,
+                        $errorOutput
+                    )
+                );
+            }
+        }
+
+        // Give a bit more time for final acknowledgments to be processed
+        sleep(1);
+    }
+
+    /**
+     * @Then :count messages should have been processed by the consumers
+     */
+    public function messagesShouldHaveBeenProcessedByTheConsumers(int $count): void
+    {
+        $totalProcessed = 0;
+
+        foreach ($this->consumerProcesses as $index => $process) {
+            $output = $process->getOutput();
+
+            // Count "Consumed message" lines in output
+            $consumedLines = substr_count($output, '[OK] Consumed message');
+            $totalProcessed += $consumedLines;
+        }
+
+        if ($totalProcessed !== $count) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected %d total messages to be processed by consumers, but found %d processed',
+                    $count,
+                    $totalProcessed
+                )
+            );
+        }
+    }
+
+    /**
      * Clean up after each scenario
      *
      * @AfterScenario
@@ -524,6 +617,14 @@ class NatsSetupContext implements Context
         if ($this->consumerProcess && $this->consumerProcess->isRunning()) {
             $this->consumerProcess->stop();
         }
+
+        // Stop multiple consumer processes if running
+        foreach ($this->consumerProcesses as $process) {
+            if ($process->isRunning()) {
+                $process->stop();
+            }
+        }
+        $this->consumerProcesses = [];
 
         // Clean up test stream if it exists
         if ($this->shouldNatsBeRunning) {

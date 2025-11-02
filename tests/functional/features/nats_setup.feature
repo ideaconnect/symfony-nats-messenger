@@ -36,3 +36,12 @@ Feature: NATS Stream Setup
     And I wait for messages to be consumed
     Then all 20 messages should be consumed
     And the messenger stats should show 0 messages waiting
+
+  Scenario: Partial message consumption with multiple consumers
+    Given I have a messenger transport configured with max age of 15 minutes
+    And the NATS stream is set up
+    When I send 20 messages to the transport
+    Then the messenger stats should show 20 messages waiting
+    When I start 2 consumers that each process 5 messages
+    And I wait for the consumers to finish
+    Then 10 messages should have been processed by the consumers
