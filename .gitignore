@@ -4,3 +4,6 @@ tests/functional/nats/data/
 tests/functional/nats/data
 tests/functional/var/cache/
 coverage/
+clover.xml
+.phpunit.cache
+.vscode
