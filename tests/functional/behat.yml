@@ -1,0 +1,9 @@
+default:
+    suites:
+        default:
+            contexts:
+                - App\Tests\Behat\NatsSetupContext
+            paths:
+                - '%paths.base%/features'
+    formatters:
+        pretty: ~

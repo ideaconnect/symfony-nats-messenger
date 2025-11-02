@@ -20,5 +20,13 @@
         "symfony/messenger": "^7.2",
         "basis-company/nats": "^1",
         "symfony/uid": "^7.2"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.5"
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "IDCT\\NatsMessenger\\Tests\\": "tests/"
+        }
     }
 }

@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, road_to_stable ]
+  pull_request:
+    branches: [ main, road_to_stable ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20  # Set explicit timeout for the entire job
+
+    strategy:
+      matrix:
+        php-version: [8.2, 8.3, 8.4]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ matrix.php-version }}
+        extensions: igbinary, json, mbstring
+        coverage: xdebug
+        tools: composer:v2
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc netcat-openbsd
+
+    # - name: Get composer cache directory
+    #   id: composer-cache
+    #   run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+    # - name: Cache dependencies
+    #   uses: actions/cache@v3
+    #   with:
+    #     path: ${{ steps.composer-cache.outputs.dir }}
+    #     key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+    #     restore-keys: ${{ runner.os }}-composer-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress --no-suggest
+
+    - name: Start NATS server
+      run: |
+        cd tests/functional/nats
+        docker compose up -d
+        sleep 10
+        # Wait for NATS to be ready with multiple checks
+        timeout 60 bash -c 'until nc -z localhost 4222; do sleep 2; done'
+        echo "NATS server is ready on port 4222"
+
+        # Verify NATS is responding
+        timeout 10 bash -c 'until curl -f http://localhost:8223/varz > /dev/null 2>&1; do sleep 1; done' || echo "NATS monitoring not available"
+
+        # Show NATS server status
+        docker logs nats_test || echo "Could not get NATS logs"
+
+    - name: Verify NATS is running
+      run: |
+        docker ps | grep nats || echo "No NATS container found"
+        curl -f http://localhost:8223/varz | head -20 || echo "NATS monitoring endpoint not responding"
+        # Test basic NATS connectivity
+        timeout 5 bash -c 'nc -zv localhost 4222' || echo "NATS port 4222 not accessible"
+
+    - name: Run unit tests with coverage
+      run: |
+        XDEBUG_MODE=coverage ./vendor/bin/phpunit \
+          --configuration phpunit.xml.dist \
+          --coverage-clover clover.xml \
+          --coverage-text \
+          --colors=never
+
+    - name: Check coverage threshold (90%)
+      run: |
+        # Extract coverage percentage from clover.xml
+        COVERAGE=$(php -r "
+          \$xml = simplexml_load_file('clover.xml');
+          \$projectMetrics = \$xml->project->metrics;
+          \$statements = (int)\$projectMetrics['statements'];
+          \$coveredStatements = (int)\$projectMetrics['coveredstatements'];
+          if (\$statements > 0) {
+            \$percentage = (\$coveredStatements / \$statements) * 100;
+            echo number_format(\$percentage, 2);
+          } else {
+            echo '0';
+          }
+        ")
+
+        echo "Coverage: ${COVERAGE}%"
+        echo "Covered statements: $(php -r "\$xml = simplexml_load_file('clover.xml'); echo \$xml->project->metrics['coveredstatements'];")"
+        echo "Total statements: $(php -r "\$xml = simplexml_load_file('clover.xml'); echo \$xml->project->metrics['statements'];")"
+
+        # Check if coverage meets minimum threshold
+        THRESHOLD=90.00
+        if (( $(echo "${COVERAGE} >= ${THRESHOLD}" | bc -l) )); then
+          echo "✅ Coverage ${COVERAGE}% meets minimum threshold of ${THRESHOLD}%"
+        else
+          echo "❌ Coverage ${COVERAGE}% is below minimum threshold of ${THRESHOLD}%"
+          exit 1
+        fi
+
+    - name: Install functional test dependencies
+      run: |
+        cd tests/functional
+        composer install --prefer-dist --no-progress --no-suggest
+
+    - name: Run functional tests
+      timeout-minutes: 10  # Set explicit timeout for functional tests
+      env:
+        APP_ENV: test
+        NATS_DSN: nats://localhost:4222
+        CI: true
+      run: |
+        cd tests/functional
+        # Set up environment for testing
+        cp .env.dev .env.test.local || echo "No .env.dev file found"
+
+        # Run functional tests using the test runner script
+        chmod +x run_tests.sh
+        # In CI, run all tests except extreme tests which take too long
+        vendor/bin/behat --tags="~@extreme"
+
+    - name: Run benchmark tests
+      timeout-minutes: 5  # Set explicit timeout for benchmark tests
+      env:
+        APP_ENV: test
+        NATS_DSN: nats://localhost:4222
+      run: |
+        cd tests/functional
+        chmod +x run-benchmark.sh
+        # Run benchmark with a smaller message count for CI
+        ./run-benchmark.sh --count 1000
+      continue-on-error: true  # Don't fail the entire workflow if benchmark fails
+
+    - name: Collect logs on failure
+      if: failure()
+      run: |
+        echo "=== NATS Container Logs ==="
+        docker logs nats_test || echo "Could not get NATS logs"
+        echo "=== Docker Containers ==="
+        docker ps -a
+        echo "=== Network Status ==="
+        netstat -tlnp | grep :4222 || echo "Port 4222 not listening"
+
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v4
+      if: matrix.php-version == '8.4'
+      with:
+        name: coverage-report
+        path: |
+          clover.xml
+          coverage/
+        retention-days: 5
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      if: matrix.php-version == '8.4'
+      with:
+        name: benchmark-results
+        path: tests/functional/benchmark-*.txt
+        retention-days: 5
+
+    - name: Stop NATS server
+      if: always()
+      run: |
+        cd tests/functional/nats
+        docker compose down -v
