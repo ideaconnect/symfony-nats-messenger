@@ -919,6 +919,56 @@ class NatsTransportTest extends TestCase
     /**
      * @test
      */
+    public function getMessageCount_WithConsumerInfoDecodingToNull_ReturnsZero(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new NatsTransport($dsn, []);
+
+        // Mock consumer to return a response that will decode to null
+        $mockConsumer = $this->createMock(\Basis\Nats\Consumer\Consumer::class);
+        $mockConsumerResponse = new \stdClass();
+        $mockConsumerResponse->body = null; // This will cause decodeJsonInfo to return null
+        $mockConsumer->method('info')->willReturn($mockConsumerResponse);
+
+        // Use reflection to set the mocked consumer
+        $reflection = new \ReflectionClass($transport);
+        $consumerProperty = $reflection->getProperty('consumer');
+        $consumerProperty->setAccessible(true);
+        $consumerProperty->setValue($transport, $mockConsumer);
+
+        $count = $transport->getMessageCount();
+
+        $this->assertSame(0, $count);
+    }
+
+    /**
+     * @test
+     */
+    public function getMessageCount_WithConsumerInfoInvalidJson_ReturnsZero(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new NatsTransport($dsn, []);
+
+        // Mock consumer to return a response with invalid JSON that will decode to null
+        $mockConsumer = $this->createMock(\Basis\Nats\Consumer\Consumer::class);
+        $mockConsumerResponse = new \stdClass();
+        $mockConsumerResponse->body = 'invalid-json-string-not-object'; // This will cause json_decode to not return stdClass
+        $mockConsumer->method('info')->willReturn($mockConsumerResponse);
+
+        // Use reflection to set the mocked consumer
+        $reflection = new \ReflectionClass($transport);
+        $consumerProperty = $reflection->getProperty('consumer');
+        $consumerProperty->setAccessible(true);
+        $consumerProperty->setValue($transport, $mockConsumer);
+
+        $count = $transport->getMessageCount();
+
+        $this->assertSame(0, $count);
+    }
+
+    /**
+     * @test
+     */
     public function getMessageCount_WithExceptionFromConsumerInfo_FallsBackToStreamInfo(): void
     {
         $dsn = self::VALID_DSN;
