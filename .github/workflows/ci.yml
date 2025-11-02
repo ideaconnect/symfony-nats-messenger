@@ -123,7 +123,8 @@ jobs:
 
         # Run functional tests using the test runner script
         chmod +x run_tests.sh
-        ./run_tests.sh
+        # In CI, run all tests except extreme tests which take too long
+        vendor/bin/behat --tags="~@extreme"
 
     - name: Run benchmark tests
       timeout-minutes: 5  # Set explicit timeout for benchmark tests

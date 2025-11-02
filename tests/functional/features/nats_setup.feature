@@ -69,3 +69,27 @@ Feature: NATS Stream Setup
     And I wait for the consumers to finish
     Then the messenger stats should show approximately 0 messages waiting
     And the test files directory should contain approximately 10000 files
+
+  @extreme
+  Scenario: Extreme high-volume message processing - 1 million messages
+    Given I have a messenger transport configured with max age of 15 minutes
+    And the NATS stream is set up
+    And the test files directory is clean
+    When I send 1000000 messages to the transport
+    Then the messenger stats should show 1000000 messages waiting
+    When I start 1 consumer that processes 250000 messages
+    And I wait for the consumers to finish
+    Then the messenger stats should show approximately 750000 messages waiting
+    And the test files directory should contain approximately 250000 files
+    When I start 5 consumers that each process 50000 messages
+    And I wait for the consumers to finish
+    Then the messenger stats should show approximately 500000 messages waiting
+    And the test files directory should contain approximately 500000 files
+    When I start 1 consumer that processes 100000 messages
+    And I wait for the consumers to finish
+    Then the messenger stats should show approximately 400000 messages waiting
+    And the test files directory should contain approximately 600000 files
+    When I start 4 consumers that each process 100000 messages
+    And I wait for the consumers to finish
+    Then the messenger stats should show approximately 0 messages waiting
+    And the test files directory should contain approximately 1000000 files

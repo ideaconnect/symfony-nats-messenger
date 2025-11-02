@@ -39,8 +39,9 @@ echo "1. Run all tests"
 echo "2. Run specific scenario (setup with max age)"
 echo "3. Run specific scenario (existing stream handling)"
 echo "4. Run specific scenario (NATS unavailable)"
-echo "5. Dry run (syntax check only)"
-echo "6. Show test definitions"
+echo "5. Run extreme test (1 million messages)"
+echo "6. Dry run (syntax check only)"
+echo "7. Show test definitions"
 echo ""
 
 # Check if we're running in CI mode
@@ -48,7 +49,7 @@ if [ "$CI" = "true" ]; then
     echo -e "${YELLOW}CI mode detected - automatically running all tests${NC}"
     choice=1
 else
-    read -p "Choose option (1-6): " choice
+    read -p "Choose option (1-7): " choice
 fi
 
 case $choice in
@@ -69,15 +70,26 @@ case $choice in
         vendor/bin/behat features/nats_setup.feature:23
         ;;
     5)
+        echo -e "${GREEN}Running: Extreme high-volume test (1 million messages)${NC}"
+        echo -e "${YELLOW}Warning: This test may take a very long time to complete (30+ minutes)${NC}"
+        read -p "Are you sure you want to continue? (y/N): " confirm
+        if [[ $confirm =~ ^[Yy]$ ]]; then
+            vendor/bin/behat features/nats_setup.feature:73
+        else
+            echo "Test canceled."
+            exit 0
+        fi
+        ;;
+    6)
         echo -e "${GREEN}Running dry run (syntax check)...${NC}"
         vendor/bin/behat --dry-run
         ;;
-    6)
+    7)
         echo -e "${GREEN}Showing test step definitions...${NC}"
         vendor/bin/behat --definitions
         ;;
     *)
-        echo -e "${RED}Invalid option. Please choose 1-6.${NC}"
+        echo -e "${RED}Invalid option. Please choose 1-7.${NC}"
         exit 1
         ;;
 esac

@@ -597,6 +597,48 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * @When I start :consumerCount consumer that processes :messageCount messages
+     */
+    public function iStartConsumerThatProcessesMessages(int $consumerCount, int $messageCount): void
+    {
+        // Scale down message counts in CI environment
+        if (getenv('CI') === 'true') {
+            if ($messageCount >= 1000) {
+                $messageCount = max(100, intval($messageCount * 0.1));
+                echo "CI mode: Scaled down messages for single consumer to $messageCount\n";
+            }
+        }
+
+        $this->consumerProcesses = [];
+
+        for ($i = 1; $i <= $consumerCount; $i++) {
+            $command = [
+                'php',
+                'bin/console',
+                'messenger:consume',
+                'test_transport',
+                '--limit=' . $messageCount,
+                '--time-limit=1800', // 30 minutes for extreme volume processing
+                '--env=test',
+                '-v'
+            ];
+
+            $process = new Process($command, __DIR__ . '/../..');
+            // Set timeout based on message count - allow time for processing
+            $timeout = max(300, ($messageCount / 10)); // 10 messages per second estimate with buffer
+            $process->setTimeout($timeout + 300); // Add 5-minute buffer
+            $process->start();
+
+            $this->consumerProcesses[] = $process;
+
+            // Small delay between starting consumers
+            usleep(100000); // 100ms
+        }
+
+        echo "Started $consumerCount consumer(s) to process $messageCount messages each\n";
+    }
+
+    /**
      * Clean up after each scenario
      *
      * @AfterScenario
