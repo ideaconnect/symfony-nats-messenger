@@ -48,7 +48,7 @@ jobs:
     - name: Start NATS server
       run: |
         cd tests/functional/nats
-        docker-compose up -d
+        docker compose up -d
         sleep 10
         # Wait for NATS to be ready with multiple checks
         timeout 60 bash -c 'until nc -z localhost 4222; do sleep 2; done'
@@ -164,4 +164,4 @@ jobs:
       if: always()
       run: |
         cd tests/functional/nats
-        docker-compose down -v
+        docker compose down -v
