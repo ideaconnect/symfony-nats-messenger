@@ -103,18 +103,6 @@ jobs:
     name: Functional Tests
     runs-on: ubuntu-latest
 
-    services:
-      nats:
-        image: nats:latest
-        options: >-
-          --health-cmd "nats-server -m 8222 --port 4222 &"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 4222:4222
-          - 8222:8222
-
     steps:
       - uses: actions/checkout@v4
 
@@ -134,6 +122,22 @@ jobs:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
           restore-keys: ${{ runner.os }}-composer-
+
+      - name: Start NATS with JetStream Configuration
+        run: |
+          cd tests/functional/nats
+          docker-compose up -d
+          # Wait for NATS to be ready
+          for i in {1..30}; do
+            if nc -z localhost 4222; then
+              echo "✓ NATS is ready"
+              exit 0
+            fi
+            echo "Waiting for NATS... ($i/30)"
+            sleep 1
+          done
+          echo "❌ NATS failed to start"
+          exit 1
 
       - name: Install Root Dependencies
         run: composer install --prefer-dist --no-progress
@@ -146,21 +150,13 @@ jobs:
         env:
           NATS_SERVER: localhost:4222
 
+      - name: Stop NATS
+        if: always()
+        run: cd tests/functional/nats && docker-compose down
+
   benchmark:
     name: Performance Benchmark
     runs-on: ubuntu-latest
-
-    services:
-      nats:
-        image: nats:latest
-        options: >-
-          --health-cmd "nats-server -m 8222 --port 4222 &"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 4222:4222
-          - 8222:8222
 
     steps:
       - uses: actions/checkout@v4
@@ -181,6 +177,22 @@ jobs:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
           restore-keys: ${{ runner.os }}-composer-
+
+      - name: Start NATS with JetStream Configuration
+        run: |
+          cd tests/functional/nats
+          docker-compose up -d
+          # Wait for NATS to be ready
+          for i in {1..30}; do
+            if nc -z localhost 4222; then
+              echo "✓ NATS is ready"
+              exit 0
+            fi
+            echo "Waiting for NATS... ($i/30)"
+            sleep 1
+          done
+          echo "❌ NATS failed to start"
+          exit 1
 
       - name: Install Root Dependencies
         run: composer install --prefer-dist --no-progress
@@ -200,6 +212,10 @@ jobs:
           name: benchmark-results
           path: tests/functional/benchmark-results/
           retention-days: 30
+
+      - name: Stop NATS
+        if: always()
+        run: cd tests/functional/nats && docker-compose down
 
   code-quality:
     name: Code Quality Checks
