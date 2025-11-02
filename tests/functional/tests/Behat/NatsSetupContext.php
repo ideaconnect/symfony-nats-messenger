@@ -39,9 +39,14 @@ class NatsSetupContext implements Context
     public function natsServerIsRunning(): void
     {
         $this->shouldNatsBeRunning = true;
+        
+        // Start NATS server (or verify it's already running in CI)
         $this->startNatsServer();
 
-        // Wait for NATS to be ready
+        // Give it a moment to fully initialize
+        sleep(2);
+
+        // Wait for NATS to be ready with improved error handling
         $this->waitForNatsToBeReady();
     }
 
@@ -88,14 +93,7 @@ class NatsSetupContext implements Context
         }
 
         // Create the stream manually using NATS client
-        $clientConfig = new Configuration([
-            'host' => 'localhost',
-            'port' => 4222,
-            'user' => 'admin',
-            'pass' => 'password',
-        ]);
-
-        $client = new Client($clientConfig);
+        $client = $this->createNatsClient();
         $stream = $client->getApi()->getStream($this->testStreamName);
     }
 
@@ -144,14 +142,7 @@ class NatsSetupContext implements Context
     {
         $expectedMaxAgeNanoseconds = $maxAge * 60 * 1_000_000_000; // Convert minutes to nanoseconds
 
-        $clientConfig = new Configuration([
-            'host' => 'localhost',
-            'port' => 4222,
-            'user' => 'admin',
-            'pass' => 'password',
-        ]);
-
-        $client = new Client($clientConfig);
+        $client = $this->createNatsClient();
         $stream = $client->getApi()->getStream($this->testStreamName);
         $streamInfo = $stream->info();
 
@@ -174,14 +165,7 @@ class NatsSetupContext implements Context
      */
     public function theStreamShouldBeConfiguredWithTheCorrectSubject(): void
     {
-        $clientConfig = new Configuration([
-            'host' => 'localhost',
-            'port' => 4222,
-            'user' => 'admin',
-            'pass' => 'password',
-        ]);
-
-        $client = new Client($clientConfig);
+        $client = $this->createNatsClient();
         $stream = $client->getApi()->getStream($this->testStreamName);
         $streamInfo = $stream->info();
 
@@ -270,14 +254,7 @@ class NatsSetupContext implements Context
 
         // Purge any existing messages from the stream for clean test state
         try {
-            $clientConfig = new Configuration([
-                'host' => 'localhost',
-                'port' => 4222,
-                'user' => 'admin',
-                'pass' => 'password',
-            ]);
-
-            $client = new Client($clientConfig);
+            $client = $this->createNatsClient();
             $stream = $client->getApi()->getStream($this->testStreamName);
 
             // Purge the stream to remove any existing messages for clean test state
@@ -618,14 +595,7 @@ class NatsSetupContext implements Context
         // Clean up test stream if it exists
         if ($this->shouldNatsBeRunning) {
             try {
-                $clientConfig = new Configuration([
-                    'host' => 'localhost',
-                    'port' => 4222,
-                    'user' => 'admin',
-                    'pass' => 'password',
-                ]);
-
-                $client = new Client($clientConfig);
+                $client = $this->createNatsClient();
                 $stream = $client->getApi()->getStream($this->testStreamName);
                 if ($stream->exists()) {
                     $stream->delete();
@@ -662,12 +632,22 @@ class NatsSetupContext implements Context
 
     private function startNatsServer(): void
     {
+        // In CI environments, NATS might already be running
+        // First check if NATS is already accessible
+        if ($this->isNatsRunning()) {
+            return; // NATS is already running
+        }
+
         // Use docker compose to start NATS
         $command = ['docker', 'compose', 'up', '-d'];
         $process = new Process($command, __DIR__ . '/../../nats');
         $process->run();
 
         if (!$process->isSuccessful()) {
+            // In CI, the container might already be running, check if NATS is accessible
+            if ($this->isNatsRunning()) {
+                return; // NATS is accessible despite docker compose failure
+            }
             throw new \RuntimeException('Failed to start NATS server: ' . $process->getErrorOutput());
         }
     }
@@ -686,36 +666,72 @@ class NatsSetupContext implements Context
         $attempt = 0;
 
         while ($attempt < $maxAttempts) {
-            try {
-                $clientConfig = new Configuration([
-                    'host' => 'localhost',
-                    'port' => 4222,
-                    'user' => 'admin',
-                    'pass' => 'password',
-                ]);
-
-                $client = new Client($clientConfig);
-                $client->getApi()->getInfo();
-                return; // NATS is ready
-            } catch (\Exception $e) {
-                $attempt++;
-                sleep(1);
+            // First check TCP connectivity
+            $socket = @fsockopen('localhost', 4222, $errno, $errstr, 1);
+            if ($socket !== false) {
+                fclose($socket);
+                
+                // TCP is working, now try NATS client
+                try {
+                    $client = $this->createNatsClient();
+                    // Just test basic API access without calling problematic methods
+                    $api = $client->getApi();
+                    return; // NATS is ready
+                } catch (\Exception $e) {
+                    // Continue retrying
+                } catch (\Throwable $e) {
+                    // Continue retrying  
+                }
             }
+            
+            $attempt++;
+            sleep(1);
         }
 
         throw new \RuntimeException('NATS server did not become ready within 30 seconds');
     }
 
-    private function verifyStreamExists(): void
+    private function createNatsClient(): Client
     {
         $clientConfig = new Configuration([
             'host' => 'localhost',
             'port' => 4222,
             'user' => 'admin',
             'pass' => 'password',
+            'timeout' => 5,
+            'lang' => 'php',
+            'pedantic' => false,
+            'reconnect' => true,
         ]);
 
-        $client = new Client($clientConfig);
+        return new Client($clientConfig);
+    }
+
+    private function isNatsRunning(): bool
+    {
+        // First, try a simple TCP connection test
+        $socket = @fsockopen('localhost', 4222, $errno, $errstr, 2);
+        if ($socket === false) {
+            return false;
+        }
+        fclose($socket);
+
+        // If TCP connection works, try a simple NATS client test
+        try {
+            $client = $this->createNatsClient();
+            // Just test if we can create the API object
+            $client->getApi();
+            return true;
+        } catch (\Exception $e) {
+            return false;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    private function verifyStreamExists(): void
+    {
+        $client = $this->createNatsClient();
         $stream = $client->getApi()->getStream($this->testStreamName);
 
         if (!$stream->exists()) {
