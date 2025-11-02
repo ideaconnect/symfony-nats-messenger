@@ -44,6 +44,79 @@ vendor/bin/behat features/nats_setup.feature
 vendor/bin/behat --dry-run
 ```
 
+## Performance Benchmark
+
+The functional test suite includes a comprehensive performance benchmark to measure throughput and memory usage:
+
+### Quick Start
+
+```bash
+# Run the benchmark with 1,000,000 messages
+./run-benchmark.sh
+
+# See all options
+./run-benchmark.sh --help
+```
+
+### What the Benchmark Tests
+
+- **1,000,000 messages** sent and received
+- **Multiple batch configurations**: 1, 100, 1,000, 10,000, 1,000,000
+- **Metrics collected**:
+  - Total time (seconds)
+  - Memory used (MB)
+  - Peak memory (MB)
+  - Throughput (messages/second)
+
+### Example Benchmark Commands
+
+```bash
+# Full benchmark with defaults
+./run-benchmark.sh
+
+# Custom message count (for faster testing)
+./run-benchmark.sh --count 100000
+
+# Specific batch sizes
+./run-benchmark.sh --batches "1,50,500,5000"
+
+# Only test sending (skip consumption)
+./run-benchmark.sh --skip-consume
+
+# Only test consumption (skip sending)
+./run-benchmark.sh --skip-send
+
+# Combined: 500K messages, custom batches, skip sending
+./run-benchmark.sh --count 500000 --batches "1,100,1000" --skip-send
+```
+
+### Expected Output
+
+The benchmark produces a comparison table:
+
+```
+┌───────────────────┬──────────────┬──────────────┬────────────┬──────────────┬────────────────┬──────────────────┐
+│ Phase             │ Batch Size   │ Messages     │ Total Time │ Memory Used  │ Peak Memory    │ Throughput       │
+├───────────────────┼──────────────┼──────────────┼────────────┼──────────────┼────────────────┼──────────────────┤
+│ SEND              │ 1            │ 1,000,000    │ 12.34 s    │ 45.20 MB     │ 128.50 MB      │ 81,038.52 msg/s  │
+│ CONSUME (batch=1) │ 1            │ 1,000,000    │ 8.56 s     │ 32.10 MB     │ 95.20 MB       │ 116,822.43 msg/s │
+│ CONSUME (batch=100) │ 100        │ 1,000,000    │ 7.21 s     │ 28.50 MB     │ 87.30 MB       │ 138,697.11 msg/s │
+└───────────────────┴──────────────┴──────────────┴────────────┴──────────────┴────────────────┴──────────────────┘
+```
+
+### Benchmark Documentation
+
+For detailed information on the benchmark suite, see:
+- [BENCHMARK.md](./BENCHMARK.md) - Comprehensive benchmark documentation
+- [BENCHMARK_QUICK_REFERENCE.md](./BENCHMARK_QUICK_REFERENCE.md) - Quick reference guide
+
+Key components:
+- `BenchmarkMessage.php` - Lightweight message for testing
+- `BenchmarkMessageHandler.php` - Zero-work handler
+- `BenchmarkMetrics.php` - Metrics collection and formatting
+- `BenchmarkMessengerCommand.php` - Main benchmark command
+- `run-benchmark.sh` - Executable benchmark script
+
 ## Test Scenarios
 
 The functional tests cover three main scenarios:
