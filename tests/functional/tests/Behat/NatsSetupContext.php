@@ -338,65 +338,61 @@ class NatsSetupContext implements Context
      */
     public function theMessengerStatsShouldShowMessagesWaiting(int $count): void
     {
-        // Check the consumer info to get pending messages, not the stream total
-        try {
-            $clientConfig = new Configuration([
-                'host' => 'localhost',
-                'port' => 4222,
-                'user' => 'admin',
-                'pass' => 'password',
-            ]);
+        $command = [
+            'php',
+            'bin/console',
+            'messenger:stats',
+            '--env=test'
+        ];
 
-            $client = new Client($clientConfig);
-            $stream = $client->getApi()->getStream($this->testStreamName);
+        $statsProcess = new Process($command, __DIR__ . '/../..');
+        $statsProcess->run();
 
-            try {
-                // Check consumer info for pending messages
-                $consumer = $stream->getConsumer('client');
-                $consumerInfo = $consumer->info();
-
-                // For NATS JetStream, use num_ack_pending which represents messages waiting for acknowledgment
-                $pendingMessages = $consumerInfo->num_ack_pending ?? $consumerInfo->num_pending ?? $consumerInfo->pending ?? 0;
-
-                if ($pendingMessages !== $count) {
-                    throw new \RuntimeException(
-                        sprintf(
-                            'Expected %d pending messages in consumer, but found %d. Consumer info: %s',
-                            $count,
-                            $pendingMessages,
-                            json_encode($consumerInfo, JSON_PRETTY_PRINT)
-                        )
-                    );
-                }
-            } catch (\Exception $consumerException) {
-                // If consumer doesn't exist yet and we expect 0 messages, that's OK
-                if ($count === 0) {
-                    return;
-                }
-
-                // If consumer doesn't exist but we expect messages, fall back to stream count
-                $streamInfo = $stream->info();
-                $actualCount = $streamInfo->state->messages ?? 0;
-
-                if ($actualCount !== $count) {
-                    throw new \RuntimeException(
-                        sprintf(
-                            'Expected %d messages in stream (consumer not found), but found %d. Stream info: %s',
-                            $count,
-                            $actualCount,
-                            json_encode($streamInfo, JSON_PRETTY_PRINT)
-                        )
-                    );
-                }
-            }
-        } catch (\Exception $e) {
+        if (!$statsProcess->isSuccessful()) {
             throw new \RuntimeException(
                 sprintf(
-                    'Failed to check message count via NATS API: %s',
-                    $e->getMessage()
-                ),
-                0,
-                $e
+                    'Failed to get messenger stats. Exit code: %d. Output: %s. Error: %s',
+                    $statsProcess->getExitCode(),
+                    $statsProcess->getOutput(),
+                    $statsProcess->getErrorOutput()
+                )
+            );
+        }
+
+        // For messenger:stats, the table output goes to stderr, not stdout
+        $output = $statsProcess->getErrorOutput();
+
+        // Parse the output to find the test_transport line and extract the message count
+        $lines = explode("\n", $output);
+        $messageCount = null;
+
+        foreach ($lines as $line) {
+            if (strpos($line, 'test_transport') !== false) {
+                // Extract number from lines like "  test_transport   20  "
+                if (preg_match('/test_transport\s+(\d+)/', $line, $matches)) {
+                    $messageCount = (int) $matches[1];
+                    break;
+                }
+            }
+        }
+
+        if ($messageCount === null) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Could not find test_transport in messenger:stats output: %s',
+                    $output
+                )
+            );
+        }
+
+        if ($messageCount !== $count) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected %d messages waiting in messenger stats, but found %d. Full output: %s',
+                    $count,
+                    $messageCount,
+                    $output
+                )
             );
         }
     }

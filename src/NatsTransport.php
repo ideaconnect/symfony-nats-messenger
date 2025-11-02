@@ -109,8 +109,27 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
     public function getMessageCount(): int
     {
-        $info = json_decode($this->consumer->info()->body);
-        return $info->num_pending;
+        try {
+            // First try to get consumer info
+            $info = json_decode($this->consumer->info()->body);
+
+            // Use num_ack_pending which represents messages delivered but not yet acknowledged
+            // If num_ack_pending is 0 but num_pending > 0, use num_pending (messages not yet delivered)
+            $ackPending = $info->num_ack_pending ?? 0;
+            $pending = $info->num_pending ?? 0;
+
+            return max($ackPending, $pending);
+        } catch (\Exception $e) {
+            // If consumer doesn't exist, check stream message count instead
+            try {
+                $streamInfo = $this->stream->info();
+                $streamData = json_decode($streamInfo->body);
+                return $streamData->state->messages ?? 0;
+            } catch (\Exception $streamException) {
+                // If both consumer and stream checks fail, return 0
+                return 0;
+            }
+        }
     }
 
     public function setup(): void
