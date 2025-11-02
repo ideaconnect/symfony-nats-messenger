@@ -113,13 +113,15 @@ jobs:
       env:
         APP_ENV: test
         NATS_DSN: nats://localhost:4222
+        CI: true
       run: |
         cd tests/functional
         # Set up environment for testing
         cp .env.dev .env.test.local || echo "No .env.dev file found"
 
-        # Run behat tests directly (non-interactive)
-        ./vendor/bin/behat --config=behat.yml --colors --strict --no-interaction
+        # Run functional tests using the test runner script
+        chmod +x run_tests.sh
+        ./run_tests.sh
 
     - name: Run benchmark tests
       env:

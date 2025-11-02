@@ -43,7 +43,13 @@ echo "5. Dry run (syntax check only)"
 echo "6. Show test definitions"
 echo ""
 
-read -p "Choose option (1-6): " choice
+# Check if we're running in CI mode
+if [ "$CI" = "true" ]; then
+    echo -e "${YELLOW}CI mode detected - automatically running all tests${NC}"
+    choice=1
+else
+    read -p "Choose option (1-6): " choice
+fi
 
 case $choice in
     1)
