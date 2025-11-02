@@ -1,5 +1,12 @@
 # Symfony NATS Messenger Bridge
 
+[![PHP Version](https://img.shields.io/badge/PHP-^8.1-787CB5?logo=php&logoColor=white)](https://php.net)
+[![Symfony Version](https://img.shields.io/badge/Symfony-^7.2-000000?logo=symfony&logoColor=white)](https://symfony.com)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-96.15%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![CI Status](https://github.com/ideaconnect/symfony-nats-messenger/workflows/CI/badge.svg?branch=main)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+
 A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream), enabling reliable asynchronous messaging with persistent message streaming.
 
 ## Features
