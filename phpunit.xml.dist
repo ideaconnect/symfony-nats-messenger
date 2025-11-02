@@ -4,12 +4,8 @@
          bootstrap="vendor/autoload.php"
          cacheResultFile=".phpunit.cache/test-results"
          executionOrder="depends,defects"
-         forceCoversAnnotatedCoveredMethods="false"
-         beStrictAboutCoversAnnotatedMissingCoversEdgeCases="false"
          beStrictAboutOutputDuringTests="true"
          beStrictAboutTestsThatDoNotTestAnything="true"
-         beStrictAboutTodoTestedCodeUnitsThatAreNotIntended="false"
-         beStrictAboutTestSize="true"
          verbose="true">
     <testsuites>
         <testsuite name="Unit Tests">

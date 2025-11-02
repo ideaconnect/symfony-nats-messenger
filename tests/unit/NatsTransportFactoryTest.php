@@ -23,7 +23,7 @@ class NatsTransportFactoryTest extends TestCase
      */
     public function createTransport_WithValidDsn_ReturnsNatsTransportInstance(): void
     {
-        $dsn = 'nats-jetstream://localhost:4222/test-stream/test-topic';
+        $dsn = 'nats-jetstream://admin:password@localhost:4222/test-stream/test-topic';
         $options = [];
 
         $transport = $this->factory->createTransport($dsn, $options, $this->mockSerializer);
@@ -36,7 +36,7 @@ class NatsTransportFactoryTest extends TestCase
      */
     public function createTransport_WithOptions_PassesOptionsToTransport(): void
     {
-        $dsn = 'nats-jetstream://localhost:4222/test-stream/test-topic';
+        $dsn = 'nats-jetstream://admin:password@localhost:4222/test-stream/test-topic';
         $options = ['consumer' => 'my-consumer', 'batching' => 5];
 
         $transport = $this->factory->createTransport($dsn, $options, $this->mockSerializer);
@@ -49,12 +49,12 @@ class NatsTransportFactoryTest extends TestCase
      */
     public function createTransport_IgnoresProvidedSerializer(): void
     {
-        $dsn = 'nats-jetstream://localhost:4222/test-stream/test-topic';
+        $dsn = 'nats-jetstream://admin:password@localhost:4222/test-stream/test-topic';
         $options = [];
 
         // The serializer should not be called - igbinary is used instead
-        $this->mockSerializer->expects($this->never())->method('serialize');
-        $this->mockSerializer->expects($this->never())->method('deserialize');
+        $this->mockSerializer->expects($this->never())->method('encode');
+        $this->mockSerializer->expects($this->never())->method('decode');
 
         $transport = $this->factory->createTransport($dsn, $options, $this->mockSerializer);
 
@@ -66,7 +66,7 @@ class NatsTransportFactoryTest extends TestCase
      */
     public function supports_WithNatsJetStreamScheme_ReturnsTrue(): void
     {
-        $dsn = 'nats-jetstream://localhost:4222/test-stream/test-topic';
+        $dsn = 'nats-jetstream://admin:password@localhost:4222/test-stream/test-topic';
         $options = [];
 
         $result = $this->factory->supports($dsn, $options);

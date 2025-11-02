@@ -175,6 +175,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // Serialize the envelope for storage
         try {
             $encodedMessage = igbinary_serialize($envelope);
+            // Publish to the NATS stream
+            $this->stream->put($this->topic, $encodedMessage);
         } catch (Exception $e) {
             // Extract error details if available, otherwise use the caught exception
             $realError = $envelope->last(ErrorDetailsStamp::class);
@@ -184,8 +186,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw $e;
         }
 
-        // Publish to the NATS stream
-        $this->stream->put($this->topic, $encodedMessage);
         return $envelope;
     }
 
@@ -222,7 +222,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 // Attach the message ID for later ack/nak operations
                 $envelope = $decoded->with(new TransportMessageIdStamp($message->replyTo));
                 $envelopes[] = $envelope;
-            } catch (Exception $e) {
+            } catch (\Throwable $e) {
                 // Send negative acknowledgment for failed messages
                 $this->sendNak($message->replyTo);
                 throw $e;
@@ -495,11 +495,21 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw new InvalidArgumentException('The given NATS DSN is invalid.');
         }
 
+        // Validate required components exist
+        if (!isset($components['host'])) {
+            throw new InvalidArgumentException('The given NATS DSN is invalid.');
+        }
+
         // Extract connection credentials
         $connectionCredentials = [
             'host' => $components['host'],
             'port' => $components['port'] ?? self::DEFAULT_NATS_PORT,
         ];
+
+        // Validate that path exists for stream name and topic
+        if (!isset($components['path'])) {
+            throw new InvalidArgumentException('NATS Stream name not provided.');
+        }
 
         $path = $components['path'];
 
@@ -536,7 +546,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         // Extract stream name and topic from path (format: /stream_name/topic_name)
         $pathParts = explode('/', substr($components['path'], 1));
-        if (count($pathParts) < 2) {
+        if (count($pathParts) < 2 || empty($pathParts[0]) || empty($pathParts[1])) {
             throw new InvalidArgumentException('NATS DSN must contain both stream name and topic name (format: /stream/topic).');
         }
 
