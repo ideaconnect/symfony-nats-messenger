@@ -17,15 +17,20 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
+use Symfony\Component\Messenger\Transport\SetupableTransportInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
 use Symfony\Component\Uid\Uuid;
 
-class NatsTransport implements TransportInterface, MessageCountAwareInterface
+class NatsTransport implements TransportInterface, MessageCountAwareInterface, SetupableTransportInterface
 {
     private const DEFAULT_OPTIONS = [
         'delay' => 0.001,
         'consumer' => 'client',
         'batching' => 10,
+        'stream_max_age' => 0,
+        'stream_max_bytes' => null,
+        'stream_max_messages' => null,
+        'stream_replicas' => 1,
     ];
 
     protected Consumer $consumer;
@@ -33,6 +38,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
     protected Stream $stream;
     protected Client $client;
     protected string $topic;
+    protected string $streamName;
     protected array $configuration;
 
     public function __construct(#[\SensitiveParameter] string $dsn, ?array $options = [])
@@ -107,6 +113,40 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
         return $info->num_pending;
     }
 
+    public function setup(): void
+    {
+        try {
+            // Get stream from the API
+            $stream = $this->client->getApi()->getStream($this->streamName);
+
+            // Use createIfNotExists to avoid errors if stream already exists
+            $streamConfig = $stream->getConfiguration();
+
+            // Configure the stream with the topic as subject
+            $streamConfig->setSubjects([$this->topic]);
+
+            // Apply additional configuration from options
+            if (isset($this->configuration['stream_max_age']) && $this->configuration['stream_max_age'] > 0) {
+                // Convert seconds to nanoseconds for NATS
+                $maxAgeNanoseconds = $this->configuration['stream_max_age'] * 1_000_000_000;
+                $streamConfig->setMaxAge($maxAgeNanoseconds);
+            }
+
+            if (isset($this->configuration['stream_max_bytes']) && $this->configuration['stream_max_bytes'] !== null) {
+                $streamConfig->setMaxBytes($this->configuration['stream_max_bytes']);
+            }
+
+            if (isset($this->configuration['stream_replicas']) && $this->configuration['stream_replicas'] > 0) {
+                $streamConfig->setReplicas($this->configuration['stream_replicas']);
+            }
+
+            $stream->createIfNotExists();
+
+        } catch (\Exception $e) {
+            throw new \RuntimeException("Failed to setup NATS stream '{$this->streamName}': " . $e->getMessage(), 0, $e);
+        }
+    }
+
     private function findReceivedStamp(Envelope $envelope): TransportMessageIdStamp
     {
         /** @var RedisReceivedStamp|null $redisReceivedStamp */
@@ -156,14 +196,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
             $clientConnectionSettings['pass'] = $components['pass'];
         }
 
-        list($stream, $topic) = explode('/', substr($components['path'], 1));
+        list($streamName, $topic) = explode('/', substr($components['path'], 1));
         $nastConfig = new Configuration($clientConnectionSettings);
         $nastConfig->setDelay(floatval($configuration['delay']));
         $client = new Client($nastConfig);
-        $stream = $client->getApi()->getStream($stream);
+        $stream = $client->getApi()->getStream($streamName);
         $consumer = $stream->getConsumer($configuration['consumer']);
         $consumer->setBatching($configuration['batching']);
         $this->topic = $topic;
+        $this->streamName = $streamName;
         $this->consumer = $consumer;
         $this->client = $client;
         $this->stream = $stream;
