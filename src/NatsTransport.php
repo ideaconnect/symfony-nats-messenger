@@ -4,7 +4,9 @@ namespace IDCT\NatsMessenger;
 
 use Basis\Nats\Client;
 use Basis\Nats\Configuration;
+use Basis\Nats\Consumer\AckPolicy;
 use Basis\Nats\Consumer\Consumer;
+use Basis\Nats\Consumer\DeliverPolicy;
 use Basis\Nats\Message\Ack;
 use Basis\Nats\Message\Msg;
 use Basis\Nats\Message\Nak;
@@ -24,18 +26,26 @@ use Symfony\Component\Uid\Uuid;
 class NatsTransport implements TransportInterface, MessageCountAwareInterface, SetupableTransportInterface
 {
     private const DEFAULT_OPTIONS = [
-        'delay' => 0.001,
-        'consumer' => 'client',
-        'batching' => 10,
-        'stream_max_age' => 0,
-        'stream_max_bytes' => null,
-        'stream_max_messages' => null,
-        'stream_replicas' => 1,
+        'delay' => 0.01, // delay between fetch attempts, retry, TODO: other options than fixed
+        'consumer' => 'client', // consumer name
+        'batching' => 1, // number of messages to fetch in one batch
+        'max_batch_timeout' => 0.5, // seconds, allow to define how long to wait for batch to fill
+        'stream_max_age' => 0, // in seconds, 0 means unlimited
+        'stream_max_bytes' => null, // in bytes, null means unlimited
+        'stream_max_messages' => null, // in messages, null means unlimited
+        'stream_replicas' => 1, // number of replicas for the stream
     ];
 
-    protected Consumer $consumer;
-    protected Queue $queue;
-    protected Stream $stream;
+    /**
+     * @var Consumer|null
+     */
+    protected ?Consumer $consumer = null;
+
+    /**
+     * @var Queue|null
+     */
+    protected ?Queue $queue = null;
+    protected ?Stream $stream = null;
     protected Client $client;
     protected string $topic;
     protected string $streamName;
@@ -44,10 +54,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function __construct(#[\SensitiveParameter] string $dsn, ?array $options = [])
     {
         $this->buildFromDsn($dsn, $options);
+        $this->connect();
     }
 
     public function send(Envelope $envelope): Envelope
     {
+        if (!$this->stream) {
+            $this->stream = $this->client->getApi()->getStream($this->streamName);
+        }
+
         $uuid = (string) Uuid::v4();
         $envelope = $envelope->with(new TransportMessageIdStamp($uuid));
         try {
@@ -86,7 +101,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         return $envelopes;
     }
 
-    protected function sendNak($id) {
+    protected function sendNak($id)
+    {
         $this->client->connection->sendMessage(new Nak([
             'subject' => $id,
             'delay' => 0, //TODO
@@ -107,8 +123,27 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $this->sendNak($id);
     }
 
+    protected function connect()
+    {
+        if (!$this->stream) {
+            $this->stream = $this->client->getApi()->getStream($this->streamName);
+        }
+
+        if (!$this->consumer) {
+            $this->consumer = $this->stream->getConsumer($this->configuration['consumer']);
+        }
+
+        if (!$this->queue) {
+            $batching = $this->configuration['batching'];
+            $this->consumer->setBatching($batching);
+            $this->queue = $this->consumer->getQueue();
+        }
+    }
+
     public function getMessageCount(): int
     {
+
+
         try {
             // First try to get consumer info
             $info = json_decode($this->consumer->info()->body);
@@ -159,7 +194,24 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $streamConfig->setReplicas($this->configuration['stream_replicas']);
             }
 
-            $stream->createIfNotExists();
+            // Create the stream if it doesn't exist
+            $stream->create();
+
+            $this->stream = $stream;
+
+            // Also create the consumer to ensure the transport is fully ready
+            $consumer = $stream->getConsumer($this->configuration['consumer']);
+            $consumer->getConfiguration()->setAckPolicy(AckPolicy::EXPLICIT);
+            $consumer->getConfiguration()->setDeliverPolicy(DeliverPolicy::ALL);
+            $consumer->setBatching($this->configuration['batching']);
+            $consumer->create();
+
+            $this->consumer = $consumer;
+
+            $cons = $this->stream->getConsumerNames();
+            if (!in_array($this->configuration['consumer'], $cons)) {
+                throw new \RuntimeException("Consumer was not created successfully.");
+            }
 
         } catch (\Exception $e) {
             throw new \RuntimeException("Failed to setup NATS stream '{$this->streamName}': " . $e->getMessage(), 0, $e);
@@ -209,7 +261,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             'pedantic' => false,
             'port' => $connectionCredentials['port'],
             'reconnect' => true,
+            'timeout' => $configuration['max_batch_timeout'],
         ];
+
         if (isset($components['user']) && isset($components['pass']) && !empty($components['user']) && !empty($components['pass'])) {
             $clientConnectionSettings['user'] = $components['user'];
             $clientConnectionSettings['pass'] = $components['pass'];
@@ -219,16 +273,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $nastConfig = new Configuration($clientConnectionSettings);
         $nastConfig->setDelay(floatval($configuration['delay']));
         $client = new Client($nastConfig);
-        $stream = $client->getApi()->getStream($streamName);
-        $consumer = $stream->getConsumer($configuration['consumer']);
-        $consumer->setBatching($configuration['batching']);
         $this->topic = $topic;
         $this->streamName = $streamName;
-        $this->consumer = $consumer;
         $this->client = $client;
-        $this->stream = $stream;
         $this->configuration = $configuration;
-        $this->queue = $consumer->getQueue();
-        $this->queue->setTimeout($this->configuration['delay']);
     }
 }

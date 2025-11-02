@@ -21,11 +21,17 @@ class NatsSetupContext implements Context
     private ?Process $consumerProcess = null;
     /** @var Process[] */
     private array $consumerProcesses = [];
-    private string $testStreamName = 'test_stream';
+    private string $testStreamName = 'stream';
     private string $testSubject = 'test.messages';
     private bool $shouldNatsBeRunning = false;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
+    private string $testFilesDir;
+
+    public function __construct()
+    {
+        $this->testFilesDir = __DIR__ . '/../../var/test_files';
+    }
 
     /**
      * @Given NATS server is running
@@ -91,8 +97,6 @@ class NatsSetupContext implements Context
 
         $client = new Client($clientConfig);
         $stream = $client->getApi()->getStream($this->testStreamName);
-        $stream->getConfiguration()->setSubjects([$this->testSubject]);
-        $stream->createIfNotExists();
     }
 
     /**
@@ -260,11 +264,11 @@ class NatsSetupContext implements Context
      */
     public function theNatsStreamIsSetUp(): void
     {
-        // First run the setup command to ensure stream exists
+        // Use the messenger setup command to create both stream and consumer via the transport's setup() method
         $this->iRunTheMessengerSetupCommand();
         $this->theNatsStreamShouldBeCreatedSuccessfully();
 
-        // Purge any existing messages from the stream to start clean
+        // Purge any existing messages from the stream for clean test state
         try {
             $clientConfig = new Configuration([
                 'host' => 'localhost',
@@ -276,28 +280,12 @@ class NatsSetupContext implements Context
             $client = new Client($clientConfig);
             $stream = $client->getApi()->getStream($this->testStreamName);
 
-            // Purge the stream to remove any existing messages
+            // Purge the stream to remove any existing messages for clean test state
             $stream->purge();
-
-            // Create the consumer
-            $consumer = $stream->getConsumer('client'); // Default consumer name from transport
-            $consumer->create(); // Explicitly create the consumer
         } catch (\Exception $e) {
-            // Consumer might already exist, that's fine for consumer creation
-            // But purge should work, so let's try the purge again
-            try {
-                $clientConfig = new Configuration([
-                    'host' => 'localhost',
-                    'port' => 4222,
-                    'user' => 'admin',
-                    'pass' => 'password',
-                ]);
-                $client = new Client($clientConfig);
-                $stream = $client->getApi()->getStream($this->testStreamName);
-                $stream->purge();
-            } catch (\Exception $purgeException) {
-                // If we can't purge, that's a real problem for the test
-                throw new \RuntimeException("Failed to purge stream for clean test state: " . $purgeException->getMessage());
+            // If we can't purge, only fail if it's not a "stream not found" error
+            if (strpos($e->getMessage(), 'stream not found') === false) {
+                throw new \RuntimeException("Failed to purge stream for clean test state: " . $e->getMessage());
             }
         }
     }
@@ -319,6 +307,9 @@ class NatsSetupContext implements Context
         ];
 
         $sendProcess = new Process($command, __DIR__ . '/../..');
+        // Set timeout based on message count - allow 1 second per 100 messages minimum 60s
+        $timeout = max(60, $count / 100);
+        $sendProcess->setTimeout($timeout);
         $sendProcess->run();
 
         if (!$sendProcess->isSuccessful()) {
@@ -526,20 +517,21 @@ class NatsSetupContext implements Context
                 'messenger:consume',
                 'test_transport',
                 '--limit=' . $messagesPerConsumer,
-                '--time-limit=30', // Give more time for processing and acknowledgment
-                '--sleep=0.1',
+                '--time-limit=300', // 5 minutes for high volume processing
                 '--env=test',
-                '-vv'
+                '-v'
             ];
 
             $process = new Process($command, __DIR__ . '/../..');
-            $process->setTimeout(60); // Longer timeout
+            // Set timeout based on message count - allow time for processing
+            $timeout = max(60, ($messagesPerConsumer / 10)); // 10 messages per second estimate
+            $process->setTimeout($timeout + 60); // Add buffer
             $process->start();
 
             $this->consumerProcesses[] = $process;
 
-            // Add a small delay between starting consumers to avoid race conditions
-            usleep(100000); // 100ms
+            // Small delay between starting consumers
+            usleep(50000); // 50ms
         }
     }
 
@@ -609,6 +601,7 @@ class NatsSetupContext implements Context
      */
     public function cleanup(): void
     {
+        sleep(1);
         // Stop consumer process if running
         if ($this->consumerProcess && $this->consumerProcess->isRunning()) {
             $this->consumerProcess->stop();
@@ -644,6 +637,16 @@ class NatsSetupContext implements Context
 
         // Stop NATS server
         $this->stopNatsServer();
+
+        //clear the var/test_files directory
+        if (is_dir($this->testFilesDir)) {
+            $files = glob($this->testFilesDir . '/*');
+            foreach ($files as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+        }
 
         // Remove temporary config file
         $configFile = __DIR__ . '/../../config/packages/test_messenger.yaml';
@@ -719,4 +722,103 @@ class NatsSetupContext implements Context
             throw new \RuntimeException("Stream '{$this->testStreamName}' does not exist");
         }
     }
+
+    /**
+     * @Given the test files directory is clean
+     */
+    public function theTestFilesDirectoryIsClean(): void
+    {
+        if (is_dir($this->testFilesDir)) {
+            // Remove all files in the directory
+            $files = glob($this->testFilesDir . '/*');
+            foreach ($files as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+        } else {
+            mkdir($this->testFilesDir, 0755, true);
+        }
+    }
+
+    /**
+     * @Then the messenger stats should show approximately :expectedCount messages waiting
+     */
+    public function theMessengerStatsShouldShowApproximatelyMessagesWaiting(int $expectedCount): void
+    {
+        $process = new Process([
+            'php',
+            'bin/console',
+            'messenger:stats',
+            '--env=test'
+        ], __DIR__ . '/../..');
+
+        $process->run();
+        $output = $process->getErrorOutput() ?: $process->getOutput();
+
+        if (!preg_match('/test_transport\s+(\d+)/', $output, $matches)) {
+            throw new \RuntimeException(
+                "Could not parse messenger stats output. Full output: {$output}"
+            );
+        }
+
+        $actualCount = (int) $matches[1];
+
+        if ($actualCount !== $expectedCount) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected exactly %d messages waiting in messenger stats, but found %d. Full output: %s',
+                    $expectedCount,
+                    $actualCount,
+                    $output
+                )
+            );
+        }
+    }
+
+    /**
+     * @Then the test files directory should contain approximately :count files
+     */
+    public function theTestFilesDirectoryShouldContainApproximatelyFiles(int $count): void
+    {
+        if (!is_dir($this->testFilesDir)) {
+            throw new \RuntimeException("Test files directory does not exist: {$this->testFilesDir}");
+        }
+
+        $files = glob($this->testFilesDir . '/message_*.txt');
+        $actualCount = count($files);
+
+        if ($actualCount !== $count) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected exactly %d files in test directory, but found %d. Directory: %s',
+                    $count,
+                    $actualCount,
+                    $this->testFilesDir
+                )
+            );
+        }
+    }
+
+    public function theTestFilesDirectoryShouldContainFiles(int $count): void
+    {
+        if (!is_dir($this->testFilesDir)) {
+            throw new \RuntimeException("Test files directory does not exist: {$this->testFilesDir}");
+        }
+
+        $files = glob($this->testFilesDir . '/message_*.txt');
+        $actualCount = count($files);
+
+        if ($actualCount !== $count) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected %d files in test directory, but found %d. Directory: %s',
+                    $count,
+                    $actualCount,
+                    $this->testFilesDir
+                )
+            );
+        }
+    }
+
 }
