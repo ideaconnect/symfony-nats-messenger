@@ -503,15 +503,6 @@ The bridge consists of two main components:
 - Handles message serialization (igbinary)
 - Supports batching and explicit acknowledgment
 
-## Documentation
-
-- **[PHPUNIT_GUIDE.md](PHPUNIT_GUIDE.md)** - Unit test setup and execution
-- **[UNIT_TESTS_INDEX.md](UNIT_TESTS_INDEX.md)** - Test documentation index
-- **[UNIT_TESTS.md](UNIT_TESTS.md)** - Detailed test coverage
-- **[COMPLETION_REPORT.md](COMPLETION_REPORT.md)** - Project completion summary
-- **[tests/functional/README.md](tests/functional/README.md)** - Functional test guide
-- **[tests/unit/README.md](tests/unit/README.md)** - Unit test reference
-
 ## Performance Tips
 
 1. **Choose appropriate batching**
@@ -569,9 +560,8 @@ MIT License - see LICENSE file for details
 
 For issues, questions, or suggestions:
 1. Check the [troubleshooting](#troubleshooting) section
-2. Review the [documentation](#documentation)
-3. Check existing issues on GitHub
-4. Create a new issue with detailed information
+2. Check existing issues on GitHub
+3. Create a new issue with detailed information
 
 ## Changelog
 
