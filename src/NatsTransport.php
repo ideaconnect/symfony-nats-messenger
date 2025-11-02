@@ -343,17 +343,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $ackPending = $info->num_ack_pending ?? 0;
             $pending = $info->num_pending ?? 0;
 
-            $info = $this->decodeJsonInfo($this->consumer->info());
-
-            if ($info === null) {
-                return 0;
-            }
-
-            // num_ack_pending represents messages delivered but not yet acknowledged
-            // num_pending represents messages not yet delivered
-            $ackPending = $info->num_ack_pending ?? 0;
-            $pending = $info->num_pending ?? 0;
-
             // Return the maximum of the two - represents total messages requiring attention
             return max($ackPending, $pending);
         } catch (\Exception $e) {
