@@ -64,7 +64,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // Consumer group name for organizing message consumption
         'consumer' => 'client',
         // Number of messages to fetch in a single batch operation
-        'batching' => 5,
+        'batching' => 1,
         // Maximum time (in seconds) to wait for a batch to fill before returning
         'max_batch_timeout' => 1,
         // Stream retention policy - max age of messages (0 = unlimited)

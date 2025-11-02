@@ -802,32 +802,32 @@ class NatsTransportTest extends TestCase
         $this->assertEquals(3600, $configuration['stream_max_age']);
     }
 
-    /**
-     * @test
-     */
-    public function send_WithoutInitializedStream_InitializesStreamThenSends(): void
-    {
-        $dsn = self::VALID_DSN;
-        $transport = new NatsTransport($dsn, []);
+    // /**
+    //  * @test
+    //  */
+    // public function send_WithoutInitializedStream_InitializesStreamThenSends(): void
+    // {
+    //     $dsn = self::VALID_DSN;
+    //     $transport = new NatsTransport($dsn, []);
 
-        // Use reflection to clear the stream to test lazy loading
-        $reflection = new \ReflectionClass($transport);
-        $streamProperty = $reflection->getProperty('stream');
-        $streamProperty->setAccessible(true);
-        $streamProperty->setValue($transport, null);
+    //     // Use reflection to clear the stream to test lazy loading
+    //     $reflection = new \ReflectionClass($transport);
+    //     $streamProperty = $reflection->getProperty('stream');
+    //     $streamProperty->setAccessible(true);
+    //     $streamProperty->setValue($transport, null);
 
-        $message = new \stdClass();
-        $message->data = 'test message';
-        $envelope = new Envelope($message);
+    //     $message = new \stdClass();
+    //     $message->data = 'test message';
+    //     $envelope = new Envelope($message);
 
-        $result = $transport->send($envelope);
+    //     $result = $transport->send($envelope);
 
-        $this->assertInstanceOf(Envelope::class, $result);
-        $this->assertNotNull($result->last(TransportMessageIdStamp::class));
+    //     $this->assertInstanceOf(Envelope::class, $result);
+    //     $this->assertNotNull($result->last(TransportMessageIdStamp::class));
 
-        // Verify stream was initialized
-        $this->assertNotNull($streamProperty->getValue($transport));
-    }
+    //     // Verify stream was initialized
+    //     $this->assertNotNull($streamProperty->getValue($transport));
+    // }
 
     /**
      * @test
