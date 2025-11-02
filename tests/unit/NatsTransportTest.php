@@ -289,6 +289,18 @@ class NatsTransportTest extends TestCase
         $dsn = self::VALID_DSN;
         $transport = new NatsTransport($dsn, []);
 
+        // Create mock stream that doesn't actually connect to NATS
+        $mockStream = $this->createMock(\Basis\Nats\Stream\Stream::class);
+        $mockStream->expects($this->once())
+                  ->method('publish')
+                  ->with($this->equalTo('test-topic'), $this->anything());
+
+        // Use reflection to inject the mock stream
+        $reflection = new \ReflectionClass($transport);
+        $streamProperty = $reflection->getProperty('stream');
+        $streamProperty->setAccessible(true);
+        $streamProperty->setValue($transport, $mockStream);
+
         $message = new \stdClass();
         $envelope = new Envelope($message);
 
@@ -485,6 +497,18 @@ class NatsTransportTest extends TestCase
     {
         $dsn = self::VALID_DSN;
         $transport = new NatsTransport($dsn, []);
+
+        // Create mock stream that doesn't actually connect to NATS
+        $mockStream = $this->createMock(\Basis\Nats\Stream\Stream::class);
+        $mockStream->expects($this->once())
+                  ->method('publish')
+                  ->with($this->equalTo('test-topic'), $this->anything());
+
+        // Use reflection to inject the mock stream
+        $reflection = new \ReflectionClass($transport);
+        $streamProperty = $reflection->getProperty('stream');
+        $streamProperty->setAccessible(true);
+        $streamProperty->setValue($transport, $mockStream);
 
         $message = new \stdClass();
         $message->data = 'test data';

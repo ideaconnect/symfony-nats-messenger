@@ -174,17 +174,19 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         // Serialize the envelope for storage
         try {
-            $encodedMessage = igbinary_serialize($envelope);
-            // Publish to the NATS stream
-            $this->stream->publish($this->topic, $encodedMessage);
-        } catch (Exception $e) {
-            // Extract error details if available, otherwise use the caught exception
-            $realError = $envelope->last(ErrorDetailsStamp::class);
-            if ($realError) {
-                throw new Exception($realError->getExceptionMessage());
+            $encodedMessage = \igbinary_serialize($envelope);
+        } catch (\Throwable $serializationError) {
+            // Check for ErrorDetailsStamp for serialization failures
+            $errorStamp = $envelope->last(ErrorDetailsStamp::class);
+            if ($errorStamp !== null) {
+                throw new Exception($errorStamp->getExceptionMessage());
             }
-            throw $e;
+            // Re-throw original serialization error if no ErrorDetailsStamp
+            throw $serializationError;
         }
+
+        // Publish to the NATS stream
+        $this->stream->publish($this->topic, $encodedMessage);
 
         return $envelope;
     }
@@ -218,7 +220,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             try {
                 // Deserialize the message payload back to an Envelope
-                $decoded = igbinary_unserialize($message->payload->body);
+                $decoded = \igbinary_unserialize($message->payload->body);
                 // Attach the message ID for later ack/nak operations
                 $envelope = $decoded->with(new TransportMessageIdStamp($message->replyTo));
                 $envelopes[] = $envelope;
