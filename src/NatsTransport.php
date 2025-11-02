@@ -66,7 +66,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // Number of messages to fetch in a single batch operation
         'batching' => 1,
         // Maximum time (in seconds) to wait for a batch to fill before returning
-        'max_batch_timeout' => 0.5,
+        'max_batch_timeout' => 1,
         // Stream retention policy - max age of messages (0 = unlimited)
         'stream_max_age' => 0,
         // Stream retention policy - max bytes stored (null = unlimited)

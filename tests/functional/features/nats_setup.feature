@@ -50,6 +50,7 @@ Feature: NATS Stream Setup
     And I wait for the consumers to finish
     Then 10 messages should have been processed by the consumers
 
+  @high
   Scenario: High-volume message processing with file output verification
     Given I have a messenger transport configured with max age of 15 minutes
     And the NATS stream is set up

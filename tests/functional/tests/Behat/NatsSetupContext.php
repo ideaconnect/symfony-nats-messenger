@@ -280,7 +280,7 @@ class NatsSetupContext implements Context
                 echo "CI mode: Scaled down message count to $count\n";
             }
         }
-        
+
         $this->messagesSent = $count;
 
         // Use a simple command to send messages
@@ -322,7 +322,7 @@ class NatsSetupContext implements Context
                 echo "CI mode: Scaled down expected count to $count\n";
             }
         }
-        
+
         $command = [
             'php',
             'bin/console',
@@ -509,7 +509,7 @@ class NatsSetupContext implements Context
                 echo "CI mode: Scaled down messages per consumer to $messagesPerConsumer\n";
             }
         }
-        
+
         $this->consumerProcesses = [];
 
         for ($i = 1; $i <= $consumerCount; $i++) {
@@ -794,7 +794,7 @@ class NatsSetupContext implements Context
                 echo "CI mode: Scaled down expected count to $expectedCount\n";
             }
         }
-        
+
         $process = new Process([
             'php',
             'bin/console',
@@ -837,7 +837,7 @@ class NatsSetupContext implements Context
                 echo "CI mode: Scaled down expected file count to $count\n";
             }
         }
-        
+
         if (!is_dir($this->testFilesDir)) {
             throw new \RuntimeException("Test files directory does not exist: {$this->testFilesDir}");
         }
