@@ -129,7 +129,7 @@ class BenchmarkMessengerCommand extends Command
         $io->writeln('Starting to send messages...');
         $progressBar = $io->createProgressBar($messageCount);
         $progressBar->setFormat(
-            "Sent: %current%/%max% [%bar%] %percent:3s%% %memory:6s% %elapsed:6s% %rate_avg:20s%\n"
+            "Sent: %current%/%max% [%bar%] %percent:3s%% %memory:6s% %elapsed:6s%\n"
         );
         $progressBar->setRedrawFrequency(10000);
 
@@ -161,7 +161,7 @@ class BenchmarkMessengerCommand extends Command
 
         $progressBar = $io->createProgressBar($messageCount);
         $progressBar->setFormat(
-            "Consumed: %current%/%max% [%bar%] %percent:3s%% %memory:6s% %elapsed:6s% %rate_avg:20s%\n"
+            "Consumed: %current%/%max% [%bar%] %percent:3s%% %memory:6s% %elapsed:6s%\n"
         );
         $progressBar->setRedrawFrequency(10000);
 
