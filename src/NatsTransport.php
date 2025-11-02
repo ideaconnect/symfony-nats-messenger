@@ -176,7 +176,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         try {
             $encodedMessage = igbinary_serialize($envelope);
             // Publish to the NATS stream
-            $this->stream->put($this->topic, $encodedMessage);
+            $this->stream->publish($this->topic, $encodedMessage);
         } catch (Exception $e) {
             // Extract error details if available, otherwise use the caught exception
             $realError = $envelope->last(ErrorDetailsStamp::class);
@@ -332,6 +332,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     {
         try {
             // Attempt to get consumer info for accurate pending message count
+            $info = $this->decodeJsonInfo($this->consumer->info());
+
+            if ($info === null) {
+                return 0;
+            }
+
+            // num_ack_pending represents messages delivered but not yet acknowledged
+            // num_pending represents messages not yet delivered
+            $ackPending = $info->num_ack_pending ?? 0;
+            $pending = $info->num_pending ?? 0;
+
             $info = $this->decodeJsonInfo($this->consumer->info());
 
             if ($info === null) {
