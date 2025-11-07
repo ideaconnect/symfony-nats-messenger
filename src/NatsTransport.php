@@ -10,6 +10,7 @@ use Basis\Nats\Consumer\DeliverPolicy;
 use Basis\Nats\Message\Ack;
 use Basis\Nats\Message\Msg;
 use Basis\Nats\Message\Nak;
+use Basis\Nats\Message\Payload;
 use Basis\Nats\Queue;
 use Basis\Nats\Stream\Stream;
 use Exception;
@@ -196,8 +197,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw $serializationError;
         }
 
+        if (isset($encodedMessage['headers']['headers'])) {
+            $payload = new Payload($encodedMessage['body'], $encodedMessage['headers']);
+        } else {
+            $payload = $encodedMessage['body'];
+        }
+
         // Publish to the NATS stream
-        $this->stream->publish($this->topic, $encodedMessage['body']);
+        $this->stream->publish($this->topic, $payload);
 
         return $envelope;
     }
