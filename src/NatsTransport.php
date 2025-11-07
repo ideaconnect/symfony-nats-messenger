@@ -241,7 +241,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $envelope = $this->serializer->decode([
                     'body' => $message->payload->body,
                     'headers' => $message->payload->headers,
-                    'messageId' => $message->replyTo,
                 ]);
                 $envelope = $envelope->with(new TransportMessageIdStamp($message->replyTo));
                 $envelopes[] = $envelope;
