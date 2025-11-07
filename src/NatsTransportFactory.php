@@ -33,21 +33,17 @@ class NatsTransportFactory implements TransportFactoryInterface
      *
      * This method instantiates a NatsTransport with the provided DSN and options.
      *
-     * Note: The $serializer parameter is intentionally ignored in favor of igbinary
-     * serialization for performance reasons. NATS JetStream messages are serialized
-     * using igbinary directly for optimal speed and memory efficiency.
-     *
      * @param string $dsn The NATS JetStream DSN (marked sensitive for security)
      * @param array $options Transport configuration options
-     * @param SerializerInterface $serializer Symfony serializer (unused - igbinary is used instead)
+     * @param SerializerInterface $serializer Symfony serializer
      * @return TransportInterface A new NatsTransport instance
      */
-    public function createTransport(#[\SensitiveParameter] string $dsn, array $options, SerializerInterface $serializer): TransportInterface
-    {
-        // This transport uses igbinary serialization for performance optimization
-        // instead of the provided Symfony serializer, so we instantiate NatsTransport directly
-        // with the DSN and options, bypassing the serializer parameter
-        return new NatsTransport($dsn, $options);
+    public function createTransport(
+        #[\SensitiveParameter] string $dsn,
+        array $options,
+        SerializerInterface $serializer = (new IgbinarySerializer())
+    ): TransportInterface {
+        return new NatsTransport($dsn, $options, $serializer);
     }
 
     /**
