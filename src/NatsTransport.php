@@ -197,7 +197,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw $serializationError;
         }
 
-        if (isset($encodedMessage['headers']['headers'])) {
+        if (isset($encodedMessage['headers'])) {
             $payload = new Payload($encodedMessage['body'], $encodedMessage['headers']);
         } else {
             $payload = $encodedMessage['body'];
