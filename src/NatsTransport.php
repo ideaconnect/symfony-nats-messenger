@@ -238,11 +238,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             try {
                 // Deserialize the message payload back to an Envelope
-                $envelope = $this->serializer->decode([
+                $decoded = $this->serializer->decode([
                     'body' => $message->payload->body,
                     'headers' => $message->payload->headers,
                 ]);
-                $envelope = $envelope->with(new TransportMessageIdStamp($message->replyTo));
+                $envelope = $decoded->with(new TransportMessageIdStamp($message->replyTo));
                 $envelopes[] = $envelope;
             } catch (\Throwable $e) {
                 // Send negative acknowledgment for failed messages
