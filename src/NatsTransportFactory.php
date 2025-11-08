@@ -2,7 +2,6 @@
 
 namespace IDCT\NatsMessenger;
 
-use IDCT\NatsMessenger\NatsTransport;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\TransportFactoryInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
@@ -28,6 +27,8 @@ class NatsTransportFactory implements TransportFactoryInterface
      */
     private const SCHEME = 'nats-jetstream://';
 
+    protected ?SerializerInterface $serializer = null;
+
     /**
      * Create a new NATS transport instance.
      *
@@ -38,12 +39,9 @@ class NatsTransportFactory implements TransportFactoryInterface
      * @param SerializerInterface $serializer Symfony serializer
      * @return TransportInterface A new NatsTransport instance
      */
-    public function createTransport(
-        #[\SensitiveParameter] string $dsn,
-        array $options,
-        SerializerInterface $serializer = (new IgbinarySerializer())
-    ): TransportInterface {
-        return new NatsTransport($dsn, $options, $serializer);
+    public function createTransport(#[\SensitiveParameter] string $dsn, array $options, SerializerInterface $serializer): TransportInterface
+    {
+        return new NatsTransport($dsn, $options, $this->serializer);
     }
 
     /**
@@ -59,5 +57,10 @@ class NatsTransportFactory implements TransportFactoryInterface
     public function supports(#[\SensitiveParameter] string $dsn, array $options): bool
     {
         return 0 === strpos($dsn, self::SCHEME);
+    }
+
+    public function setSerializer(?SerializerInterface $serializer): void
+    {
+        $this->serializer = $serializer;
     }
 }

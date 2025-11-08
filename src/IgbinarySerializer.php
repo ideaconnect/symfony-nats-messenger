@@ -16,10 +16,6 @@ final class IgbinarySerializer implements SerializerInterface
             throw new MessageDecodingFailedException('Encoded envelope should have at least a "body".');
         }
 
-        if (!extension_loaded('igbinary')) {
-            throw new \RuntimeException('The igbinary extension is required to decode messages.');
-        }
-
         $envelope = \igbinary_unserialize($encodedEnvelope['body']);
 
         if (!$envelope instanceof Envelope) {
@@ -31,10 +27,6 @@ final class IgbinarySerializer implements SerializerInterface
 
     public function encode(Envelope $envelope): array
     {
-        if (!extension_loaded('igbinary')) {
-            throw new \RuntimeException('The igbinary extension is required to encode messages.');
-        }
-
         return [
             'body' => \igbinary_serialize($envelope),
         ];
