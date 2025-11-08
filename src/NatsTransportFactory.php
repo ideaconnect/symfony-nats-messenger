@@ -2,7 +2,6 @@
 
 namespace IDCT\NatsMessenger;
 
-use IDCT\NatsMessenger\NatsTransport;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\TransportFactoryInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
@@ -29,25 +28,27 @@ class NatsTransportFactory implements TransportFactoryInterface
     private const SCHEME = 'nats-jetstream://';
 
     /**
+     * Serializer instance for encoding and decoding messages.
+     * Default will be set to igbinary in the NATS transport
+     * if the serializer is not set.
+     *
+     * @var SerializerInterface|null
+     */
+    protected ?SerializerInterface $serializer = null;
+
+    /**
      * Create a new NATS transport instance.
      *
      * This method instantiates a NatsTransport with the provided DSN and options.
      *
-     * Note: The $serializer parameter is intentionally ignored in favor of igbinary
-     * serialization for performance reasons. NATS JetStream messages are serialized
-     * using igbinary directly for optimal speed and memory efficiency.
-     *
      * @param string $dsn The NATS JetStream DSN (marked sensitive for security)
      * @param array $options Transport configuration options
-     * @param SerializerInterface $serializer Symfony serializer (unused - igbinary is used instead)
+     * @param SerializerInterface $serializer Symfony serializer
      * @return TransportInterface A new NatsTransport instance
      */
     public function createTransport(#[\SensitiveParameter] string $dsn, array $options, SerializerInterface $serializer): TransportInterface
     {
-        // This transport uses igbinary serialization for performance optimization
-        // instead of the provided Symfony serializer, so we instantiate NatsTransport directly
-        // with the DSN and options, bypassing the serializer parameter
-        return new NatsTransport($dsn, $options);
+        return new NatsTransport($dsn, $options, $this->serializer);
     }
 
     /**
@@ -63,5 +64,15 @@ class NatsTransportFactory implements TransportFactoryInterface
     public function supports(#[\SensitiveParameter] string $dsn, array $options): bool
     {
         return 0 === strpos($dsn, self::SCHEME);
+    }
+
+    /*
+     * Set a custom serializer for the transport.
+     *
+     * @param SerializerInterface $serializer
+     */
+    public function setSerializer(SerializerInterface $serializer): void
+    {
+        $this->serializer = $serializer;
     }
 }
