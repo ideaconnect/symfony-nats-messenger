@@ -16,6 +16,7 @@
     ],
     "minimum-stability": "stable",
     "require": {
+        "ext-igbinary": "*",
         "symfony/framework-bundle": "^7.2",
         "symfony/messenger": "^7.2",
         "basis-company/nats": "^1",
