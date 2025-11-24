@@ -10,6 +10,7 @@ use Basis\Nats\Consumer\DeliverPolicy;
 use Basis\Nats\Message\Ack;
 use Basis\Nats\Message\Msg;
 use Basis\Nats\Message\Nak;
+use Basis\Nats\Message\Payload;
 use Basis\Nats\Queue;
 use Basis\Nats\Stream\Stream;
 use Exception;
@@ -19,6 +20,7 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
+use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\SetupableTransportInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
 use Symfony\Component\Uid\Uuid;
@@ -76,6 +78,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // Number of stream replicas for high availability
         'stream_replicas' => 1,
     ];
+
+    /**
+     * Serializer instance used for (de)serializing messages.
+     *
+     * @var SerializerInterface
+     */
+    protected SerializerInterface $serializer;
 
     /**
      * Consumer instance for managing message retrieval and acknowledgment.
@@ -140,10 +149,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Example: nats://nats:password@localhost:4222/my_stream/my_topic?consumer=worker&batching=5
      *
      * @param string $dsn The NATS connection DSN (marked sensitive for security reasons)
-     * @param array|null $options Optional configuration overrides (takes precedence over DSN parameters)
+     * @param array $options Optional configuration overrides (takes precedence over DSN parameters)
+     * @param SerializerInterface|null $serializer Serializer for (de)serializing messages
      */
-    public function __construct(#[\SensitiveParameter] string $dsn, ?array $options = [])
+    public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null)
     {
+        $this->serializer = $serializer ?? new IgbinarySerializer();
+
         $this->buildFromDsn($dsn, $options);
         $this->connect();
     }
@@ -174,7 +186,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         // Serialize the envelope for storage
         try {
-            $encodedMessage = \igbinary_serialize($envelope);
+            $encodedMessage = $this->serializer->encode($envelope);
         } catch (\Throwable $serializationError) {
             // Check for ErrorDetailsStamp for serialization failures
             $errorStamp = $envelope->last(ErrorDetailsStamp::class);
@@ -185,8 +197,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw $serializationError;
         }
 
+        if (isset($encodedMessage['headers'])) {
+            $payload = new Payload($encodedMessage['body'], $encodedMessage['headers']);
+        } else {
+            $payload = $encodedMessage['body'];
+        }
+
         // Publish to the NATS stream
-        $this->stream->publish($this->topic, $encodedMessage);
+        $this->stream->publish($this->topic, $payload);
 
         return $envelope;
     }
@@ -220,8 +238,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             try {
                 // Deserialize the message payload back to an Envelope
-                $decoded = \igbinary_unserialize($message->payload->body);
-                // Attach the message ID for later ack/nak operations
+                $decoded = $this->serializer->decode([
+                    'body' => $message->payload->body,
+                    'headers' => $message->payload->headers,
+                ]);
                 $envelope = $decoded->with(new TransportMessageIdStamp($message->replyTo));
                 $envelopes[] = $envelope;
             } catch (\Throwable $e) {
