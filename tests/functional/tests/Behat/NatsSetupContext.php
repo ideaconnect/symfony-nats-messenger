@@ -521,7 +521,7 @@ class NatsSetupContext implements Context
                 'messenger:consume',
                 'test_transport',
                 '--limit=' . $messagesPerConsumer,
-                '--time-limit=300', // 5 minutes for high volume processing
+                '--time-limit=600', // 10 minutes for high volume processing (for json especially)
                 '--env=test',
                 '-v'
             ];
