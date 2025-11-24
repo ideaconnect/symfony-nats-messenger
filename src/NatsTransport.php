@@ -155,7 +155,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null)
     {
-        $this->serializer = new IgbinarySerializer();
+        $this->serializer = $serializer ?? new IgbinarySerializer();
 
         $this->buildFromDsn($dsn, $options);
         $this->connect();

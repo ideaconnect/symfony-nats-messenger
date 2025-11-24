@@ -24,7 +24,7 @@ services:
         class: IDCT\NatsMessenger\Serializer\IgbinarySerializer
 
     simddecodejson_serializer:
-        class: IDCT\NatsMessenger\Serializer\SimdDecodeJsonSerializer
+        class: IDCT\NatsMessenger\Serializer\SimdDecodingJsonSerializer
 
     IDCT\NatsMessenger\NatsTransportFactory:
         tags: [messenger.transport_factory]

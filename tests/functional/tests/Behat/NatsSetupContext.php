@@ -61,18 +61,20 @@ class NatsSetupContext implements Context
 
     /**
      * @Given I have a messenger transport configured with max age of :maxAge minutes
+     * @Given I have a messenger transport configured with max age of :maxAge minutes using :serializer
      */
-    public function iHaveAMessengerTransportConfiguredWithMaxAgeOfMinutes(int $maxAge): void
+    public function iHaveAMessengerTransportConfiguredWithMaxAgeOfMinutes(int $maxAge, string $serializer = 'igbinary_serializer'): void
     {
         // Create a temporary messenger configuration for testing
         $maxAgeSeconds = $maxAge * 60;
 
         // Create a test-specific configuration
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=%d'\n                serializer: 'igbinary_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=%d'\n                serializer: '%s'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
-            $maxAgeSeconds
+            $maxAgeSeconds,
+            $serializer
         );
 
         // Write temporary config file for the test environment

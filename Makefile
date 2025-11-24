@@ -1,4 +1,7 @@
-.PHONY: run-unit-tests setup-functional-tests run-functional-tests
+.PHONY: run-unit-tests setup-functional-tests run-functional-tests run-nats
+
+run-nats:
+	cd tests/nats && docker-compose up -d
 
 run-unit-tests:
 	XDEBUG_MODE=coverage ./vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-clover clover.xml --coverage-text --colors=never
