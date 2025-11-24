@@ -48,8 +48,7 @@ jobs:
 
     - name: Start NATS server
       run: |
-        cd tests/functional/nats
-        docker compose up -d
+        make run-nats
         sleep 10
         # Wait for NATS to be ready with multiple checks
         timeout 60 bash -c 'until nc -z localhost 4222; do sleep 2; done'
@@ -70,11 +69,7 @@ jobs:
 
     - name: Run unit tests with coverage
       run: |
-        XDEBUG_MODE=coverage ./vendor/bin/phpunit \
-          --configuration phpunit.xml.dist \
-          --coverage-clover clover.xml \
-          --coverage-text \
-          --colors=never
+        make run-unit-tests
 
     - name: Check coverage threshold (90%)
       run: |
@@ -107,16 +102,14 @@ jobs:
 
     - name: Install functional test dependencies
       run: |
-        cd tests/functional
-        composer install --prefer-dist --no-progress --no-suggest
+        make setup-functional-tests
 
     - name: Run functional tests
       timeout-minutes: 10  # Set explicit timeout for functional tests
       env:
         CI: true
       run: |
-        cd tests/functional
-        vendor/bin/behat --tags="~@extreme"
+        make run-functional-tests
 
     - name: Run benchmark tests
       timeout-minutes: 5  # Set explicit timeout for benchmark tests
@@ -161,5 +154,4 @@ jobs:
     - name: Stop NATS server
       if: always()
       run: |
-        cd tests/functional/nats
-        docker compose down -v
+        make stop-nats

@@ -106,6 +106,8 @@ echo ""
 echo -e "${CYAN}Running Benchmark...${NC}"
 echo ""
 
+cat config/packages/test_messenger.yaml.dist > config/packages/test_messenger.yaml
+
 php bin/console app:benchmark-messenger \
     --count="$MESSAGE_COUNT" \
     --batches="$BATCH_SIZES" \

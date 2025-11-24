@@ -3,6 +3,9 @@
 run-nats:
 	cd tests/nats && docker-compose up -d
 
+stop-nats:
+	cd tests/nats && docker-compose down -v
+
 run-unit-tests:
 	XDEBUG_MODE=coverage ./vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-clover clover.xml --coverage-text --colors=never
 

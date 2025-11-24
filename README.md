@@ -41,6 +41,30 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 composer require idct/symfony-nats-messenger
 ```
 
+### Development Setup
+
+For contributors and development:
+
+```bash
+# Install dependencies
+composer install
+
+# Start NATS server for testing
+make run-nats
+
+# Run unit tests with coverage
+make run-unit-tests
+
+# Set up functional tests
+make setup-functional-tests
+
+# Run functional tests
+make run-functional-tests
+
+# Stop NATS server
+make stop-nats
+```
+
 ## Quick Start
 
 ### 1. Configure NATS Server
@@ -71,7 +95,89 @@ framework:
       'App\Message\MyAsyncMessage': nats_transport
 ```
 
-### 3. Send Messages
+### 3. Configure Custom Serializers (Optional)
+
+By default, the transport uses `igbinary` serialization for high performance. You can customize this:
+
+#### Using IgbinarySerializer (Default)
+
+```yaml
+# config/packages/messenger.yaml
+framework:
+  messenger:
+    transports:
+      nats_transport:
+        dsn: 'nats-jetstream://localhost:4222/my-stream/my-topic'
+        serializer: 'IDCT\NatsMessenger\Serializer\IgbinarySerializer'
+        options:
+          consumer: 'my-consumer'
+```
+
+#### Using SimdDecodingJsonSerializer
+
+For JSON-based serialization with high-performance decoding:
+
+```yaml
+# config/packages/messenger.yaml
+framework:
+  messenger:
+    transports:
+      nats_transport:
+        dsn: 'nats-jetstream://localhost:4222/my-stream/my-topic'
+        serializer: 'IDCT\NatsMessenger\Serializer\SimdDecodingJsonSerializer'
+        options:
+          consumer: 'my-consumer'
+```
+
+**Note:** The `SimdDecodingJsonSerializer` requires the `simdjson` PHP extension for optimal performance.
+
+**Note:** Serializers are not created during execution of the transport. They need to be previously registered services.
+
+For example:
+```yaml
+    igbinary_serializer:
+        class: IDCT\NatsMessenger\Serializer\IgbinarySerializer
+
+    simddecodejson_serializer:
+        class: IDCT\NatsMessenger\Serializer\SimdDecodingJsonSerializer
+```
+
+or:
+```yaml
+    IDCT\NatsMessenger\Serializer\IgbinarySerializer: ~
+    IDCT\NatsMessenger\Serializer\SimdDecodingJsonSerializer: ~
+```
+
+#### Creating Custom Serializers
+
+You can create your own serializer by extending `AbstractEnveloperSerializer`:
+
+```php
+use IDCT\NatsMessenger\Serializer\AbstractEnveloperSerializer;
+use Symfony\Component\Messenger\Envelope;
+
+class MyCustomSerializer extends AbstractEnveloperSerializer
+{
+    protected function serialize(Envelope $envelope): string
+    {
+        // Your custom serialization logic
+        return serialize($envelope);
+    }
+
+    protected function deserialize(string $data): mixed
+    {
+        // Your custom deserialization logic
+        return unserialize($data);
+    }
+}
+```
+
+For reference implementations, see:
+- `src/Serializer/IgbinarySerializer.php` - Binary serialization
+- `src/Serializer/SimdDecodingJsonSerializer.php` - JSON with SIMD decoding
+- `src/Serializer/AbstractEnveloperSerializer.php` - Base class
+
+### 4. Send Messages
 
 ```php
 use App\Message\MyAsyncMessage;
@@ -88,7 +194,7 @@ class MyController
 }
 ```
 
-### 4. Handle Messages
+### 5. Handle Messages
 
 ```php
 use App\Message\MyAsyncMessage;
@@ -103,7 +209,7 @@ class MyAsyncMessageHandler implements MessageHandlerInterface
 }
 ```
 
-### 5. Consume Messages
+### 6. Consume Messages
 
 ```bash
 symfony console messenger:consume nats_transport
@@ -296,26 +402,20 @@ options:
 ### Unit Tests
 
 ```bash
-# Install PHPUnit
+# Install dependencies
 composer install --dev
 
-# Run all unit tests
+# Run Nats
+make run-nats
+
+# Run all unit tests with coverage (recommended)
+make run-unit-tests
+
+# Or run tests manually
 ./vendor/bin/phpunit
-
-# Or use the helper script
-./run-tests.sh
-
-# View specific tests
-./run-tests.sh factory       # Factory tests only
-./run-tests.sh transport     # Transport tests only
-./run-tests.sh filter DSN    # Tests matching pattern
 ```
 
-**Coverage:**
-- 28 unit tests
-- ~92% code coverage
-- 1-2 seconds execution time
-- No NATS server required
+The target is to have at least 90% of code coverage.
 
 **What's tested:**
 - DSN parsing and validation
@@ -330,16 +430,31 @@ composer install --dev
 Functional tests require a running NATS server with JetStream enabled:
 
 ```bash
+# Set up functional test dependencies
+make setup-functional-tests
+
+# Start NATS server in Docker
+make run-nats
+
+# Run functional tests
+make run-functional-tests
+
+# Stop NATS server
+make stop-nats
+```
+
+**Manual approach:**
+```bash
 # Set up NATS in Docker (optional)
-cd tests/functional/nats
+cd tests/nats
 docker-compose up -d
 
 # Run functional tests
-cd ../..
-./vendor/bin/behat tests/functional/features/
+cd ../functional
+./vendor/bin/behat features/
 
 # Stop NATS
-cd tests/functional/nats
+cd ../nats
 docker-compose down
 ```
 
@@ -547,10 +662,30 @@ The bridge consists of two main components:
 ## Contributing
 
 Contributions are welcome! Please ensure:
-- All tests pass: `./vendor/bin/phpunit`
+- All tests pass: `make run-unit-tests`
 - Code coverage remains above 90%
 - New features include corresponding tests
 - Documentation is updated
+- Functional tests pass: `make run-functional-tests` (if applicable)
+
+### Quick Development Workflow
+
+```bash
+# 1. Run unit tests
+make run-unit-tests
+
+# 2. Set up functional tests (first time only)
+make setup-functional-tests
+
+# 3. Start NATS for functional tests
+make run-nats
+
+# 4. Run functional tests
+make run-functional-tests
+
+# 5. Clean up
+make stop-nats
+```
 
 ## License
 
@@ -562,16 +697,3 @@ For issues, questions, or suggestions:
 1. Check the [troubleshooting](#troubleshooting) section
 2. Check existing issues on GitHub
 3. Create a new issue with detailed information
-
-## Changelog
-
-### Version 1.0.0
-- ✅ Initial release
-- ✅ NATS JetStream integration
-- ✅ Full Symfony Messenger support
-- ✅ Comprehensive test suite (~92% coverage)
-- ✅ Complete documentation
-
----
-
-**Ready to get started?** See [Quick Start](#quick-start) above or read [PHPUNIT_GUIDE.md](PHPUNIT_GUIDE.md) for testing setup.
