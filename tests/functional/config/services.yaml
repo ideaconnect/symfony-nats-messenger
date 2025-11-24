@@ -20,6 +20,12 @@ services:
             - '../src/Entity/'
             - '../src/Kernel.php'
 
+    igbinary_serializer:
+        class: IDCT\NatsMessenger\Serializer\IgbinarySerializer
+
+    simddecodejson_serializer:
+        class: IDCT\NatsMessenger\Serializer\SimdDecodeJsonSerializer
+
     IDCT\NatsMessenger\NatsTransportFactory:
         tags: [messenger.transport_factory]
     # add more service definitions when explicit configuration is needed

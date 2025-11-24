@@ -28,15 +28,6 @@ class NatsTransportFactory implements TransportFactoryInterface
     private const SCHEME = 'nats-jetstream://';
 
     /**
-     * Serializer instance for encoding and decoding messages.
-     * Default will be set to igbinary in the NATS transport
-     * if the serializer is not set.
-     *
-     * @var SerializerInterface|null
-     */
-    protected ?SerializerInterface $serializer = null;
-
-    /**
      * Create a new NATS transport instance.
      *
      * This method instantiates a NatsTransport with the provided DSN and options.
@@ -48,7 +39,7 @@ class NatsTransportFactory implements TransportFactoryInterface
      */
     public function createTransport(#[\SensitiveParameter] string $dsn, array $options, SerializerInterface $serializer): TransportInterface
     {
-        return new NatsTransport($dsn, $options, $this->serializer);
+        return new NatsTransport($dsn, $options, $serializer);
     }
 
     /**
@@ -64,15 +55,5 @@ class NatsTransportFactory implements TransportFactoryInterface
     public function supports(#[\SensitiveParameter] string $dsn, array $options): bool
     {
         return 0 === strpos($dsn, self::SCHEME);
-    }
-
-    /*
-     * Set a custom serializer for the transport.
-     *
-     * @param SerializerInterface $serializer
-     */
-    public function setSerializer(SerializerInterface $serializer): void
-    {
-        $this->serializer = $serializer;
     }
 }

@@ -69,7 +69,7 @@ class NatsSetupContext implements Context
 
         // Create a test-specific configuration
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=%d'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=%d'\n                serializer: 'igbinary_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             $maxAgeSeconds
