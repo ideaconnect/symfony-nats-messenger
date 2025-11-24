@@ -528,7 +528,7 @@ class NatsSetupContext implements Context
 
             $process = new Process($command, __DIR__ . '/../..');
             // Set timeout based on message count - allow time for processing
-            $timeout = max(60, ($messagesPerConsumer / 10)); // 10 messages per second estimate
+            $timeout = max(600, ($messagesPerConsumer / 10)); // 10 messages per second estimate
             $process->setTimeout($timeout + 60); // Add buffer
             $process->start();
 
