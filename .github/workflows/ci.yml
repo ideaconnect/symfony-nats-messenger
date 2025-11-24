@@ -23,7 +23,7 @@ jobs:
       uses: shivammathur/setup-php@v2
       with:
         php-version: ${{ matrix.php-version }}
-        extensions: igbinary, json, mbstring
+        extensions: igbinary, json, mbstring, simdjson
         coverage: xdebug
         tools: composer:v2
 
