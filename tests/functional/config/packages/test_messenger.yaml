@@ -3,6 +3,6 @@ framework:
         transports:
             test_transport:
                 dsn: 'nats-jetstream://admin:password@localhost:4222/stream/test.messages?stream_max_age=900'
-                serializer: 'igbinary_serializer'
+                serializer: 'simddecodejson_serializer'
         routing:
             'App\Async\TestMessage': test_transport

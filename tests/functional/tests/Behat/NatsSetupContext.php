@@ -709,7 +709,7 @@ class NatsSetupContext implements Context
 
         // Use docker compose to start NATS
         $command = ['docker', 'compose', 'up', '-d'];
-        $process = new Process($command, __DIR__ . '/../../nats');
+        $process = new Process($command, __DIR__ . '/../../../nats');
         $process->run();
 
         if (!$process->isSuccessful()) {
@@ -725,7 +725,7 @@ class NatsSetupContext implements Context
     {
         // Use docker compose to stop NATS
         $command = ['docker', 'compose', 'down'];
-        $process = new Process($command, __DIR__ . '/../../nats');
+        $process = new Process($command, __DIR__ . '/../../../nats');
         $process->run();
     }
 
