@@ -866,6 +866,7 @@ class NatsTransportTest extends TestCase
         // Create a mock payload with the serialized data
         $mockPayload = $this->createMock(\Basis\Nats\Message\Payload::class);
         $mockPayload->body = $serialized;
+        $mockPayload->headers = [];
 
         // Configure the mock message
         $mockMessage->payload = $mockPayload;

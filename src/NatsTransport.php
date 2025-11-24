@@ -14,6 +14,7 @@ use Basis\Nats\Message\Payload;
 use Basis\Nats\Queue;
 use Basis\Nats\Stream\Stream;
 use Exception;
+use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use InvalidArgumentException;
 use LogicException;
 use Symfony\Component\Messenger\Envelope;
@@ -154,7 +155,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null)
     {
-        $this->serializer = $serializer ?? new IgbinarySerializer();
+        $this->serializer = new IgbinarySerializer();
 
         $this->buildFromDsn($dsn, $options);
         $this->connect();

@@ -22,6 +22,9 @@
         "basis-company/nats": "^1",
         "symfony/uid": "^7.2"
     },
+    "suggest": {
+        "ext-simdjson": "To use SimdJsonSerializer for better performance when not using igbinary."
+    },
     "require-dev": {
         "phpunit/phpunit": "^9.5"
     },
