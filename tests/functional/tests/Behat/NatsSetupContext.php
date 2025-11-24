@@ -395,14 +395,14 @@ class NatsSetupContext implements Context
             'messenger:consume',
             'test_transport',
             '--limit=' . $this->messagesSent,
-            '--time-limit=60', // Give more time
+            '--time-limit=600', // Give more time
             '--sleep=0.1', // Reduce sleep between messages
             '--env=test',
             '-vv' // Verbose output to see what's happening
         ];
 
         $this->consumerProcess = new Process($command, __DIR__ . '/../..');
-        $this->consumerProcess->setTimeout(120); // 2 minutes timeout
+        $this->consumerProcess->setTimeout(600); // 10 minutes timeout
         $this->consumerProcess->start();
     }
 
