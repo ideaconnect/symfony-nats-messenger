@@ -13,4 +13,4 @@ setup-functional-tests:
 	cd tests/functional && composer install --prefer-dist --no-progress --no-suggest
 
 run-functional-tests:
-	cd tests/functional && vendor/bin/behat --tags="~@extreme"
+	cd tests/functional && vendor/bin/behat

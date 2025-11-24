@@ -274,15 +274,6 @@ class NatsSetupContext implements Context
      */
     public function iSendMessagesToTheTransport(int $count): void
     {
-        // Scale down message count in CI environment to reduce test time
-        if (getenv('CI') === 'true') {
-            // In CI, scale down high-volume tests to 10% of original count
-            if ($count >= 1000) {
-                $count = max(100, intval($count * 0.1));
-                echo "CI mode: Scaled down message count to $count\n";
-            }
-        }
-
         $this->messagesSent = $count;
 
         // Use a simple command to send messages
@@ -317,14 +308,6 @@ class NatsSetupContext implements Context
      */
     public function theMessengerStatsShouldShowMessagesWaiting(int $count): void
     {
-        // Scale down expected counts in CI environment to match scaled message sending
-        if (getenv('CI') === 'true') {
-            if ($count >= 1000) {
-                $count = max(100, intval($count * 0.1));
-                echo "CI mode: Scaled down expected count to $count\n";
-            }
-        }
-
         $command = [
             'php',
             'bin/console',
@@ -504,14 +487,6 @@ class NatsSetupContext implements Context
      */
     public function iStartConsumersThatEachProcessMessages(int $consumerCount, int $messagesPerConsumer): void
     {
-        // Scale down consumer counts in CI environment
-        if (getenv('CI') === 'true') {
-            if ($messagesPerConsumer >= 1000) {
-                $messagesPerConsumer = max(100, intval($messagesPerConsumer * 0.1));
-                echo "CI mode: Scaled down messages per consumer to $messagesPerConsumer\n";
-            }
-        }
-
         $this->consumerProcesses = [];
 
         for ($i = 1; $i <= $consumerCount; $i++) {
@@ -603,14 +578,6 @@ class NatsSetupContext implements Context
      */
     public function iStartConsumerThatProcessesMessages(int $consumerCount, int $messageCount): void
     {
-        // Scale down message counts in CI environment
-        if (getenv('CI') === 'true') {
-            if ($messageCount >= 1000) {
-                $messageCount = max(100, intval($messageCount * 0.1));
-                echo "CI mode: Scaled down messages for single consumer to $messageCount\n";
-            }
-        }
-
         $this->consumerProcesses = [];
 
         for ($i = 1; $i <= $consumerCount; $i++) {
@@ -831,14 +798,6 @@ class NatsSetupContext implements Context
      */
     public function theMessengerStatsShouldShowApproximatelyMessagesWaiting(int $expectedCount): void
     {
-        // Scale down expected counts in CI environment to match scaled message sending
-        if (getenv('CI') === 'true') {
-            if ($expectedCount >= 1000) {
-                $expectedCount = max(100, intval($expectedCount * 0.1));
-                echo "CI mode: Scaled down expected count to $expectedCount\n";
-            }
-        }
-
         $process = new Process([
             'php',
             'bin/console',
@@ -874,14 +833,6 @@ class NatsSetupContext implements Context
      */
     public function theTestFilesDirectoryShouldContainApproximatelyFiles(int $count): void
     {
-        // Scale down expected file counts in CI environment to match scaled message processing
-        if (getenv('CI') === 'true') {
-            if ($count >= 1000) {
-                $count = max(100, intval($count * 0.1));
-                echo "CI mode: Scaled down expected file count to $count\n";
-            }
-        }
-
         if (!is_dir($this->testFilesDir)) {
             throw new \RuntimeException("Test files directory does not exist: {$this->testFilesDir}");
         }

@@ -6,6 +6,7 @@ Feature: NATS Stream Setup
   Background:
     Given NATS server is running
 
+  @maxage
   Scenario Outline: Setup NATS stream with max age configuration
     Given I have a messenger transport configured with max age of 15 minutes using "<serializer>"
     When I run the messenger setup command
@@ -18,6 +19,7 @@ Feature: NATS Stream Setup
       | igbinary_serializer      |
       | simddecodejson_serializer|
 
+  @existing
   Scenario Outline: Setup command handles existing streams gracefully
     Given I have a messenger transport configured with max age of 15 minutes using "<serializer>"
     And the NATS stream already exists
@@ -54,6 +56,7 @@ Feature: NATS Stream Setup
       | igbinary_serializer      |
       | simddecodejson_serializer|
 
+  @partial
   Scenario Outline: Partial message consumption with multiple consumers
     Given I have a messenger transport configured with max age of 15 minutes using "<serializer>"
     And the NATS stream is set up

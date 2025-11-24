@@ -106,8 +106,6 @@ jobs:
 
     - name: Run functional tests
       timeout-minutes: 10  # Set explicit timeout for functional tests
-      env:
-        CI: true
       run: |
         make run-functional-tests
 
