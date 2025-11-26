@@ -113,39 +113,17 @@ framework:
           consumer: 'my-consumer'
 ```
 
-#### Using SimdDecodingJsonSerializer
-
-For JSON-based serialization with high-performance decoding:
-
-```yaml
-# config/packages/messenger.yaml
-framework:
-  messenger:
-    transports:
-      nats_transport:
-        dsn: 'nats-jetstream://localhost:4222/my-stream/my-topic'
-        serializer: 'IDCT\NatsMessenger\Serializer\SimdDecodingJsonSerializer'
-        options:
-          consumer: 'my-consumer'
-```
-
-**Note:** The `SimdDecodingJsonSerializer` requires the `simdjson` PHP extension for optimal performance.
-
 **Note:** Serializers are not created during execution of the transport. They need to be previously registered services.
 
 For example:
 ```yaml
     igbinary_serializer:
         class: IDCT\NatsMessenger\Serializer\IgbinarySerializer
-
-    simddecodejson_serializer:
-        class: IDCT\NatsMessenger\Serializer\SimdDecodingJsonSerializer
 ```
 
 or:
 ```yaml
     IDCT\NatsMessenger\Serializer\IgbinarySerializer: ~
-    IDCT\NatsMessenger\Serializer\SimdDecodingJsonSerializer: ~
 ```
 
 #### Creating Custom Serializers
@@ -174,7 +152,6 @@ class MyCustomSerializer extends AbstractEnveloperSerializer
 
 For reference implementations, see:
 - `src/Serializer/IgbinarySerializer.php` - Binary serialization
-- `src/Serializer/SimdDecodingJsonSerializer.php` - JSON with SIMD decoding
 - `src/Serializer/AbstractEnveloperSerializer.php` - Base class
 
 ### 4. Send Messages

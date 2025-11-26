@@ -6,7 +6,6 @@ namespace IDCT\NatsMessenger\Serializer;
 
 use IDCT\NatsMessenger\Serializer\AbstractEnveloperSerializer;
 use Symfony\Component\Messenger\Envelope;
-use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 
 final class IgbinarySerializer extends AbstractEnveloperSerializer implements SerializerInterface

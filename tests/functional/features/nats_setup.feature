@@ -15,9 +15,9 @@ Feature: NATS Stream Setup
     And the stream should be configured with the correct subject
 
     Examples:
-      | serializer               |
-      | igbinary_serializer      |
-      | simddecodejson_serializer|
+      | serializer                                |
+      | messenger.transport.native_php_serializer |
+      | igbinary_serializer                       |
 
   @existing
   Scenario Outline: Setup command handles existing streams gracefully
@@ -28,9 +28,9 @@ Feature: NATS Stream Setup
     And the existing stream configuration should be preserved
 
     Examples:
-      | serializer               |
-      | igbinary_serializer      |
-      | simddecodejson_serializer|
+      | serializer                                |
+      | messenger.transport.native_php_serializer |
+      | igbinary_serializer                       |
 
   Scenario: Setup command fails gracefully when NATS is unavailable
     Given NATS server is not running
@@ -52,9 +52,9 @@ Feature: NATS Stream Setup
     And the messenger stats should show 0 messages waiting
 
     Examples:
-      | serializer               |
-      | igbinary_serializer      |
-      | simddecodejson_serializer|
+      | serializer                                |
+      | messenger.transport.native_php_serializer |
+      | igbinary_serializer                       |
 
   @partial
   Scenario Outline: Partial message consumption with multiple consumers
@@ -69,9 +69,9 @@ Feature: NATS Stream Setup
     Then 6 messages should have been processed by the consumers
 
     Examples:
-      | serializer               |
-      | igbinary_serializer      |
-      | simddecodejson_serializer|
+      | serializer                                |
+      | messenger.transport.native_php_serializer |
+      | igbinary_serializer                       |
 
   @high
   Scenario Outline: High-volume message processing with file output verification
@@ -90,6 +90,6 @@ Feature: NATS Stream Setup
     And the test files directory should contain approximately 1000 files
 
     Examples:
-      | serializer               |
-      | igbinary_serializer      |
-      | simddecodejson_serializer|
+      | serializer                                |
+      | messenger.transport.native_php_serializer |
+      | igbinary_serializer                       |

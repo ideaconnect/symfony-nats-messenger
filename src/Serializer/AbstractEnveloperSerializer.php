@@ -14,7 +14,7 @@ abstract class AbstractEnveloperSerializer implements SerializerInterface
             throw new MessageDecodingFailedException('Encoded envelope should at least have a "body".');
         }
 
-        $envelope = \igbinary_unserialize($encodedEnvelope['body']);
+        $envelope = $this->deserialize($encodedEnvelope['body']);
 
         if (!$envelope instanceof Envelope) {
             throw new \RuntimeException('Invalid envelope');
@@ -26,7 +26,7 @@ abstract class AbstractEnveloperSerializer implements SerializerInterface
     public function encode(Envelope $envelope): array
     {
         return [
-            'body' => \igbinary_serialize($envelope),
+            'body' => $this->serialize($envelope),
         ];
     }
 
