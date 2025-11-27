@@ -5,7 +5,7 @@
 [![Unit Tests Coverage](https://img.shields.io/badge/Coverage-96.15%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![CI Status](https://github.com/ideaconnect/symfony-nats-messenger/workflows/CI/badge.svg?branch=main)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
 
 A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream), enabling reliable asynchronous messaging with persistent message streaming.
 
@@ -674,3 +674,12 @@ For issues, questions, or suggestions:
 1. Check the [troubleshooting](#troubleshooting) section
 2. Check existing issues on GitHub
 3. Create a new issue with detailed information
+
+# 💖 Love the project? Support it! 🚀
+
+* 🪙 **BTC**: bc1qwz2wy764dzc5hkvuc9kx08gmurmxmujusma8c5
+* 💎 **ETH**: 0x9E147eA99640c39Bd9F88b0d8986D2719F3c0878
+* ⚡ **TRX**: TLiN6p1VdXRbUodfNSLLi363P5jsCRtoio
+* 🚀 **LTC**: LbqUpd49UrQpnXo8uQeRg5xGoHv95cSoMs
+* ☕ **Buy me a coffee**: https://buymeacoffee.com/idct
+* 💝 **Sponsor**: https://github.com/sponsors/ideaconnect
