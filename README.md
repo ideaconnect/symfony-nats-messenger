@@ -2,7 +2,7 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.1-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-95.95%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-95.97%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -17,7 +17,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 28 unit tests with ~92% code coverage
+- 🧪 **Thoroughly Tested** - 102 unit tests with ~96% code coverage
 
 ## Requirements
 
@@ -230,7 +230,8 @@ framework:
 
           # Performance Tuning
           batching: 5                       # Messages per batch (default: 1)
-          max_batch_timeout: 1.0            # Timeout in seconds for batches (default: 0.5)
+          max_batch_timeout: 1.0            # Timeout in seconds for batch fetching (default: 1)
+          connection_timeout: 1.0           # Socket I/O timeout in seconds (default: 1)
           delay: 0.01                       # Delay between fetch attempts in seconds (default: 0.01)
 
           # Stream Retention Policies
@@ -338,6 +339,26 @@ options:
 - If you set `batching: 10` and `max_batch_timeout: 0.5`
 - If 10 messages arrive quickly, all are fetched immediately
 - If only 3 messages arrive in 0.5s, return those 3
+
+### Connection Timeout
+
+Controls the socket-level I/O timeout for all NATS operations:
+
+```yaml
+options:
+  connection_timeout: 2.0  # Socket timeout in seconds
+```
+
+**Purpose:**
+- Sets the timeout for socket read/write operations
+- Affects all NATS communication (publish, subscribe, ack, etc.)
+- Lower values fail faster on network issues
+- Higher values tolerate slower networks
+
+**When to adjust:**
+- Increase for high-latency networks or geographically distant NATS servers
+- Decrease for faster failure detection in local environments
+- Default of 1 second works well for most local/regional deployments
 - Don't wait forever for the batch to fill
 
 ## Stream Configuration
@@ -605,6 +626,8 @@ The bridge consists of two main components:
 2. **Set reasonable timeouts**
    - `max_batch_timeout: 0.5` for responsive systems
    - `max_batch_timeout: 2.0` for background jobs
+   - `connection_timeout: 1.0` for local/regional deployments
+   - `connection_timeout: 3.0+` for cross-region or high-latency networks
 
 3. **Configure fetch delay**
    - Lower delay (0.001) for low-latency scenarios

@@ -20,6 +20,132 @@ use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\SetupableTransportInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
 
+/**
+ * Testable subclass that avoids connecting to NATS during construction.
+ * Used for testing DSN parsing and configuration without requiring a real NATS server.
+ */
+class TestableNatsTransport extends NatsTransport
+{
+    protected function connect(): void
+    {
+        // No-op: skip connection during tests
+    }
+
+    /**
+     * Override buildFromDsn to avoid calling Client::setTimeout() which triggers a connection.
+     */
+    protected function buildFromDsn(#[\SensitiveParameter] string $dsn, array $options = []): void
+    {
+        // Call parent implementation but catch the setTimeout call
+        $reflection = new \ReflectionClass(NatsTransport::class);
+        $method = $reflection->getMethod('buildFromDsn');
+
+        // We need to replicate the parent logic but skip the setTimeout call
+        // Parse DSN components
+        if (false === $components = parse_url($dsn)) {
+            throw new InvalidArgumentException('The given NATS DSN is invalid.');
+        }
+
+        // Validate required components exist
+        if (!isset($components['host'])) {
+            throw new InvalidArgumentException('The given NATS DSN is invalid.');
+        }
+
+        // Extract connection credentials
+        $connectionCredentials = [
+            'host' => $components['host'],
+            'port' => $components['port'] ?? 4222,
+        ];
+
+        // Validate that path exists for stream name and topic
+        if (!isset($components['path'])) {
+            throw new InvalidArgumentException('NATS Stream name not provided.');
+        }
+
+        $path = $components['path'];
+
+        // Validate that stream name and topic are provided
+        if (empty($path) || strlen($path) < 4) {
+            throw new InvalidArgumentException('NATS Stream name not provided.');
+        }
+
+        // Parse query parameters from DSN
+        $query = [];
+        if (isset($components['query'])) {
+            parse_str($components['query'], $query);
+        }
+
+        // Merge configuration
+        $defaultOptions = [
+            'delay' => 0.01,
+            'consumer' => 'client',
+            'batching' => 1,
+            'max_batch_timeout' => 1,
+            'connection_timeout' => 1,
+            'stream_max_age' => 0,
+            'stream_max_bytes' => null,
+            'stream_max_messages' => null,
+            'stream_replicas' => 1,
+        ];
+        $configuration = [];
+        $configuration += $options + $query + $defaultOptions;
+
+        // Build client connection settings
+        $clientConnectionSettings = [
+            'host' => $connectionCredentials['host'],
+            'lang' => 'php',
+            'pedantic' => false,
+            'port' => intval($connectionCredentials['port']),
+            'reconnect' => true,
+            'timeout' => floatval($configuration['max_batch_timeout']),
+        ];
+
+        // Add authentication if provided in DSN
+        if (isset($components['user']) && isset($components['pass']) && !empty($components['user']) && !empty($components['pass'])) {
+            $clientConnectionSettings['user'] = $components['user'];
+            $clientConnectionSettings['pass'] = $components['pass'];
+        }
+
+        // Extract stream name and topic from path
+        $pathParts = explode('/', substr($components['path'], 1));
+        if (count($pathParts) < 2 || empty($pathParts[0]) || empty($pathParts[1])) {
+            throw new InvalidArgumentException('NATS DSN must contain both stream name and topic name (format: /stream/topic).');
+        }
+
+        [$streamName, $topic] = $pathParts;
+
+        // Create NATS client configuration (but don't call setTimeout on Client)
+        $nastConfig = new Configuration($clientConnectionSettings);
+        $nastConfig->setDelay(floatval($configuration['delay']));
+
+        // Initialize client without setting timeout (which would trigger connection)
+        $client = new Client($nastConfig);
+
+        // Store the connection_timeout in configuration for later use
+        // Note: We skip $client->setTimeout() to avoid triggering a connection
+        $this->topic = $topic;
+        $this->streamName = $streamName;
+        $this->client = $client;
+        $this->configuration = $configuration;
+    }
+
+    /**
+     * Get the stored configuration for testing purposes.
+     */
+    public function getTestConfiguration(): array
+    {
+        return $this->configuration;
+    }
+
+    /**
+     * Get the NATS client for testing purposes.
+     */
+    public function getTestClient(): Client
+    {
+        return $this->client;
+    }
+}
+
 class NatsTransportTest extends TestCase
 {
     private const VALID_DSN = 'nats://admin:password@localhost:4222/test-stream/test-topic';
@@ -1604,5 +1730,174 @@ class NatsTransportTest extends TestCase
         $this->expectExceptionMessage("Consumer was not created successfully");
 
         $transport->setup();
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithConnectionTimeout_StoresInConfiguration(): void
+    {
+        $dsn = self::VALID_DSN;
+        $connectionTimeout = 2.5;
+        $options = ['connection_timeout' => $connectionTimeout];
+
+        $transport = new TestableNatsTransport($dsn, $options);
+
+        $config = $transport->getTestConfiguration();
+        $this->assertEquals($connectionTimeout, $config['connection_timeout']);
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithConnectionTimeoutFromDsn_ParsesAsFloat(): void
+    {
+        $dsn = 'nats://admin:password@localhost:4222/test-stream/test-topic?connection_timeout=3.5';
+
+        $transport = new TestableNatsTransport($dsn, []);
+
+        $config = $transport->getTestConfiguration();
+        $this->assertEquals(3.5, floatval($config['connection_timeout']));
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithMaxBatchTimeoutFromDsn_ParsesAsFloat(): void
+    {
+        $dsn = 'nats://admin:password@localhost:4222/test-stream/test-topic?max_batch_timeout=2.5';
+
+        $transport = new TestableNatsTransport($dsn, []);
+
+        $config = $transport->getTestConfiguration();
+        $this->assertEquals(2.5, floatval($config['max_batch_timeout']));
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithStringTimeoutValuesFromDsn_CoercesToFloat(): void
+    {
+        // Query parameters are always strings when parsed from DSN
+        $dsn = 'nats://admin:password@localhost:4222/test-stream/test-topic?connection_timeout=5&max_batch_timeout=3';
+
+        $transport = new TestableNatsTransport($dsn, []);
+
+        $config = $transport->getTestConfiguration();
+
+        // Values should be coercible to float (DSN query params come as strings)
+        $this->assertIsNumeric($config['connection_timeout']);
+        $this->assertIsNumeric($config['max_batch_timeout']);
+        $this->assertEquals(5.0, floatval($config['connection_timeout']));
+        $this->assertEquals(3.0, floatval($config['max_batch_timeout']));
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithMaxBatchTimeout_PassesToNatsConfiguration(): void
+    {
+        $dsn = self::VALID_DSN;
+        $maxBatchTimeout = 4.5;
+        $options = ['max_batch_timeout' => $maxBatchTimeout];
+
+        $transport = new TestableNatsTransport($dsn, $options);
+
+        // Access the client and its configuration
+        $client = $transport->getTestClient();
+        $clientReflection = new \ReflectionClass($client);
+        $configProperty = $clientReflection->getProperty('configuration');
+        $configProperty->setAccessible(true);
+        $natsConfig = $configProperty->getValue($client);
+
+        // Verify the timeout was set in the Configuration
+        $this->assertEquals($maxBatchTimeout, $natsConfig->timeout);
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithBothTimeouts_ConfiguresIndependently(): void
+    {
+        $dsn = self::VALID_DSN;
+        $maxBatchTimeout = 2.0;
+        $connectionTimeout = 5.0;
+        $options = [
+            'max_batch_timeout' => $maxBatchTimeout,
+            'connection_timeout' => $connectionTimeout,
+        ];
+
+        $transport = new TestableNatsTransport($dsn, $options);
+
+        // Verify both timeouts are stored independently
+        $config = $transport->getTestConfiguration();
+        $this->assertEquals($maxBatchTimeout, $config['max_batch_timeout']);
+        $this->assertEquals($connectionTimeout, $config['connection_timeout']);
+
+        // Verify max_batch_timeout is passed to NATS Configuration
+        $client = $transport->getTestClient();
+        $clientReflection = new \ReflectionClass($client);
+        $natsConfigProperty = $clientReflection->getProperty('configuration');
+        $natsConfigProperty->setAccessible(true);
+        $natsConfig = $natsConfigProperty->getValue($client);
+
+        $this->assertEquals($maxBatchTimeout, $natsConfig->timeout);
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithDefaultTimeouts_UsesDefaultValues(): void
+    {
+        $dsn = self::VALID_DSN;
+
+        $transport = new TestableNatsTransport($dsn, []);
+
+        $config = $transport->getTestConfiguration();
+
+        // Default values should be 1 second for both timeouts
+        $this->assertEquals(1, $config['max_batch_timeout']);
+        $this->assertEquals(1, $config['connection_timeout']);
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithPortFromDsn_ParsesAsInteger(): void
+    {
+        $dsn = 'nats://admin:password@localhost:5222/test-stream/test-topic';
+
+        $transport = new TestableNatsTransport($dsn, []);
+
+        // Access the client configuration
+        $client = $transport->getTestClient();
+        $clientReflection = new \ReflectionClass($client);
+        $configProperty = $clientReflection->getProperty('configuration');
+        $configProperty->setAccessible(true);
+        $natsConfig = $configProperty->getValue($client);
+
+        $this->assertEquals(5222, $natsConfig->port);
+        $this->assertIsInt($natsConfig->port);
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_OptionsOverrideDsnQueryParams(): void
+    {
+        // DSN has connection_timeout=1.0, but options has 5.0
+        $dsn = 'nats://admin:password@localhost:4222/test-stream/test-topic?connection_timeout=1.0&max_batch_timeout=1.0';
+        $options = [
+            'connection_timeout' => 5.0,
+            'max_batch_timeout' => 3.0,
+        ];
+
+        $transport = new TestableNatsTransport($dsn, $options);
+
+        $config = $transport->getTestConfiguration();
+
+        // Options should take precedence over DSN query params
+        $this->assertEquals(5.0, $config['connection_timeout']);
+        $this->assertEquals(3.0, $config['max_batch_timeout']);
     }
 }

@@ -70,8 +70,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         'batching' => 1,
         // Maximum time (in seconds) to wait for a batch to fill before returning
         'max_batch_timeout' => 1,
-        // Maximum time (in seconds) to wait for a batch to fill before returning
-        'dispatch_timeout' => 1,
+        // Socket-level I/O timeout (in seconds) for all NATS operations
+        'connection_timeout' => 1,
         // Stream retention policy - max age of messages (0 = unlimited)
         'stream_max_age' => 0,
         // Stream retention policy - max bytes stored (null = unlimited)
@@ -584,7 +584,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // Initialize and store client
         $client = new Client($nastConfig);
 
-        $client->setTimeout(floatval($configuration['dispatch_timeout']));
+        $client->setTimeout(floatval($configuration['connection_timeout']));
         $this->topic = $topic;
         $this->streamName = $streamName;
         $this->client = $client;
