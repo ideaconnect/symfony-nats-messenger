@@ -70,6 +70,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         'batching' => 1,
         // Maximum time (in seconds) to wait for a batch to fill before returning
         'max_batch_timeout' => 1,
+        // Maximum time (in seconds) to wait for a batch to fill before returning
+        'dispatch_timeout' => 1,
         // Stream retention policy - max age of messages (0 = unlimited)
         'stream_max_age' => 0,
         // Stream retention policy - max bytes stored (null = unlimited)
@@ -329,7 +331,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         // Lazy-load queue if not already initialized
         if (!$this->queue) {
-            $batching = $this->configuration['batching'];
+            $batching = intval($this->configuration['batching']);
             $this->consumer->setBatching($batching);
             $this->queue = $this->consumer->getQueue();
         }
@@ -556,9 +558,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             'host' => $connectionCredentials['host'],
             'lang' => 'php',
             'pedantic' => false,
-            'port' => $connectionCredentials['port'],
+            'port' => intval($connectionCredentials['port']),
             'reconnect' => true,
-            'timeout' => $configuration['max_batch_timeout'],
+            'timeout' => floatval($configuration['max_batch_timeout']),
         ];
 
         // Add authentication if provided in DSN
@@ -582,6 +584,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // Initialize and store client
         $client = new Client($nastConfig);
 
+        $client->setTimeout(floatval($configuration['dispatch_timeout']));
         $this->topic = $topic;
         $this->streamName = $streamName;
         $this->client = $client;
