@@ -146,6 +146,20 @@ class TestableNatsTransport extends NatsTransport
     }
 }
 
+/**
+ * Test subclass that simulates missing igbinary extension.
+ */
+class NatsTransportWithoutIgbinary extends TestableNatsTransport
+{
+    protected function isExtensionLoaded(string $extension): bool
+    {
+        if ($extension === 'igbinary') {
+            return false;
+        }
+        return parent::isExtensionLoaded($extension);
+    }
+}
+
 class NatsTransportTest extends TestCase
 {
     private const VALID_DSN = 'nats://admin:password@localhost:4222/test-stream/test-topic';
@@ -315,7 +329,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to test the private method
         $reflection = new \ReflectionClass($transport);
         $method = $reflection->getMethod('findReceivedStamp');
-        $method->setAccessible(true);
 
         $result = $method->invoke($transport, $envelope);
 
@@ -334,7 +347,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to test the private method
         $reflection = new \ReflectionClass($transport);
         $method = $reflection->getMethod('findReceivedStamp');
-        $method->setAccessible(true);
 
         $this->expectException(LogicException::class);
         $this->expectExceptionMessage('No ReceivedStamp found');
@@ -424,7 +436,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to inject the mock stream
         $reflection = new \ReflectionClass($transport);
         $streamProperty = $reflection->getProperty('stream');
-        $streamProperty->setAccessible(true);
         $streamProperty->setValue($transport, $mockStream);
 
         $message = new \stdClass();
@@ -633,7 +644,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to inject the mock stream
         $reflection = new \ReflectionClass($transport);
         $streamProperty = $reflection->getProperty('stream');
-        $streamProperty->setAccessible(true);
         $streamProperty->setValue($transport, $mockStream);
 
         $message = new \stdClass();
@@ -762,7 +772,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to access private method
         $reflection = new \ReflectionClass($transport);
         $method = $reflection->getMethod('findReceivedStamp');
-        $method->setAccessible(true);
 
         $result = $method->invoke($transport, $envelope);
 
@@ -781,7 +790,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to access protected method
         $reflection = new \ReflectionClass($transport);
         $method = $reflection->getMethod('connect');
-        $method->setAccessible(true);
 
         // This should not throw an exception
         $method->invoke($transport);
@@ -800,7 +808,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to access private method
         $reflection = new \ReflectionClass($transport);
         $method = $reflection->getMethod('decodeJsonInfo');
-        $method->setAccessible(true);
 
         // Create a mock response object with body property
         $response = new \stdClass();
@@ -824,7 +831,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to access private method
         $reflection = new \ReflectionClass($transport);
         $method = $reflection->getMethod('decodeJsonInfo');
-        $method->setAccessible(true);
 
         // Test with null response
         $result = $method->invoke($transport, null);
@@ -853,7 +859,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to access protected method
         $reflection = new \ReflectionClass($transport);
         $method = $reflection->getMethod('sendNak');
-        $method->setAccessible(true);
 
         // Call sendNak method with a test ID
         $testId = 'test_message_id';
@@ -874,16 +879,12 @@ class NatsTransportTest extends TestCase
         // Use reflection to access protected method and properties
         $reflection = new \ReflectionClass($transport);
         $connectMethod = $reflection->getMethod('connect');
-        $connectMethod->setAccessible(true);
 
         $streamProperty = $reflection->getProperty('stream');
-        $streamProperty->setAccessible(true);
 
         $consumerProperty = $reflection->getProperty('consumer');
-        $consumerProperty->setAccessible(true);
 
         $queueProperty = $reflection->getProperty('queue');
-        $queueProperty->setAccessible(true);
 
         // Call connect method
         $connectMethod->invoke($transport);
@@ -909,13 +910,10 @@ class NatsTransportTest extends TestCase
         $reflection = new \ReflectionClass($transport);
 
         $topicProperty = $reflection->getProperty('topic');
-        $topicProperty->setAccessible(true);
 
         $streamNameProperty = $reflection->getProperty('streamName');
-        $streamNameProperty->setAccessible(true);
 
         $configurationProperty = $reflection->getProperty('configuration');
-        $configurationProperty->setAccessible(true);
 
         // Verify all parameters were parsed correctly
         $this->assertEquals('test_topic', $topicProperty->getValue($transport));
@@ -939,7 +937,6 @@ class NatsTransportTest extends TestCase
     //     // Use reflection to clear the stream to test lazy loading
     //     $reflection = new \ReflectionClass($transport);
     //     $streamProperty = $reflection->getProperty('stream');
-    //     $streamProperty->setAccessible(true);
     //     $streamProperty->setValue($transport, null);
 
     //     $message = new \stdClass();
@@ -1013,11 +1010,9 @@ class NatsTransportTest extends TestCase
         $reflection = new \ReflectionClass($transport);
 
         $queueProperty = $reflection->getProperty('queue');
-        $queueProperty->setAccessible(true);
         $queueProperty->setValue($transport, $mockQueue);
 
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         // Test that the message can be processed successfully
@@ -1055,7 +1050,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to test the private decodeJsonInfo method returning null
         $reflection = new \ReflectionClass($transport);
         $decodeMethod = $reflection->getMethod('decodeJsonInfo');
-        $decodeMethod->setAccessible(true);
 
         // Test that null response returns 0
         $result = $decodeMethod->invoke($transport, null);
@@ -1084,7 +1078,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to set the mocked consumer
         $reflection = new \ReflectionClass($transport);
         $consumerProperty = $reflection->getProperty('consumer');
-        $consumerProperty->setAccessible(true);
         $consumerProperty->setValue($transport, $mockConsumer);
 
         $count = $transport->getMessageCount();
@@ -1109,7 +1102,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to set the mocked consumer
         $reflection = new \ReflectionClass($transport);
         $consumerProperty = $reflection->getProperty('consumer');
-        $consumerProperty->setAccessible(true);
         $consumerProperty->setValue($transport, $mockConsumer);
 
         $count = $transport->getMessageCount();
@@ -1143,11 +1135,9 @@ class NatsTransportTest extends TestCase
         $reflection = new \ReflectionClass($transport);
 
         $consumerProperty = $reflection->getProperty('consumer');
-        $consumerProperty->setAccessible(true);
         $consumerProperty->setValue($transport, $mockConsumer);
 
         $streamProperty = $reflection->getProperty('stream');
-        $streamProperty->setAccessible(true);
         $streamProperty->setValue($transport, $mockStream);
 
         $count = $transport->getMessageCount();
@@ -1174,11 +1164,9 @@ class NatsTransportTest extends TestCase
         $reflection = new \ReflectionClass($transport);
 
         $consumerProperty = $reflection->getProperty('consumer');
-        $consumerProperty->setAccessible(true);
         $consumerProperty->setValue($transport, $mockConsumer);
 
         $streamProperty = $reflection->getProperty('stream');
-        $streamProperty->setAccessible(true);
         $streamProperty->setValue($transport, $mockStream);
 
         $count = $transport->getMessageCount();
@@ -1207,11 +1195,9 @@ class NatsTransportTest extends TestCase
         $reflection = new \ReflectionClass($transport);
 
         $consumerProperty = $reflection->getProperty('consumer');
-        $consumerProperty->setAccessible(true);
         $consumerProperty->setValue($transport, $mockConsumer);
 
         $streamProperty = $reflection->getProperty('stream');
-        $streamProperty->setAccessible(true);
         $streamProperty->setValue($transport, $mockStream);
 
         $count = $transport->getMessageCount();
@@ -1365,7 +1351,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to inject the mock client
         $reflection = new \ReflectionClass($transport);
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $this->expectException(\RuntimeException::class);
@@ -1403,7 +1388,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to inject the mock client
         $reflection = new \ReflectionClass($transport);
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $this->expectException(\RuntimeException::class);
@@ -1447,7 +1431,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to inject the mock client
         $reflection = new \ReflectionClass($transport);
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $this->expectException(\RuntimeException::class);
@@ -1492,7 +1475,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to inject the mock client
         $reflection = new \ReflectionClass($transport);
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $this->expectException(\RuntimeException::class);
@@ -1538,7 +1520,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to inject the mock client
         $reflection = new \ReflectionClass($transport);
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $this->expectException(\RuntimeException::class);
@@ -1599,7 +1580,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to inject the mock client
         $reflection = new \ReflectionClass($transport);
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $this->expectException(\RuntimeException::class);
@@ -1661,7 +1641,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to inject the mock client
         $reflection = new \ReflectionClass($transport);
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $this->expectException(\RuntimeException::class);
@@ -1723,7 +1702,6 @@ class NatsTransportTest extends TestCase
         // Use reflection to inject the mock client
         $reflection = new \ReflectionClass($transport);
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $this->expectException(\RuntimeException::class);
@@ -1807,7 +1785,6 @@ class NatsTransportTest extends TestCase
         $client = $transport->getTestClient();
         $clientReflection = new \ReflectionClass($client);
         $configProperty = $clientReflection->getProperty('configuration');
-        $configProperty->setAccessible(true);
         $natsConfig = $configProperty->getValue($client);
 
         // Verify the timeout was set in the Configuration
@@ -1838,7 +1815,6 @@ class NatsTransportTest extends TestCase
         $client = $transport->getTestClient();
         $clientReflection = new \ReflectionClass($client);
         $natsConfigProperty = $clientReflection->getProperty('configuration');
-        $natsConfigProperty->setAccessible(true);
         $natsConfig = $natsConfigProperty->getValue($client);
 
         $this->assertEquals($maxBatchTimeout, $natsConfig->timeout);
@@ -1873,7 +1849,6 @@ class NatsTransportTest extends TestCase
         $client = $transport->getTestClient();
         $clientReflection = new \ReflectionClass($client);
         $configProperty = $clientReflection->getProperty('configuration');
-        $configProperty->setAccessible(true);
         $natsConfig = $configProperty->getValue($client);
 
         $this->assertEquals(5222, $natsConfig->port);
@@ -1935,11 +1910,9 @@ class NatsTransportTest extends TestCase
         $reflection = new \ReflectionClass($transport);
 
         $serializerProperty = $reflection->getProperty('serializer');
-        $serializerProperty->setAccessible(true);
         $serializerProperty->setValue($transport, $mockSerializer);
 
         $streamProperty = $reflection->getProperty('stream');
-        $streamProperty->setAccessible(true);
         $streamProperty->setValue($transport, $mockStream);
 
         $message = new \stdClass();
@@ -1999,11 +1972,9 @@ class NatsTransportTest extends TestCase
         $reflection = new \ReflectionClass($transport);
 
         $queueProperty = $reflection->getProperty('queue');
-        $queueProperty->setAccessible(true);
         $queueProperty->setValue($transport, $mockQueue);
 
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $envelopes = $transport->get();
@@ -2059,15 +2030,12 @@ class NatsTransportTest extends TestCase
         $reflection = new \ReflectionClass($transport);
 
         $queueProperty = $reflection->getProperty('queue');
-        $queueProperty->setAccessible(true);
         $queueProperty->setValue($transport, $mockQueue);
 
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $serializerProperty = $reflection->getProperty('serializer');
-        $serializerProperty->setAccessible(true);
         $serializerProperty->setValue($transport, $mockSerializer);
 
         // Expect an exception to be thrown
@@ -2112,11 +2080,9 @@ class NatsTransportTest extends TestCase
         $reflection = new \ReflectionClass($transport);
 
         $streamProperty = $reflection->getProperty('stream');
-        $streamProperty->setAccessible(true);
         $streamProperty->setValue($transport, null);
 
         $clientProperty = $reflection->getProperty('client');
-        $clientProperty->setAccessible(true);
         $clientProperty->setValue($transport, $mockClient);
 
         $message = new \stdClass();
@@ -2129,5 +2095,30 @@ class NatsTransportTest extends TestCase
 
         // Verify stream was initialized
         $this->assertSame($mockStream, $streamProperty->getValue($transport));
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithoutIgbinaryExtension_TriggersError(): void
+    {
+        $errorTriggered = false;
+        $errorMessage = '';
+
+        set_error_handler(function ($errno, $errstr) use (&$errorTriggered, &$errorMessage) {
+            $errorTriggered = true;
+            $errorMessage = $errstr;
+            return true;
+        });
+
+        try {
+            // Pass null serializer to trigger the igbinary check
+            new NatsTransportWithoutIgbinary(self::VALID_DSN, [], null);
+        } finally {
+            restore_error_handler();
+        }
+
+        $this->assertTrue($errorTriggered, 'Expected trigger_error to be called');
+        $this->assertStringContainsString('igbinary extension is not installed', $errorMessage);
     }
 }

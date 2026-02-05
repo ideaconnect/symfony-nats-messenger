@@ -35,7 +35,6 @@ class IgbinarySerializerTest extends TestCase
         // Use reflection to test the protected method
         $reflection = new \ReflectionClass($this->serializer);
         $method = $reflection->getMethod('serialize');
-        $method->setAccessible(true);
 
         $result = $method->invoke($this->serializer, $envelope);
 
@@ -61,7 +60,6 @@ class IgbinarySerializerTest extends TestCase
         // Use reflection to test the protected method
         $reflection = new \ReflectionClass($this->serializer);
         $method = $reflection->getMethod('serialize');
-        $method->setAccessible(true);
 
         $serializedData = $method->invoke($this->serializer, $envelope);
         $deserializedEnvelope = \igbinary_unserialize($serializedData);
@@ -85,7 +83,6 @@ class IgbinarySerializerTest extends TestCase
         // Use reflection to test the protected method
         $reflection = new \ReflectionClass($this->serializer);
         $method = $reflection->getMethod('deserialize');
-        $method->setAccessible(true);
 
         $result = $method->invoke($this->serializer, $serialized);
 
@@ -105,7 +102,6 @@ class IgbinarySerializerTest extends TestCase
         // Use reflection to test the protected method
         $reflection = new \ReflectionClass($this->serializer);
         $method = $reflection->getMethod('deserialize');
-        $method->setAccessible(true);
 
         $result = $method->invoke($this->serializer, $serialized);
 
@@ -123,7 +119,6 @@ class IgbinarySerializerTest extends TestCase
         // Use reflection to test the protected method
         $reflection = new \ReflectionClass($this->serializer);
         $method = $reflection->getMethod('deserialize');
-        $method->setAccessible(true);
 
         // Suppress igbinary warning for invalid data
         $result = @$method->invoke($this->serializer, $invalidData);
@@ -140,7 +135,6 @@ class IgbinarySerializerTest extends TestCase
         // Use reflection to test the protected method
         $reflection = new \ReflectionClass($this->serializer);
         $method = $reflection->getMethod('deserialize');
-        $method->setAccessible(true);
 
         $result = $method->invoke($this->serializer, '');
 
@@ -286,7 +280,6 @@ class IgbinarySerializerTest extends TestCase
         // Use reflection to test the protected method
         $reflection = new \ReflectionClass($this->serializer);
         $method = $reflection->getMethod('serialize');
-        $method->setAccessible(true);
 
         $result = $method->invoke($this->serializer, $envelope);
 

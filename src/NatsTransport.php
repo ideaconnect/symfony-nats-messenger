@@ -157,7 +157,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null)
     {
-        if ($serializer === null && !extension_loaded('igbinary')) {
+        if ($serializer === null && !$this->isExtensionLoaded('igbinary')) {
             trigger_error(
                 'The igbinary extension is not installed. Please install ext-igbinary for optimal performance with the default serializer, or provide a custom serializer.',
             );
@@ -167,6 +167,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $this->buildFromDsn($dsn, $options);
         $this->connect();
+    }
+
+    /**
+     * Check if a PHP extension is loaded (abstracted for testability).
+     */
+    protected function isExtensionLoaded(string $extension): bool
+    {
+        return extension_loaded($extension);
     }
 
     /**
