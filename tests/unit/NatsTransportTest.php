@@ -1900,4 +1900,234 @@ class NatsTransportTest extends TestCase
         $this->assertEquals(5.0, $config['connection_timeout']);
         $this->assertEquals(3.0, $config['max_batch_timeout']);
     }
+
+    /**
+     * @test
+     */
+    public function send_WithSerializerReturningHeaders_PublishesPayloadWithHeaders(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new NatsTransport($dsn, []);
+
+        // Create a mock serializer that returns headers
+        $mockSerializer = $this->createMock(\Symfony\Component\Messenger\Transport\Serialization\SerializerInterface::class);
+        $mockSerializer->expects($this->once())
+            ->method('encode')
+            ->willReturn([
+                'body' => 'serialized-message-body',
+                'headers' => ['Content-Type' => 'application/json', 'X-Custom' => 'value'],
+            ]);
+
+        // Create mock stream that captures the payload
+        $capturedPayload = null;
+        $mockStream = $this->createMock(\Basis\Nats\Stream\Stream::class);
+        $mockStream->expects($this->once())
+            ->method('publish')
+            ->with(
+                $this->equalTo('test-topic'),
+                $this->callback(function ($payload) use (&$capturedPayload) {
+                    $capturedPayload = $payload;
+                    return $payload instanceof \Basis\Nats\Message\Payload;
+                })
+            );
+
+        // Use reflection to inject the mock dependencies
+        $reflection = new \ReflectionClass($transport);
+
+        $serializerProperty = $reflection->getProperty('serializer');
+        $serializerProperty->setAccessible(true);
+        $serializerProperty->setValue($transport, $mockSerializer);
+
+        $streamProperty = $reflection->getProperty('stream');
+        $streamProperty->setAccessible(true);
+        $streamProperty->setValue($transport, $mockStream);
+
+        $message = new \stdClass();
+        $envelope = new Envelope($message);
+
+        $result = $transport->send($envelope);
+
+        $this->assertInstanceOf(Envelope::class, $result);
+        $this->assertInstanceOf(\Basis\Nats\Message\Payload::class, $capturedPayload);
+        $this->assertEquals('serialized-message-body', $capturedPayload->body);
+        $this->assertEquals(['Content-Type' => 'application/json', 'X-Custom' => 'value'], $capturedPayload->headers);
+    }
+
+    /**
+     * @test
+     */
+    public function get_WithEmptyMessagePayload_SkipsEmptyMessage(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new NatsTransport($dsn, []);
+
+        // Create an empty message (should be skipped)
+        $emptyPayload = $this->createMock(\Basis\Nats\Message\Payload::class);
+        $emptyPayload->body = ''; // Empty body
+        $emptyPayload->headers = [];
+
+        $emptyMessage = $this->createMock(\Basis\Nats\Message\Msg::class);
+        $emptyMessage->payload = $emptyPayload;
+        $emptyMessage->replyTo = 'empty-reply-to';
+
+        // Create a valid message
+        $validMessage = new \stdClass();
+        $validMessage->data = 'test data';
+        $validEnvelope = new \Symfony\Component\Messenger\Envelope($validMessage);
+        $serialized = \igbinary_serialize($validEnvelope);
+
+        $validPayload = $this->createMock(\Basis\Nats\Message\Payload::class);
+        $validPayload->body = $serialized;
+        $validPayload->headers = [];
+
+        $validMsg = $this->createMock(\Basis\Nats\Message\Msg::class);
+        $validMsg->payload = $validPayload;
+        $validMsg->replyTo = 'valid-reply-to';
+
+        // Mock queue to return both messages (empty first, then valid)
+        $mockQueue = $this->createMock(\Basis\Nats\Queue::class);
+        $mockQueue->method('fetchAll')->willReturn([$emptyMessage, $validMsg]);
+
+        // Mock connection
+        $mockConnection = $this->createMock(\Basis\Nats\Connection::class);
+
+        // Mock client
+        $mockClient = $this->createMock(\Basis\Nats\Client::class);
+        $mockClient->connection = $mockConnection;
+
+        // Inject mocks
+        $reflection = new \ReflectionClass($transport);
+
+        $queueProperty = $reflection->getProperty('queue');
+        $queueProperty->setAccessible(true);
+        $queueProperty->setValue($transport, $mockQueue);
+
+        $clientProperty = $reflection->getProperty('client');
+        $clientProperty->setAccessible(true);
+        $clientProperty->setValue($transport, $mockClient);
+
+        $envelopes = $transport->get();
+        $envelopeArray = iterator_to_array($envelopes);
+
+        // Should only have 1 envelope (empty message was skipped)
+        $this->assertCount(1, $envelopeArray);
+        $this->assertInstanceOf(\Symfony\Component\Messenger\Envelope::class, $envelopeArray[0]);
+    }
+
+    /**
+     * @test
+     */
+    public function get_WithDeserializationFailure_SendsNakAndThrowsException(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new NatsTransport($dsn, []);
+
+        // Create a message with valid-looking payload
+        $invalidPayload = $this->createMock(\Basis\Nats\Message\Payload::class);
+        $invalidPayload->body = 'some-payload-data';
+        $invalidPayload->headers = [];
+
+        $invalidMessage = $this->createMock(\Basis\Nats\Message\Msg::class);
+        $invalidMessage->payload = $invalidPayload;
+        $invalidMessage->replyTo = 'invalid-message-reply-to';
+
+        // Mock queue to return the message
+        $mockQueue = $this->createMock(\Basis\Nats\Queue::class);
+        $mockQueue->method('fetchAll')->willReturn([$invalidMessage]);
+
+        // Mock serializer to throw exception during decode
+        $mockSerializer = $this->createMock(\Symfony\Component\Messenger\Transport\Serialization\SerializerInterface::class);
+        $mockSerializer->expects($this->once())
+            ->method('decode')
+            ->willThrowException(new \Symfony\Component\Messenger\Exception\MessageDecodingFailedException('Test decoding failure'));
+
+        // Mock connection to verify NAK is sent
+        $nakWasSent = false;
+        $mockConnection = $this->createMock(\Basis\Nats\Connection::class);
+        $mockConnection->expects($this->once())
+            ->method('sendMessage')
+            ->with($this->callback(function ($message) use (&$nakWasSent) {
+                $nakWasSent = $message instanceof \Basis\Nats\Message\Nak;
+                return true;
+            }));
+
+        // Mock client
+        $mockClient = $this->createMock(\Basis\Nats\Client::class);
+        $mockClient->connection = $mockConnection;
+
+        // Inject mocks
+        $reflection = new \ReflectionClass($transport);
+
+        $queueProperty = $reflection->getProperty('queue');
+        $queueProperty->setAccessible(true);
+        $queueProperty->setValue($transport, $mockQueue);
+
+        $clientProperty = $reflection->getProperty('client');
+        $clientProperty->setAccessible(true);
+        $clientProperty->setValue($transport, $mockClient);
+
+        $serializerProperty = $reflection->getProperty('serializer');
+        $serializerProperty->setAccessible(true);
+        $serializerProperty->setValue($transport, $mockSerializer);
+
+        // Expect an exception to be thrown
+        $this->expectException(\Symfony\Component\Messenger\Exception\MessageDecodingFailedException::class);
+
+        try {
+            $transport->get();
+        } finally {
+            // Verify NAK was sent before the exception was thrown
+            $this->assertTrue($nakWasSent, 'NAK message should have been sent for failed deserialization');
+        }
+    }
+
+    /**
+     * @test
+     */
+    public function send_WhenStreamNotInitialized_InitializesStreamFromApi(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new NatsTransport($dsn, []);
+
+        // Create mock stream
+        $mockStream = $this->createMock(\Basis\Nats\Stream\Stream::class);
+        $mockStream->expects($this->once())
+            ->method('publish')
+            ->with($this->equalTo('test-topic'), $this->anything());
+
+        // Create mock API that returns the stream
+        $mockApi = $this->createMock(\Basis\Nats\Api::class);
+        $mockApi->expects($this->once())
+            ->method('getStream')
+            ->with($this->equalTo('test-stream'))
+            ->willReturn($mockStream);
+
+        // Create mock client
+        $mockClient = $this->createMock(\Basis\Nats\Client::class);
+        $mockClient->expects($this->once())
+            ->method('getApi')
+            ->willReturn($mockApi);
+
+        // Use reflection to set stream to null and inject mock client
+        $reflection = new \ReflectionClass($transport);
+
+        $streamProperty = $reflection->getProperty('stream');
+        $streamProperty->setAccessible(true);
+        $streamProperty->setValue($transport, null);
+
+        $clientProperty = $reflection->getProperty('client');
+        $clientProperty->setAccessible(true);
+        $clientProperty->setValue($transport, $mockClient);
+
+        $message = new \stdClass();
+        $envelope = new Envelope($message);
+
+        $result = $transport->send($envelope);
+
+        $this->assertInstanceOf(Envelope::class, $result);
+        $this->assertNotNull($result->last(TransportMessageIdStamp::class));
+
+        // Verify stream was initialized
+        $this->assertSame($mockStream, $streamProperty->getValue($transport));
+    }
 }
