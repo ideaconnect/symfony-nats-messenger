@@ -18,6 +18,7 @@ use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use InvalidArgumentException;
 use LogicException;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
@@ -214,14 +215,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw $serializationError;
         }
 
+        $delay = $envelope->last(DelayStamp::class)?->getDelay() ?? 0;
+        if ($delay > 0) {
+            $encodedMessage['headers']['Nats-Schedule'] = '@at ' . (new \DateTime('now + ' . $delay . ' milliseconds'))->format('Y-m-d\TH:i:s\Z');
+            $encodedMessage['headers']['Nats-Schedule-Target'] = $this->topic;
+        }
+
         if (isset($encodedMessage['headers'])) {
             $payload = new Payload($encodedMessage['body'], $encodedMessage['headers']);
         } else {
             $payload = $encodedMessage['body'];
         }
 
+        //Delayed messages should be published to unique topic which is not being consumed by the consumer which consumes normal messages
+        $topic = $delay > 0 ? $this->topic . '.delayed.' . $uuid : $this->topic;
         // Publish to the NATS stream
-        $this->stream->publish($this->topic, $payload);
+        $this->stream->publish($topic, $payload);
 
         return $envelope;
     }
@@ -314,8 +323,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     public function reject(Envelope $envelope): void
     {
-        $id = $this->findReceivedStamp($envelope)->getId();
-        $this->sendNak($id);
+        $this->ack($envelope);
     }
 
     /**
@@ -445,7 +453,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $streamConfig = $stream->getConfiguration();
 
             // Configure the stream to listen to the topic/subject
-            $streamConfig->setSubjects([$this->topic]);
+            $streamConfig->setSubjects([$this->topic, $this->topic.'.delayed.>']);
+            $streamConfig->setAllowMsgSchedules(true);
 
             // Apply retention policy: max age (convert seconds to nanoseconds)
             if (isset($this->configuration['stream_max_age']) && $this->configuration['stream_max_age'] > 0) {
@@ -472,6 +481,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $consumer->getConfiguration()->setAckPolicy(AckPolicy::EXPLICIT);
             $consumer->getConfiguration()->setDeliverPolicy(DeliverPolicy::ALL);
             $consumer->setBatching($this->configuration['batching']);
+            $consumer->getConfiguration()->setSubjectFilter($this->topic);
             $consumer->create();
 
             $this->consumer = $consumer;
