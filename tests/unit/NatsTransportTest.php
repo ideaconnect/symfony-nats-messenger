@@ -1540,10 +1540,11 @@ class NatsTransportTest extends TestCase
         $mockConsumerConfig = $this->createMock(\Basis\Nats\Consumer\Configuration::class);
         $mockConsumerConfig->expects($this->once())->method('setAckPolicy');
         $mockConsumerConfig->expects($this->once())->method('setDeliverPolicy');
+        $mockConsumerConfig->expects($this->once())->method('setSubjectFilter');
 
         // Create a mock consumer that throws exception on create
         $mockConsumer = $this->createMock(\Basis\Nats\Consumer\Consumer::class);
-        $mockConsumer->expects($this->exactly(2)) // Called twice: setAckPolicy and setDeliverPolicy
+        $mockConsumer->expects($this->exactly(3)) // Called three times: setAckPolicy, setDeliverPolicy, and setSubjectFilter
                     ->method('getConfiguration')
                     ->willReturn($mockConsumerConfig);
         $mockConsumer->expects($this->once())->method('setBatching');
@@ -1600,10 +1601,11 @@ class NatsTransportTest extends TestCase
         $mockConsumerConfig = $this->createMock(\Basis\Nats\Consumer\Configuration::class);
         $mockConsumerConfig->expects($this->once())->method('setAckPolicy');
         $mockConsumerConfig->expects($this->once())->method('setDeliverPolicy');
+        $mockConsumerConfig->expects($this->once())->method('setSubjectFilter');
 
         // Create a mock consumer
         $mockConsumer = $this->createMock(\Basis\Nats\Consumer\Consumer::class);
-        $mockConsumer->expects($this->exactly(2)) // Called twice: setAckPolicy and setDeliverPolicy
+        $mockConsumer->expects($this->exactly(3)) // Called three times: setAckPolicy, setDeliverPolicy, and setSubjectFilter
                     ->method('getConfiguration')
                     ->willReturn($mockConsumerConfig);
         $mockConsumer->expects($this->once())->method('setBatching');
