@@ -7,7 +7,7 @@
         "php": ">=8.2",
         "ext-ctype": "*",
         "ext-iconv": "*",
-        "basis-company/nats": "dev-main",
+        "basis-company/nats": "dev-stream-schedules-config",
         "phpdocumentor/reflection-docblock": "^5.6",
         "phpstan/phpdoc-parser": "^2.3",
         "symfony/console": "7.2.*",
@@ -77,5 +77,11 @@
         "behat/behat": "^3.26",
         "symfony/maker-bundle": "^1.64",
         "symfony/process": "7.2.*"
-    }
+    },
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/zlatkoverk/nats.php"
+        }
+    ]
 }

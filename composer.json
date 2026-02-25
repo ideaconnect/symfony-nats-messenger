@@ -18,7 +18,7 @@
     "require": {
         "symfony/framework-bundle": "^7.2",
         "symfony/messenger": "^7.2",
-        "basis-company/nats": "^1",
+        "basis-company/nats": "dev-stream-schedules-config",
         "symfony/uid": "^7.2"
     },
     "require-dev": {
@@ -31,5 +31,11 @@
         "psr-4": {
             "IDCT\\NatsMessenger\\Tests\\": "tests/"
         }
-    }
+    },
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/zlatkoverk/nats.php"
+        }
+    ]
 }
