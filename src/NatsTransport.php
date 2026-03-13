@@ -455,6 +455,19 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $serverConfig = (array) $info->config;
                 $streamConfig->fromArray($serverConfig);
 
+                // Workaround: fromArray() in the vendor library does not hydrate
+                // all fields. Manually restore the ones we expose via configuration
+                // so that update() does not reset them to defaults.
+                if (isset($serverConfig['max_age'])) {
+                    $streamConfig->setMaxAge((int) $serverConfig['max_age']);
+                }
+                if (isset($serverConfig['max_bytes']) && $serverConfig['max_bytes'] !== null) {
+                    $streamConfig->setMaxBytes((int) $serverConfig['max_bytes']);
+                }
+                if (isset($serverConfig['max_msgs_per_subject']) && $serverConfig['max_msgs_per_subject'] !== null) {
+                    $streamConfig->setMaxMessagesPerSubject((int) $serverConfig['max_msgs_per_subject']);
+                }
+
                 // Merge the new subject into the existing subjects
                 $subjects = $serverConfig['subjects'] ?? [];
                 if (!in_array($this->topic, $subjects, true)) {
@@ -475,6 +488,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             // Apply retention policy: max storage size in bytes
             if (isset($this->configuration['stream_max_bytes']) && $this->configuration['stream_max_bytes'] !== null) {
                 $streamConfig->setMaxBytes($this->configuration['stream_max_bytes']);
+            }
+
+            // Apply retention policy: max number of messages per subject
+            if (isset($this->configuration['stream_max_messages']) && $this->configuration['stream_max_messages'] !== null) {
+                $streamConfig->setMaxMessagesPerSubject(intval($this->configuration['stream_max_messages']));
             }
 
             // Apply replication factor for high availability

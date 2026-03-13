@@ -1269,6 +1269,20 @@ class NatsTransportTest extends TestCase
     /**
      * @test
      */
+    public function setup_WithStreamMaxMessagesConfiguration_AppliesMaxMessages(): void
+    {
+        $dsn = 'nats://admin:password@localhost:4222/test-stream-max-msgs/max-msgs-topic';
+        $options = ['stream_max_messages' => 10000];
+        $transport = new NatsTransport($dsn, $options);
+
+        $transport->setup();
+
+        $this->assertTrue(true);
+    }
+
+    /**
+     * @test
+     */
     public function setup_WithStorageViaDsnQueryParam_AppliesStorage(): void
     {
         $dsn = 'nats://admin:password@localhost:4222/test-stream-dsn-storage/dsn-storage-topic?stream_storage=memory';
@@ -1828,6 +1842,9 @@ class NatsTransportTest extends TestCase
                 'num_replicas' => 1,
                 'retention' => 'limits',
                 'storage' => 'memory',
+                'max_age' => 3600000000000,
+                'max_bytes' => 1048576,
+                'max_msgs_per_subject' => 5000,
             ],
         ]);
 
@@ -1870,9 +1887,12 @@ class NatsTransportTest extends TestCase
 
         $transport->setup();
 
-        // Verify subjects were merged and storage was preserved from server
+        // Verify subjects were merged and server config was preserved
         $this->assertSame(['existing-topic', 'test-topic'], $streamConfig->getSubjects());
         $this->assertSame('memory', $streamConfig->getStorageBackend());
+        $this->assertSame(3600000000000, $streamConfig->getMaxAge());
+        $this->assertSame(1048576, $streamConfig->getMaxBytes());
+        $this->assertSame(5000, $streamConfig->getMaxMessagesPerSubject());
     }
 
     /**
