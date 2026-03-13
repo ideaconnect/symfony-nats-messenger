@@ -239,6 +239,9 @@ framework:
           stream_max_bytes: 1073741824      # Max storage size in bytes (null = unlimited)
           stream_max_messages: 1000000      # Max number of messages (null = unlimited)
 
+          # Storage Backend
+          stream_storage: 'file'            # Storage type: 'file' or 'memory' (default: 'file')
+
           # High Availability
           stream_replicas: 1                # Number of replicas (default: 1)
 ```

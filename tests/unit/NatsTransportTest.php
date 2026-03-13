@@ -86,6 +86,7 @@ class TestableNatsTransport extends NatsTransport
             'stream_max_bytes' => null,
             'stream_max_messages' => null,
             'stream_replicas' => 1,
+            'stream_storage' => 'file',
         ];
         $configuration = [];
         $configuration += $options + $query + $defaultOptions;
@@ -1235,6 +1236,71 @@ class NatsTransportTest extends TestCase
 
         // If no exception thrown, setup was successful
         $this->assertTrue(true);
+    }
+
+    /**
+     * @test
+     */
+    public function setup_WithMemoryStorageConfiguration_AppliesMemoryStorage(): void
+    {
+        $dsn = 'nats://admin:password@localhost:4222/test-stream-memory/memory-topic';
+        $options = ['stream_storage' => 'memory'];
+        $transport = new NatsTransport($dsn, $options);
+
+        $transport->setup();
+
+        $this->assertTrue(true);
+    }
+
+    /**
+     * @test
+     */
+    public function setup_WithFileStorageConfiguration_AppliesFileStorage(): void
+    {
+        $dsn = 'nats://admin:password@localhost:4222/test-stream-file-storage/file-topic';
+        $options = ['stream_storage' => 'file'];
+        $transport = new NatsTransport($dsn, $options);
+
+        $transport->setup();
+
+        $this->assertTrue(true);
+    }
+
+    /**
+     * @test
+     */
+    public function setup_WithStorageViaDsnQueryParam_AppliesStorage(): void
+    {
+        $dsn = 'nats://admin:password@localhost:4222/test-stream-dsn-storage/dsn-storage-topic?stream_storage=memory';
+        $transport = new NatsTransport($dsn, []);
+
+        $transport->setup();
+
+        $this->assertTrue(true);
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithStorageOption_StoresInConfiguration(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new TestableNatsTransport($dsn, ['stream_storage' => 'memory']);
+
+        $config = $transport->getTestConfiguration();
+        $this->assertSame('memory', $config['stream_storage']);
+    }
+
+    /**
+     * @test
+     */
+    public function constructor_WithDefaultStorage_DefaultsToFile(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new TestableNatsTransport($dsn, []);
+
+        $config = $transport->getTestConfiguration();
+        $this->assertSame('file', $config['stream_storage']);
     }
 
     /**

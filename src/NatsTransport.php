@@ -80,6 +80,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         'stream_max_messages' => null,
         // Number of stream replicas for high availability
         'stream_replicas' => 1,
+        // Storage backend: 'file' or 'memory'
+        'stream_storage' => 'file',
     ];
 
     /**
@@ -461,6 +463,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             // Apply replication factor for high availability
             if (isset($this->configuration['stream_replicas']) && $this->configuration['stream_replicas'] > 0) {
                 $streamConfig->setReplicas($this->configuration['stream_replicas']);
+            }
+
+            // Apply storage backend (file or memory)
+            if (isset($this->configuration['stream_storage'])) {
+                $streamConfig->setStorageBackend($this->configuration['stream_storage']);
             }
 
             // Create the stream with the configured settings
