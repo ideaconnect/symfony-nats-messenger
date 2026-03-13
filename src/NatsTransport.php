@@ -483,7 +483,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             // Apply storage backend (file or memory)
-            // Important: Updating the storage backend for already existing streams is not allowed
             if (!$streamExists && isset($this->configuration['stream_storage'])) {
                 $streamConfig->setStorageBackend($this->configuration['stream_storage']);
             }
