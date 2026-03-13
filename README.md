@@ -237,7 +237,7 @@ framework:
           # Stream Retention Policies
           stream_max_age: 86400             # Max message age in seconds (0 = unlimited, default: 0)
           stream_max_bytes: 1073741824      # Max storage size in bytes (null = unlimited)
-          stream_max_messages: 1000000      # Max number of messages (null = unlimited)
+          stream_max_messages: 1000000      # Max number of messages per subject (null = unlimited)
 
           # Storage Backend
           stream_storage: 'file'            # Storage type: 'file' or 'memory' (default: 'file')
@@ -502,6 +502,35 @@ framework:
           stream_max_age: 2592000  # 30 days
           stream_replicas: 3
 ```
+
+### Multi-Subject Streams
+
+Multiple transports can share the same NATS stream with different subjects. When `messenger:setup-transports` runs, each transport adds its subject to the existing stream rather than overwriting it:
+
+```yaml
+framework:
+  messenger:
+    transports:
+      # Both transports share the "events" stream
+      nats_orders:
+        dsn: 'nats-jetstream://localhost/events/orders'
+        options:
+          consumer: 'order-consumer'
+          delay: 0.5
+          batching: 1
+          stream_max_age: 300
+
+      nats_payments:
+        dsn: 'nats-jetstream://localhost/events/payments'
+        options:
+          consumer: 'payment-consumer'
+          delay: 1
+          batching: 2
+```
+
+The `events` stream will have both `orders` and `payments` as subjects.
+
+> **Note:** Stream-level settings (prefixed with `stream_`) are applied when the stream is first created, and then for each additional subject on the same stream, **overwriting** any previous values. When defining multiple subjects per stream, it is recommended to only specify them in the first transport block.
 
 ### Setup on Initialization
 
