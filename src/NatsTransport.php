@@ -448,14 +448,19 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $streamExists = $stream->exists();
 
             if ($streamExists) {
-                // Fetch stream subjects directly from the NATS server since getStream()
-                // returns a fresh Configuration object with an empty subjects array
+                // getStream() returns a fresh Configuration with defaults, not the
+                // actual server state. Hydrate from info() so that immutable fields
+                // like storage backend are correct before we call update().
                 $info = $this->decodeJsonInfo($stream->info());
-                $subjects = $info->config->subjects ?? [];
+                $serverConfig = (array) $info->config;
+                $streamConfig->fromArray($serverConfig);
+
+                // Merge the new subject into the existing subjects
+                $subjects = $serverConfig['subjects'] ?? [];
                 if (!in_array($this->topic, $subjects, true)) {
                     $subjects[] = $this->topic;
+                    $streamConfig->setSubjects($subjects);
                 }
-                $streamConfig->setSubjects($subjects);
             } else {
                 // Set the current topic on new streams
                 $streamConfig->setSubjects([$this->topic]);

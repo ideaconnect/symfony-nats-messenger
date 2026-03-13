@@ -1815,23 +1815,27 @@ class NatsTransportTest extends TestCase
         $mockConsumer->expects($this->once())->method('setBatching');
         $mockConsumer->expects($this->once())->method('create');
 
-        // Create a mock configuration
-        $mockConfig = $this->createMock(\Basis\Nats\Stream\Configuration::class);
-        $mockConfig->expects($this->once())
-                  ->method('setSubjects')
-                  ->with(['existing-topic', 'test-topic']);
+        // Create a real Configuration object so fromArray() works correctly
+        $streamConfig = new \Basis\Nats\Stream\Configuration('test-stream');
 
-        // Mock info() response with existing subjects from the server
+        // Mock info() response with full server config
         $infoResponse = new \stdClass();
         $infoResponse->body = json_encode((object) [
-            'config' => (object) ['subjects' => ['existing-topic']],
+            'config' => (object) [
+                'subjects' => ['existing-topic'],
+                'discard' => 'old',
+                'max_consumers' => -1,
+                'num_replicas' => 1,
+                'retention' => 'limits',
+                'storage' => 'memory',
+            ],
         ]);
 
         // Create a mock stream that already exists
         $mockStream = $this->createMock(\Basis\Nats\Stream\Stream::class);
         $mockStream->expects($this->once())
                   ->method('getConfiguration')
-                  ->willReturn($mockConfig);
+                  ->willReturn($streamConfig);
         $mockStream->expects($this->once())
                   ->method('exists')
                   ->willReturn(true);
@@ -1866,7 +1870,9 @@ class NatsTransportTest extends TestCase
 
         $transport->setup();
 
-        $this->assertTrue(true);
+        // Verify subjects were merged and storage was preserved from server
+        $this->assertSame(['existing-topic', 'test-topic'], $streamConfig->getSubjects());
+        $this->assertSame('memory', $streamConfig->getStorageBackend());
     }
 
     /**
@@ -1890,23 +1896,27 @@ class NatsTransportTest extends TestCase
         $mockConsumer->expects($this->once())->method('setBatching');
         $mockConsumer->expects($this->once())->method('create');
 
-        // Create a mock configuration - setSubjects is still called with existing subjects
-        $mockConfig = $this->createMock(\Basis\Nats\Stream\Configuration::class);
-        $mockConfig->expects($this->once())
-                  ->method('setSubjects')
-                  ->with(['test-topic', 'other-topic']);
+        // Create a real Configuration object so fromArray() works correctly
+        $streamConfig = new \Basis\Nats\Stream\Configuration('test-stream');
 
         // Mock info() response where test-topic already exists
         $infoResponse = new \stdClass();
         $infoResponse->body = json_encode((object) [
-            'config' => (object) ['subjects' => ['test-topic', 'other-topic']],
+            'config' => (object) [
+                'subjects' => ['test-topic', 'other-topic'],
+                'discard' => 'old',
+                'max_consumers' => -1,
+                'num_replicas' => 1,
+                'retention' => 'limits',
+                'storage' => 'file',
+            ],
         ]);
 
         // Create a mock stream that already exists
         $mockStream = $this->createMock(\Basis\Nats\Stream\Stream::class);
         $mockStream->expects($this->once())
                   ->method('getConfiguration')
-                  ->willReturn($mockConfig);
+                  ->willReturn($streamConfig);
         $mockStream->expects($this->once())
                   ->method('exists')
                   ->willReturn(true);
@@ -1941,7 +1951,8 @@ class NatsTransportTest extends TestCase
 
         $transport->setup();
 
-        $this->assertTrue(true);
+        // Subjects should remain unchanged since test-topic already exists
+        $this->assertSame(['test-topic', 'other-topic'], $streamConfig->getSubjects());
     }
 
     /**
