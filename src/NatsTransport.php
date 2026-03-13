@@ -445,9 +445,21 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             // Retrieve the stream configuration for modification
             $streamConfig = $stream->getConfiguration();
+            $streamExists = $stream->exists();
 
-            // Configure the stream to listen to the topic/subject
-            $streamConfig->setSubjects([$this->topic]);
+            if ($streamExists) {
+                // Fetch stream subjects directly from the NATS server since getStream()
+                // returns a fresh Configuration object with an empty subjects array
+                $info = $this->decodeJsonInfo($stream->info());
+                $subjects = $info->config->subjects ?? [];
+                if (!in_array($this->topic, $subjects, true)) {
+                    $subjects[] = $this->topic;
+                }
+                $streamConfig->setSubjects($subjects);
+            } else {
+                // Set the current topic on new streams
+                $streamConfig->setSubjects([$this->topic]);
+            }
 
             // Apply retention policy: max age (convert seconds to nanoseconds)
             if (isset($this->configuration['stream_max_age']) && $this->configuration['stream_max_age'] > 0) {
@@ -466,12 +478,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             // Apply storage backend (file or memory)
-            if (isset($this->configuration['stream_storage'])) {
+            // Important: Updating the storage backend for already existing streams is not allowed
+            if (!$streamExists && isset($this->configuration['stream_storage'])) {
                 $streamConfig->setStorageBackend($this->configuration['stream_storage']);
             }
 
-            // Create the stream with the configured settings
-            $stream->create();
+            if ($streamExists) {
+                $stream->update();
+            } else {
+                $stream->create();
+            }
             $this->stream = $stream;
 
             // Create the consumer for message consumption

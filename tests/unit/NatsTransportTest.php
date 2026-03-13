@@ -1481,6 +1481,9 @@ class NatsTransportTest extends TestCase
         $mockStream->expects($this->once())
                   ->method('getConfiguration')
                   ->willReturn($mockConfig);
+        $mockStream->expects($this->once())
+                  ->method('exists')
+                  ->willReturn(false);
 
         // Create a mock API
         $mockApi = $this->createMock(\Basis\Nats\Api::class);
@@ -1522,6 +1525,9 @@ class NatsTransportTest extends TestCase
         $mockStream->expects($this->once())
                   ->method('getConfiguration')
                   ->willReturn($mockConfig);
+        $mockStream->expects($this->once())
+                  ->method('exists')
+                  ->willReturn(false);
         $mockStream->expects($this->once())
                   ->method('create')
                   ->willThrowException(new \Exception('Stream creation failed'));
@@ -1566,6 +1572,9 @@ class NatsTransportTest extends TestCase
         $mockStream->expects($this->once())
                   ->method('getConfiguration')
                   ->willReturn($mockConfig);
+        $mockStream->expects($this->once())
+                  ->method('exists')
+                  ->willReturn(false);
         $mockStream->expects($this->once())->method('create');
         $mockStream->expects($this->once())
                   ->method('getConsumer')
@@ -1626,6 +1635,9 @@ class NatsTransportTest extends TestCase
         $mockStream->expects($this->once())
                   ->method('getConfiguration')
                   ->willReturn($mockConfig);
+        $mockStream->expects($this->once())
+                  ->method('exists')
+                  ->willReturn(false);
         $mockStream->expects($this->once())->method('create');
         $mockStream->expects($this->once())
                   ->method('getConsumer')
@@ -1684,6 +1696,9 @@ class NatsTransportTest extends TestCase
         $mockStream->expects($this->once())
                   ->method('getConfiguration')
                   ->willReturn($mockConfig);
+        $mockStream->expects($this->once())
+                  ->method('exists')
+                  ->willReturn(false);
         $mockStream->expects($this->once())->method('create');
         $mockStream->expects($this->once())
                   ->method('getConsumer')
@@ -1745,6 +1760,9 @@ class NatsTransportTest extends TestCase
         $mockStream->expects($this->once())
                   ->method('getConfiguration')
                   ->willReturn($mockConfig);
+        $mockStream->expects($this->once())
+                  ->method('exists')
+                  ->willReturn(false);
         $mockStream->expects($this->once())->method('create');
         $mockStream->expects($this->once())
                   ->method('getConsumer')
@@ -1774,6 +1792,222 @@ class NatsTransportTest extends TestCase
         $this->expectExceptionMessage("Consumer was not created successfully");
 
         $transport->setup();
+    }
+
+    /**
+     * @test
+     */
+    public function setup_WithExistingStream_MergesNewSubject(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new NatsTransport($dsn, []);
+
+        // Create mock consumer configuration
+        $mockConsumerConfig = $this->createMock(\Basis\Nats\Consumer\Configuration::class);
+        $mockConsumerConfig->expects($this->any())->method('setAckPolicy');
+        $mockConsumerConfig->expects($this->any())->method('setDeliverPolicy');
+
+        // Create a mock consumer
+        $mockConsumer = $this->createMock(\Basis\Nats\Consumer\Consumer::class);
+        $mockConsumer->expects($this->any())
+                    ->method('getConfiguration')
+                    ->willReturn($mockConsumerConfig);
+        $mockConsumer->expects($this->once())->method('setBatching');
+        $mockConsumer->expects($this->once())->method('create');
+
+        // Create a mock configuration
+        $mockConfig = $this->createMock(\Basis\Nats\Stream\Configuration::class);
+        $mockConfig->expects($this->once())
+                  ->method('setSubjects')
+                  ->with(['existing-topic', 'test-topic']);
+
+        // Mock info() response with existing subjects from the server
+        $infoResponse = new \stdClass();
+        $infoResponse->body = json_encode((object) [
+            'config' => (object) ['subjects' => ['existing-topic']],
+        ]);
+
+        // Create a mock stream that already exists
+        $mockStream = $this->createMock(\Basis\Nats\Stream\Stream::class);
+        $mockStream->expects($this->once())
+                  ->method('getConfiguration')
+                  ->willReturn($mockConfig);
+        $mockStream->expects($this->once())
+                  ->method('exists')
+                  ->willReturn(true);
+        $mockStream->expects($this->once())
+                  ->method('info')
+                  ->willReturn($infoResponse);
+        $mockStream->expects($this->never())->method('create');
+        $mockStream->expects($this->once())->method('update');
+        $mockStream->expects($this->once())
+                  ->method('getConsumer')
+                  ->willReturn($mockConsumer);
+        $mockStream->expects($this->once())
+                  ->method('getConsumerNames')
+                  ->willReturn(['client']);
+
+        // Create a mock API
+        $mockApi = $this->createMock(\Basis\Nats\Api::class);
+        $mockApi->expects($this->once())
+               ->method('getStream')
+               ->willReturn($mockStream);
+
+        // Create a mock client
+        $mockClient = $this->createMock(\Basis\Nats\Client::class);
+        $mockClient->expects($this->once())
+                  ->method('getApi')
+                  ->willReturn($mockApi);
+
+        // Use reflection to inject the mock client
+        $reflection = new \ReflectionClass($transport);
+        $clientProperty = $reflection->getProperty('client');
+        $clientProperty->setValue($transport, $mockClient);
+
+        $transport->setup();
+
+        $this->assertTrue(true);
+    }
+
+    /**
+     * @test
+     */
+    public function setup_WithExistingStreamAndDuplicateSubject_DoesNotAddDuplicate(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new NatsTransport($dsn, []);
+
+        // Create mock consumer configuration
+        $mockConsumerConfig = $this->createMock(\Basis\Nats\Consumer\Configuration::class);
+        $mockConsumerConfig->expects($this->any())->method('setAckPolicy');
+        $mockConsumerConfig->expects($this->any())->method('setDeliverPolicy');
+
+        // Create a mock consumer
+        $mockConsumer = $this->createMock(\Basis\Nats\Consumer\Consumer::class);
+        $mockConsumer->expects($this->any())
+                    ->method('getConfiguration')
+                    ->willReturn($mockConsumerConfig);
+        $mockConsumer->expects($this->once())->method('setBatching');
+        $mockConsumer->expects($this->once())->method('create');
+
+        // Create a mock configuration - setSubjects is still called with existing subjects
+        $mockConfig = $this->createMock(\Basis\Nats\Stream\Configuration::class);
+        $mockConfig->expects($this->once())
+                  ->method('setSubjects')
+                  ->with(['test-topic', 'other-topic']);
+
+        // Mock info() response where test-topic already exists
+        $infoResponse = new \stdClass();
+        $infoResponse->body = json_encode((object) [
+            'config' => (object) ['subjects' => ['test-topic', 'other-topic']],
+        ]);
+
+        // Create a mock stream that already exists
+        $mockStream = $this->createMock(\Basis\Nats\Stream\Stream::class);
+        $mockStream->expects($this->once())
+                  ->method('getConfiguration')
+                  ->willReturn($mockConfig);
+        $mockStream->expects($this->once())
+                  ->method('exists')
+                  ->willReturn(true);
+        $mockStream->expects($this->once())
+                  ->method('info')
+                  ->willReturn($infoResponse);
+        $mockStream->expects($this->never())->method('create');
+        $mockStream->expects($this->once())->method('update');
+        $mockStream->expects($this->once())
+                  ->method('getConsumer')
+                  ->willReturn($mockConsumer);
+        $mockStream->expects($this->once())
+                  ->method('getConsumerNames')
+                  ->willReturn(['client']);
+
+        // Create a mock API
+        $mockApi = $this->createMock(\Basis\Nats\Api::class);
+        $mockApi->expects($this->once())
+               ->method('getStream')
+               ->willReturn($mockStream);
+
+        // Create a mock client
+        $mockClient = $this->createMock(\Basis\Nats\Client::class);
+        $mockClient->expects($this->once())
+                  ->method('getApi')
+                  ->willReturn($mockApi);
+
+        // Use reflection to inject the mock client
+        $reflection = new \ReflectionClass($transport);
+        $clientProperty = $reflection->getProperty('client');
+        $clientProperty->setValue($transport, $mockClient);
+
+        $transport->setup();
+
+        $this->assertTrue(true);
+    }
+
+    /**
+     * @test
+     */
+    public function setup_WithNewStream_CallsCreateNotUpdate(): void
+    {
+        $dsn = self::VALID_DSN;
+        $transport = new NatsTransport($dsn, []);
+
+        // Create mock consumer configuration
+        $mockConsumerConfig = $this->createMock(\Basis\Nats\Consumer\Configuration::class);
+        $mockConsumerConfig->expects($this->any())->method('setAckPolicy');
+        $mockConsumerConfig->expects($this->any())->method('setDeliverPolicy');
+
+        // Create a mock consumer
+        $mockConsumer = $this->createMock(\Basis\Nats\Consumer\Consumer::class);
+        $mockConsumer->expects($this->any())
+                    ->method('getConfiguration')
+                    ->willReturn($mockConsumerConfig);
+        $mockConsumer->expects($this->once())->method('setBatching');
+        $mockConsumer->expects($this->once())->method('create');
+
+        // Create a mock configuration
+        $mockConfig = $this->createMock(\Basis\Nats\Stream\Configuration::class);
+        $mockConfig->expects($this->once())
+                  ->method('setSubjects')
+                  ->with(['test-topic']);
+
+        // Create a mock stream that does not exist yet
+        $mockStream = $this->createMock(\Basis\Nats\Stream\Stream::class);
+        $mockStream->expects($this->once())
+                  ->method('getConfiguration')
+                  ->willReturn($mockConfig);
+        $mockStream->expects($this->once())
+                  ->method('exists')
+                  ->willReturn(false);
+        $mockStream->expects($this->once())->method('create');
+        $mockStream->expects($this->never())->method('update');
+        $mockStream->expects($this->once())
+                  ->method('getConsumer')
+                  ->willReturn($mockConsumer);
+        $mockStream->expects($this->once())
+                  ->method('getConsumerNames')
+                  ->willReturn(['client']);
+
+        // Create a mock API
+        $mockApi = $this->createMock(\Basis\Nats\Api::class);
+        $mockApi->expects($this->once())
+               ->method('getStream')
+               ->willReturn($mockStream);
+
+        // Create a mock client
+        $mockClient = $this->createMock(\Basis\Nats\Client::class);
+        $mockClient->expects($this->once())
+                  ->method('getApi')
+                  ->willReturn($mockApi);
+
+        // Use reflection to inject the mock client
+        $reflection = new \ReflectionClass($transport);
+        $clientProperty = $reflection->getProperty('client');
+        $clientProperty->setValue($transport, $mockClient);
+
+        $transport->setup();
+
+        $this->assertTrue(true);
     }
 
     /**
