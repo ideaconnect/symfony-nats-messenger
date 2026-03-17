@@ -7,9 +7,9 @@ use Behat\Gherkin\Node\PyStringNode;
 use Behat\Gherkin\Node\TableNode;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Process\Exception\ProcessFailedException;
+use IDCT\NATS\Connection\NatsOptions;
+use IDCT\NATS\Core\NatsClient;
 use IDCT\NatsMessenger\NatsTransport;
-use Basis\Nats\Client;
-use Basis\Nats\Configuration;
 
 /**
  * Defines application features from the specific context.
@@ -96,7 +96,7 @@ class NatsSetupContext implements Context
 
         // Create the stream manually using NATS client
         $client = $this->createNatsClient();
-        $stream = $client->getApi()->getStream($this->testStreamName);
+        $client->jetStream()->createStream($this->testStreamName, [$this->testSubject])->await();
     }
 
     /**
@@ -145,10 +145,9 @@ class NatsSetupContext implements Context
         $expectedMaxAgeNanoseconds = $maxAge * 60 * 1_000_000_000; // Convert minutes to nanoseconds
 
         $client = $this->createNatsClient();
-        $stream = $client->getApi()->getStream($this->testStreamName);
-        $streamInfo = $stream->info();
-
-        $actualMaxAge = $streamInfo->config->max_age ?? 0;
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $streamConfig = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        $actualMaxAge = (int) ($streamConfig['max_age'] ?? 0);
 
         if ($actualMaxAge !== $expectedMaxAgeNanoseconds) {
             throw new \RuntimeException(
@@ -168,10 +167,9 @@ class NatsSetupContext implements Context
     public function theStreamShouldBeConfiguredWithTheCorrectSubject(): void
     {
         $client = $this->createNatsClient();
-        $stream = $client->getApi()->getStream($this->testStreamName);
-        $streamInfo = $stream->info();
-
-        $subjects = $streamInfo->config->subjects ?? [];
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $streamConfig = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        $subjects = is_array($streamConfig['subjects'] ?? null) ? $streamConfig['subjects'] : [];
 
         if (!in_array($this->testSubject, $subjects)) {
             throw new \RuntimeException(
@@ -257,10 +255,7 @@ class NatsSetupContext implements Context
         // Purge any existing messages from the stream for clean test state
         try {
             $client = $this->createNatsClient();
-            $stream = $client->getApi()->getStream($this->testStreamName);
-
-            // Purge the stream to remove any existing messages for clean test state
-            $stream->purge();
+            $client->jetStream()->purgeStream($this->testStreamName)->await();
         } catch (\Exception $e) {
             // If we can't purge, only fail if it's not a "stream not found" error
             if (strpos($e->getMessage(), 'stream not found') === false) {
@@ -632,10 +627,8 @@ class NatsSetupContext implements Context
         if ($this->shouldNatsBeRunning) {
             try {
                 $client = $this->createNatsClient();
-                $stream = $client->getApi()->getStream($this->testStreamName);
-                if ($stream->exists()) {
-                    $stream->delete();
-                }
+                $client->jetStream()->getStream($this->testStreamName)->await();
+                $client->jetStream()->deleteStream($this->testStreamName)->await();
             } catch (\Exception $e) {
                 // Ignore cleanup errors
             }
@@ -710,8 +703,7 @@ class NatsSetupContext implements Context
                 // TCP is working, now try NATS client
                 try {
                     $client = $this->createNatsClient();
-                    // Just test basic API access without calling problematic methods
-                    $api = $client->getApi();
+                    $client->jetStream()->accountInfo()->await();
                     return; // NATS is ready
                 } catch (\Exception $e) {
                     // Continue retrying
@@ -727,20 +719,17 @@ class NatsSetupContext implements Context
         throw new \RuntimeException('NATS server did not become ready within 30 seconds');
     }
 
-    private function createNatsClient(): Client
+    private function createNatsClient(): NatsClient
     {
-        $clientConfig = new Configuration([
-            'host' => 'localhost',
-            'port' => 4222,
-            'user' => 'admin',
-            'pass' => 'password',
-            'timeout' => 5,
-            'lang' => 'php',
-            'pedantic' => false,
-            'reconnect' => true,
-        ]);
+        $client = new NatsClient(new NatsOptions(
+            servers: ['nats://localhost:4222'],
+            username: 'admin',
+            password: 'password',
+            connectTimeoutMs: 5000,
+        ));
+        $client->connect()->await();
 
-        return new Client($clientConfig);
+        return $client;
     }
 
     private function isNatsRunning(): bool
@@ -755,8 +744,7 @@ class NatsSetupContext implements Context
         // If TCP connection works, try a simple NATS client test
         try {
             $client = $this->createNatsClient();
-            // Just test if we can create the API object
-            $client->getApi();
+            $client->jetStream()->accountInfo()->await();
             return true;
         } catch (\Exception $e) {
             return false;
@@ -768,9 +756,10 @@ class NatsSetupContext implements Context
     private function verifyStreamExists(): void
     {
         $client = $this->createNatsClient();
-        $stream = $client->getApi()->getStream($this->testStreamName);
 
-        if (!$stream->exists()) {
+        try {
+            $client->jetStream()->getStream($this->testStreamName)->await();
+        } catch (\Throwable $e) {
             throw new \RuntimeException("Stream '{$this->testStreamName}' does not exist");
         }
     }
