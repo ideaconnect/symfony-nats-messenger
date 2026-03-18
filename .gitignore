@@ -7,3 +7,4 @@ coverage/
 clover.xml
 .phpunit.cache
 .vscode
+.phpstan/

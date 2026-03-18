@@ -49,20 +49,23 @@ For contributors and development:
 # Install dependencies
 composer install
 
+# Run static analysis and the default unit test suite after every modification
+composer test
+
 # Start NATS server for testing
-make run-nats
+composer nats:start
 
 # Run unit tests with coverage
-make run-unit-tests
+composer test:unit
 
 # Set up functional tests
-make setup-functional-tests
+composer test:functional:setup
 
 # Run functional tests
-make run-functional-tests
+composer test:functional
 
 # Stop NATS server
-make stop-nats
+composer nats:stop
 ```
 
 ## Quick Start
@@ -214,6 +217,9 @@ nats-jetstream://user:password@localhost:4222/my-stream/my-topic
 
 # With query parameters
 nats-jetstream://localhost/my-stream/my-topic?consumer=worker&batching=10
+
+# TLS transport scheme
+nats-jetstream+tls://localhost:4222/my-stream/my-topic
 ```
 
 ### Configuration Options
@@ -232,7 +238,6 @@ framework:
           batching: 5                       # Messages per batch (default: 1)
           max_batch_timeout: 1.0            # Timeout in seconds for batch fetching (default: 1)
           connection_timeout: 1.0           # Socket I/O timeout in seconds (default: 1)
-          delay: 0.01                       # Delay between fetch attempts in seconds (default: 0.01)
 
           # Stream Retention Policies
           stream_max_age: 86400             # Max message age in seconds (0 = unlimited, default: 0)
@@ -241,7 +246,34 @@ framework:
 
           # High Availability
           stream_replicas: 1                # Number of replicas (default: 1)
+
+          # Failure Handling Strategy
+          retry_handler: 'symfony'          # symfony|nats (default: symfony)
+                                            # symfony => TERM on failed/rejected message
+                                            # nats    => NAK on failed/rejected message
+
+          # TLS Configuration
+          tls_required: false               # Force TLS for NATS connection (default: false)
+          tls_handshake_first: false        # Use TLS-first handshake mode (default: false)
+          tls_ca_file: null                 # Path to CA certificate file
+          tls_cert_file: null               # Path to client certificate file
+          tls_key_file: null                # Path to client private key
+          tls_key_passphrase: null          # Passphrase for encrypted private key
+          tls_peer_name: null               # Override TLS peer name for certificate validation
+          tls_verify_peer: true             # Verify TLS peer certificate (default: true)
+
+          # Additional Authentication
+          token: null                       # NATS token authentication
+          username: null                    # Overrides DSN username if provided
+          password: null                    # Overrides DSN password if provided
+          jwt: null                         # JWT authentication value
+          nkey: null                        # NKey public value
 ```
+
+### Retry Handler Behavior
+
+- `retry_handler: symfony` (default) sends `TERM` when a message fails during transport decoding or is rejected.
+- `retry_handler: nats` sends `NAK` when a message fails during transport decoding or is rejected.
 
 ## Important: Consumer Strategies
 
@@ -403,11 +435,14 @@ options:
 # Install dependencies
 composer install --dev
 
-# Run Nats
-make run-nats
+# Run static analysis and the fast unit suite after every modification
+composer test
+
+# Run NATS
+composer nats:start
 
 # Run all unit tests with coverage (recommended)
-make run-unit-tests
+composer test:unit
 
 # Or run tests manually
 ./vendor/bin/phpunit
@@ -429,16 +464,16 @@ Functional tests require a running NATS server with JetStream enabled:
 
 ```bash
 # Set up functional test dependencies
-make setup-functional-tests
+composer test:functional:setup
 
 # Start NATS server in Docker
-make run-nats
+composer nats:start
 
 # Run functional tests
-make run-functional-tests
+composer test:functional
 
 # Stop NATS server
-make stop-nats
+composer nats:stop
 ```
 
 **Manual approach:**
@@ -481,7 +516,6 @@ framework:
         options:
           consumer: 'fast-consumer'
           batching: 1
-          delay: 0.001
 
       # Bulk processing, high throughput
       nats_bulk:
@@ -489,7 +523,6 @@ framework:
         options:
           consumer: 'bulk-consumer'
           batching: 50
-          delay: 0.05
 
       # Audit logging
       nats_audit:
@@ -629,23 +662,45 @@ The bridge consists of two main components:
    - `connection_timeout: 1.0` for local/regional deployments
    - `connection_timeout: 3.0+` for cross-region or high-latency networks
 
-3. **Configure fetch delay**
-   - Lower delay (0.001) for low-latency scenarios
-   - Higher delay (0.05) to reduce CPU usage
-
-4. **Use appropriate replicas**
+3. **Use appropriate replicas**
    - `stream_replicas: 1` for development
    - `stream_replicas: 3` for production
 
-5. **Monitor performance**
+4. **Monitor performance**
    - Use `getMessageCount()` to track queue depth
    - Monitor handler execution time
    - Watch for stuck messages
 
 ## Security Considerations
 
+### ⚠️ Deserialization of Untrusted Data
+
+The default `IgbinarySerializer` (and any serializer extending `AbstractEnveloperSerializer`) deserializes raw message payloads from NATS into PHP objects. PHP object unserialization is a [well-known attack vector](https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/) — a crafted payload can trigger arbitrary code execution via magic methods (`__wakeup`, `__destruct`, etc.).
+
+**If your NATS topics are not fully trusted** (e.g. shared infrastructure, external publishers), you should:
+- Implement a custom serializer that uses a safe format (JSON, Protobuf) instead of PHP object serialization
+- Add message-level authentication (e.g. HMAC signatures) to verify publisher identity before deserializing
+- Restrict NATS topic publish permissions via ACLs so only trusted services can publish
+
+The type check (`instanceof Envelope`) happens *after* deserialization, which is too late to prevent exploitation.
+
+### ⚠️ Stream-Exists Detection Is Fragile
+
+During `setup()`, the transport detects whether a stream already exists by matching error message strings from the NATS server (e.g. `"already in use"`, `"already exists"`). This is brittle and may break if the NATS server changes its error wording in a future release. Additionally, HTTP status code 400 is treated as "stream exists", but 400 can indicate other bad-request errors.
+
+If you experience unexpected behavior during stream setup, check that your NATS server version is compatible and review the error messages returned by the server.
+
+### ⚠️ Silent Publish Failures on Non-JSON Responses
+
+The transport validates JetStream publish responses by parsing them as JSON and checking for an `error` field. If the server returns a non-JSON response (e.g. due to a proxy, misconfiguration, or protocol error), the validation silently passes — a failed publish could go unnoticed.
+
+Monitor your NATS server logs and consider implementing application-level publish confirmation if delivery guarantees are critical.
+
+### General Recommendations
+
 1. **Authentication**
-   - Use credentials in DSN for production: `nats-jetstream://user:password@host/stream/topic`
+   - Prefer environment variables or explicit options for credentials over hard-coded DSNs
+   - If you use credentials in a DSN, avoid logging the full DSN because it may expose secrets
    - Store credentials in environment variables
    - Never commit credentials to version control
 
@@ -662,29 +717,31 @@ The bridge consists of two main components:
 ## Contributing
 
 Contributions are welcome! Please ensure:
-- All tests pass: `make run-unit-tests`
+- Every modification runs the relevant verification commands before it is considered done
+- Minimum verification for PHP changes: `composer test`
+- All tests pass: `composer test:unit`
 - Code coverage remains above 90%
 - New features include corresponding tests
 - Documentation is updated
-- Functional tests pass: `make run-functional-tests` (if applicable)
+- Functional tests pass: `composer test:functional` (if applicable)
 
 ### Quick Development Workflow
 
 ```bash
-# 1. Run unit tests
-make run-unit-tests
+# 1. Run static analysis and the default unit suite after each modification
+composer test
 
 # 2. Set up functional tests (first time only)
-make setup-functional-tests
+composer test:functional:setup
 
 # 3. Start NATS for functional tests
-make run-nats
+composer nats:start
 
 # 4. Run functional tests
-make run-functional-tests
+composer test:functional
 
 # 5. Clean up
-make stop-nats
+composer nats:stop
 ```
 
 ## License

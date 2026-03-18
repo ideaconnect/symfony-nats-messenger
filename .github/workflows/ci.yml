@@ -13,7 +13,7 @@ jobs:
 
     strategy:
       matrix:
-        php-version: [8.2, 8.3, 8.4]
+        php-version: [8.2, 8.5]
 
     steps:
     - name: Checkout code
@@ -30,7 +30,7 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc netcat-openbsd
+        sudo apt-get install -y netcat-openbsd
 
     # - name: Get composer cache directory
     #   id: composer-cache
@@ -44,11 +44,14 @@ jobs:
     #     restore-keys: ${{ runner.os }}-composer-
 
     - name: Install dependencies
-      run: composer install --prefer-dist --no-progress --no-suggest
+      run: composer install --prefer-dist --no-progress
+
+    - name: Run static analysis and fast unit tests
+      run: composer test
 
     - name: Start NATS server
       run: |
-        make run-nats
+        composer nats:start
         sleep 10
         # Wait for NATS to be ready with multiple checks
         timeout 60 bash -c 'until nc -z localhost 4222; do sleep 2; done'
@@ -68,46 +71,27 @@ jobs:
         timeout 5 bash -c 'nc -zv localhost 4222' || echo "NATS port 4222 not accessible"
 
     - name: Run unit tests with coverage
-      run: |
-        make run-unit-tests
+      run: composer test:unit
 
     - name: Check coverage threshold (90%)
       run: |
-        # Extract coverage percentage from clover.xml
-        COVERAGE=$(php -r "
+        php -r "
           \$xml = simplexml_load_file('clover.xml');
-          \$projectMetrics = \$xml->project->metrics;
-          \$statements = (int)\$projectMetrics['statements'];
-          \$coveredStatements = (int)\$projectMetrics['coveredstatements'];
-          if (\$statements > 0) {
-            \$percentage = (\$coveredStatements / \$statements) * 100;
-            echo number_format(\$percentage, 2);
-          } else {
-            echo '0';
-          }
-        ")
-
-        echo "Coverage: ${COVERAGE}%"
-        echo "Covered statements: $(php -r "\$xml = simplexml_load_file('clover.xml'); echo \$xml->project->metrics['coveredstatements'];")"
-        echo "Total statements: $(php -r "\$xml = simplexml_load_file('clover.xml'); echo \$xml->project->metrics['statements'];")"
-
-        # Check if coverage meets minimum threshold
-        THRESHOLD=90.00
-        if (( $(echo "${COVERAGE} >= ${THRESHOLD}" | bc -l) )); then
-          echo "✅ Coverage ${COVERAGE}% meets minimum threshold of ${THRESHOLD}%"
-        else
-          echo "❌ Coverage ${COVERAGE}% is below minimum threshold of ${THRESHOLD}%"
-          exit 1
-        fi
+          \$m = \$xml->project->metrics;
+          \$stmts = (int)\$m['statements'];
+          \$covered = (int)\$m['coveredstatements'];
+          \$pct = \$stmts > 0 ? (\$covered / \$stmts) * 100 : 0;
+          printf(\"Coverage: %.2f%% (%d/%d statements)\n\", \$pct, \$covered, \$stmts);
+          if (\$pct < 90) { fwrite(STDERR, \"❌ Below 90% threshold\n\"); exit(1); }
+          echo \"✅ Meets 90% threshold\n\";
+        "
 
     - name: Install functional test dependencies
-      run: |
-        make setup-functional-tests
+      run: composer test:functional:setup
 
     - name: Run functional tests
       timeout-minutes: 10  # Set explicit timeout for functional tests
-      run: |
-        make run-functional-tests
+      run: composer test:functional
 
     - name: Run benchmark tests
       timeout-minutes: 5  # Set explicit timeout for benchmark tests
@@ -151,5 +135,4 @@ jobs:
 
     - name: Stop NATS server
       if: always()
-      run: |
-        make stop-nats
+      run: composer nats:stop

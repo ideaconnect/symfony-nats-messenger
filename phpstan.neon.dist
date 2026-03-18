@@ -1,0 +1,7 @@
+parameters:
+    level: max
+    paths:
+        - src
+    bootstrapFiles:
+        - vendor/autoload.php
+    tmpDir: .phpstan

@@ -16,13 +16,30 @@
     ],
     "minimum-stability": "stable",
     "require": {
-        "symfony/framework-bundle": "^7.2",
-        "symfony/messenger": "^7.2",
+        "php": "^8.2",
+        "symfony/framework-bundle": "^7 || ^8",
+        "symfony/messenger": "^7.2 || ^8.0",
         "idct/php-nats-jetstream-client": "dev-main",
-        "symfony/uid": "^7.2"
+        "symfony/uid": "^7.2 || ^8.0"
     },
     "require-dev": {
-        "phpunit/phpunit": "^9.5"
+        "behat/behat": "^3.29",
+        "phpunit/phpunit": "^11",
+        "phpstan/phpstan": "^2.1",
+        "dg/bypass-finals": "^1.9"
+    },
+    "scripts": {
+        "analyse": "phpstan analyse --configuration phpstan.neon.dist",
+        "nats:start": "cd tests/nats && docker compose up -d",
+        "nats:stop": "cd tests/nats && docker compose down -v",
+        "test": [
+            "@analyse",
+            "@test:unit:fast"
+        ],
+        "test:functional": "cd tests/functional && vendor/bin/behat",
+        "test:functional:setup": "cd tests/functional && composer install --prefer-dist --no-progress --no-suggest",
+        "test:unit": "XDEBUG_MODE=coverage ./vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-clover clover.xml --coverage-text --colors=never",
+        "test:unit:fast": "./vendor/bin/phpunit --configuration phpunit.xml.dist"
     },
     "suggest": {
         "ext-igbinary": "For improved serialization performance when using the default IgbinarySerializer"
