@@ -4,20 +4,20 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "6664dec7a6e1782e4df2255810d665a2",
+    "content-hash": "bfb64b5e08c1fe22cebde9bdefcc8f64",
     "packages": [
         {
             "name": "basis-company/nats",
-            "version": "dev-stream-schedules-config",
+            "version": "dev-main",
             "source": {
                 "type": "git",
-                "url": "https://github.com/zlatkoverk/nats.php.git",
-                "reference": "dfa2f62b0900c91f002268348f5ee6a5f6ec273d"
+                "url": "https://github.com/basis-company/nats.php.git",
+                "reference": "6281d8c6b7ea7419bcb29723bb117536b423da47"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/zlatkoverk/nats.php/zipball/dfa2f62b0900c91f002268348f5ee6a5f6ec273d",
-                "reference": "dfa2f62b0900c91f002268348f5ee6a5f6ec273d",
+                "url": "https://api.github.com/repos/basis-company/nats.php/zipball/6281d8c6b7ea7419bcb29723bb117536b423da47",
+                "reference": "6281d8c6b7ea7419bcb29723bb117536b423da47",
                 "shasum": ""
             },
             "require": {
@@ -34,36 +34,16 @@
                 "ext-sodium": "Provides Ed25519 for nkey authentication",
                 "paragonie/sodium_compat": "Provides Ed25519 for nkey authentication if sodium is not available"
             },
+            "default-branch": true,
             "type": "library",
             "autoload": {
                 "psr-4": {
                     "Basis\\Nats\\": "src/"
                 }
             },
-            "autoload-dev": {
-                "psr-4": {
-                    "Tests\\": "tests/"
-                }
-            },
-            "scripts": {
-                "test": [
-                    "phpunit --testsuite Tests"
-                ],
-                "perf-test": [
-                    "phpunit --testsuite Performance"
-                ],
-                "cs-fix": [
-                    "php-cs-fixer fix --config .php-cs-fixer.php"
-                ],
-                "cs-verify": [
-                    "php-cs-fixer fix --config .php-cs-fixer.php --dry-run --diff"
-                ],
-                "phan": [
-                    "phan --allow-polyfill-parser"
-                ]
-            },
+            "notification-url": "https://packagist.org/downloads/",
             "license": [
-                "mit"
+                "MIT"
             ],
             "authors": [
                 {
@@ -88,9 +68,10 @@
                 "subscribe"
             ],
             "support": {
-                "source": "https://github.com/zlatkoverk/nats.php/tree/stream-schedules-config"
+                "issues": "https://github.com/basis-company/nats.php/issues",
+                "source": "https://github.com/basis-company/nats.php/tree/main"
             },
-            "time": "2026-02-06T12:45:58+00:00"
+            "time": "2026-03-17T22:21:16+00:00"
         },
         {
             "name": "doctrine/deprecations",

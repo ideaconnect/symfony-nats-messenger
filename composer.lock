@@ -4,20 +4,20 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "cd5697808aa86fca79b09e3614c9e5bb",
+    "content-hash": "0478828fddf7bb25a620c4a443e3d470",
     "packages": [
         {
             "name": "basis-company/nats",
-            "version": "dev-stream-schedules-config",
+            "version": "1.2.0",
             "source": {
                 "type": "git",
-                "url": "https://github.com/zlatkoverk/nats.php.git",
-                "reference": "c28a7f3e03eaa251913c18ce0e3cddeb4b727426"
+                "url": "https://github.com/basis-company/nats.php.git",
+                "reference": "6281d8c6b7ea7419bcb29723bb117536b423da47"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/zlatkoverk/nats.php/zipball/c28a7f3e03eaa251913c18ce0e3cddeb4b727426",
-                "reference": "c28a7f3e03eaa251913c18ce0e3cddeb4b727426",
+                "url": "https://api.github.com/repos/basis-company/nats.php/zipball/6281d8c6b7ea7419bcb29723bb117536b423da47",
+                "reference": "6281d8c6b7ea7419bcb29723bb117536b423da47",
                 "shasum": ""
             },
             "require": {
@@ -40,30 +40,9 @@
                     "Basis\\Nats\\": "src/"
                 }
             },
-            "autoload-dev": {
-                "psr-4": {
-                    "Tests\\": "tests/"
-                }
-            },
-            "scripts": {
-                "test": [
-                    "phpunit --testsuite Tests"
-                ],
-                "perf-test": [
-                    "phpunit --testsuite Performance"
-                ],
-                "cs-fix": [
-                    "php-cs-fixer fix --config .php-cs-fixer.php"
-                ],
-                "cs-verify": [
-                    "php-cs-fixer fix --config .php-cs-fixer.php --dry-run --diff"
-                ],
-                "phan": [
-                    "phan --allow-polyfill-parser"
-                ]
-            },
+            "notification-url": "https://packagist.org/downloads/",
             "license": [
-                "mit"
+                "MIT"
             ],
             "authors": [
                 {
@@ -88,9 +67,10 @@
                 "subscribe"
             ],
             "support": {
-                "source": "https://github.com/zlatkoverk/nats.php/tree/stream-schedules-config"
+                "issues": "https://github.com/basis-company/nats.php/issues",
+                "source": "https://github.com/basis-company/nats.php/tree/1.2.0"
             },
-            "time": "2026-02-06T12:01:12+00:00"
+            "time": "2026-03-17T22:21:16+00:00"
         },
         {
             "name": "psr/cache",
@@ -4198,9 +4178,7 @@
     ],
     "aliases": [],
     "minimum-stability": "stable",
-    "stability-flags": {
-        "basis-company/nats": 20
-    },
+    "stability-flags": {},
     "prefer-stable": false,
     "prefer-lowest": false,
     "platform": {},
