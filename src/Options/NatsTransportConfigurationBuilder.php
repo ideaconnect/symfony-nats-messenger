@@ -157,10 +157,10 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
-     * Validates that a NATS stream or topic name contains only safe characters.
+     * Validates stream and topic path segments.
      *
-     * Rejects wildcards, dots, spaces, and other special characters that could cause
-     * unexpected NATS routing or subject injection.
+     * Stream names remain strict identifiers. Topic names allow standard dotted NATS
+     * subject tokens, but still reject wildcards, spaces, and empty tokens.
      *
      * @param string $name  The name to validate
      * @param string $label Human-readable label for error messages ('stream' or 'topic')
@@ -169,11 +169,20 @@ final class NatsTransportConfigurationBuilder
      */
     private function validateNatsName(string $name, string $label): void
     {
-        if (preg_match('/^[a-zA-Z0-9_-]+$/', $name) !== 1) {
+        $pattern = $label === 'topic'
+            ? '/^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*$/'
+            : '/^[a-zA-Z0-9_-]+$/';
+
+        if (preg_match($pattern, $name) !== 1) {
+            $allowedCharacters = $label === 'topic'
+                ? 'Only dot-separated subject tokens containing alphanumeric characters, hyphens, and underscores are allowed.'
+                : 'Only alphanumeric characters, hyphens, and underscores are allowed.';
+
             throw new InvalidArgumentException(sprintf(
-                'NATS %s name "%s" contains invalid characters. Only alphanumeric characters, hyphens, and underscores are allowed.',
+                'NATS %s name "%s" contains invalid characters. %s',
                 $label,
                 $name,
+                $allowedCharacters,
             ));
         }
     }

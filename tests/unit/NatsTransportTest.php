@@ -17,6 +17,7 @@ use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
+use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\SetupableTransportInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
@@ -96,6 +97,13 @@ final class NatsTransportTest extends TestCase
         self::assertInstanceOf(SetupableTransportInterface::class, $transport);
     }
 
+    public function testConstructorWithDottedTopicInitializesTransport(): void
+    {
+        $transport = new TestableNatsTransport('nats://admin:password@localhost:4222/test-stream/test.messages', []);
+
+        self::assertInstanceOf(NatsTransport::class, $transport);
+    }
+
     public function testConstructorWithInvalidDsnThrowsException(): void
     {
         $this->expectException(InvalidArgumentException::class);
@@ -118,6 +126,14 @@ final class NatsTransportTest extends TestCase
         $this->expectExceptionMessage('both stream name and topic name');
 
         new TestableNatsTransport('nats://localhost:4222/stream-only/', []);
+    }
+
+    public function testConstructorWithWildcardTopicThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Only dot-separated subject tokens containing alphanumeric characters, hyphens, and underscores are allowed.');
+
+        new TestableNatsTransport('nats://localhost:4222/test-stream/test.*', []);
     }
 
     public function testFindReceivedStampReturnsTransportStamp(): void
@@ -668,6 +684,74 @@ final class NatsTransportTest extends TestCase
         self::assertTrue(true);
     }
 
+    public function testSetupDoesNotTreatGenericBadRequestAsExistingStream(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->willReturn(Future::error(new JetStreamException('invalid stream configuration', 400)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::error(new JetStreamException('stream not found', 404)));
+        $jetStream->expects(self::never())->method('updateStream');
+        $jetStream->expects(self::never())->method('createConsumer');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("Failed to setup NATS stream 'test-stream': invalid stream configuration");
+
+        $transport->setup();
+    }
+
+    public function testSetupChecksStreamExistenceBeforeUpdatingOnAmbiguousBadRequest(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->willReturn(Future::error(new JetStreamException('bad request', 400)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete(new StreamInfo(
+                name: 'test-stream',
+                subjects: ['test-topic'],
+                raw: [
+                    'config' => [
+                        'name' => 'test-stream',
+                        'subjects' => ['test-topic'],
+                    ],
+                ],
+            )));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', ['num_replicas' => 1, 'subjects' => ['test-topic']])
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('createConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertTrue(true);
+    }
+
     public function testSetupRejectsUnexpectedConsumerConfiguration(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -735,8 +819,14 @@ final class NatsTransportTest extends TestCase
         self::assertNotNull($capturedError);
         self::assertSame(E_USER_NOTICE, $capturedError[0]);
         self::assertStringContainsString('The igbinary extension is not installed.', $capturedError[1]);
+        self::assertStringContainsString('Falling back to Symfony\\Component\\Messenger\\Transport\\Serialization\\PhpSerializer.', $capturedError[1]);
 
         self::assertInstanceOf(NatsTransport::class, $transport);
+
+        $reflection = new \ReflectionClass($transport);
+        $serializerProperty = $reflection->getProperty('serializer');
+
+        self::assertInstanceOf(PhpSerializer::class, $serializerProperty->getValue($transport));
     }
 
     public function testConstructorWithInvalidRetryHandlerThrowsException(): void

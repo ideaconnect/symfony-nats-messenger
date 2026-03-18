@@ -100,7 +100,7 @@ framework:
 
 ### 3. Configure Custom Serializers (Optional)
 
-By default, the transport uses `igbinary` serialization for high performance. You can customize this:
+By default, the transport uses `igbinary` serialization for high performance when the extension is available. If `ext-igbinary` is not installed, it falls back to Symfony's `PhpSerializer` and emits a notice. You can also customize this explicitly:
 
 #### Using IgbinarySerializer (Default)
 
@@ -116,7 +116,7 @@ framework:
           consumer: 'my-consumer'
 ```
 
-**Note:** Serializers are not created during execution of the transport. They need to be previously registered services.
+**Note:** Custom serializer services are resolved by Symfony before transport creation. When no serializer service is provided, the transport instantiates its built-in default serializer and falls back to Symfony's `PhpSerializer` if `ext-igbinary` is unavailable.
 
 For example:
 ```yaml
@@ -684,17 +684,15 @@ The default `IgbinarySerializer` (and any serializer extending `AbstractEnvelope
 
 The type check (`instanceof Envelope`) happens *after* deserialization, which is too late to prevent exploitation.
 
-### ⚠️ Stream-Exists Detection Is Fragile
+### Stream-Exists Detection During Setup
 
-During `setup()`, the transport detects whether a stream already exists by matching error message strings from the NATS server (e.g. `"already in use"`, `"already exists"`). This is brittle and may break if the NATS server changes its error wording in a future release. Additionally, HTTP status code 400 is treated as "stream exists", but 400 can indicate other bad-request errors.
+During `setup()`, the transport prefers explicit NATS conflict messages (for example `"already in use"` or `"already exists"`) to detect a pre-existing stream. When NATS returns a generic HTTP `400`, the transport now verifies whether the stream actually exists before switching to `updateStream()`. This avoids misclassifying unrelated bad-request errors as an existing-stream conflict.
 
-If you experience unexpected behavior during stream setup, check that your NATS server version is compatible and review the error messages returned by the server.
+If you experience unexpected behavior during stream setup, review the exact error returned by your NATS server version and confirm the stream can be queried via JetStream stream info APIs.
 
-### ⚠️ Silent Publish Failures on Non-JSON Responses
+### Publish Response Validation
 
-The transport validates JetStream publish responses by parsing them as JSON and checking for an `error` field. If the server returns a non-JSON response (e.g. due to a proxy, misconfiguration, or protocol error), the validation silently passes — a failed publish could go unnoticed.
-
-Monitor your NATS server logs and consider implementing application-level publish confirmation if delivery guarantees are critical.
+When JetStream publish acknowledgements are received through the header-aware request path, the transport parses the response as JSON and throws an exception if JetStream reports an error or the response is not valid JSON. This makes proxy or protocol misconfiguration fail closed instead of silently accepting an invalid publish acknowledgement.
 
 ### General Recommendations
 

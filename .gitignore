@@ -8,3 +8,4 @@ clover.xml
 .phpunit.cache
 .vscode
 .phpstan/
+.cache

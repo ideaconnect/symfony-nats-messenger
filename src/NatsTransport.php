@@ -18,6 +18,7 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
+use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\SetupableTransportInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
@@ -74,13 +75,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null)
     {
-        if ($serializer === null && !$this->isExtensionLoaded('igbinary')) {
+        if ($serializer !== null) {
+            $this->serializer = $serializer;
+        } elseif ($this->isExtensionLoaded('igbinary')) {
+            $this->serializer = new IgbinarySerializer();
+        } else {
             trigger_error(
-                'The igbinary extension is not installed. Please install ext-igbinary for optimal performance with the default serializer, or provide a custom serializer.',
+                'The igbinary extension is not installed. Falling back to Symfony\\Component\\Messenger\\Transport\\Serialization\\PhpSerializer. Install ext-igbinary for better performance or provide a custom serializer.',
             );
+            $this->serializer = new PhpSerializer();
         }
-
-        $this->serializer = $serializer ?? new IgbinarySerializer();
 
         $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options);
         $this->configuration = $configuration;
@@ -169,8 +173,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw $e;
         }
 
-        $envelopes = [];
-
         foreach ($messages as $message) {
             if ($message->payload === '') {
                 continue;
@@ -185,8 +187,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                     'body' => $message->payload,
                     'headers' => $headers,
                 ]);
-
-                $envelopes[] = $decoded->with(new TransportMessageIdStamp((string) $message->replyTo));
             } catch (\Throwable $e) {
                 if ($message->replyTo !== null && $message->replyTo !== '') {
                     $this->handleFailedDelivery($message->replyTo);
@@ -194,9 +194,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
                 throw $e;
             }
-        }
 
-        return $envelopes;
+            yield $decoded->with(new TransportMessageIdStamp((string) $message->replyTo));
+        }
     }
 
     /**
@@ -319,7 +319,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             try {
                 $this->jetStream()->createStream($this->streamName, [$this->topic], $streamOptions)->await();
             } catch (JetStreamException $streamCreateException) {
-                if (!$this->isStreamAlreadyExistsException($streamCreateException)) {
+                if (!$this->shouldUpdateExistingStream($streamCreateException)) {
                     throw $streamCreateException;
                 }
 
@@ -491,19 +491,48 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Determines whether a createStream failure indicates an existing stream conflict.
+     * Determines whether a failed createStream should be treated as an update of an existing stream.
      *
-     * Checks both the HTTP-style status code (400) and common error message patterns
-     * returned by different NATS server versions.
-     *
-     * @param JetStreamException $exception The exception from a failed createStream call
+     * NATS commonly reports stream conflicts as 400 responses, but 400 can also indicate
+     * unrelated invalid configuration. Prefer explicit conflict messages; for ambiguous 400s,
+     * verify the stream actually exists before attempting an update.
      */
-    private function isStreamAlreadyExistsException(JetStreamException $exception): bool
+    private function shouldUpdateExistingStream(JetStreamException $exception): bool
     {
-        if ($exception->getCode() === 400) {
+        if ($this->hasStreamAlreadyExistsMessage($exception)) {
             return true;
         }
 
+        if ($exception->getCode() !== 400) {
+            return false;
+        }
+
+        return $this->streamExists();
+    }
+
+    /**
+     * Checks whether the current stream already exists in JetStream.
+     */
+    private function streamExists(): bool
+    {
+        try {
+            $streamInfo = $this->jetStream()->getStream($this->streamName)->await();
+
+            return $streamInfo->name === $this->streamName;
+        } catch (JetStreamException $exception) {
+            if ($exception->getCode() === 404) {
+                return false;
+            }
+
+            throw $exception;
+        }
+    }
+
+    /**
+     * Matches known NATS stream-conflict messages returned by different server versions.
+     */
+    private function hasStreamAlreadyExistsMessage(JetStreamException $exception): bool
+    {
         $message = strtolower($exception->getMessage());
 
         return str_contains($message, 'already in use')
