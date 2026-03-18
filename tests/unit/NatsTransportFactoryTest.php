@@ -47,18 +47,18 @@ class NatsTransportFactoryTest extends TestCase
     /**
      * @test
      */
-    public function createTransport_IgnoresProvidedSerializer(): void
+    public function createTransport_UsesProvidedSerializer(): void
     {
         $dsn = 'nats-jetstream://admin:password@localhost:4222/test-stream/test-topic';
         $options = [];
 
-        // The serializer should not be called - igbinary is used instead
-        $this->mockSerializer->expects($this->never())->method('encode');
-        $this->mockSerializer->expects($this->never())->method('decode');
-
         $transport = $this->factory->createTransport($dsn, $options, $this->mockSerializer);
 
+        $reflection = new \ReflectionClass($transport);
+        $serializerProperty = $reflection->getProperty('serializer');
+
         $this->assertInstanceOf(NatsTransport::class, $transport);
+        $this->assertSame($this->mockSerializer, $serializerProperty->getValue($transport));
     }
 
     /**
@@ -80,6 +80,19 @@ class NatsTransportFactoryTest extends TestCase
     public function supports_WithNatsJetStreamSchemeAndComplexDsn_ReturnsTrue(): void
     {
         $dsn = 'nats-jetstream://user:password@localhost:4222/my-stream/my-topic?consumer=worker&batching=10';
+        $options = [];
+
+        $result = $this->factory->supports($dsn, $options);
+
+        $this->assertTrue($result);
+    }
+
+    /**
+     * @test
+     */
+    public function supports_WithNatsJetStreamTlsScheme_ReturnsTrue(): void
+    {
+        $dsn = 'nats-jetstream+tls://user:password@localhost:4222/my-stream/my-topic';
         $options = [];
 
         $result = $this->factory->supports($dsn, $options);

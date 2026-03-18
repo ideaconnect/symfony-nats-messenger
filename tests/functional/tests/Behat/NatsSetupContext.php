@@ -324,8 +324,11 @@ class NatsSetupContext implements Context
             );
         }
 
-        // For messenger:stats, the table output goes to stderr, not stdout
+        // Symfony may render the table to either stderr or stdout depending on console version.
         $output = $statsProcess->getErrorOutput();
+        if ($output === '') {
+            $output = $statsProcess->getOutput();
+        }
 
         // Parse the output to find the test_transport line and extract the message count
         $lines = explode("\n", $output);
