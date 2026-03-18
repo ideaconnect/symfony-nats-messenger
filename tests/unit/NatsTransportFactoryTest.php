@@ -4,6 +4,7 @@ namespace IDCT\NatsMessenger\Tests\Unit;
 
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\NatsTransportFactory;
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 
@@ -18,9 +19,7 @@ class NatsTransportFactoryTest extends TestCase
         $this->mockSerializer = $this->createMock(SerializerInterface::class);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function createTransport_WithValidDsn_ReturnsNatsTransportInstance(): void
     {
         $dsn = 'nats-jetstream://admin:password@localhost:4222/test-stream/test-topic';
@@ -31,9 +30,7 @@ class NatsTransportFactoryTest extends TestCase
         $this->assertInstanceOf(NatsTransport::class, $transport);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function createTransport_WithOptions_PassesOptionsToTransport(): void
     {
         $dsn = 'nats-jetstream://admin:password@localhost:4222/test-stream/test-topic';
@@ -44,9 +41,7 @@ class NatsTransportFactoryTest extends TestCase
         $this->assertInstanceOf(NatsTransport::class, $transport);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function createTransport_UsesProvidedSerializer(): void
     {
         $dsn = 'nats-jetstream://admin:password@localhost:4222/test-stream/test-topic';
@@ -61,9 +56,7 @@ class NatsTransportFactoryTest extends TestCase
         $this->assertSame($this->mockSerializer, $serializerProperty->getValue($transport));
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function supports_WithNatsJetStreamScheme_ReturnsTrue(): void
     {
         $dsn = 'nats-jetstream://admin:password@localhost:4222/test-stream/test-topic';
@@ -74,9 +67,7 @@ class NatsTransportFactoryTest extends TestCase
         $this->assertTrue($result);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function supports_WithNatsJetStreamSchemeAndComplexDsn_ReturnsTrue(): void
     {
         $dsn = 'nats-jetstream://user:password@localhost:4222/my-stream/my-topic?consumer=worker&batching=10';
@@ -87,9 +78,7 @@ class NatsTransportFactoryTest extends TestCase
         $this->assertTrue($result);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function supports_WithNatsJetStreamTlsScheme_ReturnsTrue(): void
     {
         $dsn = 'nats-jetstream+tls://user:password@localhost:4222/my-stream/my-topic';
@@ -100,9 +89,7 @@ class NatsTransportFactoryTest extends TestCase
         $this->assertTrue($result);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function supports_WithDifferentScheme_ReturnsFalse(): void
     {
         $dsn = 'redis://localhost:6379';
@@ -113,9 +100,7 @@ class NatsTransportFactoryTest extends TestCase
         $this->assertFalse($result);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function supports_WithNatsButNotJetStream_ReturnsFalse(): void
     {
         $dsn = 'nats://localhost:4222/test';
@@ -126,9 +111,7 @@ class NatsTransportFactoryTest extends TestCase
         $this->assertFalse($result);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function supports_WithAmqpScheme_ReturnsFalse(): void
     {
         $dsn = 'amqp://guest:guest@localhost:5672/';
@@ -139,9 +122,7 @@ class NatsTransportFactoryTest extends TestCase
         $this->assertFalse($result);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function supports_WithEmptyString_ReturnsFalse(): void
     {
         $dsn = '';

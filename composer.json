@@ -37,7 +37,7 @@
             "@test:unit:fast"
         ],
         "test:functional": "cd tests/functional && vendor/bin/behat",
-        "test:functional:setup": "cd tests/functional && composer install --prefer-dist --no-progress --no-suggest",
+        "test:functional:setup": "cd tests/functional && composer install --prefer-dist --no-progress",
         "test:unit": "XDEBUG_MODE=coverage ./vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-clover clover.xml --coverage-text --colors=never --coverage-html coverage",
         "test:unit:fast": "./vendor/bin/phpunit --configuration phpunit.xml.dist"
     },

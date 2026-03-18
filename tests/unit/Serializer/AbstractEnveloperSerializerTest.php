@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace IDCT\NatsMessenger\Tests\Unit\Serializer;
 
 use IDCT\NatsMessenger\Serializer\AbstractEnveloperSerializer;
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
@@ -45,9 +46,7 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->serializer = new TestableEnveloperSerializer();
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function encode_WithValidEnvelope_ReturnsArrayWithBody(): void
     {
         $message = new \stdClass();
@@ -62,9 +61,7 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->assertNotEmpty($result['body']);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function encode_WithEnvelopeContainingStamps_PreservesStampsInBody(): void
     {
         $message = new \stdClass();
@@ -80,9 +77,7 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->assertEquals('test-bus', $busStamp->getBusName());
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function decode_WithValidEncodedEnvelope_ReturnsEnvelope(): void
     {
         $message = new \stdClass();
@@ -96,9 +91,7 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->assertEquals($message->data, $decoded->getMessage()->data);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function decode_WithEmptyBody_ThrowsMessageDecodingFailedException(): void
     {
         $this->expectException(MessageDecodingFailedException::class);
@@ -107,9 +100,7 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->serializer->decode(['body' => '']);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function decode_WithMissingBody_ThrowsMessageDecodingFailedException(): void
     {
         $this->expectException(MessageDecodingFailedException::class);
@@ -118,9 +109,7 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->serializer->decode([]);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function decode_WithNullBody_ThrowsMessageDecodingFailedException(): void
     {
         $this->expectException(MessageDecodingFailedException::class);
@@ -129,9 +118,7 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->serializer->decode(['body' => null]);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function decode_WhenDeserializeReturnsNonEnvelope_ThrowsMessageDecodingFailed(): void
     {
         $this->serializer->setShouldReturnInvalidEnvelope(true);
@@ -143,9 +130,7 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->serializer->decode(['body' => 'some-data']);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function encode_ThenDecode_ReturnsEquivalentEnvelope(): void
     {
         $message = new \stdClass();
@@ -164,9 +149,7 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->assertEquals(['key' => 'value'], $decodedMessage->nested);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function encode_WithMultipleStamps_PreservesAllStamps(): void
     {
         $message = new \stdClass();
@@ -181,9 +164,7 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->assertCount(2, $stamps);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function encode_WithValidEnvelope_IncludesHeadersKey(): void
     {
         $message = new \stdClass();
