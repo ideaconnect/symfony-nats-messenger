@@ -2,6 +2,8 @@ vendor/
 tests/functional/vendor/
 tests/nats/data/
 tests/nats/data
+tests/nats/data-tls/
+tests/nats/data-tls
 tests/functional/var/cache/
 coverage/
 clover.xml

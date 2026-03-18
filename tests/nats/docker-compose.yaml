@@ -11,3 +11,17 @@ services:
     volumes:
       - ./nats.conf:/etc/nats/nats.conf
       - ./data:/data
+
+  nats-tls:
+    image: nats:alpine
+    container_name: nats_test_tls
+    restart: always
+    command: -c /etc/nats/nats.conf
+    ports:
+      - "4223:4222" # TLS client port
+      - "6224:6222" # TLS cluster port
+      - "8224:8222" # TLS monitoring port
+    volumes:
+      - ./nats-tls.conf:/etc/nats/nats.conf
+      - ./certs:/etc/nats/certs:ro
+      - ./data-tls:/data

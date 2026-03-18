@@ -23,14 +23,19 @@ class NatsSetupContext implements Context
     private array $consumerProcesses = [];
     private string $testStreamName = 'stream';
     private string $testSubject = 'test.messages';
+    private string $failedStreamName = 'failed_stream';
+    private string $failedSubject = 'fail.messages';
     private bool $shouldNatsBeRunning = false;
+    private bool $useTls = false;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
     private string $testFilesDir;
+    private string $retryStateDir;
 
     public function __construct()
     {
         $this->testFilesDir = __DIR__ . '/../../var/test_files';
+        $this->retryStateDir = __DIR__ . '/../../var/retry_state';
     }
 
     /**
@@ -80,9 +85,7 @@ class NatsSetupContext implements Context
         // Write temporary config file for the test environment
         file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
 
-        // Clear Symfony cache to pick up the new configuration
-        $clearCacheProcess = new Process(['php', 'bin/console', 'cache:clear', '--env=test'], __DIR__ . '/../..');
-        $clearCacheProcess->run();
+        $this->resetSymfonyCache();
     }
 
     /**
@@ -254,7 +257,7 @@ class NatsSetupContext implements Context
 
         // Purge any existing messages from the stream for clean test state
         try {
-            $client = $this->createNatsClient();
+            $client = $this->useTls ? $this->createNatsTlsClient() : $this->createNatsClient();
             $client->jetStream()->purgeStream($this->testStreamName)->await();
         } catch (\Exception $e) {
             // If we can't purge, only fail if it's not a "stream not found" error
@@ -606,6 +609,297 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * @Given NATS TLS server is running
+     */
+    public function natsTlsServerIsRunning(): void
+    {
+        $this->shouldNatsBeRunning = true;
+        $this->useTls = true;
+
+        $this->startNatsServer();
+        sleep(2);
+        $this->waitForNatsTlsToBeReady();
+    }
+
+    /**
+     * @Given I have a TLS messenger transport configured using :serializer
+     */
+    public function iHaveATlsMessengerTransportConfiguredUsing(string $serializer = 'igbinary_serializer'): void
+    {
+        $caFile = realpath(__DIR__ . '/../../../nats/certs/ca.pem');
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4223/%s/%s?stream_max_age=900&tls_ca_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: '%s'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $caFile,
+            $serializer
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @Given I have a messenger transport configured with NATS retry handler
+     */
+    public function iHaveAMessengerTransportConfiguredWithNatsRetryHandler(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats'\n                serializer: 'igbinary_serializer'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @Given I have a messenger transport with failure transport configured
+     */
+    public function iHaveAMessengerTransportWithFailureTransportConfigured(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n                retry_strategy:\n                    max_retries: 1\n                    delay: 100\n                    multiplier: 1\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $this->failedStreamName,
+            $this->failedSubject
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @Given the failure stream is set up
+     */
+    public function theFailureStreamIsSetUp(): void
+    {
+        $command = [
+            'php',
+            'bin/console',
+            'messenger:setup-transports',
+            'failed_transport',
+            '--no-interaction',
+            '--env=test'
+        ];
+
+        $process = new Process($command, __DIR__ . '/../..');
+        $process->run();
+
+        if ($process->getExitCode() !== 0) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Failed to set up failure transport. Exit code: %d. Output: %s. Error: %s',
+                    $process->getExitCode(),
+                    $process->getOutput(),
+                    $process->getErrorOutput()
+                )
+            );
+        }
+    }
+
+    /**
+     * @Given the retry state directory is clean
+     */
+    public function theRetryStateDirectoryIsClean(): void
+    {
+        if (is_dir($this->retryStateDir)) {
+            $files = glob($this->retryStateDir . '/*');
+            foreach ($files as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+        } else {
+            mkdir($this->retryStateDir, 0755, true);
+        }
+    }
+
+    /**
+     * @When I send :count retryable failing message
+     * @When I send :count retryable failing messages
+     */
+    public function iSendRetryableFailingMessages(int $count): void
+    {
+        $this->messagesSent = $count;
+
+        $command = [
+            'php',
+            'bin/console',
+            'app:send-failing-messages',
+            (string) $count,
+            '--retryable',
+            '--env=test'
+        ];
+
+        $sendProcess = new Process($command, __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Failed to send failing messages. Exit code: %d. Output: %s. Error: %s',
+                    $sendProcess->getExitCode(),
+                    $sendProcess->getOutput(),
+                    $sendProcess->getErrorOutput()
+                )
+            );
+        }
+    }
+
+    /**
+     * @When I send :count always-failing message
+     * @When I send :count always-failing messages
+     */
+    public function iSendAlwaysFailingMessages(int $count): void
+    {
+        $this->messagesSent = $count;
+
+        $command = [
+            'php',
+            'bin/console',
+            'app:send-failing-messages',
+            (string) $count,
+            '--env=test'
+        ];
+
+        $sendProcess = new Process($command, __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Failed to send failing messages. Exit code: %d. Output: %s. Error: %s',
+                    $sendProcess->getExitCode(),
+                    $sendProcess->getOutput(),
+                    $sendProcess->getErrorOutput()
+                )
+            );
+        }
+    }
+
+    /**
+     * @When I start a messenger consumer with high limit
+     */
+    public function iStartAMessengerConsumerWithHighLimit(): void
+    {
+        $command = [
+            'php',
+            'bin/console',
+            'messenger:consume',
+            'test_transport',
+            '--limit=10',
+            '--time-limit=30',
+            '--sleep=0.1',
+            '--env=test',
+            '-vv'
+        ];
+
+        $this->consumerProcess = new Process($command, __DIR__ . '/../..');
+        $this->consumerProcess->setTimeout(60);
+        $this->consumerProcess->start();
+    }
+
+    /**
+     * @When I wait for the consumer to finish or timeout
+     */
+    public function iWaitForTheConsumerToFinishOrTimeout(): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $this->consumerProcess->wait();
+
+        // Consumer may exit with non-zero when all messages fail,
+        // which is expected in failure scenarios.
+        $output = $this->consumerProcess->getOutput();
+        $errorOutput = $this->consumerProcess->getErrorOutput();
+
+        echo "Consumer output:\n" . $output . "\n";
+        if (!empty($errorOutput)) {
+            echo "Consumer error output:\n" . $errorOutput . "\n";
+        }
+    }
+
+    /**
+     * @Then the retryable message should have been processed successfully
+     */
+    public function theRetryableMessageShouldHaveBeenProcessedSuccessfully(): void
+    {
+        $successFile = $this->testFilesDir . '/failing_message_1.txt';
+
+        if (!file_exists($successFile)) {
+            $consumerOutput = $this->consumerProcess ? $this->consumerProcess->getOutput() : 'N/A';
+            $consumerError = $this->consumerProcess ? $this->consumerProcess->getErrorOutput() : 'N/A';
+            throw new \RuntimeException(
+                sprintf(
+                    "Expected retryable message to be processed successfully (marker file '%s' not found).\nConsumer output: %s\nConsumer error: %s",
+                    $successFile,
+                    $consumerOutput,
+                    $consumerError
+                )
+            );
+        }
+
+        $content = file_get_contents($successFile);
+        if (!str_contains($content, 'Attempt: 2')) {
+            throw new \RuntimeException(
+                sprintf('Expected message to succeed on attempt 2, but file content was: %s', $content)
+            );
+        }
+    }
+
+    /**
+     * @Then the failure transport should contain :count message
+     * @Then the failure transport should contain :count messages
+     */
+    public function theFailureTransportShouldContainMessages(int $count): void
+    {
+        // Give a moment for the failure transport to receive the message
+        sleep(2);
+
+        $command = [
+            'php',
+            'bin/console',
+            'messenger:stats',
+            '--env=test'
+        ];
+
+        $statsProcess = new Process($command, __DIR__ . '/../..');
+        $statsProcess->run();
+
+        $output = $statsProcess->getErrorOutput() ?: $statsProcess->getOutput();
+
+        if (!preg_match('/failed_transport\s+(\d+)/', $output, $matches)) {
+            throw new \RuntimeException(
+                sprintf('Could not find failed_transport in messenger:stats output: %s', $output)
+            );
+        }
+
+        $actualCount = (int) $matches[1];
+
+        if ($actualCount !== $count) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected %d message(s) in failure transport, but found %d. Full output: %s',
+                    $count,
+                    $actualCount,
+                    $output
+                )
+            );
+        }
+    }
+
+    /**
      * Clean up after each scenario
      *
      * @AfterScenario
@@ -626,19 +920,42 @@ class NatsSetupContext implements Context
         }
         $this->consumerProcesses = [];
 
-        // Clean up test stream if it exists
+        // Clean up test streams if they exist
         if ($this->shouldNatsBeRunning) {
             try {
-                $client = $this->createNatsClient();
+                $client = $this->useTls ? $this->createNatsTlsClient() : $this->createNatsClient();
                 $client->jetStream()->getStream($this->testStreamName)->await();
                 $client->jetStream()->deleteStream($this->testStreamName)->await();
             } catch (\Exception $e) {
                 // Ignore cleanup errors
             }
+
+            // Clean up failure stream if it exists
+            if (!$this->useTls) {
+                try {
+                    $client = $this->createNatsClient();
+                    $client->jetStream()->getStream($this->failedStreamName)->await();
+                    $client->jetStream()->deleteStream($this->failedStreamName)->await();
+                } catch (\Exception $e) {
+                    // Ignore cleanup errors
+                }
+            }
         }
 
-        // Stop NATS server
-        $this->stopNatsServer();
+        // Only stop NATS server if the scenario explicitly required it to be down
+        if (!$this->shouldNatsBeRunning) {
+            $this->stopNatsServer();
+        }
+
+        // Clean the retry state directory
+        if (is_dir($this->retryStateDir)) {
+            $files = glob($this->retryStateDir . '/*');
+            foreach ($files as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+        }
 
         //clear the var/test_files directory
         if (is_dir($this->testFilesDir)) {
@@ -650,16 +967,18 @@ class NatsSetupContext implements Context
             }
         }
 
-        // Remove temporary config file
+        // Remove temporary config file and clear cache
         $configFile = __DIR__ . '/../../config/packages/test_messenger.yaml';
         if (file_exists($configFile)) {
             unlink($configFile);
         }
+        $this->resetSymfonyCache();
 
         // Reset counters
         $this->messagesSent = 0;
         $this->messagesConsumed = 0;
         $this->consumerProcess = null;
+        $this->useTls = false;
     }
 
     private function startNatsServer(): void
@@ -681,6 +1000,15 @@ class NatsSetupContext implements Context
                 return; // NATS is accessible despite docker compose failure
             }
             throw new \RuntimeException('Failed to start NATS server: ' . $process->getErrorOutput());
+        }
+    }
+
+    private function resetSymfonyCache(): void
+    {
+        $cacheDir = __DIR__ . '/../../var/cache/test';
+        if (is_dir($cacheDir)) {
+            $process = new Process(['rm', '-rf', $cacheDir]);
+            $process->run();
         }
     }
 
@@ -756,9 +1084,56 @@ class NatsSetupContext implements Context
         }
     }
 
+    private function waitForNatsTlsToBeReady(): void
+    {
+        $maxAttempts = 30;
+        $attempt = 0;
+
+        while ($attempt < $maxAttempts) {
+            $socket = @fsockopen('localhost', 4223, $errno, $errstr, 1);
+            if ($socket !== false) {
+                fclose($socket);
+
+                try {
+                    $client = $this->createNatsTlsClient();
+                    $client->jetStream()->accountInfo()->await();
+                    return;
+                } catch (\Exception $e) {
+                    // Continue retrying
+                } catch (\Throwable $e) {
+                    // Continue retrying
+                }
+            }
+
+            $attempt++;
+            sleep(1);
+        }
+
+        throw new \RuntimeException('NATS TLS server did not become ready within 30 seconds');
+    }
+
+    private function createNatsTlsClient(): NatsClient
+    {
+        $caFile = realpath(__DIR__ . '/../../../nats/certs/ca.pem');
+
+        $client = new NatsClient(new NatsOptions(
+            servers: ['tls://localhost:4223'],
+            username: 'admin',
+            password: 'password',
+            connectTimeoutMs: 5000,
+            tlsRequired: true,
+            tlsCaFile: $caFile,
+            tlsVerifyPeer: true,
+            tlsPeerName: 'localhost',
+        ));
+        $client->connect()->await();
+
+        return $client;
+    }
+
     private function verifyStreamExists(): void
     {
-        $client = $this->createNatsClient();
+        $client = $this->useTls ? $this->createNatsTlsClient() : $this->createNatsClient();
 
         try {
             $client->jetStream()->getStream($this->testStreamName)->await();
