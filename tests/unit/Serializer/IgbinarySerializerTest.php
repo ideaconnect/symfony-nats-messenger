@@ -274,4 +274,22 @@ class IgbinarySerializerTest extends TestCase
     {
         $this->assertInstanceOf(\IDCT\NatsMessenger\Serializer\AbstractEnveloperSerializer::class, $this->serializer);
     }
+
+    #[Test]
+    public function encode_ThrowsRuntimeException_WhenSerializeReturnsNull(): void
+    {
+        $serializer = new class extends IgbinarySerializer {
+            protected function serialize(Envelope $envelope): string
+            {
+                throw new \RuntimeException('Failed to serialize envelope with igbinary.');
+            }
+        };
+
+        $envelope = new Envelope(new \stdClass());
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Failed to serialize envelope with igbinary.');
+
+        $serializer->encode($envelope);
+    }
 }

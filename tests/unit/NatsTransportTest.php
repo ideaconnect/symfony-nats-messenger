@@ -1069,4 +1069,45 @@ final class NatsTransportTest extends TestCase
 
         $method->invoke($transport, $consumerInfo);
     }
+
+    public function testSendSerializationFailureRethrowsOriginalExceptionWithoutErrorDetailsStamp(): void
+    {
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->expects(self::once())
+            ->method('encode')
+            ->willThrowException(new \RuntimeException('serialize-boom'));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $transport->setJetStreamContext($jetStream);
+
+        $envelope = new Envelope(new \stdClass());
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('serialize-boom');
+
+        $transport->send($envelope);
+    }
+
+    public function testSetupRethrowsNon404JetStreamExceptionFromStreamExistsCheck(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->willReturn(Future::error(new JetStreamException('ambiguous bad request', 400)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::error(new JetStreamException('internal server error', 500)));
+        $jetStream->expects(self::never())->method('updateStream');
+        $jetStream->expects(self::never())->method('createConsumer');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('internal server error');
+
+        $transport->setup();
+    }
 }

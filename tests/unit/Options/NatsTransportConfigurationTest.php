@@ -55,4 +55,25 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertSame(1, $configuration->streamReplicas());
         self::assertFalse($configuration->isNatsRetryHandlerEnabled());
     }
+
+    public function testTypedAccessorsTruncateFloatValues(): void
+    {
+        $configuration = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: [
+                'batching' => 3.7,
+                'stream_max_bytes' => 2048.9,
+                'stream_max_messages' => 100.1,
+                'stream_replicas' => 2.5,
+            ],
+            natsRetryHandlerEnabled: false,
+        );
+
+        self::assertSame(3, $configuration->batching());
+        self::assertSame(2048, $configuration->streamMaxBytes());
+        self::assertSame(100, $configuration->streamMaxMessages());
+        self::assertSame(2, $configuration->streamReplicas());
+    }
 }

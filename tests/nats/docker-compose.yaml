@@ -25,3 +25,17 @@ services:
       - ./nats-tls.conf:/etc/nats/nats.conf
       - ./certs:/etc/nats/certs:ro
       - ./data-tls:/data
+
+  nats-mtls:
+    image: nats:alpine
+    container_name: nats_test_mtls
+    restart: always
+    command: -c /etc/nats/nats.conf
+    ports:
+      - "4224:4222" # mTLS client port
+      - "6225:6222" # mTLS cluster port
+      - "8225:8222" # mTLS monitoring port
+    volumes:
+      - ./nats-mtls.conf:/etc/nats/nats.conf
+      - ./certs:/etc/nats/certs:ro
+      - ./data-mtls:/data

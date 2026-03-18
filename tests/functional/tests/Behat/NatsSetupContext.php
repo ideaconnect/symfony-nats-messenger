@@ -27,6 +27,7 @@ class NatsSetupContext implements Context
     private string $failedSubject = 'fail.messages';
     private bool $shouldNatsBeRunning = false;
     private bool $useTls = false;
+    private bool $useMtls = false;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
     private string $testFilesDir;
@@ -257,7 +258,7 @@ class NatsSetupContext implements Context
 
         // Purge any existing messages from the stream for clean test state
         try {
-            $client = $this->useTls ? $this->createNatsTlsClient() : $this->createNatsClient();
+            $client = $this->createAppropriateNatsClient();
             $client->jetStream()->purgeStream($this->testStreamName)->await();
         } catch (\Exception $e) {
             // If we can't purge, only fail if it's not a "stream not found" error
@@ -642,6 +643,43 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * @Given NATS mTLS server is running
+     */
+    public function natsMtlsServerIsRunning(): void
+    {
+        $this->shouldNatsBeRunning = true;
+        $this->useTls = true;
+        $this->useMtls = true;
+
+        $this->startNatsServer();
+        sleep(2);
+        $this->waitForNatsMtlsToBeReady();
+    }
+
+    /**
+     * @Given I have an mTLS messenger transport configured
+     */
+    public function iHaveAnMtlsMessengerTransportConfigured(): void
+    {
+        $caFile = realpath(__DIR__ . '/../../../nats/certs/ca.pem');
+        $certFile = realpath(__DIR__ . '/../../../nats/certs/client-cert.pem');
+        $keyFile = realpath(__DIR__ . '/../../../nats/certs/client-key.pem');
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4224/%s/%s?stream_max_age=900&tls_ca_file=%s&tls_cert_file=%s&tls_key_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: 'igbinary_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $caFile,
+            $certFile,
+            $keyFile
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
      * @Given I have a messenger transport configured with NATS retry handler
      */
     public function iHaveAMessengerTransportConfiguredWithNatsRetryHandler(): void
@@ -900,6 +938,112 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * @Given I have a messenger transport configured with stream max bytes of :maxBytes
+     */
+    public function iHaveAMessengerTransportConfiguredWithStreamMaxBytes(int $maxBytes): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&stream_max_bytes=%d'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $maxBytes
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @Given I have a messenger transport configured with stream max messages of :maxMessages
+     */
+    public function iHaveAMessengerTransportConfiguredWithStreamMaxMessages(int $maxMessages): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&stream_max_messages=%d'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $maxMessages
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @Then the stream should have max bytes of :maxBytes
+     */
+    public function theStreamShouldHaveMaxBytesOf(int $maxBytes): void
+    {
+        $client = $this->createNatsClient();
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $streamConfig = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        $actualMaxBytes = (int) ($streamConfig['max_bytes'] ?? 0);
+
+        if ($actualMaxBytes !== $maxBytes) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected stream max bytes to be %d, but got %d',
+                    $maxBytes,
+                    $actualMaxBytes
+                )
+            );
+        }
+    }
+
+    /**
+     * @Then the stream should have max messages of :maxMessages
+     */
+    public function theStreamShouldHaveMaxMessagesOf(int $maxMessages): void
+    {
+        $client = $this->createNatsClient();
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $streamConfig = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        $actualMaxMessages = (int) ($streamConfig['max_msgs'] ?? 0);
+
+        if ($actualMaxMessages !== $maxMessages) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected stream max messages to be %d, but got %d',
+                    $maxMessages,
+                    $actualMaxMessages
+                )
+            );
+        }
+    }
+
+    /**
+     * @Given I have a messenger transport configured with consumer name :consumerName
+     */
+    public function iHaveAMessengerTransportConfiguredWithConsumerName(string $consumerName): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&consumer=%s'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $consumerName
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @Given I have a messenger transport configured with batching of :batching
+     */
+    public function iHaveAMessengerTransportConfiguredWithBatching(int $batching): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&batching=%d'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $batching
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
      * Clean up after each scenario
      *
      * @AfterScenario
@@ -923,7 +1067,7 @@ class NatsSetupContext implements Context
         // Clean up test streams if they exist
         if ($this->shouldNatsBeRunning) {
             try {
-                $client = $this->useTls ? $this->createNatsTlsClient() : $this->createNatsClient();
+                $client = $this->createAppropriateNatsClient();
                 $client->jetStream()->getStream($this->testStreamName)->await();
                 $client->jetStream()->deleteStream($this->testStreamName)->await();
             } catch (\Exception $e) {
@@ -931,7 +1075,7 @@ class NatsSetupContext implements Context
             }
 
             // Clean up failure stream if it exists
-            if (!$this->useTls) {
+            if (!$this->useTls && !$this->useMtls) {
                 try {
                     $client = $this->createNatsClient();
                     $client->jetStream()->getStream($this->failedStreamName)->await();
@@ -979,6 +1123,7 @@ class NatsSetupContext implements Context
         $this->messagesConsumed = 0;
         $this->consumerProcess = null;
         $this->useTls = false;
+        $this->useMtls = false;
     }
 
     private function startNatsServer(): void
@@ -1131,9 +1276,71 @@ class NatsSetupContext implements Context
         return $client;
     }
 
+    private function waitForNatsMtlsToBeReady(): void
+    {
+        $maxAttempts = 30;
+        $attempt = 0;
+
+        while ($attempt < $maxAttempts) {
+            $socket = @fsockopen('localhost', 4224, $errno, $errstr, 1);
+            if ($socket !== false) {
+                fclose($socket);
+
+                try {
+                    $client = $this->createNatsMtlsClient();
+                    $client->jetStream()->accountInfo()->await();
+                    return;
+                } catch (\Exception $e) {
+                    // Continue retrying
+                } catch (\Throwable $e) {
+                    // Continue retrying
+                }
+            }
+
+            $attempt++;
+            sleep(1);
+        }
+
+        throw new \RuntimeException('NATS mTLS server did not become ready within 30 seconds');
+    }
+
+    private function createNatsMtlsClient(): NatsClient
+    {
+        $caFile = realpath(__DIR__ . '/../../../nats/certs/ca.pem');
+        $certFile = realpath(__DIR__ . '/../../../nats/certs/client-cert.pem');
+        $keyFile = realpath(__DIR__ . '/../../../nats/certs/client-key.pem');
+
+        $client = new NatsClient(new NatsOptions(
+            servers: ['tls://localhost:4224'],
+            username: 'admin',
+            password: 'password',
+            connectTimeoutMs: 5000,
+            tlsRequired: true,
+            tlsCaFile: $caFile,
+            tlsCertFile: $certFile,
+            tlsKeyFile: $keyFile,
+            tlsVerifyPeer: true,
+            tlsPeerName: 'localhost',
+        ));
+        $client->connect()->await();
+
+        return $client;
+    }
+
+    private function createAppropriateNatsClient(): NatsClient
+    {
+        if ($this->useMtls) {
+            return $this->createNatsMtlsClient();
+        }
+        if ($this->useTls) {
+            return $this->createNatsTlsClient();
+        }
+        return $this->createNatsClient();
+    }
+
     private function verifyStreamExists(): void
     {
-        $client = $this->useTls ? $this->createNatsTlsClient() : $this->createNatsClient();
+        $client = $this->createAppropriateNatsClient();
 
         try {
             $client->jetStream()->getStream($this->testStreamName)->await();
