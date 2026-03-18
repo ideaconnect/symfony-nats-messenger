@@ -791,4 +791,192 @@ final class NatsTransportTest extends TestCase
 
         $method->invoke($transport, $consumerInfo);
     }
+
+    public function testGetMessageCountReturnsAckPendingWhenHigherThanPending(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->with('test-stream', 'client')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'num_ack_pending' => 10,
+                    'num_pending' => 3,
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame(10, $transport->getMessageCount());
+    }
+
+    public function testSetupUpdatesStreamWhenAlreadyInUseMessage(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->willReturn(Future::error(new JetStreamException('stream name already in use', 409)));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', ['num_replicas' => 1, 'subjects' => ['test-topic']])
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('createConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertTrue(true);
+    }
+
+    public function testSetupUpdatesStreamWhenAlreadyExistsInMessage(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', ['num_replicas' => 1, 'subjects' => ['test-topic']])
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('createConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertTrue(true);
+    }
+
+    public function testAssertJetStreamPublishSucceededPassesOnValidAck(): void
+    {
+        $transport = new TestableNatsTransport(self::VALID_DSN, []);
+        $method = (new \ReflectionClass($transport))->getMethod('assertJetStreamPublishSucceeded');
+
+        $method->invoke($transport, '{"stream":"s","seq":1}');
+
+        self::assertTrue(true);
+    }
+
+    public function testAssertJetStreamPublishSucceededPassesOnEmptyPayload(): void
+    {
+        $transport = new TestableNatsTransport(self::VALID_DSN, []);
+        $method = (new \ReflectionClass($transport))->getMethod('assertJetStreamPublishSucceeded');
+
+        $method->invoke($transport, '');
+
+        self::assertTrue(true);
+    }
+
+    public function testAssertJetStreamPublishSucceededThrowsOnInvalidJson(): void
+    {
+        $transport = new TestableNatsTransport(self::VALID_DSN, []);
+        $method = (new \ReflectionClass($transport))->getMethod('assertJetStreamPublishSucceeded');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Unexpected JetStream publish response.');
+
+        $method->invoke($transport, 'not-json');
+    }
+
+    public function testAssertConsumerMatchesConfigurationRejectsWrongDeliverPolicy(): void
+    {
+        $transport = new TestableNatsTransport(self::VALID_DSN, []);
+        $method = (new \ReflectionClass($transport))->getMethod('assertConsumerMatchesConfiguration');
+        $consumerInfo = new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: [
+                'config' => [
+                    'ack_policy' => 'explicit',
+                    'deliver_policy' => 'new',
+                    'filter_subject' => 'test-topic',
+                ],
+            ],
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Consumer deliver policy must be all.');
+
+        $method->invoke($transport, $consumerInfo);
+    }
+
+    public function testAssertConsumerMatchesConfigurationRejectsWrongFilterSubject(): void
+    {
+        $transport = new TestableNatsTransport(self::VALID_DSN, []);
+        $method = (new \ReflectionClass($transport))->getMethod('assertConsumerMatchesConfiguration');
+        $consumerInfo = new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: [
+                'config' => [
+                    'ack_policy' => 'explicit',
+                    'deliver_policy' => 'all',
+                    'filter_subject' => 'wrong-topic',
+                ],
+            ],
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Consumer filter subject does not match the configured topic.');
+
+        $method->invoke($transport, $consumerInfo);
+    }
+
+    public function testAssertConsumerMatchesConfigurationRejectsWrongStreamOrConsumerName(): void
+    {
+        $transport = new TestableNatsTransport(self::VALID_DSN, []);
+        $method = (new \ReflectionClass($transport))->getMethod('assertConsumerMatchesConfiguration');
+        $consumerInfo = new ConsumerInfo(
+            streamName: 'wrong-stream',
+            name: 'client',
+            push: false,
+            raw: [
+                'config' => [
+                    'ack_policy' => 'explicit',
+                    'deliver_policy' => 'all',
+                    'filter_subject' => 'test-topic',
+                ],
+            ],
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Consumer was not created successfully.');
+
+        $method->invoke($transport, $consumerInfo);
+    }
 }

@@ -264,8 +264,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *
      * Tries the consumer info first (num_ack_pending / num_pending), then falls
      * back to stream-level message count. Returns 0 if both queries fail.
-     * Catches \Throwable intentionally to handle both NATS protocol errors and
-     * connection failures gracefully.
      */
     public function getMessageCount(): int
     {
@@ -275,13 +273,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $pending = $this->intValue($consumerInfo->raw['num_pending'] ?? 0);
 
             return max($ackPending, $pending);
-        } catch (\Throwable $e) {
+        } catch (\Exception $e) {
             try {
                 $streamInfo = $this->jetStream()->getStream($this->streamName)->await();
                 $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];
 
                 return $this->intValue($state['messages'] ?? 0);
-            } catch (\Throwable $streamException) {
+            } catch (\Exception $streamException) {
                 return 0;
             }
         }
@@ -435,9 +433,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function assertJetStreamPublishSucceeded(string $payload): void
     {
+        if ($payload === '') {
+            return;
+        }
+
         $decoded = json_decode($payload, true);
         if (!is_array($decoded)) {
-            return;
+            throw new RuntimeException('Unexpected JetStream publish response.');
         }
 
         if (!array_key_exists('error', $decoded)) {

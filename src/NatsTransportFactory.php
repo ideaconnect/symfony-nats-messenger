@@ -35,11 +35,11 @@ class NatsTransportFactory implements TransportFactoryInterface
     /**
      * Create a new NATS transport instance.
      *
-    * This method instantiates a NatsTransport with the provided DSN, options,
-    * and serializer resolved by Symfony Messenger.
+     * This method instantiates a NatsTransport with the provided DSN, options,
+     * and serializer resolved by Symfony Messenger.
      *
      * @param string $dsn The NATS JetStream DSN (marked sensitive for security)
-    * @param array<string, mixed> $options Transport configuration options
+     * @param array<string, mixed> $options Transport configuration options
      * @param SerializerInterface $serializer Symfony serializer
      * @return TransportInterface A new NatsTransport instance
      */
@@ -55,7 +55,7 @@ class NatsTransportFactory implements TransportFactoryInterface
      * should be used to create a transport for the provided DSN.
      *
      * @param string $dsn The DSN to check (marked sensitive for security)
-    * @param array<string, mixed> $options Transport configuration options (unused but required by interface)
+     * @param array<string, mixed> $options Transport configuration options (unused but required by interface)
      * @return bool True if the DSN scheme matches NATS JetStream, false otherwise
      */
     public function supports(#[\SensitiveParameter] string $dsn, array $options): bool

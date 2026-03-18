@@ -5,3 +5,4 @@ parameters:
     bootstrapFiles:
         - vendor/autoload.php
     tmpDir: .phpstan
+    reportUnmatchedIgnoredErrors: true

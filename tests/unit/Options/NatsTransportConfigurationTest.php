@@ -32,7 +32,7 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertSame(0, $configuration->streamMaxAgeSeconds());
         self::assertSame(1024, $configuration->streamMaxBytes());
         self::assertSame(500, $configuration->streamMaxMessages());
-        self::assertSame(0, $configuration->streamReplicas());
+        self::assertSame(1, $configuration->streamReplicas());
         self::assertTrue($configuration->isNatsRetryHandlerEnabled());
     }
 

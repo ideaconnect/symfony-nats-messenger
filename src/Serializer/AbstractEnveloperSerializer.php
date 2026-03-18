@@ -39,7 +39,7 @@ abstract class AbstractEnveloperSerializer implements SerializerInterface
         $envelope = $this->deserialize($body);
 
         if (!$envelope instanceof Envelope) {
-            throw new \RuntimeException('Invalid envelope');
+            throw new MessageDecodingFailedException('Deserialized data is not a valid Symfony Messenger Envelope.');
         }
 
         return $envelope;
@@ -48,13 +48,27 @@ abstract class AbstractEnveloperSerializer implements SerializerInterface
     /**
      * Encodes an envelope to transport payload shape.
      *
-     * @return array{body: string}
+     * @return array{body: string, headers: array<string, string>}
      */
     public function encode(Envelope $envelope): array
     {
         return [
             'body' => $this->serialize($envelope),
+            'headers' => $this->headers($envelope),
         ];
+    }
+
+    /**
+     * Returns headers to include with the transport message.
+     *
+     * Override in concrete serializers to propagate envelope metadata as NATS headers.
+     * Default implementation returns an empty array (no transport-level headers).
+     *
+     * @return array<string, string>
+     */
+    protected function headers(Envelope $envelope): array
+    {
+        return [];
     }
 
     /**

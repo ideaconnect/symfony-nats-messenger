@@ -208,12 +208,12 @@ class IgbinarySerializerTest extends TestCase
     /**
      * @test
      */
-    public function decode_WithInvalidSerializedData_ThrowsRuntimeException(): void
+    public function decode_WithInvalidSerializedData_ThrowsMessageDecodingFailed(): void
     {
         $encodedEnvelope = ['body' => 'invalid serialized data'];
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Invalid envelope');
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('Deserialized data is not a valid Symfony Messenger Envelope.');
 
         // Suppress igbinary warning
         @$this->serializer->decode($encodedEnvelope);
@@ -222,15 +222,15 @@ class IgbinarySerializerTest extends TestCase
     /**
      * @test
      */
-    public function decode_WithNonEnvelopeObject_ThrowsRuntimeException(): void
+    public function decode_WithNonEnvelopeObject_ThrowsMessageDecodingFailed(): void
     {
         $nonEnvelopeObject = new \stdClass();
         $nonEnvelopeObject->data = 'not an envelope';
         $serialized = \igbinary_serialize($nonEnvelopeObject);
         $encodedEnvelope = ['body' => $serialized];
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Invalid envelope');
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('Deserialized data is not a valid Symfony Messenger Envelope.');
 
         $this->serializer->decode($encodedEnvelope);
     }

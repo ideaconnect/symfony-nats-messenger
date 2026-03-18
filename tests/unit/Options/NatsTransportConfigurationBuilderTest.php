@@ -7,6 +7,7 @@ use IDCT\NATS\Core\NatsClient;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Options\RetryHandler;
+use IDCT\NatsMessenger\Options\TransportOption;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -235,5 +236,47 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         $options = $optionsProperty->getValue($connection);
 
         return $options;
+    }
+
+    public function testBuildWithWildcardInStreamNameThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('NATS stream name');
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/str*eam/topic', []);
+    }
+
+    public function testBuildWithSpaceInTopicThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('NATS topic name');
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/stream/top%20ic', []);
+    }
+
+    public function testBuildWithDotInStreamNameThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('NATS stream name');
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/str.eam/topic', []);
+    }
+
+    public function testBuildWithGreaterThanInTopicThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('NATS topic name');
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/stream/topic%3E', []);
+    }
+
+    public function testDefaultOptionsCoversAllTransportOptionCases(): void
+    {
+        $reflection = new \ReflectionClass(NatsTransportConfigurationBuilder::class);
+        $defaultOptions = $reflection->getConstant('DEFAULT_OPTIONS');
+
+        $enumValues = array_map(static fn (TransportOption $case): string => $case->value, TransportOption::cases());
+
+        self::assertEqualsCanonicalizing($enumValues, array_keys($defaultOptions));
     }
 }

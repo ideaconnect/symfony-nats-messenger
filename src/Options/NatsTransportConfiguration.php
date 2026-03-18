@@ -109,7 +109,7 @@ final readonly class NatsTransportConfiguration
      */
     public function streamReplicas(): int
     {
-        return max(0, $this->intOption(TransportOption::STREAM_REPLICAS, 1));
+        return max(1, $this->intOption(TransportOption::STREAM_REPLICAS, 1));
     }
 
     /**

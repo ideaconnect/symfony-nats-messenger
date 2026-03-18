@@ -132,12 +132,12 @@ class AbstractEnveloperSerializerTest extends TestCase
     /**
      * @test
      */
-    public function decode_WhenDeserializeReturnsNonEnvelope_ThrowsRuntimeException(): void
+    public function decode_WhenDeserializeReturnsNonEnvelope_ThrowsMessageDecodingFailed(): void
     {
         $this->serializer->setShouldReturnInvalidEnvelope(true);
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Invalid envelope');
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('Deserialized data is not a valid Symfony Messenger Envelope.');
 
         // Provide a valid body so we pass the empty check but fail on the Envelope check
         $this->serializer->decode(['body' => 'some-data']);
@@ -179,5 +179,21 @@ class AbstractEnveloperSerializerTest extends TestCase
 
         $stamps = $decoded->all(BusNameStamp::class);
         $this->assertCount(2, $stamps);
+    }
+
+    /**
+     * @test
+     */
+    public function encode_WithValidEnvelope_IncludesHeadersKey(): void
+    {
+        $message = new \stdClass();
+        $message->data = 'test data';
+        $envelope = new Envelope($message);
+
+        $result = $this->serializer->encode($envelope);
+
+        $this->assertArrayHasKey('headers', $result);
+        $this->assertIsArray($result['headers']);
+        $this->assertEmpty($result['headers']);
     }
 }

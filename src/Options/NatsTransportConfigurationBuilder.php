@@ -150,7 +150,32 @@ final class NatsTransportConfigurationBuilder
             throw new InvalidArgumentException('NATS DSN must contain both stream name and topic name (format: /stream/topic).');
         }
 
+        $this->validateNatsName($pathParts[0], 'stream');
+        $this->validateNatsName($pathParts[1], 'topic');
+
         return [$pathParts[0], $pathParts[1]];
+    }
+
+    /**
+     * Validates that a NATS stream or topic name contains only safe characters.
+     *
+     * Rejects wildcards, dots, spaces, and other special characters that could cause
+     * unexpected NATS routing or subject injection.
+     *
+     * @param string $name  The name to validate
+     * @param string $label Human-readable label for error messages ('stream' or 'topic')
+     *
+     * @throws InvalidArgumentException If the name contains disallowed characters
+     */
+    private function validateNatsName(string $name, string $label): void
+    {
+        if (preg_match('/^[a-zA-Z0-9_-]+$/', $name) !== 1) {
+            throw new InvalidArgumentException(sprintf(
+                'NATS %s name "%s" contains invalid characters. Only alphanumeric characters, hyphens, and underscores are allowed.',
+                $label,
+                $name,
+            ));
+        }
     }
 
     /**
