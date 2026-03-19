@@ -242,7 +242,11 @@ framework:
           # Stream Retention Policies
           stream_max_age: 86400             # Max message age in seconds (0 = unlimited, default: 0)
           stream_max_bytes: 1073741824      # Max storage size in bytes (null = unlimited)
-          stream_max_messages: 1000000      # Max number of messages (null = unlimited)
+          stream_max_messages: 1000000      # Max number of messages in the stream (null = unlimited)
+          stream_max_messages_per_subject: 1000 # Max number of messages retained per subject (null = unlimited)
+
+          # Storage Backend
+          stream_storage: 'file'            # Storage type: 'file' or 'memory' (default: 'file')
 
           # High Availability
           stream_replicas: 1                # Number of replicas (default: 1)
@@ -412,14 +416,20 @@ options:
   # By total size (1GB)
   stream_max_bytes: 1073741824
 
-  # By message count (1 million messages)
+  # By total message count across the entire stream (NATS: max_msgs)
   stream_max_messages: 1000000
+
+  # By message count per individual subject (NATS: max_msgs_per_subject)
+  stream_max_messages_per_subject: 1000
 
   # Unlimited (default)
   stream_max_age: 0
   stream_max_bytes: null
   stream_max_messages: null
+  stream_max_messages_per_subject: null
 ```
+
+> **Note:** `stream_max_messages` limits the total number of messages stored in the stream (maps to NATS `max_msgs`), while `stream_max_messages_per_subject` limits messages retained per individual subject (maps to NATS `max_msgs_per_subject`). The per-subject limit is especially useful with [multi-subject streams](#multi-subject-streams) to prevent one high-volume subject from dominating retention.
 
 ### High Availability
 
@@ -537,6 +547,35 @@ framework:
           stream_max_age: 2592000  # 30 days
           stream_replicas: 3
 ```
+
+### Multi-Subject Streams
+
+Multiple transports can share the same NATS stream with different subjects. When `messenger:setup-transports` runs, each transport adds its subject to the existing stream rather than overwriting it:
+
+```yaml
+framework:
+  messenger:
+    transports:
+      # Both transports share the "events" stream
+      nats_orders:
+        dsn: 'nats-jetstream://localhost/events/orders'
+        options:
+          consumer: 'order-consumer'
+          delay: 0.5
+          batching: 1
+          stream_max_age: 300
+
+      nats_payments:
+        dsn: 'nats-jetstream://localhost/events/payments'
+        options:
+          consumer: 'payment-consumer'
+          delay: 1
+          batching: 2
+```
+
+The `events` stream will have both `orders` and `payments` as subjects.
+
+> **Note:** When a stream already exists, setup reads the current JetStream configuration, merges in any new subjects, and then overlays the stream settings managed by this transport. Existing subjects are preserved, duplicate subjects are not added, and the existing storage backend is kept for already-created streams.
 
 ### Setup on Initialization
 
@@ -758,6 +797,9 @@ Contributions are welcome! Please ensure:
 - New features include corresponding tests
 - Documentation is updated
 - Functional tests pass: `composer test:functional` (if applicable)
+- `docs/TESTS.md` is kept up to date when tests are added, removed, or renamed
+- Each release has an entry in `docs/CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format
+- When a PR is merged or its features are adapted, a description is added to `docs/PRs/`
 
 ### Quick Development Workflow
 

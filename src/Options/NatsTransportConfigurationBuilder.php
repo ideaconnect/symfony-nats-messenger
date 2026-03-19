@@ -4,6 +4,7 @@ namespace IDCT\NatsMessenger\Options;
 
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
+use IDCT\NATS\JetStream\Enum\StorageBackend;
 use IDCT\NatsMessenger\TypeCoercionTrait;
 use InvalidArgumentException;
 
@@ -45,6 +46,8 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_MAX_AGE->value => 0,
         TransportOption::STREAM_MAX_BYTES->value => null,
         TransportOption::STREAM_MAX_MESSAGES->value => null,
+        TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT->value => null,
+        TransportOption::STREAM_STORAGE->value => StorageBackend::File->value,
         TransportOption::STREAM_REPLICAS->value => 1,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
         TransportOption::SCHEDULED_MESSAGES->value => false,
@@ -232,9 +235,34 @@ final class NatsTransportConfigurationBuilder
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_AGE);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_BYTES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES, true);
+        $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT, true);
         $this->assertPositiveNumber($configuration, TransportOption::STREAM_REPLICAS, true);
+        $this->normalizeStorageBackend($configuration);
 
         return $configuration;
+    }
+
+    /**
+     * Validates and normalizes the configured stream storage backend.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function normalizeStorageBackend(array &$configuration): void
+    {
+        $storage = $this->stringValue(
+            $configuration[TransportOption::STREAM_STORAGE->value] ?? StorageBackend::File->value,
+            StorageBackend::File->value,
+        );
+
+        $storageBackend = StorageBackend::tryFrom(strtolower($storage));
+        if ($storageBackend === null) {
+            throw new InvalidArgumentException(sprintf(
+                "Invalid stream_storage option '%s'. Allowed values are 'file' or 'memory'.",
+                $storage,
+            ));
+        }
+
+        $configuration[TransportOption::STREAM_STORAGE->value] = $storageBackend->value;
     }
 
     /**

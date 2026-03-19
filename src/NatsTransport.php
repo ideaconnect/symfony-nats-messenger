@@ -315,29 +315,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function setup(): void
     {
         try {
-            $streamOptions = [];
-
-            if ($this->configuration->streamMaxAgeSeconds() > 0) {
-                $streamOptions['max_age'] = $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS;
-            }
-
-            if ($this->configuration->streamMaxBytes() !== null) {
-                $streamOptions['max_bytes'] = $this->configuration->streamMaxBytes();
-            }
-
-            if ($this->configuration->streamMaxMessages() !== null) {
-                $streamOptions['max_msgs'] = $this->configuration->streamMaxMessages();
-            }
-
-            if ($this->configuration->streamReplicas() > 0) {
-                $streamOptions['num_replicas'] = $this->configuration->streamReplicas();
-            }
-
-            $subjects = [$this->topic];
-            if ($this->configuration->isScheduledMessagesEnabled()) {
-                $subjects[] = $this->topic . '.delayed.>';
-                $streamOptions['allow_msg_schedules'] = true;
-            }
+            $streamOptions = $this->buildManagedStreamOptions();
+            $subjects = $this->buildDesiredSubjects();
 
             try {
                 $this->jetStream()->createStream($this->streamName, $subjects, $streamOptions)->await();
@@ -346,9 +325,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                     throw $streamCreateException;
                 }
 
-                $this->jetStream()->updateStream($this->streamName, array_merge($streamOptions, [
-                    'subjects' => $subjects,
-                ]))->await();
+                $existingStream = $this->jetStream()->getStream($this->streamName)->await();
+                $updatedConfiguration = $this->buildUpdatedStreamConfiguration($existingStream, $streamOptions, $subjects);
+
+                $this->jetStream()->updateStream($this->streamName, $updatedConfiguration)->await();
             }
 
             $consumerInfo = $this->jetStream()->createConsumer(
@@ -561,5 +541,141 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         return str_contains($message, 'already in use')
             || str_contains($message, 'stream name already in use')
             || str_contains($message, 'already exists');
+    }
+
+    /**
+     * Builds the stream configuration fields managed by this transport.
+     *
+     * @return array<string, mixed>
+     */
+    private function buildManagedStreamOptions(): array
+    {
+        $streamOptions = [
+            'storage' => $this->configuration->streamStorage()->value,
+        ];
+
+        if ($this->configuration->streamMaxAgeSeconds() > 0) {
+            $streamOptions['max_age'] = $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS;
+        }
+
+        if ($this->configuration->streamMaxBytes() !== null) {
+            $streamOptions['max_bytes'] = $this->configuration->streamMaxBytes();
+        }
+
+        if ($this->configuration->streamMaxMessages() !== null) {
+            $streamOptions['max_msgs'] = $this->configuration->streamMaxMessages();
+        }
+
+        if ($this->configuration->streamMaxMessagesPerSubject() !== null) {
+            $streamOptions['max_msgs_per_subject'] = $this->configuration->streamMaxMessagesPerSubject();
+        }
+
+        if ($this->configuration->streamReplicas() > 0) {
+            $streamOptions['num_replicas'] = $this->configuration->streamReplicas();
+        }
+
+        if ($this->configuration->isScheduledMessagesEnabled()) {
+            $streamOptions['allow_msg_schedules'] = true;
+        }
+
+        return $streamOptions;
+    }
+
+    /**
+     * Returns the subjects this transport needs to be present on the stream.
+     *
+     * @return list<string>
+     */
+    private function buildDesiredSubjects(): array
+    {
+        $subjects = [$this->topic];
+        if ($this->configuration->isScheduledMessagesEnabled()) {
+            $subjects[] = $this->topic . '.delayed.>';
+        }
+
+        return $subjects;
+    }
+
+    /**
+     * Builds the update payload for an existing stream while preserving server-side fields.
+     *
+     * @param array<string, mixed> $managedOptions
+     * @param list<string>         $desiredSubjects
+     * @return array<string, mixed>
+     */
+    private function buildUpdatedStreamConfiguration(
+        \IDCT\NATS\JetStream\Models\StreamInfo $streamInfo,
+        array $managedOptions,
+        array $desiredSubjects,
+    ): array {
+        /** @var array<string, mixed> $serverConfiguration */
+        $serverConfiguration = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        unset($serverConfiguration['name']);
+        $serverConfiguration = $this->normalizeStreamConfigurationForUpdate($serverConfiguration);
+
+        $serverSubjects = $this->normalizeSubjects($serverConfiguration['subjects'] ?? $streamInfo->subjects);
+        $mergedSubjects = $this->mergeSubjects($serverSubjects, $desiredSubjects);
+
+        $updatedConfiguration = array_merge($serverConfiguration, $managedOptions, [
+            'subjects' => $mergedSubjects,
+        ]);
+
+        if (array_key_exists('storage', $serverConfiguration)) {
+            $updatedConfiguration['storage'] = $serverConfiguration['storage'];
+        }
+
+        /** @var array<string, mixed> $updatedConfiguration */
+        return $updatedConfiguration;
+    }
+
+    /**
+     * Normalizes stream config fields returned by getStream() before sending them back to updateStream().
+     *
+     * JetStream returns some map-like fields as empty arrays when unset. Those must be
+     * re-encoded as JSON objects on update or the server rejects the payload.
+     *
+     * @param array<string, mixed> $configuration
+     * @return array<string, mixed>
+     */
+    private function normalizeStreamConfigurationForUpdate(array $configuration): array
+    {
+        foreach (['consumer_limits', 'metadata'] as $objectLikeKey) {
+            if (array_key_exists($objectLikeKey, $configuration) && $configuration[$objectLikeKey] === []) {
+                $configuration[$objectLikeKey] = (object) [];
+            }
+        }
+
+        return $configuration;
+    }
+
+    /**
+     * @param mixed $subjects
+     * @return list<string>
+     */
+    private function normalizeSubjects(mixed $subjects): array
+    {
+        if (!is_array($subjects)) {
+            return [];
+        }
+
+        return array_values(array_filter($subjects, static fn (mixed $subject): bool => is_string($subject) && $subject !== ''));
+    }
+
+    /**
+     * @param list<string> $existingSubjects
+     * @param list<string> $desiredSubjects
+     * @return list<string>
+     */
+    private function mergeSubjects(array $existingSubjects, array $desiredSubjects): array
+    {
+        $mergedSubjects = $existingSubjects;
+
+        foreach ($desiredSubjects as $subject) {
+            if (!in_array($subject, $mergedSubjects, true)) {
+                $mergedSubjects[] = $subject;
+            }
+        }
+
+        return $mergedSubjects;
     }
 }

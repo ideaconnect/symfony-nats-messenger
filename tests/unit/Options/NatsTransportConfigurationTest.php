@@ -3,6 +3,7 @@
 namespace IDCT\NatsMessenger\Tests\Unit\Options;
 
 use IDCT\NATS\Core\NatsClient;
+use IDCT\NATS\JetStream\Enum\StorageBackend;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use PHPUnit\Framework\TestCase;
 
@@ -21,6 +22,8 @@ final class NatsTransportConfigurationTest extends TestCase
                 'stream_max_age' => '-5',
                 'stream_max_bytes' => '1024',
                 'stream_max_messages' => '500',
+                'stream_max_messages_per_subject' => '25',
+                'stream_storage' => 'memory',
                 'stream_replicas' => '-1',
             ],
             natsRetryHandlerEnabled: true,
@@ -32,6 +35,8 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertSame(0, $configuration->streamMaxAgeSeconds());
         self::assertSame(1024, $configuration->streamMaxBytes());
         self::assertSame(500, $configuration->streamMaxMessages());
+        self::assertSame(25, $configuration->streamMaxMessagesPerSubject());
+        self::assertSame(StorageBackend::Memory, $configuration->streamStorage());
         self::assertSame(1, $configuration->streamReplicas());
         self::assertTrue($configuration->isNatsRetryHandlerEnabled());
     }
@@ -52,6 +57,8 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertSame(0, $configuration->streamMaxAgeSeconds());
         self::assertNull($configuration->streamMaxBytes());
         self::assertNull($configuration->streamMaxMessages());
+        self::assertNull($configuration->streamMaxMessagesPerSubject());
+        self::assertSame(StorageBackend::File, $configuration->streamStorage());
         self::assertSame(1, $configuration->streamReplicas());
         self::assertFalse($configuration->isNatsRetryHandlerEnabled());
     }
@@ -66,6 +73,7 @@ final class NatsTransportConfigurationTest extends TestCase
                 'batching' => 3.7,
                 'stream_max_bytes' => 2048.9,
                 'stream_max_messages' => 100.1,
+                'stream_max_messages_per_subject' => 7.9,
                 'stream_replicas' => 2.5,
             ],
             natsRetryHandlerEnabled: false,
@@ -74,6 +82,7 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertSame(3, $configuration->batching());
         self::assertSame(2048, $configuration->streamMaxBytes());
         self::assertSame(100, $configuration->streamMaxMessages());
+        self::assertSame(7, $configuration->streamMaxMessagesPerSubject());
         self::assertSame(2, $configuration->streamReplicas());
     }
 

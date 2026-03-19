@@ -32,6 +32,27 @@ Feature: NATS Stream Setup
       | messenger.transport.native_php_serializer |
       | igbinary_serializer                       |
 
+  @storage
+  Scenario: Setup NATS stream with memory storage
+    Given I have a messenger transport configured with memory stream storage
+    When I run the messenger setup command
+    Then the NATS stream should be created successfully
+    And the stream should use memory storage
+
+  @per-subject-limit
+  Scenario: Setup NATS stream with max messages per subject configuration
+    Given I have a messenger transport configured with max messages per subject of 5
+    When I run the messenger setup command
+    Then the NATS stream should be created successfully
+    And the stream should have max messages per subject of 5
+
+  @shared-stream
+  Scenario: Setup command merges subjects for transports sharing one stream
+    Given I have two messenger transports sharing the same stream with subjects "orders.created" and "payments.created"
+    When I run the messenger setup command for both shared transports
+    Then the setup should complete successfully
+    And the stream should include the shared subjects
+
   Scenario: Setup command fails gracefully when NATS is unavailable
     Given NATS server is not running
     And I have a messenger transport configured with max age of 15 minutes using "igbinary_serializer"

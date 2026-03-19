@@ -578,7 +578,7 @@ final class NatsTransportTest extends TestCase
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->expects(self::once())
             ->method('createStream')
-            ->with('test-stream', ['test-topic'], ['num_replicas' => 1])
+            ->with('test-stream', ['test-topic'], ['storage' => 'file', 'num_replicas' => 1])
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
             ->method('createConsumer')
@@ -613,9 +613,11 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::once())
             ->method('createStream')
             ->with('test-stream', ['test-topic'], [
+                'storage' => 'memory',
                 'max_age' => 10_000_000_000,
                 'max_bytes' => 1024,
                 'max_msgs' => 2048,
+                'max_msgs_per_subject' => 128,
                 'num_replicas' => 3,
             ])
             ->willReturn(Future::complete());
@@ -643,6 +645,8 @@ final class NatsTransportTest extends TestCase
             'stream_max_age' => 10,
             'stream_max_bytes' => 1024,
             'stream_max_messages' => 2048,
+            'stream_max_messages_per_subject' => 128,
+            'stream_storage' => 'memory',
             'stream_replicas' => 3,
         ]);
         $transport->setJetStreamContext($jetStream);
@@ -655,12 +659,26 @@ final class NatsTransportTest extends TestCase
     public function testSetupUpdatesStreamWhenItAlreadyExists(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                ],
+            ],
+        );
         $jetStream->expects(self::once())
             ->method('createStream')
             ->willReturn(Future::error(new JetStreamException('stream already exists', 400)));
         $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
             ->method('updateStream')
-            ->with('test-stream', ['num_replicas' => 1, 'subjects' => ['test-topic']])
+            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1])
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
             ->method('createConsumer')
@@ -710,25 +728,26 @@ final class NatsTransportTest extends TestCase
     public function testSetupChecksStreamExistenceBeforeUpdatingOnAmbiguousBadRequest(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                ],
+            ],
+        );
         $jetStream->expects(self::once())
             ->method('createStream')
             ->willReturn(Future::error(new JetStreamException('bad request', 400)));
-        $jetStream->expects(self::once())
+        $jetStream->expects(self::exactly(2))
             ->method('getStream')
             ->with('test-stream')
-            ->willReturn(Future::complete(new StreamInfo(
-                name: 'test-stream',
-                subjects: ['test-topic'],
-                raw: [
-                    'config' => [
-                        'name' => 'test-stream',
-                        'subjects' => ['test-topic'],
-                    ],
-                ],
-            )));
+            ->willReturnOnConsecutiveCalls(Future::complete($streamInfo), Future::complete($streamInfo));
         $jetStream->expects(self::once())
             ->method('updateStream')
-            ->with('test-stream', ['num_replicas' => 1, 'subjects' => ['test-topic']])
+            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1])
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
             ->method('createConsumer')
@@ -908,12 +927,26 @@ final class NatsTransportTest extends TestCase
     public function testSetupUpdatesStreamWhenAlreadyInUseMessage(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                ],
+            ],
+        );
         $jetStream->expects(self::once())
             ->method('createStream')
             ->willReturn(Future::error(new JetStreamException('stream name already in use', 409)));
         $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
             ->method('updateStream')
-            ->with('test-stream', ['num_replicas' => 1, 'subjects' => ['test-topic']])
+            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1])
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
             ->method('createConsumer')
@@ -941,12 +974,26 @@ final class NatsTransportTest extends TestCase
     public function testSetupUpdatesStreamWhenAlreadyExistsInMessage(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                ],
+            ],
+        );
         $jetStream->expects(self::once())
             ->method('createStream')
             ->willReturn(Future::error(new JetStreamException('already exists', 0)));
         $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
             ->method('updateStream')
-            ->with('test-stream', ['num_replicas' => 1, 'subjects' => ['test-topic']])
+            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1])
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
             ->method('createConsumer')
@@ -1197,7 +1244,8 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::once())
             ->method('createStream')
             ->with('test-stream', ['test-topic', 'test-topic.delayed.>'], self::callback(function (array $options): bool {
-                return ($options['allow_msg_schedules'] ?? false) === true
+                return ($options['storage'] ?? null) === 'file'
+                    && ($options['allow_msg_schedules'] ?? false) === true
                     && ($options['num_replicas'] ?? 0) === 1;
             }))
             ->willReturn(Future::complete());
@@ -1231,14 +1279,30 @@ final class NatsTransportTest extends TestCase
     public function testSetupUpdateStreamWithScheduledMessagesIncludesDelayedSubject(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                ],
+            ],
+        );
         $jetStream->expects(self::once())
             ->method('createStream')
             ->willReturn(Future::error(new JetStreamException('stream already exists', 400)));
         $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
             ->method('updateStream')
             ->with('test-stream', self::callback(function (array $options): bool {
                 return ($options['subjects'] ?? []) === ['test-topic', 'test-topic.delayed.>']
-                    && ($options['allow_msg_schedules'] ?? false) === true;
+                    && ($options['allow_msg_schedules'] ?? false) === true
+                    && ($options['storage'] ?? null) === 'file';
             }))
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
@@ -1257,6 +1321,295 @@ final class NatsTransportTest extends TestCase
             )));
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertTrue(true);
+    }
+
+    public function testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['existing-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['existing-topic'],
+                    'storage' => 'memory',
+                    'discard' => 'old',
+                    'retention' => 'limits',
+                    'consumer_limits' => [],
+                ],
+            ],
+        );
+
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(function (array $options): bool {
+                return ($options['subjects'] ?? []) === ['existing-topic', 'test-topic']
+                    && ($options['storage'] ?? null) === 'memory'
+                    && ($options['discard'] ?? null) === 'old'
+                    && ($options['retention'] ?? null) === 'limits'
+                    && ($options['consumer_limits'] ?? null) instanceof \stdClass;
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('createConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['stream_storage' => 'file']);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertTrue(true);
+    }
+
+    public function testSetupUpdatesExistingStreamWithoutDuplicatingSubjects(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                ],
+            ],
+        );
+
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(function (array $options): bool {
+                return ($options['subjects'] ?? []) === ['test-topic'];
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('createConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertTrue(true);
+    }
+
+    public function testSetupCreatesNewStreamWithMaxMessages(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->with('test-stream', ['test-topic'], self::callback(function (array $options): bool {
+                return ($options['max_msgs'] ?? null) === 5000
+                    && ($options['storage'] ?? null) === 'file'
+                    && ($options['num_replicas'] ?? null) === 1;
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('createConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'stream_max_messages' => 5000,
+        ]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertTrue(true);
+    }
+
+    public function testSetupUpdatesExistingStreamWithMaxMessages(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                ],
+            ],
+        );
+
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(function (array $options): bool {
+                return ($options['max_msgs'] ?? null) === 5000
+                    && ($options['subjects'] ?? []) === ['test-topic'];
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('createConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'stream_max_messages' => 5000,
+        ]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertTrue(true);
+    }
+
+    public function testSetupCreatesNewStreamWithMaxMessagesPerSubject(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->with('test-stream', ['test-topic'], self::callback(function (array $options): bool {
+                return ($options['max_msgs_per_subject'] ?? null) === 100
+                    && ($options['storage'] ?? null) === 'file'
+                    && ($options['num_replicas'] ?? null) === 1;
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('createConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'stream_max_messages_per_subject' => 100,
+        ]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertTrue(true);
+    }
+
+    public function testSetupUpdatesExistingStreamWithMaxMessagesPerSubject(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                ],
+            ],
+        );
+
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(function (array $options): bool {
+                return ($options['max_msgs_per_subject'] ?? null) === 100
+                    && ($options['subjects'] ?? []) === ['test-topic'];
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('createConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'stream_max_messages_per_subject' => 100,
+        ]);
         $transport->setJetStreamContext($jetStream);
 
         $transport->setup();

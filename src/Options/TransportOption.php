@@ -9,7 +9,8 @@ namespace IDCT\NatsMessenger\Options;
  * and the internal merged options array. Grouped by function:
  *
  * **Consumer & Batching:** CONSUMER, BATCHING, MAX_BATCH_TIMEOUT, CONNECTION_TIMEOUT
- * **Stream Limits:** STREAM_MAX_AGE, STREAM_MAX_BYTES, STREAM_MAX_MESSAGES, STREAM_REPLICAS
+ * **Stream Limits:** STREAM_MAX_AGE, STREAM_MAX_BYTES, STREAM_MAX_MESSAGES,
+ *                    STREAM_MAX_MESSAGES_PER_SUBJECT, STREAM_STORAGE, STREAM_REPLICAS
  * **Retry Strategy:** RETRY_HANDLER
  * **Scheduling:** SCHEDULED_MESSAGES
  * **TLS:** TLS_REQUIRED, TLS_HANDSHAKE_FIRST, TLS_CA_FILE, TLS_CERT_FILE, TLS_KEY_FILE,
@@ -25,6 +26,8 @@ enum TransportOption: string
     case STREAM_MAX_AGE = 'stream_max_age';
     case STREAM_MAX_BYTES = 'stream_max_bytes';
     case STREAM_MAX_MESSAGES = 'stream_max_messages';
+    case STREAM_MAX_MESSAGES_PER_SUBJECT = 'stream_max_messages_per_subject';
+    case STREAM_STORAGE = 'stream_storage';
     case STREAM_REPLICAS = 'stream_replicas';
     case RETRY_HANDLER = 'retry_handler';
     case SCHEDULED_MESSAGES = 'scheduled_messages';

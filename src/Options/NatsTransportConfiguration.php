@@ -3,6 +3,7 @@
 namespace IDCT\NatsMessenger\Options;
 
 use IDCT\NATS\Core\NatsClient;
+use IDCT\NATS\JetStream\Enum\StorageBackend;
 use IDCT\NatsMessenger\TypeCoercionTrait;
 
 /**
@@ -101,6 +102,28 @@ final readonly class NatsTransportConfiguration
         $maxMessages = $this->options[TransportOption::STREAM_MAX_MESSAGES->value] ?? null;
 
         return $maxMessages === null ? null : $this->intValue($maxMessages);
+    }
+
+    /**
+     * Returns stream max messages per subject, or null for unlimited.
+     *
+     * When set, JetStream limits the number of retained messages for each individual subject.
+     */
+    public function streamMaxMessagesPerSubject(): ?int
+    {
+        $maxMessagesPerSubject = $this->options[TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT->value] ?? null;
+
+        return $maxMessagesPerSubject === null ? null : $this->intValue($maxMessagesPerSubject);
+    }
+
+    /**
+     * Returns the configured stream storage backend.
+     */
+    public function streamStorage(): StorageBackend
+    {
+        $storage = $this->stringOption(TransportOption::STREAM_STORAGE, StorageBackend::File->value);
+
+        return StorageBackend::from($storage);
     }
 
     /**

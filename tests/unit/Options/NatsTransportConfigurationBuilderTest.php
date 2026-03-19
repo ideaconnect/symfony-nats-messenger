@@ -117,6 +117,39 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_replicas' => 0]);
     }
 
+    public function testBuildWithInvalidStreamStorageThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("Invalid stream_storage option 'disk'. Allowed values are 'file' or 'memory'.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_storage' => 'disk']);
+    }
+
+    public function testBuildWithStreamStorageAndPerSubjectLimitNormalizesValues(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'stream_storage' => 'memory',
+            'stream_max_messages_per_subject' => '42',
+        ]);
+
+        self::assertSame('memory', $configuration->streamStorage()->value);
+        self::assertSame(42, $configuration->streamMaxMessagesPerSubject());
+    }
+
+    public function testBuildMethodOptionsOverrideQueryForStreamStorageAndPerSubjectLimit(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?stream_storage=file&stream_max_messages_per_subject=10',
+            [
+                'stream_storage' => 'memory',
+                'stream_max_messages_per_subject' => 20,
+            ]
+        );
+
+        self::assertSame('memory', $configuration->streamStorage()->value);
+        self::assertSame(20, $configuration->streamMaxMessagesPerSubject());
+    }
+
     public function testBuildWithTlsSchemeUsesTlsServerProtocol(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
@@ -221,6 +254,56 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         $options = $this->extractNatsOptions($configuration->client);
 
         self::assertFalse($options->tlsVerifyPeer);
+    }
+
+    public function testBuildWithNegativeStreamMaxMessagesThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_max_messages option must be a non-negative integer value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_messages' => -1]);
+    }
+
+    public function testBuildWithNegativeStreamMaxMessagesPerSubjectThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_max_messages_per_subject option must be a non-negative integer value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_messages_per_subject' => -1]);
+    }
+
+    public function testBuildWithNonIntegerStreamMaxMessagesThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_max_messages option must be a non-negative integer value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_messages' => 1.5]);
+    }
+
+    public function testBuildWithNonIntegerStreamMaxMessagesPerSubjectThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_max_messages_per_subject option must be a non-negative integer value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_messages_per_subject' => 1.5]);
+    }
+
+    public function testBuildWithStreamMaxMessagesFromQueryString(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?stream_max_messages=500',
+            []
+        );
+
+        self::assertSame(500, $configuration->streamMaxMessages());
+    }
+
+    public function testBuildWithNegativeStreamMaxBytesThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_max_bytes option must be a non-negative integer value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_bytes' => -1]);
     }
 
     private function extractNatsOptions(NatsClient $client): NatsOptions

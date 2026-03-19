@@ -23,6 +23,7 @@ class NatsSetupContext implements Context
     private array $consumerProcesses = [];
     private string $testStreamName = 'stream';
     private string $testSubject = 'test.messages';
+    private ?string $secondaryTestSubject = null;
     private string $failedStreamName = 'failed_stream';
     private string $failedSubject = 'fail.messages';
     private bool $shouldNatsBeRunning = false;
@@ -113,6 +114,23 @@ class NatsSetupContext implements Context
             'bin/console',
             'messenger:setup-transports',
             'test_transport',
+            '--no-interaction',
+            '--env=test'
+        ];
+
+        $this->setupProcess = new Process($command, __DIR__ . '/../..');
+        $this->setupProcess->run();
+    }
+
+    /**
+     * @When I run the messenger setup command for both shared transports
+     */
+    public function iRunTheMessengerSetupCommandForBothSharedTransports(): void
+    {
+        $command = [
+            'php',
+            'bin/console',
+            'messenger:setup-transports',
             '--no-interaction',
             '--env=test'
         ];
@@ -970,6 +988,57 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * @Given I have a messenger transport configured with memory stream storage
+     */
+    public function iHaveAMessengerTransportConfiguredWithMemoryStreamStorage(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_storage=memory'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @Given I have a messenger transport configured with max messages per subject of :maxMessages
+     */
+    public function iHaveAMessengerTransportConfiguredWithMaxMessagesPerSubject(int $maxMessages): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_messages_per_subject=%d'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $maxMessages,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @Given I have two messenger transports sharing the same stream with subjects :firstSubject and :secondSubject
+     */
+    public function iHaveTwoMessengerTransportsSharingTheSameStreamWithSubjects(string $firstSubject, string $secondSubject): void
+    {
+        $this->testSubject = $firstSubject;
+        $this->secondaryTestSubject = $secondSubject;
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n            test_transport_two:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $this->testStreamName,
+            $secondSubject,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
      * @Then the stream should have max bytes of :maxBytes
      */
     public function theStreamShouldHaveMaxBytesOf(int $maxBytes): void
@@ -1008,6 +1077,65 @@ class NatsSetupContext implements Context
                     $actualMaxMessages
                 )
             );
+        }
+    }
+
+    /**
+     * @Then the stream should use memory storage
+     */
+    public function theStreamShouldUseMemoryStorage(): void
+    {
+        $client = $this->createNatsClient();
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $streamConfig = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        $storage = $streamConfig['storage'] ?? null;
+
+        if ($storage !== 'memory') {
+            throw new \RuntimeException(sprintf('Expected stream storage to be memory, but got %s', var_export($storage, true)));
+        }
+    }
+
+    /**
+     * @Then the stream should have max messages per subject of :maxMessages
+     */
+    public function theStreamShouldHaveMaxMessagesPerSubjectOf(int $maxMessages): void
+    {
+        $client = $this->createNatsClient();
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $streamConfig = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        $actualMaxMessages = (int) ($streamConfig['max_msgs_per_subject'] ?? 0);
+
+        if ($actualMaxMessages !== $maxMessages) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected stream max messages per subject to be %d, but got %d',
+                    $maxMessages,
+                    $actualMaxMessages
+                )
+            );
+        }
+    }
+
+    /**
+     * @Then the stream should include the shared subjects
+     */
+    public function theStreamShouldIncludeTheSharedSubjects(): void
+    {
+        if ($this->secondaryTestSubject === null) {
+            throw new \RuntimeException('No secondary shared subject was configured for this scenario.');
+        }
+
+        $client = $this->createNatsClient();
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $streamConfig = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        $subjects = is_array($streamConfig['subjects'] ?? null) ? $streamConfig['subjects'] : [];
+
+        foreach ([$this->testSubject, $this->secondaryTestSubject] as $expectedSubject) {
+            if (!in_array($expectedSubject, $subjects, true)) {
+                throw new \RuntimeException(
+                    sprintf('Expected shared stream to contain subject "%s", but subjects were: %s', $expectedSubject, implode(', ', $subjects))
+                );
+            }
         }
     }
 
@@ -1171,6 +1299,9 @@ class NatsSetupContext implements Context
         $this->consumerProcess = null;
         $this->useTls = false;
         $this->useMtls = false;
+        $this->testStreamName = 'stream';
+        $this->testSubject = 'test.messages';
+        $this->secondaryTestSubject = null;
     }
 
     private function startNatsServer(): void
