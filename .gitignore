@@ -11,3 +11,4 @@ clover.xml
 .vscode
 .phpstan/
 .cache
+composer.lock
