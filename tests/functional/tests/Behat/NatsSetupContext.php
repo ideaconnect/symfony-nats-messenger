@@ -1044,6 +1044,53 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * @Given I have a messenger transport configured with scheduled messages enabled
+     */
+    public function iHaveAMessengerTransportConfiguredWithScheduledMessagesEnabled(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&scheduled_messages=true'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @When I send :count messages with :delay milliseconds delay to the transport
+     */
+    public function iSendMessagesWithDelayToTheTransport(int $count, int $delay): void
+    {
+        $this->messagesSent = $count;
+
+        $command = [
+            'php',
+            'bin/console',
+            'app:send-test-messages',
+            (string) $count,
+            '--delay=' . $delay,
+            '--env=test'
+        ];
+
+        $sendProcess = new Process($command, __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Failed to send delayed messages. Exit code: %d. Output: %s. Error: %s',
+                    $sendProcess->getExitCode(),
+                    $sendProcess->getOutput(),
+                    $sendProcess->getErrorOutput()
+                )
+            );
+        }
+    }
+
+    /**
      * Clean up after each scenario
      *
      * @AfterScenario
@@ -1426,6 +1473,9 @@ class NatsSetupContext implements Context
         }
     }
 
+    /**
+     * @Then the test files directory should contain :count files
+     */
     public function theTestFilesDirectoryShouldContainFiles(int $count): void
     {
         if (!is_dir($this->testFilesDir)) {

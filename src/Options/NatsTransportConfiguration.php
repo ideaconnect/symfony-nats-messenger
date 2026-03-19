@@ -25,6 +25,7 @@ final readonly class NatsTransportConfiguration
      * @param NatsClient           $client                  Pre-configured NATS client instance
      * @param array<string, mixed> $options                 Merged option map (method > DSN query > defaults)
      * @param bool                 $natsRetryHandlerEnabled True when retry handling is delegated to NATS (NAK mode)
+     * @param bool                 $scheduledMessagesEnabled True when delayed/scheduled message publishing is enabled
      */
     public function __construct(
         public string $topic,
@@ -32,6 +33,7 @@ final readonly class NatsTransportConfiguration
         public NatsClient $client,
         private array $options,
         private bool $natsRetryHandlerEnabled,
+        private bool $scheduledMessagesEnabled = false,
     ) {
     }
 
@@ -129,6 +131,17 @@ final readonly class NatsTransportConfiguration
     public function isNatsRetryHandlerEnabled(): bool
     {
         return $this->natsRetryHandlerEnabled;
+    }
+
+    /**
+     * Returns true when delayed/scheduled message publishing is enabled.
+     *
+     * When enabled, messages with a {@see \Symfony\Component\Messenger\Stamp\DelayStamp}
+     * are published as NATS scheduled messages (requires NATS 2.12+).
+     */
+    public function isScheduledMessagesEnabled(): bool
+    {
+        return $this->scheduledMessagesEnabled;
     }
 
     /**

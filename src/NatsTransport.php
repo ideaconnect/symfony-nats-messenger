@@ -8,6 +8,7 @@ use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\JetStreamException;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
+use IDCT\NATS\JetStream\Schedule;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Options\RetryHandler;
@@ -109,6 +110,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * the payload to the configured subject. When the serialized envelope includes
      * headers, uses request-with-headers and validates the JetStream publish ack.
      *
+     * When scheduled messages are enabled and the envelope carries a {@see DelayStamp},
+     * the message is published to a unique delayed subject with NATS schedule headers,
+     * causing JetStream to hold it until the scheduled time before delivering it to
+     * the original topic.
+     *
      * @throws RuntimeException If serialization fails due to an existing ErrorDetailsStamp,
      *                          or if JetStream returns a publish error.
      */
@@ -130,17 +136,27 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $payload = $this->stringValue($encodedMessage['body']);
         $headers = is_array($encodedMessage['headers'] ?? null) ? $encodedMessage['headers'] : [];
+        $topic = $this->topic;
+
+        $delayMs = $envelope->last(DelayStamp::class)?->getDelay() ?? 0;
+        if ($delayMs > 0 && $this->configuration->isScheduledMessagesEnabled()) {
+            $deliverAt = new \DateTimeImmutable('+' . $delayMs . ' milliseconds');
+            $headers['Nats-Schedule'] = Schedule::at($deliverAt);
+            $headers['Nats-Schedule-Target'] = $this->topic;
+            $topic = $this->topic . '.delayed.' . $uuid;
+        }
+
         $jetStream = $this->jetStream();
 
         if ($headers === []) {
-            $jetStream->publish($this->topic, $payload)->await();
+            $jetStream->publish($topic, $payload)->await();
         } else {
             $normalizedHeaders = [];
             foreach ($headers as $name => $value) {
                 $normalizedHeaders[(string) $name] = $this->stringValue($value);
             }
 
-            $reply = $this->client->requestWithHeaders($this->topic, $payload, $normalizedHeaders)->await();
+            $reply = $this->client->requestWithHeaders($topic, $payload, $normalizedHeaders)->await();
             $this->assertJetStreamPublishSucceeded($this->stringValue($reply->payload));
         }
 
@@ -317,15 +333,21 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $streamOptions['num_replicas'] = $this->configuration->streamReplicas();
             }
 
+            $subjects = [$this->topic];
+            if ($this->configuration->isScheduledMessagesEnabled()) {
+                $subjects[] = $this->topic . '.delayed.>';
+                $streamOptions['allow_msg_schedules'] = true;
+            }
+
             try {
-                $this->jetStream()->createStream($this->streamName, [$this->topic], $streamOptions)->await();
+                $this->jetStream()->createStream($this->streamName, $subjects, $streamOptions)->await();
             } catch (JetStreamException $streamCreateException) {
                 if (!$this->shouldUpdateExistingStream($streamCreateException)) {
                     throw $streamCreateException;
                 }
 
                 $this->jetStream()->updateStream($this->streamName, array_merge($streamOptions, [
-                    'subjects' => [$this->topic],
+                    'subjects' => $subjects,
                 ]))->await();
             }
 

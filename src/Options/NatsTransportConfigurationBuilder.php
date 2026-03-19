@@ -47,6 +47,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_MAX_MESSAGES->value => null,
         TransportOption::STREAM_REPLICAS->value => 1,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
+        TransportOption::SCHEDULED_MESSAGES->value => false,
         TransportOption::TLS_REQUIRED->value => false,
         TransportOption::TLS_HANDSHAKE_FIRST->value => false,
         TransportOption::TLS_CA_FILE->value => null,
@@ -107,6 +108,7 @@ final class NatsTransportConfigurationBuilder
             client: $client,
             options: $configuration,
             natsRetryHandlerEnabled: $configuration[TransportOption::RETRY_HANDLER->value] === RetryHandler::NATS->value,
+            scheduledMessagesEnabled: $this->toBool($configuration[TransportOption::SCHEDULED_MESSAGES->value]),
         );
     }
 

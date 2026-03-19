@@ -11,6 +11,7 @@ namespace IDCT\NatsMessenger\Options;
  * **Consumer & Batching:** CONSUMER, BATCHING, MAX_BATCH_TIMEOUT, CONNECTION_TIMEOUT
  * **Stream Limits:** STREAM_MAX_AGE, STREAM_MAX_BYTES, STREAM_MAX_MESSAGES, STREAM_REPLICAS
  * **Retry Strategy:** RETRY_HANDLER
+ * **Scheduling:** SCHEDULED_MESSAGES
  * **TLS:** TLS_REQUIRED, TLS_HANDSHAKE_FIRST, TLS_CA_FILE, TLS_CERT_FILE, TLS_KEY_FILE,
  *          TLS_KEY_PASSPHRASE, TLS_PEER_NAME, TLS_VERIFY_PEER
  * **Authentication:** TOKEN, JWT, NKEY, USERNAME, PASSWORD
@@ -26,6 +27,7 @@ enum TransportOption: string
     case STREAM_MAX_MESSAGES = 'stream_max_messages';
     case STREAM_REPLICAS = 'stream_replicas';
     case RETRY_HANDLER = 'retry_handler';
+    case SCHEDULED_MESSAGES = 'scheduled_messages';
 
     case TLS_REQUIRED = 'tls_required';
     case TLS_HANDSHAKE_FIRST = 'tls_handshake_first';

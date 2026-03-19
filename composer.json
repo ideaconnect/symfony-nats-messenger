@@ -15,6 +15,9 @@
         }
     ],
     "minimum-stability": "stable",
+    "config": {
+        "process-timeout": 600
+    },
     "require": {
         "php": "^8.2",
         "symfony/framework-bundle": "^7 || ^8",

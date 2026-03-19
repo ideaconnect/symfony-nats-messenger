@@ -279,4 +279,34 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         self::assertEqualsCanonicalizing($enumValues, array_keys($defaultOptions));
     }
+
+    public function testBuildWithScheduledMessagesEnabledSetsFlag(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            ['scheduled_messages' => true]
+        );
+
+        self::assertTrue($configuration->isScheduledMessagesEnabled());
+    }
+
+    public function testBuildWithScheduledMessagesDisabledByDefault(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            []
+        );
+
+        self::assertFalse($configuration->isScheduledMessagesEnabled());
+    }
+
+    public function testBuildWithScheduledMessagesFromDsnQueryString(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://admin:password@localhost:4222/test-stream/test-topic?scheduled_messages=1',
+            []
+        );
+
+        self::assertTrue($configuration->isScheduledMessagesEnabled());
+    }
 }

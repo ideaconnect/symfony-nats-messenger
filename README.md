@@ -252,6 +252,11 @@ framework:
                                             # symfony => TERM on failed/rejected message
                                             # nats    => NAK on failed/rejected message
 
+          # Scheduled / Delayed Messages (requires NATS >= 2.12)
+          scheduled_messages: false         # Enable scheduled message support (default: false)
+                                            # When enabled, Symfony DelayStamp triggers NATS
+                                            # scheduled message delivery via Nats-Schedule headers
+
           # TLS Configuration
           tls_required: false               # Force TLS for NATS connection (default: false)
           tls_handshake_first: false        # Use TLS-first handshake mode (default: false)
@@ -552,6 +557,37 @@ Then call setup command:
 ```bash
 symfony console messenger:setup-transports nats_transport
 ```
+
+### Delayed / Scheduled Messages
+
+**Requires NATS Server >= 2.12** with JetStream enabled.
+
+Enable `scheduled_messages` in the DSN to use Symfony's `DelayStamp` for deferred delivery:
+
+```yaml
+framework:
+  messenger:
+    transports:
+      nats_transport:
+        dsn: 'nats-jetstream://localhost/my-stream/my-topic?scheduled_messages=true'
+```
+
+Then dispatch messages with a delay:
+
+```php
+use Symfony\Component\Messenger\Stamp\DelayStamp;
+
+// Deliver after 30 seconds
+$bus->dispatch(new MyMessage(), [new DelayStamp(30000)]);
+```
+
+When `scheduled_messages` is enabled and a `DelayStamp` is present:
+- The message is published to a `{topic}.delayed.{uuid}` subject with `Nats-Schedule` and `Nats-Schedule-Target` headers
+- The stream is created with an additional `{topic}.delayed.>` subject and `allow_msg_schedules` enabled
+- NATS holds the message and delivers it to the original topic at the scheduled time
+- The consumer processes it like any other message
+
+When `scheduled_messages` is disabled (the default), any `DelayStamp` on the envelope is silently ignored and messages are published immediately.
 
 This will:
 1. Create the stream with configured settings

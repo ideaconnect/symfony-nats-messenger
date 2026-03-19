@@ -76,4 +76,41 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertSame(100, $configuration->streamMaxMessages());
         self::assertSame(2, $configuration->streamReplicas());
     }
+
+    public function testScheduledMessagesAccessorReturnsConstructorValue(): void
+    {
+        $enabled = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: [],
+            natsRetryHandlerEnabled: false,
+            scheduledMessagesEnabled: true,
+        );
+
+        $disabled = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: [],
+            natsRetryHandlerEnabled: false,
+            scheduledMessagesEnabled: false,
+        );
+
+        self::assertTrue($enabled->isScheduledMessagesEnabled());
+        self::assertFalse($disabled->isScheduledMessagesEnabled());
+    }
+
+    public function testScheduledMessagesDefaultsToFalse(): void
+    {
+        $configuration = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: [],
+            natsRetryHandlerEnabled: false,
+        );
+
+        self::assertFalse($configuration->isScheduledMessagesEnabled());
+    }
 }
