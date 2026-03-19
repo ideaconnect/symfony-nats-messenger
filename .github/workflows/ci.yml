@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, road_to_stable ]
+    branches: [ main, new-client ]
   pull_request:
-    branches: [ main, road_to_stable ]
+    branches: [ main, new-client ]
 
 jobs:
   test:
@@ -17,7 +17,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Setup PHP
       uses: shivammathur/setup-php@v2
@@ -49,42 +49,33 @@ jobs:
     - name: Run static analysis and fast unit tests
       run: composer test
 
-    - name: Start NATS server
+    - name: Start NATS servers
       run: |
         composer nats:start
         sleep 10
-        # Wait for NATS to be ready with multiple checks
+
+        # Wait for all NATS servers to be ready
+        echo "Waiting for NATS (plain) on port 4222..."
         timeout 60 bash -c 'until nc -z localhost 4222; do sleep 2; done'
-        echo "NATS server is ready on port 4222"
+        echo "Waiting for NATS (TLS) on port 4223..."
+        timeout 60 bash -c 'until nc -z localhost 4223; do sleep 2; done'
+        echo "Waiting for NATS (mTLS) on port 4224..."
+        timeout 60 bash -c 'until nc -z localhost 4224; do sleep 2; done'
+        echo "All NATS servers are ready"
 
-        # Verify NATS is responding
+        # Verify monitoring endpoints
         timeout 10 bash -c 'until curl -f http://localhost:8223/varz > /dev/null 2>&1; do sleep 1; done' || echo "NATS monitoring not available"
+        timeout 10 bash -c 'until curl -f http://localhost:8224/varz > /dev/null 2>&1; do sleep 1; done' || echo "NATS TLS monitoring not available"
+        timeout 10 bash -c 'until curl -f http://localhost:8225/varz > /dev/null 2>&1; do sleep 1; done' || echo "NATS mTLS monitoring not available"
 
-        # Show NATS server status
-        docker logs nats_test || echo "Could not get NATS logs"
-
-    - name: Verify NATS is running
-      run: |
-        docker ps | grep nats || echo "No NATS container found"
-        curl -f http://localhost:8223/varz | head -20 || echo "NATS monitoring endpoint not responding"
-        # Test basic NATS connectivity
-        timeout 5 bash -c 'nc -zv localhost 4222' || echo "NATS port 4222 not accessible"
+        # Show container status
+        docker ps --filter "name=nats"
 
     - name: Run unit tests with coverage
       run: composer test:unit
 
     - name: Check coverage threshold (90%)
-      run: |
-        php -r "
-          \$xml = simplexml_load_file('clover.xml');
-          \$m = \$xml->project->metrics;
-          \$stmts = (int)\$m['statements'];
-          \$covered = (int)\$m['coveredstatements'];
-          \$pct = \$stmts > 0 ? (\$covered / \$stmts) * 100 : 0;
-          printf(\"Coverage: %.2f%% (%d/%d statements)\n\", \$pct, \$covered, \$stmts);
-          if (\$pct < 90) { fwrite(STDERR, \"❌ Below 90% threshold\n\"); exit(1); }
-          echo \"✅ Meets 90% threshold\n\";
-        "
+      run: composer coverage:check
 
     - name: Install functional test dependencies
       run: composer test:functional:setup
@@ -98,26 +89,24 @@ jobs:
       env:
         APP_ENV: test
         NATS_DSN: nats://localhost:4222
-      run: |
-        cd tests/functional
-        chmod +x run-benchmark.sh
-        # Run benchmark with a smaller message count for CI
-        ./run-benchmark.sh --count 1000
+      run: composer test:benchmark -- --count 1000
       continue-on-error: true  # Don't fail the entire workflow if benchmark fails
 
     - name: Collect logs on failure
       if: failure()
       run: |
         echo "=== NATS Container Logs ==="
-        docker logs nats_test || echo "Could not get NATS logs"
+        docker logs nats_test || echo "Could not get NATS plain logs"
+        docker logs nats_test_tls || echo "Could not get NATS TLS logs"
+        docker logs nats_test_mtls || echo "Could not get NATS mTLS logs"
         echo "=== Docker Containers ==="
         docker ps -a
         echo "=== Network Status ==="
-        netstat -tlnp | grep :4222 || echo "Port 4222 not listening"
+        netstat -tlnp | grep -E ':422[234]' || echo "NATS ports not listening"
 
     - name: Upload coverage reports
-      uses: actions/upload-artifact@v4
-      if: matrix.php-version == '8.4'
+      uses: actions/upload-artifact@v7
+      if: matrix.php-version == '8.5'
       with:
         name: coverage-report
         path: |
@@ -126,8 +115,8 @@ jobs:
         retention-days: 5
 
     - name: Upload benchmark results
-      uses: actions/upload-artifact@v4
-      if: matrix.php-version == '8.4'
+      uses: actions/upload-artifact@v7
+      if: matrix.php-version == '8.5'
       with:
         name: benchmark-results
         path: tests/functional/benchmark-*.txt

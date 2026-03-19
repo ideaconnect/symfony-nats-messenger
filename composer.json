@@ -39,6 +39,8 @@
             "@analyse",
             "@test:unit:fast"
         ],
+        "coverage:check": "php -r \"\\$xml = simplexml_load_file('clover.xml'); \\$m = \\$xml->project->metrics; \\$stmts = (int)\\$m['statements']; \\$covered = (int)\\$m['coveredstatements']; \\$pct = \\$stmts > 0 ? (\\$covered / \\$stmts) * 100 : 0; printf(\\\"Coverage: %.2f%% (%d/%d statements)\\n\\\", \\$pct, \\$covered, \\$stmts); if (\\$pct < 90) { fwrite(STDERR, \\\"Below 90% threshold\\n\\\"); exit(1); } echo \\\"Meets 90% threshold\\n\\\";\"",
+        "test:benchmark": "cd tests/functional && chmod +x run-benchmark.sh && ./run-benchmark.sh",
         "test:functional": "cd tests/functional && vendor/bin/behat",
         "test:functional:setup": "cd tests/functional && composer install --prefer-dist --no-progress",
         "test:unit": "XDEBUG_MODE=coverage ./vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-clover clover.xml --coverage-text --colors=never --coverage-html coverage",
