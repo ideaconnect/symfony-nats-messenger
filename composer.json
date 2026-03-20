@@ -22,7 +22,7 @@
         "php": "^8.2",
         "symfony/framework-bundle": "^7 || ^8",
         "symfony/messenger": "^7.2 || ^8.0",
-        "idct/php-nats-jetstream-client": "dev-main",
+        "idct/php-nats-jetstream-client": "^1",
         "symfony/uid": "^7.2 || ^8.0"
     },
     "require-dev": {
