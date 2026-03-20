@@ -1,6 +1,6 @@
 # Symfony NATS Messenger Bridge
 
-[![PHP Version](https://img.shields.io/badge/PHP-^8.1-787CB5?logo=php&logoColor=white)](https://php.net)
+[![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
 [![Unit Tests Coverage](https://img.shields.io/badge/Coverage-95.97%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
@@ -36,18 +36,9 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 ## Requirements
 
 ### System Requirements
-- **PHP**: ^8.1
-- **Symfony**: ^7.2
-- **NATS Server**: ^2.9 with JetStream enabled
-
-### PHP Dependencies
-- `symfony/framework-bundle`: ^7.2
-- `symfony/messenger`: ^7.2
-- `symfony/uid`: ^7.2
-- `basis-company/nats`: ^1
-
-### Optional
-- `phpunit/phpunit`: ^9.5 (for running tests)
+- **PHP**: ^8.2
+- **Symfony**: ^7.2 || ^8
+- **NATS Server**: ^2.9 with JetStream enabled, ^2.12 for scheduled messages support.
 
 ## Installation
 
