@@ -37,6 +37,26 @@ class TestableEnveloperSerializer extends AbstractEnveloperSerializer
     }
 }
 
+/**
+ * Mirrors the exact custom serializer example from README.md.
+ * This class must compile and work correctly — if the AbstractEnveloperSerializer API
+ * changes (method signatures, return types), this test class will break, catching drift.
+ */
+class ReadmeExampleSerializer extends AbstractEnveloperSerializer
+{
+    protected function serialize(Envelope $envelope): string
+    {
+        // Your custom serialization logic
+        return serialize($envelope);
+    }
+
+    protected function deserialize(string $data): mixed
+    {
+        // Your custom deserialization logic
+        return unserialize($data);
+    }
+}
+
 class AbstractEnveloperSerializerTest extends TestCase
 {
     private TestableEnveloperSerializer $serializer;
@@ -176,5 +196,45 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->assertArrayHasKey('headers', $result);
         $this->assertIsArray($result['headers']);
         $this->assertEmpty($result['headers']);
+    }
+
+    #[Test]
+    public function readmeCustomSerializerExample_EncodeDecode_RoundTrips(): void
+    {
+        $serializer = new ReadmeExampleSerializer();
+
+        $message = new \stdClass();
+        $message->id = 42;
+        $message->text = 'README example';
+        $stamp = new BusNameStamp('readme-bus');
+        $envelope = new Envelope($message, [$stamp]);
+
+        $encoded = $serializer->encode($envelope);
+
+        $this->assertIsArray($encoded);
+        $this->assertArrayHasKey('body', $encoded);
+        $this->assertIsString($encoded['body']);
+        $this->assertNotEmpty($encoded['body']);
+        $this->assertArrayHasKey('headers', $encoded);
+
+        $decoded = $serializer->decode($encoded);
+
+        $this->assertInstanceOf(Envelope::class, $decoded);
+        $this->assertEquals(42, $decoded->getMessage()->id);
+        $this->assertEquals('README example', $decoded->getMessage()->text);
+
+        $busStamp = $decoded->last(BusNameStamp::class);
+        $this->assertInstanceOf(BusNameStamp::class, $busStamp);
+        $this->assertEquals('readme-bus', $busStamp->getBusName());
+    }
+
+    #[Test]
+    public function readmeCustomSerializerExample_DecodeInvalidBody_ThrowsException(): void
+    {
+        $serializer = new ReadmeExampleSerializer();
+
+        $this->expectException(MessageDecodingFailedException::class);
+
+        $serializer->decode(['body' => '']);
     }
 }

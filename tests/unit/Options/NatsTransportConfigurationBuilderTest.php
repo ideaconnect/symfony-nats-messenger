@@ -517,4 +517,288 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         (new NatsTransportConfigurationBuilder())->build('nats:///stream/topic', []);
     }
+
+    /**
+     * Verifies that every exact DSN string from README.md parses without error.
+     *
+     * @dataProvider readmeDsnExamplesProvider
+     */
+    public function testReadmeDsnExamplesParseSuccessfully(string $dsn, string $expectedStream, string $expectedTopic): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, []);
+
+        self::assertInstanceOf(NatsTransportConfiguration::class, $configuration);
+        self::assertSame($expectedStream, $configuration->streamName);
+        self::assertSame($expectedTopic, $configuration->topic);
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string}>
+     */
+    public static function readmeDsnExamplesProvider(): iterable
+    {
+        yield 'README: default port' => [
+            'nats-jetstream://localhost/my-stream/my-topic',
+            'my-stream',
+            'my-topic',
+        ];
+
+        yield 'README: custom port' => [
+            'nats-jetstream://localhost:5000/my-stream/my-topic',
+            'my-stream',
+            'my-topic',
+        ];
+
+        yield 'README: with authentication' => [
+            'nats-jetstream://user:password@localhost:4222/my-stream/my-topic',
+            'my-stream',
+            'my-topic',
+        ];
+
+        yield 'README: with query parameters' => [
+            'nats-jetstream://localhost/my-stream/my-topic?consumer=worker&batching=10',
+            'my-stream',
+            'my-topic',
+        ];
+
+        yield 'README: TLS scheme' => [
+            'nats-jetstream+tls://localhost:4222/my-stream/my-topic',
+            'my-stream',
+            'my-topic',
+        ];
+
+        yield 'README: quick-start transport' => [
+            'nats-jetstream://localhost:4222/my-stream/my-topic',
+            'my-stream',
+            'my-topic',
+        ];
+
+        yield 'README: multi-subject orders' => [
+            'nats-jetstream://localhost/events/orders',
+            'events',
+            'orders',
+        ];
+
+        yield 'README: multi-subject payments' => [
+            'nats-jetstream://localhost/events/payments',
+            'events',
+            'payments',
+        ];
+
+        yield 'README: fast transport' => [
+            'nats-jetstream://localhost/fast-stream/fast-topic',
+            'fast-stream',
+            'fast-topic',
+        ];
+
+        yield 'README: bulk transport' => [
+            'nats-jetstream://localhost/bulk-stream/bulk-topic',
+            'bulk-stream',
+            'bulk-topic',
+        ];
+
+        yield 'README: audit transport' => [
+            'nats-jetstream://localhost/audit-stream/audit-topic',
+            'audit-stream',
+            'audit-topic',
+        ];
+
+        yield 'README: scheduled messages DSN' => [
+            'nats-jetstream://localhost/my-stream/my-topic?scheduled_messages=true',
+            'my-stream',
+            'my-topic',
+        ];
+    }
+
+    /**
+     * Verifies that all option values from the README "Configuration Options" YAML example
+     * are accepted by the builder and produce the expected configuration.
+     */
+    public function testReadmeConfigurationOptionsAreAccepted(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats-jetstream://localhost:4222/my-stream/my-topic',
+            [
+                'consumer' => 'my-consumer',
+                'batching' => 5,
+                'max_batch_timeout' => 1.0,
+                'connection_timeout' => 1.0,
+                'stream_max_age' => 86400,
+                'stream_max_bytes' => 1073741824,
+                'stream_max_messages' => 1000000,
+                'stream_max_messages_per_subject' => 1000,
+                'stream_storage' => 'file',
+                'stream_replicas' => 1,
+                'retry_handler' => 'symfony',
+                'scheduled_messages' => false,
+            ]
+        );
+
+        self::assertSame('my-consumer', $configuration->consumer());
+        self::assertSame(5, $configuration->batching());
+        self::assertSame(1000, $configuration->maxBatchTimeoutMs());
+        self::assertSame(86400, $configuration->streamMaxAgeSeconds());
+        self::assertSame(1073741824, $configuration->streamMaxBytes());
+        self::assertSame(1000000, $configuration->streamMaxMessages());
+        self::assertSame(1000, $configuration->streamMaxMessagesPerSubject());
+        self::assertSame('file', $configuration->streamStorage()->value);
+        self::assertSame(1, $configuration->streamReplicas());
+        self::assertSame(RetryHandler::SYMFONY, $configuration->retryHandler());
+        self::assertFalse($configuration->isScheduledMessagesEnabled());
+    }
+
+    /**
+     * Verifies that README batching examples (1, 5, 20, 50) are all accepted.
+     */
+    public function testReadmeBatchingExamplesAreAccepted(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        foreach ([1, 5, 10, 20, 50] as $batchSize) {
+            $configuration = $builder->build(self::VALID_DSN, ['batching' => $batchSize]);
+            self::assertSame($batchSize, $configuration->batching(), "Batching {$batchSize} should be accepted");
+        }
+    }
+
+    /**
+     * Verifies that README timeout examples are accepted.
+     */
+    public function testReadmeTimeoutExamplesAreAccepted(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        // max_batch_timeout examples: 0.5, 1.0, 2.0 (seconds → milliseconds)
+        $timeoutCases = [[0.5, 500], [1.0, 1000], [2.0, 2000]];
+        foreach ($timeoutCases as [$timeout, $expectedMs]) {
+            $configuration = $builder->build(self::VALID_DSN, ['max_batch_timeout' => $timeout]);
+            self::assertSame($expectedMs, $configuration->maxBatchTimeoutMs(), "max_batch_timeout {$timeout} should produce {$expectedMs}ms");
+        }
+
+        // connection_timeout examples: 1.0, 2.0, 3.0
+        foreach ([1.0, 2.0, 3.0] as $timeout) {
+            $configuration = $builder->build(self::VALID_DSN, ['connection_timeout' => $timeout]);
+            self::assertNotNull($configuration, "connection_timeout {$timeout} should be accepted");
+        }
+    }
+
+    /**
+     * Verifies that README stream retention policy examples are accepted.
+     */
+    public function testReadmeStreamRetentionExamplesAreAccepted(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        // stream_max_age: 86400 (24h) and 0 (unlimited)
+        $config = $builder->build(self::VALID_DSN, ['stream_max_age' => 86400]);
+        self::assertSame(86400, $config->streamMaxAgeSeconds());
+
+        $config = $builder->build(self::VALID_DSN, ['stream_max_age' => 0]);
+        self::assertSame(0, $config->streamMaxAgeSeconds());
+
+        // stream_max_bytes: 1073741824 (1GB)
+        $config = $builder->build(self::VALID_DSN, ['stream_max_bytes' => 1073741824]);
+        self::assertSame(1073741824, $config->streamMaxBytes());
+
+        // stream_max_messages: 1000000
+        $config = $builder->build(self::VALID_DSN, ['stream_max_messages' => 1000000]);
+        self::assertSame(1000000, $config->streamMaxMessages());
+
+        // stream_max_messages_per_subject: 1000
+        $config = $builder->build(self::VALID_DSN, ['stream_max_messages_per_subject' => 1000]);
+        self::assertSame(1000, $config->streamMaxMessagesPerSubject());
+
+        // stream_replicas: 1 and 3
+        $config = $builder->build(self::VALID_DSN, ['stream_replicas' => 1]);
+        self::assertSame(1, $config->streamReplicas());
+
+        $config = $builder->build(self::VALID_DSN, ['stream_replicas' => 3]);
+        self::assertSame(3, $config->streamReplicas());
+
+        // stream_storage: 'file' and 'memory'
+        $config = $builder->build(self::VALID_DSN, ['stream_storage' => 'file']);
+        self::assertSame('file', $config->streamStorage()->value);
+
+        $config = $builder->build(self::VALID_DSN, ['stream_storage' => 'memory']);
+        self::assertSame('memory', $config->streamStorage()->value);
+    }
+
+    /**
+     * Verifies README query parameter DSN example produces correct option values.
+     */
+    public function testReadmeQueryParamDsnProducesCorrectValues(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats-jetstream://localhost/my-stream/my-topic?consumer=worker&batching=10',
+            []
+        );
+
+        self::assertSame('worker', $configuration->consumer());
+        self::assertSame(10, $configuration->batching());
+    }
+
+    /**
+     * Verifies README scheduled messages DSN example enables the feature.
+     */
+    public function testReadmeScheduledMessagesDsnEnablesFeature(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats-jetstream://localhost/my-stream/my-topic?scheduled_messages=true',
+            []
+        );
+
+        self::assertTrue($configuration->isScheduledMessagesEnabled());
+    }
+
+    /**
+     * Verifies README multi-subject delayed DSN example with options.
+     */
+    public function testReadmeMultiSubjectOptionsAreAccepted(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        // Orders transport
+        $config = $builder->build('nats-jetstream://localhost/events/orders', [
+            'consumer' => 'order-consumer',
+            'delay' => 0.5,
+            'batching' => 1,
+            'stream_max_age' => 300,
+        ]);
+        self::assertSame('events', $config->streamName);
+        self::assertSame('orders', $config->topic);
+        self::assertSame('order-consumer', $config->consumer());
+        self::assertSame(1, $config->batching());
+        self::assertSame(300, $config->streamMaxAgeSeconds());
+
+        // Payments transport
+        $config = $builder->build('nats-jetstream://localhost/events/payments', [
+            'consumer' => 'payment-consumer',
+            'delay' => 1,
+            'batching' => 2,
+        ]);
+        self::assertSame('events', $config->streamName);
+        self::assertSame('payments', $config->topic);
+        self::assertSame('payment-consumer', $config->consumer());
+        self::assertSame(2, $config->batching());
+    }
+
+    /**
+     * Verifies README audit transport example with retention and HA options.
+     */
+    public function testReadmeAuditTransportOptionsAreAccepted(): void
+    {
+        $config = (new NatsTransportConfigurationBuilder())->build(
+            'nats-jetstream://localhost/audit-stream/audit-topic',
+            [
+                'consumer' => 'audit-consumer',
+                'stream_max_age' => 2592000,
+                'stream_replicas' => 3,
+            ]
+        );
+
+        self::assertSame('audit-stream', $config->streamName);
+        self::assertSame('audit-topic', $config->topic);
+        self::assertSame('audit-consumer', $config->consumer());
+        self::assertSame(2592000, $config->streamMaxAgeSeconds());
+        self::assertSame(3, $config->streamReplicas());
+    }
 }

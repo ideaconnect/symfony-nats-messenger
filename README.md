@@ -46,6 +46,8 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 composer require idct/symfony-nats-messenger
 ```
 
+> **Operational note:** This is the package installation command, not a runtime behavior covered by the library test suite. The installed package is exercised by the unit and functional tests documented below.
+
 ### Development Setup
 
 For contributors and development:
@@ -73,6 +75,8 @@ composer test:functional
 composer nats:stop
 ```
 
+> **Verification note:** This is the repository verification workflow used for this package. The same command sequence is run when validating documentation and code changes in this repository.
+
 ## Quick Start
 
 ### 1. Configure NATS Server
@@ -82,6 +86,8 @@ Ensure your NATS server has JetStream enabled:
 ```bash
 nats-server -js
 ```
+
+> **Operational note:** Starting `nats-server -js` is an environment prerequisite rather than package behavior. Automated coverage begins once JetStream is available and the transport is exercised by the functional scenarios below.
 
 ### 2. Set Up Transport in Symfony
 
@@ -102,6 +108,8 @@ framework:
     routing:
       'App\Message\MyAsyncMessage': nats_transport
 ```
+
+> **Tested by:** `testReadmeDsnExamplesParseSuccessfully[README: quick-start transport]`, `testReadmeConfigurationOptionsAreAccepted`, `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`
 
 ### 3. Configure Custom Serializers (Optional)
 
@@ -134,6 +142,8 @@ or:
     IDCT\NatsMessenger\Serializer\IgbinarySerializer: ~
 ```
 
+> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`
+
 #### Creating Custom Serializers
 
 You can create your own serializer by extending `AbstractEnveloperSerializer`:
@@ -158,6 +168,8 @@ class MyCustomSerializer extends AbstractEnveloperSerializer
 }
 ```
 
+> **Tested by:** `readmeCustomSerializerExample_EncodeDecode_RoundTrips`, `readmeCustomSerializerExample_DecodeInvalidBody_ThrowsException` — the exact code above is compiled and exercised via `ReadmeExampleSerializer` in the unit tests.
+
 For reference implementations, see:
 - `src/Serializer/IgbinarySerializer.php` - Binary serialization
 - `src/Serializer/AbstractEnveloperSerializer.php` - Base class
@@ -179,6 +191,8 @@ class MyController
 }
 ```
 
+> **Tested by:** `testSendPublishesEncodedBodyWithoutHeaders`, `testSendUsesRequestWithHeadersWhenHeadersArePresent`, Behat scenario `Complete message flow - send, check stats, consume, verify`
+
 ### 5. Handle Messages
 
 ```php
@@ -194,11 +208,15 @@ class MyAsyncMessageHandler implements MessageHandlerInterface
 }
 ```
 
+> **Tested by:** Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, and `High-volume message processing with file output verification` — handlers are exercised through real `messenger:consume` runs.
+
 ### 6. Consume Messages
 
 ```bash
 symfony console messenger:consume nats_transport
 ```
+
+> **Tested by:** Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, and `Partial message consumption with multiple consumers` — the Behat context runs `messenger:consume` as a Symfony CLI process.
 
 ## Configuration Guide
 
@@ -207,6 +225,8 @@ symfony console messenger:consume nats_transport
 ```
 nats-jetstream://[user:password@]host:port/stream-name/topic-name
 ```
+
+> **Tested by:** `testBuildWithValidDsnReturnsConfiguration`, `testBuildWithoutPathThrowsException`, `testBuildWithoutTopicThrowsException`, `createTransport_WithValidDsn_ReturnsNatsTransportInstance`
 
 **Examples:**
 
@@ -226,6 +246,8 @@ nats-jetstream://localhost/my-stream/my-topic?consumer=worker&batching=10
 # TLS transport scheme
 nats-jetstream+tls://localhost:4222/my-stream/my-topic
 ```
+
+> **Tested by:** `testReadmeDsnExamplesParseSuccessfully` — each DSN above is parsed through the configuration builder via a dedicated data provider case.
 
 ### Configuration Options
 
@@ -284,10 +306,14 @@ framework:
           nkey: null                        # NKey public value
 ```
 
+> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`
+
 ### Retry Handler Behavior
 
 - `retry_handler: symfony` (default) sends `TERM` when a message fails during transport decoding or is rejected.
 - `retry_handler: nats` sends `NAK` when a message fails during transport decoding or is rejected.
+
+> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testBuildUsesRetryHandlerFromQuery`, Behat scenarios `nats_nak.feature` and `nats_term.feature`
 
 ## Important: Consumer Strategies
 
@@ -324,6 +350,8 @@ transports:
 - NATS handles message distribution
 - Guaranteed single processing per message
 
+> **Tested by:** `testReadmeBatchingExamplesAreAccepted` (batching=1), Behat scenario `Partial message consumption with multiple consumers`
+
 ### ✅ Strategy B: Different Consumers, Any Batching
 
 **Use when:** Each instance needs independent message processing (duplicates allowed)
@@ -355,6 +383,8 @@ transports:
 - Multiple independent processors
 - Audit logging / event replay
 
+> **Tested by:** `testReadmeBatchingExamplesAreAccepted` (batching=10), Behat scenario `Partial message consumption with multiple consumers`
+
 ## Batching & Timeouts
 
 ### Batching Explained
@@ -370,6 +400,8 @@ options:
   batching: 20       # Fetch 20 messages (high throughput)
 ```
 
+> **Tested by:** `testReadmeBatchingExamplesAreAccepted` — values 1, 5, 10, 20, 50 are all verified.
+
 ### Batch Timeout
 
 Controls how long to wait for a batch to fill:
@@ -380,6 +412,8 @@ options:
   max_batch_timeout: 0.5  # Wait max 0.5s for batch to fill
                           # Returns early if timeout reached
 ```
+
+> **Tested by:** `testReadmeTimeoutExamplesAreAccepted` — values 0.5, 1.0, 2.0 are verified. Behat scenarios `nats_batching.feature`.
 
 **Example scenarios:**
 - If you set `batching: 10` and `max_batch_timeout: 0.5`
@@ -394,6 +428,8 @@ Controls the socket-level I/O timeout for all NATS operations:
 options:
   connection_timeout: 2.0  # Socket timeout in seconds
 ```
+
+> **Tested by:** `testReadmeTimeoutExamplesAreAccepted` (1.0, 2.0, 3.0), `testBuildWithConnectionTimeoutPropagatesMs`
 
 **Purpose:**
 - Sets the timeout for socket read/write operations
@@ -434,6 +470,8 @@ options:
   stream_max_messages_per_subject: null
 ```
 
+> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` — all retention options above are verified. Behat scenarios `nats_stream_limits.feature`.
+
 > **Note:** `stream_max_messages` limits the total number of messages stored in the stream (maps to NATS `max_msgs`), while `stream_max_messages_per_subject` limits messages retained per individual subject (maps to NATS `max_msgs_per_subject`). The per-subject limit is especially useful with [multi-subject streams](#multi-subject-streams) to prevent one high-volume subject from dominating retention.
 
 ### High Availability
@@ -446,6 +484,8 @@ options:
   # 3 replicas (recommended for production)
   stream_replicas: 3
 ```
+
+> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`
 
 ## Testing
 
@@ -467,6 +507,8 @@ composer test:unit
 # Or run tests manually
 ./vendor/bin/phpunit
 ```
+
+> **Verification note:** This block documents the supported contributor workflow. The same `composer test` and `composer test:unit` commands are used to verify changes in this repository.
 
 The target is to have at least 90% of code coverage.
 
@@ -496,6 +538,8 @@ composer test:functional
 composer nats:stop
 ```
 
+> **Verification note:** This is the scripted functional test workflow used for the transport's end-to-end verification.
+
 **Manual approach:**
 ```bash
 # Set up NATS in Docker (optional)
@@ -510,6 +554,8 @@ cd ../functional
 cd ../nats
 docker-compose down
 ```
+
+> **Operational note:** This manual Docker/Behat flow mirrors the scripted functional commands above and is not asserted separately by the package tests.
 
 **What's tested:**
 - Message publishing
@@ -553,6 +599,8 @@ framework:
           stream_replicas: 3
 ```
 
+> **Tested by:** `testReadmeDsnExamplesParseSuccessfully[README: fast transport]`, `testReadmeDsnExamplesParseSuccessfully[README: bulk transport]`, `testReadmeDsnExamplesParseSuccessfully[README: audit transport]`, `testReadmeAuditTransportOptionsAreAccepted`, `testReadmeBatchingExamplesAreAccepted`
+
 ### Multi-Subject Streams
 
 Multiple transports can share the same NATS stream with different subjects. When `messenger:setup-transports` runs, each transport adds its subject to the existing stream rather than overwriting it:
@@ -580,6 +628,8 @@ framework:
 
 The `events` stream will have both `orders` and `payments` as subjects.
 
+> **Tested by:** `testReadmeDsnExamplesParseSuccessfully[README: multi-subject orders]`, `testReadmeDsnExamplesParseSuccessfully[README: multi-subject payments]`, `testReadmeMultiSubjectOptionsAreAccepted`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenario `Setup command merges subjects for transports sharing one stream`
+
 > **Note:** When a stream already exists, setup reads the current JetStream configuration, merges in any new subjects, and then overlays the stream settings managed by this transport. Existing subjects are preserved, duplicate subjects are not added, and the existing storage backend is kept for already-created streams.
 
 ### Setup on Initialization
@@ -601,6 +651,8 @@ Then call setup command:
 ```bash
 symfony console messenger:setup-transports nats_transport
 ```
+
+> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, and `Custom consumer name is registered in JetStream`
 
 ### Delayed / Scheduled Messages
 
@@ -624,6 +676,8 @@ use Symfony\Component\Messenger\Stamp\DelayStamp;
 // Deliver after 30 seconds
 $bus->dispatch(new MyMessage(), [new DelayStamp(30000)]);
 ```
+
+> **Tested by:** `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders`, `testReadmeScheduledMessagesDsnEnablesFeature`, Behat scenario `Delayed messages are delivered after the scheduled time`
 
 When `scheduled_messages` is enabled and a `DelayStamp` is present:
 - The message is published to a `{topic}.delayed.{uuid}` subject with `Nats-Schedule` and `Nats-Schedule-Target` headers
@@ -659,6 +713,8 @@ nats consumer info my-stream my-consumer
 nats consumer info my-stream my-consumer --json | jq '.state.num_pending'
 ```
 
+> **Operational note:** These are NATS CLI inspection commands, so this package does not assert their exact textual output directly. The underlying stream, consumer, and message-count state is covered by Behat scenarios `Setup NATS stream with max age configuration`, `Custom consumer name is registered in JetStream`, `Complete message flow - send, check stats, consume, verify`, and the `getMessageCount()` unit tests.
+
 ### Manual Message Operations
 
 ```php
@@ -674,6 +730,8 @@ if ($count > 0) {
 }
 ```
 
+> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountReturnsAckPendingWhenHigherThanPending`
+
 ## Troubleshooting
 
 ### Connection Issues
@@ -687,11 +745,15 @@ nats-server --js
 nats-jetstream://localhost:4222/stream/topic
 ```
 
+> **Tested by:** Behat scenario `Setup command fails gracefully when NATS is unavailable`
+
 **Error: "Stream not found"**
 ```bash
 # Run setup command to create stream
 symfony console messenger:setup-transports nats_transport
 ```
+
+> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupUpdatesStreamWhenItAlreadyExists`, Behat scenarios `Setup NATS stream with max age configuration` and `Setup command handles existing streams gracefully`
 
 ### Message Processing Issues
 
@@ -707,12 +769,16 @@ nats consumer info my-stream my-consumer
 nats consumer info my-stream my-consumer --json | jq '.state'
 ```
 
+> **Operational note:** These are manual diagnosis commands. The actual consume path is covered by Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, and `Partial message consumption with multiple consumers`.
+
 **Messages stuck in pending**
 ```bash
 # Check handler is not throwing exceptions
 # Verify handler implementation
 # Check application logs for errors
 ```
+
+> **Operational note:** This checklist is manual guidance. Pending-count behavior is covered by `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsAckPendingWhenHigherThanPending`, and Behat scenario `Complete message flow - send, check stats, consume, verify`.
 
 ## Architecture
 
@@ -824,6 +890,8 @@ composer test:functional
 # 5. Clean up
 composer nats:stop
 ```
+
+> **Verification note:** This is the exact end-to-end verification sequence required for repository changes and the same sequence used for this task.
 
 ## License
 
