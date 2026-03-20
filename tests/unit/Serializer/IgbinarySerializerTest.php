@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace IDCT\NatsMessenger\Tests\Unit\Serializer;
 
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
@@ -23,9 +24,7 @@ class IgbinarySerializerTest extends TestCase
         $this->serializer = new IgbinarySerializer();
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function serialize_WithValidEnvelope_ReturnsSerializedString(): void
     {
         $message = new \stdClass();
@@ -47,9 +46,7 @@ class IgbinarySerializerTest extends TestCase
         $this->assertEquals($message->data, $unserialized->getMessage()->data);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function serialize_WithEnvelopeContainingStamps_PreservesStamps(): void
     {
         $message = new \stdClass();
@@ -72,9 +69,7 @@ class IgbinarySerializerTest extends TestCase
         $this->assertEquals('test-bus', $busStamp->getBusName());
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function deserialize_WithValidSerializedData_ReturnsOriginalData(): void
     {
         $originalData = ['key' => 'value', 'number' => 42, 'array' => [1, 2, 3]];
@@ -89,9 +84,7 @@ class IgbinarySerializerTest extends TestCase
         $this->assertEquals($originalData, $result);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function deserialize_WithSerializedEnvelope_ReturnsEnvelope(): void
     {
         $message = new \stdClass();
@@ -109,9 +102,7 @@ class IgbinarySerializerTest extends TestCase
         $this->assertEquals($message->test, $result->getMessage()->test);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function deserialize_WithInvalidData_ReturnsNull(): void
     {
         $invalidData = 'invalid serialized data';
@@ -127,10 +118,8 @@ class IgbinarySerializerTest extends TestCase
         $this->assertNull($result);
     }
 
-    /**
-     * @test
-     */
-    public function deserialize_WithEmptyString_ReturnsNull(): void
+    #[Test]
+    public function deserialize_WithEmptyString_ReturnsFalse(): void
     {
         // Use reflection to test the protected method
         $reflection = new \ReflectionClass($this->serializer);
@@ -141,9 +130,7 @@ class IgbinarySerializerTest extends TestCase
         $this->assertFalse($result);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function encode_WithValidEnvelope_ReturnsArrayWithBody(): void
     {
         $message = new \stdClass();
@@ -162,9 +149,7 @@ class IgbinarySerializerTest extends TestCase
         $this->assertEquals($message->content, $unserialized->getMessage()->content);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function decode_WithValidEncodedEnvelope_ReturnsEnvelope(): void
     {
         $message = new \stdClass();
@@ -179,9 +164,7 @@ class IgbinarySerializerTest extends TestCase
         $this->assertEquals($message->decode_test, $result->getMessage()->decode_test);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function decode_WithEmptyBody_ThrowsMessageDecodingFailedException(): void
     {
         $encodedEnvelope = ['body' => ''];
@@ -192,9 +175,7 @@ class IgbinarySerializerTest extends TestCase
         $this->serializer->decode($encodedEnvelope);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function decode_WithMissingBody_ThrowsMessageDecodingFailedException(): void
     {
         $encodedEnvelope = [];
@@ -205,39 +186,33 @@ class IgbinarySerializerTest extends TestCase
         $this->serializer->decode($encodedEnvelope);
     }
 
-    /**
-     * @test
-     */
-    public function decode_WithInvalidSerializedData_ThrowsRuntimeException(): void
+    #[Test]
+    public function decode_WithInvalidSerializedData_ThrowsMessageDecodingFailed(): void
     {
         $encodedEnvelope = ['body' => 'invalid serialized data'];
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Invalid envelope');
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('Deserialized data is not a valid Symfony Messenger Envelope.');
 
         // Suppress igbinary warning
         @$this->serializer->decode($encodedEnvelope);
     }
 
-    /**
-     * @test
-     */
-    public function decode_WithNonEnvelopeObject_ThrowsRuntimeException(): void
+    #[Test]
+    public function decode_WithNonEnvelopeObject_ThrowsMessageDecodingFailed(): void
     {
         $nonEnvelopeObject = new \stdClass();
         $nonEnvelopeObject->data = 'not an envelope';
         $serialized = \igbinary_serialize($nonEnvelopeObject);
         $encodedEnvelope = ['body' => $serialized];
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Invalid envelope');
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('Deserialized data is not a valid Symfony Messenger Envelope.');
 
         $this->serializer->decode($encodedEnvelope);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function roundTripSerialization_WithComplexEnvelope_PreservesAllData(): void
     {
         $complexMessage = new \stdClass();
@@ -269,9 +244,7 @@ class IgbinarySerializerTest extends TestCase
         $this->assertEquals('main-bus', $decodedStamp->getBusName());
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function serialize_WithEmptyMessage_HandlesGracefully(): void
     {
         $message = new \stdClass();
@@ -290,19 +263,33 @@ class IgbinarySerializerTest extends TestCase
         $this->assertInstanceOf(\stdClass::class, $unserialized->getMessage());
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function implementsSerializerInterface(): void
     {
         $this->assertInstanceOf(\Symfony\Component\Messenger\Transport\Serialization\SerializerInterface::class, $this->serializer);
     }
 
-    /**
-     * @test
-     */
+    #[Test]
     public function extendsAbstractEnveloperSerializer(): void
     {
         $this->assertInstanceOf(\IDCT\NatsMessenger\Serializer\AbstractEnveloperSerializer::class, $this->serializer);
+    }
+
+    #[Test]
+    public function encode_ThrowsRuntimeException_WhenSerializeReturnsNull(): void
+    {
+        $serializer = new class extends IgbinarySerializer {
+            protected function serialize(Envelope $envelope): string
+            {
+                throw new \RuntimeException('Failed to serialize envelope with igbinary.');
+            }
+        };
+
+        $envelope = new Envelope(new \stdClass());
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Failed to serialize envelope with igbinary.');
+
+        $serializer->encode($envelope);
     }
 }

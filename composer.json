@@ -15,14 +15,36 @@
         }
     ],
     "minimum-stability": "stable",
+    "config": {
+        "process-timeout": 600
+    },
     "require": {
-        "symfony/framework-bundle": "^7.2",
-        "symfony/messenger": "^7.2",
-        "basis-company/nats": "^1",
-        "symfony/uid": "^7.2"
+        "php": "^8.2",
+        "symfony/framework-bundle": "^7 || ^8",
+        "symfony/messenger": "^7.2 || ^8.0",
+        "idct/php-nats-jetstream-client": "^1",
+        "symfony/uid": "^7.2 || ^8.0"
     },
     "require-dev": {
-        "phpunit/phpunit": "^9.5"
+        "behat/behat": "^3.29",
+        "phpunit/phpunit": "^11",
+        "phpstan/phpstan": "^2.1",
+        "dg/bypass-finals": "^1.9"
+    },
+    "scripts": {
+        "analyse": "phpstan analyse --configuration phpstan.neon.dist",
+        "nats:start": "cd tests/nats && docker compose up -d",
+        "nats:stop": "cd tests/nats && docker compose down -v",
+        "test": [
+            "@analyse",
+            "@test:unit:fast"
+        ],
+        "coverage:check": "php -r \"\\$xml = simplexml_load_file('clover.xml'); \\$m = \\$xml->project->metrics; \\$stmts = (int)\\$m['statements']; \\$covered = (int)\\$m['coveredstatements']; \\$pct = \\$stmts > 0 ? (\\$covered / \\$stmts) * 100 : 0; printf(\\\"Coverage: %.2f%% (%d/%d statements)\\n\\\", \\$pct, \\$covered, \\$stmts); if (\\$pct < 90) { fwrite(STDERR, \\\"Below 90% threshold\\n\\\"); exit(1); } echo \\\"Meets 90% threshold\\n\\\";\"",
+        "test:benchmark": "cd tests/functional && chmod +x run-benchmark.sh && ./run-benchmark.sh",
+        "test:functional": "cd tests/functional && vendor/bin/behat",
+        "test:functional:setup": "cd tests/functional && composer install --prefer-dist --no-progress",
+        "test:unit": "XDEBUG_MODE=coverage ./vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-clover clover.xml --coverage-text --colors=never --coverage-html coverage",
+        "test:unit:fast": "./vendor/bin/phpunit --configuration phpunit.xml.dist"
     },
     "suggest": {
         "ext-igbinary": "For improved serialization performance when using the default IgbinarySerializer"
