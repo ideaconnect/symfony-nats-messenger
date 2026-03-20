@@ -306,6 +306,17 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_bytes' => -1]);
     }
 
+    public function testBuildWithConnectionTimeoutPropagatesMs(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            ['connection_timeout' => 2.5]
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+        self::assertSame(2500, $options->connectTimeoutMs);
+    }
+
     private function extractNatsOptions(NatsClient $client): NatsOptions
     {
         $clientReflection = new \ReflectionClass($client);
@@ -391,5 +402,119 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         );
 
         self::assertTrue($configuration->isScheduledMessagesEnabled());
+    }
+
+    public function testBuildWithDottedTopicNameSucceeds(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/my-stream/orders.created',
+            []
+        );
+
+        self::assertSame('orders.created', $configuration->topic);
+    }
+
+    public function testBuildWithNegativeBatchingThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The batching option must be a positive integer value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['batching' => -1]);
+    }
+
+    public function testBuildWithNonIntegerBatchingFloatThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The batching option must be a positive integer value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['batching' => 2.5]);
+    }
+
+    public function testBuildWithNegativeConnectionTimeoutThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The connection_timeout option must be a positive value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['connection_timeout' => -1]);
+    }
+
+    public function testBuildWithNonNumericConnectionTimeoutThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The connection_timeout option must be numeric.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['connection_timeout' => 'abc']);
+    }
+
+    public function testBuildWithZeroMaxBatchTimeoutThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The max_batch_timeout option must be a positive value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_batch_timeout' => 0]);
+    }
+
+    public function testBuildWithNegativeMaxBatchTimeoutThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The max_batch_timeout option must be a positive value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_batch_timeout' => -5]);
+    }
+
+    public function testBuildWithNonNumericMaxBatchTimeoutThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The max_batch_timeout option must be numeric.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_batch_timeout' => 'fast']);
+    }
+
+    public function testBuildWithNegativeStreamReplicasThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_replicas option must be a positive integer value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_replicas' => -1]);
+    }
+
+    public function testBuildWithNonIntegerStreamReplicasThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_replicas option must be a positive integer value.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_replicas' => 2.5]);
+    }
+
+    public function testBuildWithNonNumericStreamMaxAgeThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_max_age option must be numeric.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_age' => 'old']);
+    }
+
+    public function testBuildWithArrayBatchingThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The batching option must be numeric.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['batching' => [1, 2]]);
+    }
+
+    public function testBuildWithMalformedDsnThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The given NATS DSN is invalid.');
+
+        (new NatsTransportConfigurationBuilder())->build(':///', []);
+    }
+
+    public function testBuildWithDsnMissingHostThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The given NATS DSN is invalid.');
+
+        (new NatsTransportConfigurationBuilder())->build('nats:///stream/topic', []);
     }
 }

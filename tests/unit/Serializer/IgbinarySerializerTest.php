@@ -119,7 +119,7 @@ class IgbinarySerializerTest extends TestCase
     }
 
     #[Test]
-    public function deserialize_WithEmptyString_ReturnsNull(): void
+    public function deserialize_WithEmptyString_ReturnsFalse(): void
     {
         // Use reflection to test the protected method
         $reflection = new \ReflectionClass($this->serializer);

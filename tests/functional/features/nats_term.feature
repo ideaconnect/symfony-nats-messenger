@@ -1,7 +1,8 @@
 Feature: Symfony failure transport via TERM
-  In order to route permanently failed messages
-  As a developer
-  I need Symfony failure transport routing to work
+  Tests the Symfony retry handler path: when retry_handler=symfony (default),
+  permanently failed messages are TERM'd and routed to the configured failure
+  transport. Verification: messenger:stats confirms the failure transport
+  received the expected number of messages.
 
   @term
   Scenario: Failed message routed to Symfony failure transport via TERM

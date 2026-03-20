@@ -1,7 +1,8 @@
 Feature: NATS Stream Limits
-  In order to control stream resource usage
-  As a developer
-  I need to configure stream max bytes, max messages and max messages per subject
+  Tests stream resource-limit configuration: max_bytes, max_msgs, and
+  max_msgs_per_subject. Covers both fresh creation and idempotent update
+  of existing streams. Verification queries the JetStream API to confirm
+  the NATS server stored the expected limit values.
 
   Background:
     Given NATS server is running
@@ -42,3 +43,11 @@ Feature: NATS Stream Limits
     When I run the messenger setup command
     Then the setup should complete successfully
     And the stream should have max messages per subject of 25
+
+  @limits
+  Scenario: Stream evicts oldest messages when max messages limit is exceeded
+    Given I have a messenger transport configured with stream max messages of 5
+    And the NATS stream is set up
+    And the test files directory is clean
+    When I send 10 messages to the transport
+    Then the NATS stream should contain at most 5 messages

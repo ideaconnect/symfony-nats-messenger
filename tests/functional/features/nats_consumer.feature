@@ -1,7 +1,7 @@
 Feature: Custom NATS Consumer
-  In order to use named consumers
-  As a developer
-  I need to configure a custom consumer name
+  Tests that the consumer DSN option creates a named JetStream consumer
+  and that messages flow correctly through it. Verification: messages
+  are sent, consumed, and counted via console output and marker files.
 
   Background:
     Given NATS server is running
@@ -16,3 +16,9 @@ Feature: Custom NATS Consumer
     When I start a messenger consumer
     And I wait for messages to be consumed
     Then all 5 messages should be consumed
+
+  @consumer
+  Scenario: Custom consumer name is registered in JetStream
+    Given I have a messenger transport configured with consumer name "verified-consumer"
+    And the NATS stream is set up
+    Then the NATS stream should have a consumer named "verified-consumer"

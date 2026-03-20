@@ -1,7 +1,8 @@
 Feature: mTLS NATS Transport
-  In order to use NATS Messenger transport with mutual TLS
-  As a developer
-  I need mTLS connections with client certificates to work
+  Tests mutual TLS (mTLS) connections where both server and client present
+  certificates. Uses the mTLS NATS container on port 4224 with CA, client
+  cert, and client key files. Verification: messages are sent and consumed
+  successfully, proving client certificate authentication works.
 
   @mtls
   Scenario: mTLS server connection with client certificate

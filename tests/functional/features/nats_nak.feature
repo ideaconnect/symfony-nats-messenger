@@ -1,7 +1,8 @@
 Feature: NATS-native retry via NAK
-  In order to use NATS-native retry
-  As a developer
-  I need NAK-based message redelivery to work
+  Tests the NATS retry handler path: when retry_handler=nats, failed messages
+  are NAK'd (negatively acknowledged) so NATS redelivers them. Verification:
+  a retryable message handler writes a marker file on its second attempt,
+  proving the message was redelivered and succeeded after initial failure.
 
   @nak
   Scenario: Message retry handled by NATS via NAK

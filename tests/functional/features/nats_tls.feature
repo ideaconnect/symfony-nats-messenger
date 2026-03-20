@@ -1,7 +1,8 @@
 Feature: TLS NATS Transport
-  In order to use NATS Messenger transport securely
-  As a developer
-  I need TLS connections to work
+  Tests one-way TLS connections using the nats-jetstream+tls:// DSN scheme.
+  Covers both native PHP serializer and igbinary serializer to ensure
+  TLS does not interfere with serialization. Verification: messages are
+  sent and consumed successfully over the encrypted connection.
 
   @tls
   Scenario: TLS server connection with native PHP serializer

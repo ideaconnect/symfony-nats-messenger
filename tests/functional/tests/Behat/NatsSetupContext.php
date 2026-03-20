@@ -12,7 +12,32 @@ use IDCT\NATS\Core\NatsClient;
 use IDCT\NatsMessenger\NatsTransport;
 
 /**
- * Defines application features from the specific context.
+ * Behat step definitions for NATS Messenger functional/integration tests.
+ *
+ * Architecture:
+ * - Uses Symfony Process to execute CLI commands (`messenger:setup-transports`,
+ *   `messenger:consume`, `messenger:stats`, custom `app:send-*` commands)
+ *   against a test Symfony application located in tests/functional/.
+ * - Each scenario writes a temporary YAML config (`config/packages/test_messenger.yaml`)
+ *   with the desired DSN and transport settings, then clears the Symfony cache.
+ *
+ * Verification strategies:
+ * - **Console output parsing**: regex matching on consumer output for `[OK] Consumed`
+ *   patterns and `messenger:stats` numeric parsing.
+ * - **File-based markers**: message handlers write `var/test_files/message_*.txt` files;
+ *   counting these proves messages were actually processed end-to-end.
+ * - **JetStream API queries**: stream and consumer metadata are fetched directly via
+ *   the NATS client to verify configuration (max_age, storage, subjects, etc.).
+ *
+ * Infrastructure:
+ * - Docker Compose manages three NATS containers: plain (4222), TLS (4223), mTLS (4224).
+ * - Connection helpers (`createNatsClient`, `createNatsTlsClient`, `createNatsMtlsClient`)
+ *   route to the correct server based on `$useTls`/`$useMtls` flags.
+ *
+ * Cleanup (@AfterScenario):
+ * - Stops consumer processes, deletes NATS streams, clears marker and retry-state files,
+ *   removes the temporary config, and resets the Symfony cache. Exceptions during cleanup
+ *   are intentionally swallowed to prevent cascade failures across independent scenarios.
  */
 class NatsSetupContext implements Context
 {
@@ -91,6 +116,13 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Creates a NATS stream via the JetStream API with minimal configuration.
+     *
+     * Note: this creates a "bare" stream with only name + subject — no retention
+     * policy, storage type, or replication settings. This is intentional: it simulates
+     * a pre-existing stream that the transport's setup() must gracefully handle
+     * and update with its own configuration.
+     *
      * @Given the NATS stream already exists
      */
     public function theNatsStreamAlreadyExists(): void
@@ -254,15 +286,34 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Verifies that the setup process produced a descriptive error message containing
+     * at least one diagnostic keyword. This prevents false positives from trivially
+     * short or generic output.
+     *
      * @Then the error message should be descriptive
      */
     public function theErrorMessageShouldBeDescriptive(): void
     {
         $output = $this->setupProcess->getOutput() . $this->setupProcess->getErrorOutput();
+        $trimmed = trim($output);
 
-        if (strlen(trim($output)) < 10) {
-            throw new \RuntimeException('Error message is too short to be descriptive');
+        if (strlen($trimmed) < 20) {
+            throw new \RuntimeException(
+                sprintf('Error message is too short to be descriptive (%d chars): %s', strlen($trimmed), $trimmed)
+            );
         }
+
+        $diagnosticKeywords = ['connection', 'refused', 'timeout', 'failed', 'error', 'nats', 'stream', 'exception', 'unable', 'could not'];
+        $lowerOutput = strtolower($trimmed);
+        foreach ($diagnosticKeywords as $keyword) {
+            if (str_contains($lowerOutput, $keyword)) {
+                return;
+            }
+        }
+
+        throw new \RuntimeException(
+            sprintf('Error message does not contain any diagnostic keywords (%s): %s', implode(', ', $diagnosticKeywords), $trimmed)
+        );
     }
 
     /**
@@ -438,6 +489,16 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Verifies that all sent messages were consumed by the consumer process.
+     *
+     * Uses a multi-tier verification strategy:
+     * 1. Regex patterns on consumer stdout (`[OK] Consumed`, `Processing message`, etc.)
+     * 2. Limit-reached string detection in output
+     * 3. File-based fallback: counts `message_*.txt` marker files in var/test_files/
+     *
+     * If none of these approaches can confirm consumption, the step fails. This avoids
+     * false positives from exit-code-only checks.
+     *
      * @Then all :count messages should be consumed
      */
     public function allMessagesShouldBeConsumed(int $count): void
@@ -481,11 +542,14 @@ class NatsSetupContext implements Context
             }
         }
 
-        // If we still can't determine, assume success if exit code is 0
-        if ($consumedCount === 0 && $this->consumerProcess->getExitCode() === 0) {
-            echo "Warning: Could not parse consumed message count from output, but process exited successfully. Assuming all messages were consumed.\n";
-            $this->messagesConsumed = $count;
-            return;
+        // File-based fallback: count marker files created by the message handler
+        if ($consumedCount === 0 && is_dir($this->testFilesDir)) {
+            $files = glob($this->testFilesDir . '/message_*.txt');
+            $fileCount = $files !== false ? count($files) : 0;
+            if ($fileCount >= $count) {
+                echo "Note: Output parsing could not verify consumption, but found {$fileCount} marker files (expected {$count}).\n";
+                $consumedCount = $fileCount;
+            }
         }
 
         if ($consumedCount < $count) {
@@ -503,6 +567,12 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Starts multiple consumer processes in parallel, each with its own message limit.
+     *
+     * Each consumer runs `messenger:consume test_transport --limit=N` as a background
+     * process. A 50ms delay is introduced between starts to reduce startup race conditions.
+     * Timeout scales with message count to accommodate slow serializers (e.g., JSON).
+     *
      * @When I start :consumerCount consumers that each process :messagesPerConsumer messages
      */
     public function iStartConsumersThatEachProcessMessages(int $consumerCount, int $messagesPerConsumer): void
@@ -887,6 +957,16 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Verifies a retryable message was successfully processed on its second attempt.
+     *
+     * The test message handler writes a marker file `failing_message_1.txt` containing
+     * the attempt number when it finally succeeds. This step asserts that:
+     * 1. The marker file exists (message was eventually handled)
+     * 2. The file content contains "Attempt: 2" (it failed once and succeeded on retry)
+     *
+     * This indirectly validates the NAK retry mechanism: the first attempt fails,
+     * NATS redelivers via NAK, and the second attempt succeeds.
+     *
      * @Then the retryable message should have been processed successfully
      */
     public function theRetryableMessageShouldHaveBeenProcessedSuccessfully(): void
@@ -915,6 +995,13 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Verifies that the failure transport received the expected number of permanently
+     * failed messages by parsing `messenger:stats` output for the `failed_transport` queue.
+     *
+     * A 2-second sleep precedes the stats check to allow NATS → failure transport routing
+     * to complete. This validates the TERM retry handler path: after max retries are
+     * exhausted, the message is forwarded to Symfony's configured failure transport.
+     *
      * @Then the failure transport should contain :count message
      * @Then the failure transport should contain :count messages
      */
@@ -1140,6 +1227,55 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Verifies that the NATS stream contains at most the expected number of messages.
+     * Used to test stream eviction behavior when max_msgs limit is set.
+     *
+     * @Then the NATS stream should contain at most :maxCount messages
+     */
+    public function theNatsStreamShouldContainAtMostMessages(int $maxCount): void
+    {
+        $client = $this->createNatsClient();
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];
+        $actualCount = (int) ($state['messages'] ?? 0);
+
+        if ($actualCount > $maxCount) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected stream to contain at most %d messages, but found %d',
+                    $maxCount,
+                    $actualCount
+                )
+            );
+        }
+    }
+
+    /**
+     * Verifies that a named consumer exists on the NATS stream by querying the
+     * JetStream consumer API directly.
+     *
+     * @Then the NATS stream should have a consumer named :consumerName
+     */
+    public function theNatsStreamShouldHaveAConsumerNamed(string $consumerName): void
+    {
+        $client = $this->createNatsClient();
+
+        try {
+            $consumerInfo = $client->jetStream()->getConsumer($this->testStreamName, $consumerName)->await();
+        } catch (\Exception $e) {
+            throw new \RuntimeException(
+                sprintf('Consumer "%s" not found on stream "%s": %s', $consumerName, $this->testStreamName, $e->getMessage())
+            );
+        }
+
+        if ($consumerInfo->name !== $consumerName) {
+            throw new \RuntimeException(
+                sprintf('Expected consumer name "%s", but got "%s"', $consumerName, $consumerInfo->name)
+            );
+        }
+    }
+
+    /**
      * @Given I have a messenger transport configured with consumer name :consumerName
      */
     public function iHaveAMessengerTransportConfiguredWithConsumerName(string $consumerName): void
@@ -1219,7 +1355,12 @@ class NatsSetupContext implements Context
     }
 
     /**
-     * Clean up after each scenario
+     * Cleans up all test resources after each scenario.
+     *
+     * Stops consumer processes, deletes NATS streams (test + failure), clears
+     * marker and retry-state files, removes the temporary YAML config, and resets
+     * the Symfony cache. Exceptions during cleanup are intentionally swallowed
+     * to prevent one scenario's cleanup failure from cascading into subsequent ones.
      *
      * @AfterScenario
      */
@@ -1505,6 +1646,11 @@ class NatsSetupContext implements Context
         return $client;
     }
 
+    /**
+     * Selects the correct NATS client (plain, TLS, or mTLS) based on the current
+     * scenario's connection flags. This ensures stream verification queries use
+     * the same connection type as the transport under test.
+     */
     private function createAppropriateNatsClient(): NatsClient
     {
         if ($this->useMtls) {
@@ -1546,9 +1692,15 @@ class NatsSetupContext implements Context
     }
 
     /**
-     * @Then the messenger stats should show approximately :expectedCount messages waiting
+     * Asserts that the messenger:stats output shows exactly the expected number of
+     * messages waiting in the test_transport queue.
+     *
+     * Verification: runs `messenger:stats --env=test` and parses the output with a
+     * regex for `test_transport <count>`. Throws if parsing fails or count differs.
+     *
+     * @Then the messenger stats should show exactly :expectedCount messages waiting
      */
-    public function theMessengerStatsShouldShowApproximatelyMessagesWaiting(int $expectedCount): void
+    public function theMessengerStatsShouldShowExactlyMessagesWaiting(int $expectedCount): void
     {
         $process = new Process([
             'php',
@@ -1581,9 +1733,13 @@ class NatsSetupContext implements Context
     }
 
     /**
-     * @Then the test files directory should contain approximately :count files
+     * Asserts that the test files directory contains exactly the expected number of
+     * marker files (message_*.txt). Each file is created by the test message handler
+     * as proof that a message was successfully processed.
+     *
+     * @Then the test files directory should contain exactly :count files
      */
-    public function theTestFilesDirectoryShouldContainApproximatelyFiles(int $count): void
+    public function theTestFilesDirectoryShouldContainExactlyFiles(int $count): void
     {
         if (!is_dir($this->testFilesDir)) {
             throw new \RuntimeException("Test files directory does not exist: {$this->testFilesDir}");

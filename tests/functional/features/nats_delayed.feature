@@ -1,7 +1,8 @@
 Feature: Delayed Messages via NATS Scheduled Messages
-  In order to schedule message delivery
-  As a developer
-  I need delayed messages using DelayStamp to be scheduled via NATS JetStream
+  Tests that DelayStamp-based scheduling works with NATS JetStream's native
+  scheduled-message support. Messages sent with a delay should not be available
+  to consumers until the scheduled time elapses. Verification: marker-file
+  counting and (for timing tests) stats polling during the delay window.
 
   Background:
     Given NATS server is running

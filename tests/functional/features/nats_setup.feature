@@ -1,7 +1,9 @@
 Feature: NATS Stream Setup
-  In order to use NATS Messenger transport
-  As a developer
-  I need to be able to setup NATS streams with specific configuration
+  Tests stream lifecycle management: creation with max_age, idempotent re-setup
+  of existing streams, memory storage, per-subject limits, multi-subject merging,
+  error handling when NATS is unavailable, and end-to-end message flow.
+  Verification uses JetStream API queries, messenger:stats, console output parsing,
+  and marker-file counting.
 
   Background:
     Given NATS server is running
@@ -103,12 +105,12 @@ Feature: NATS Stream Setup
     Then the messenger stats should show 1000 messages waiting
     When I start 2 consumers that each process 200 messages
     And I wait for the consumers to finish
-    Then the test files directory should contain approximately 400 files
-    And the messenger stats should show approximately 600 messages waiting
+    Then the test files directory should contain exactly 400 files
+    And the messenger stats should show exactly 600 messages waiting
     When I start 3 consumers that each process 200 messages
     And I wait for the consumers to finish
-    Then the messenger stats should show approximately 0 messages waiting
-    And the test files directory should contain approximately 1000 files
+    Then the messenger stats should show exactly 0 messages waiting
+    And the test files directory should contain exactly 1000 files
 
     Examples:
       | serializer                                |
