@@ -723,7 +723,7 @@ class NatsSetupContext implements Context
         $caFile = realpath(__DIR__ . '/../../../nats/certs/ca.pem');
 
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4223/%s/%s?stream_max_age=900&tls_ca_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: '%s'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4223/%s/%s?stream_max_age=900&tls_handshake_first=true&tls_ca_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: '%s'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             $caFile,
@@ -759,7 +759,7 @@ class NatsSetupContext implements Context
         $keyFile = realpath(__DIR__ . '/../../../nats/certs/client-key.pem');
 
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4224/%s/%s?stream_max_age=900&tls_ca_file=%s&tls_cert_file=%s&tls_key_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: 'igbinary_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4224/%s/%s?stream_max_age=900&tls_handshake_first=true&tls_ca_file=%s&tls_cert_file=%s&tls_key_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: 'igbinary_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             $caFile,
@@ -1686,6 +1686,7 @@ class NatsSetupContext implements Context
             password: 'password',
             connectTimeoutMs: 5000,
             tlsRequired: true,
+            tlsHandshakeFirst: true,
             tlsCaFile: $caFile,
             tlsVerifyPeer: true,
             tlsPeerName: 'localhost',
@@ -1735,6 +1736,7 @@ class NatsSetupContext implements Context
             password: 'password',
             connectTimeoutMs: 5000,
             tlsRequired: true,
+            tlsHandshakeFirst: true,
             tlsCaFile: $caFile,
             tlsCertFile: $certFile,
             tlsKeyFile: $keyFile,
