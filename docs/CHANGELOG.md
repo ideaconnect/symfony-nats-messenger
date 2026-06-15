@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `intValue()` / `floatValue()` / `stringValue()` helpers. The mixed→scalar coercion policy is now a
   standalone, independently testable unit (own unit tests plus a functional DSN-coercion scenario)
   instead of a trait mixed into three classes. No behavior change.
+- **Deterministic existing-stream detection in `setup()`** — when `createStream` fails, the transport
+  now queries JetStream stream info (`404` ⇒ absent) to decide whether to update, instead of matching
+  server-specific `"already in use"` / `"already exists"` error strings. This removes the brittle
+  message parsing and collapses the previous two stream-info lookups into one (the fetched config is
+  reused for the update).
 
 ### Added
 - **`CLAUDE.md`, `HUMANS.md`, `STRUCTURE.md`** — agent guidance, human onboarding, and an architecture/
@@ -40,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JetStream's "unlimited" sentinels instead of preserving the previous server-side value.
 - **`getMessageCount()` catches `\Throwable`** (not just `\Exception`), honouring its documented
   "returns 0 if both lookups fail" contract for `\Error`-type failures surfaced by awaited futures.
-- **README accuracy** — corrected the coverage badge (`95.97%` → `98.00%`) and the test-count claim
+- **README accuracy** — corrected the coverage badge (`95.97%` → `97.95%`) and the test-count claim
   (`102` → `226` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
   example (there is no `delay` transport option; the value was silently ignored).
 - **Documentation** — refreshed the stale `tests/functional/README.md` (removed dead benchmark-doc

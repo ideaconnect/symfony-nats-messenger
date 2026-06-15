@@ -10,6 +10,7 @@ use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\JetStreamException;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
+use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NATS\JetStream\Schedule;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
@@ -334,13 +335,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             try {
                 $this->jetStream()->createStream($this->streamName, $subjects, $streamOptions)->await();
             } catch (JetStreamException $streamCreateException) {
-                if (!$this->shouldUpdateExistingStream($streamCreateException)) {
+                // Don't string-match the server's error text to detect a pre-existing stream — the
+                // message wording varies across NATS versions. Ask JetStream directly: if the stream
+                // now exists, update it (reusing the fetched config); if it does not (404), the create
+                // failure was a genuine error, so rethrow it.
+                $existingStream = $this->getExistingStream();
+                if ($existingStream === null) {
                     throw $streamCreateException;
                 }
 
-                $existingStream = $this->jetStream()->getStream($this->streamName)->await();
                 $updatedConfiguration = $this->buildUpdatedStreamConfiguration($existingStream, $streamOptions, $subjects);
-
                 $this->jetStream()->updateStream($this->streamName, $updatedConfiguration)->await();
             }
 
@@ -466,53 +470,23 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Determines whether a failed createStream should be treated as an update of an existing stream.
+     * Returns the existing stream, or null when it does not exist.
      *
-     * NATS commonly reports stream conflicts as 400 responses, but 400 can also indicate
-     * unrelated invalid configuration. Prefer explicit conflict messages; for ambiguous 400s,
-     * verify the stream actually exists before attempting an update.
+     * Detects existence deterministically via a JetStream stream-info lookup (a 404 means the stream
+     * is absent), instead of matching server-specific "already in use" / "already exists" error
+     * strings, whose wording varies across NATS versions. Any non-404 error propagates.
      */
-    private function shouldUpdateExistingStream(JetStreamException $exception): bool
-    {
-        if ($this->hasStreamAlreadyExistsMessage($exception)) {
-            return true;
-        }
-
-        if ($exception->getCode() !== 400) {
-            return false;
-        }
-
-        return $this->streamExists();
-    }
-
-    /**
-     * Checks whether the current stream already exists in JetStream.
-     */
-    private function streamExists(): bool
+    private function getExistingStream(): ?StreamInfo
     {
         try {
-            $streamInfo = $this->jetStream()->getStream($this->streamName)->await();
-
-            return $streamInfo->name === $this->streamName;
+            return $this->jetStream()->getStream($this->streamName)->await();
         } catch (JetStreamException $exception) {
             if ($exception->getCode() === 404) {
-                return false;
+                return null;
             }
 
             throw $exception;
         }
-    }
-
-    /**
-     * Matches known NATS stream-conflict messages returned by different server versions.
-     */
-    private function hasStreamAlreadyExistsMessage(JetStreamException $exception): bool
-    {
-        $message = strtolower($exception->getMessage());
-
-        return str_contains($message, 'already in use')
-            || str_contains($message, 'stream name already in use')
-            || str_contains($message, 'already exists');
     }
 
     /**
@@ -576,7 +550,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * @return array<string, mixed>
      */
     private function buildUpdatedStreamConfiguration(
-        \IDCT\NATS\JetStream\Models\StreamInfo $streamInfo,
+        StreamInfo $streamInfo,
         array $managedOptions,
         array $desiredSubjects,
     ): array {

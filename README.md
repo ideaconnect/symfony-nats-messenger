@@ -2,7 +2,7 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-98.00%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-97.95%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -832,9 +832,9 @@ The type check (`instanceof Envelope`) happens *after* deserialization, which is
 
 ### Stream-Exists Detection During Setup
 
-During `setup()`, the transport prefers explicit NATS conflict messages (for example `"already in use"` or `"already exists"`) to detect a pre-existing stream. When NATS returns a generic HTTP `400`, the transport now verifies whether the stream actually exists before switching to `updateStream()`. This avoids misclassifying unrelated bad-request errors as an existing-stream conflict.
+During `setup()`, if `createStream` fails the transport detects a pre-existing stream **deterministically** by querying JetStream stream info: a `404` means the stream is absent (so the creation error was genuine and is rethrown), while a successful lookup means the stream exists (so it is updated, reusing the fetched configuration). This relies on the JetStream stream-info API rather than matching server-specific conflict strings (`"already in use"` / `"already exists"`), whose wording varies across NATS versions.
 
-If you experience unexpected behavior during stream setup, review the exact error returned by your NATS server version and confirm the stream can be queried via JetStream stream info APIs.
+If you experience unexpected behavior during stream setup, confirm the stream can be queried via JetStream stream-info APIs and review the exact error returned by your NATS server version.
 
 ### Publish Response Validation
 

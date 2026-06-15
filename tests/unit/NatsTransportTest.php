@@ -775,10 +775,10 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::once())
             ->method('createStream')
             ->willReturn(Future::error(new JetStreamException('bad request', 400)));
-        $jetStream->expects(self::exactly(2))
+        $jetStream->expects(self::once())
             ->method('getStream')
             ->with('test-stream')
-            ->willReturnOnConsecutiveCalls(Future::complete($streamInfo), Future::complete($streamInfo));
+            ->willReturn(Future::complete($streamInfo));
         $jetStream->expects(self::once())
             ->method('updateStream')
             ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1, 'max_age' => 0, 'max_bytes' => -1, 'max_msgs' => -1, 'max_msgs_per_subject' => -1])
@@ -842,6 +842,12 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::once())
             ->method('createStream')
             ->willReturn(Future::error(new JetStreamException('stream failure', 500)));
+        // The existence check after a failed create returns 404 (stream absent), so the original
+        // creation error is rethrown and wrapped rather than triggering an update.
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->willReturn(Future::error(new JetStreamException('stream not found', 404)));
+        $jetStream->expects(self::never())->method('updateStream');
         $jetStream->expects(self::never())->method('createConsumer');
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
