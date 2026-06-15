@@ -48,7 +48,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_MAX_MESSAGES->value => null,
         TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT->value => null,
         TransportOption::STREAM_STORAGE->value => StorageBackend::File->value,
-        TransportOption::STREAM_REPLICAS->value => 1,
+        TransportOption::STREAM_REPLICAS->value => null,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
@@ -92,7 +92,7 @@ final class NatsTransportConfigurationBuilder
 
         $client = new NatsClient(new NatsOptions(
             servers: [$server],
-            connectTimeoutMs: max(1, (int) round(TypeCoercion::floatValue($configuration[TransportOption::CONNECTION_TIMEOUT->value] ?? null, 1.0) * 1000)),
+            connectTimeoutMs: max(1, TypeCoercion::secondsToMs($configuration[TransportOption::CONNECTION_TIMEOUT->value] ?? null, 1.0)),
             pedantic: false,
             reconnectEnabled: false,
             tlsRequired: $this->toBool($configuration[TransportOption::TLS_REQUIRED->value]),
@@ -104,8 +104,8 @@ final class NatsTransportConfigurationBuilder
             tlsPeerName: $this->toNullableString($configuration[TransportOption::TLS_PEER_NAME->value]),
             tlsVerifyPeer: $this->toBool($configuration[TransportOption::TLS_VERIFY_PEER->value]),
             token: $this->toNullableString($configuration[TransportOption::TOKEN->value]),
-            username: $this->resolveUsername($components, $configuration),
-            password: $this->resolvePassword($components, $configuration),
+            username: $this->resolveCredential($components, $configuration, TransportOption::USERNAME, 'user'),
+            password: $this->resolveCredential($components, $configuration, TransportOption::PASSWORD, 'pass'),
             jwt: $this->toNullableString($configuration[TransportOption::JWT->value]),
             nkey: $this->toNullableString($configuration[TransportOption::NKEY->value]),
         ));
@@ -238,7 +238,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertPositiveNumber($configuration, TransportOption::BATCHING, true);
         $this->assertPositiveNumber($configuration, TransportOption::MAX_BATCH_TIMEOUT, false);
         $this->assertPositiveNumber($configuration, TransportOption::CONNECTION_TIMEOUT, false);
-        $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_AGE);
+        $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_AGE, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_BYTES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT, true);
@@ -449,45 +449,28 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
-     * Resolves the NATS username from explicit option or DSN user component.
+     * Resolves a NATS credential (username or password) from an explicit option or the DSN.
      *
-     * Explicit option takes precedence. DSN user values are URL-decoded to handle
-     * percent-encoded special characters (e.g. %40 for @).
-     *
-     * @param array<string, mixed> $components    Parsed DSN components
-     * @param array<string, mixed> $configuration Merged option map
-     */
-    private function resolveUsername(array $components, array $configuration): ?string
-    {
-        $configuredUsername = $this->toNullableString($configuration[TransportOption::USERNAME->value]);
-        if ($configuredUsername !== null) {
-            return $configuredUsername;
-        }
-
-        $user = $components['user'] ?? null;
-
-        return is_string($user) ? $this->toNullableString(urldecode($user)) : null;
-    }
-
-    /**
-     * Resolves the NATS password from explicit option or DSN pass component.
-     *
-     * Explicit option takes precedence. DSN pass values are URL-decoded to handle
-     * percent-encoded special characters.
+     * The explicit option takes precedence. The DSN component is decoded with rawurldecode()
+     * (RFC 3986 userinfo semantics): %XX escapes are decoded (e.g. %40 → @, %2B → +) while a
+     * literal '+' is preserved. urldecode() must NOT be used here — it would turn a literal '+'
+     * in a username/password into a space and silently corrupt the credential.
      *
      * @param array<string, mixed> $components    Parsed DSN components
      * @param array<string, mixed> $configuration Merged option map
+     * @param TransportOption       $option        Explicit-option key (USERNAME or PASSWORD)
+     * @param string                $componentKey  DSN component key ('user' or 'pass')
      */
-    private function resolvePassword(array $components, array $configuration): ?string
+    private function resolveCredential(array $components, array $configuration, TransportOption $option, string $componentKey): ?string
     {
-        $configuredPassword = $this->toNullableString($configuration[TransportOption::PASSWORD->value]);
-        if ($configuredPassword !== null) {
-            return $configuredPassword;
+        $configured = $this->toNullableString($configuration[$option->value]);
+        if ($configured !== null) {
+            return $configured;
         }
 
-        $pass = $components['pass'] ?? null;
+        $value = $components[$componentKey] ?? null;
 
-        return is_string($pass) ? $this->toNullableString(urldecode($pass)) : null;
+        return is_string($value) ? $this->toNullableString(rawurldecode($value)) : null;
     }
 
     /**

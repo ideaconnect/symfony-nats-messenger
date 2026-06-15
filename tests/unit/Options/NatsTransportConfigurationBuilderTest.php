@@ -215,6 +215,21 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame('dsn-pass', $options->password);
     }
 
+    public function testBuildDecodesDsnCredentialsWithRawUrlDecodePreservingLiteralPlus(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://user:S3cr3t+P%40ss@localhost/test-stream/test-topic',
+            []
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        // rawurldecode (not urldecode) decodes %40 -> @ while preserving a literal '+'.
+        // urldecode would corrupt the password to "S3cr3t P@ss" by turning '+' into a space.
+        self::assertSame('user', $options->username);
+        self::assertSame('S3cr3t+P@ss', $options->password);
+    }
+
     public function testBuildNormalizesStringBooleanAndNullableStringOptions(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
@@ -650,6 +665,16 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         $this->expectExceptionMessage('The stream_max_age option must be numeric.');
 
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_age' => 'old']);
+    }
+
+    public function testBuildWithNonIntegerStreamMaxAgeThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_max_age option must be a non-negative integer value.');
+
+        // Fractional seconds are silently truncated by the accessor, so reject them for a clear
+        // error, consistent with the sibling integer-only stream limits (max_bytes/max_msgs/...).
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_age' => 2.5]);
     }
 
     public function testBuildWithArrayBatchingThrowsException(): void

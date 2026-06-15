@@ -175,7 +175,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Pulls and decodes a batch of envelopes from JetStream.
      *
      * Fetches up to {@see NatsTransportConfiguration::batching()} messages with the
-     * configured timeout. HTTP 404 (consumer not found) and 408 (timeout / no messages)
+     * configured timeout. JetStream status 404 (consumer not found) and 408 (timeout / no messages)
      * are treated as empty results. A message without a reply (ack) subject is skipped
      * (it can be neither acknowledged nor rejected); a message with an empty payload is
      * TERMed so JetStream stops redelivering it, since it can never decode into an
@@ -433,7 +433,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $receivedStamp = $envelope->last(TransportMessageIdStamp::class);
 
         if (null === $receivedStamp) {
-            throw new LogicException('No ReceivedStamp found on the Envelope.');
+            throw new LogicException('No TransportMessageIdStamp found on the Envelope.');
         }
 
         return $receivedStamp;
@@ -670,6 +670,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         if (array_key_exists('storage', $serverConfiguration)) {
             $updatedConfiguration['storage'] = $serverConfiguration['storage'];
+        }
+
+        // Preserve the existing replica count unless stream_replicas was explicitly configured.
+        // The managed default (num_replicas = 1) would otherwise overwrite the server value via the
+        // array_merge above and silently downscale a stream created with more replicas (e.g. in a
+        // cluster), eliminating its high-availability/durability with no warning.
+        if (!$this->configuration->hasExplicitStreamReplicas() && array_key_exists('num_replicas', $serverConfiguration)) {
+            $updatedConfiguration['num_replicas'] = $serverConfiguration['num_replicas'];
         }
 
         /** @var array<string, mixed> $updatedConfiguration */

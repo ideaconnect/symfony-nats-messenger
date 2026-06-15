@@ -60,7 +60,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`CLAUDE.md`, `HUMANS.md`, `STRUCTURE.md`** — agent guidance, human onboarding, and an architecture/
   layout reference, respectively.
 
+### Changed
+- **`stream_max_age` now rejects non-integer values** instead of silently truncating them (e.g. `2.5`
+  was accepted and coerced to `2`). The option is integer seconds; fractional values now raise a clear
+  validation error, consistent with the other integer-only stream limits.
+- **Removed the redundant `floatOption()` accessor** (internal, no behavior change) — its two callers
+  now read the option directly through `TypeCoercion::secondsToMs()`, unifying all the seconds→ms
+  accessors on one idiom and removing a double-coercion.
+- **De-duplicated option conversion logic** (internal, no behavior change) — added
+  `TypeCoercion::secondsToMs()` (the single home for the seconds→milliseconds rounding rule, previously
+  copy-pasted across five call sites) and a private `nullableIntOption()` accessor in
+  `NatsTransportConfiguration` (the four optional stream-limit / `max_deliver` getters now share one
+  null-passthrough definition).
+
 ### Fixed
+- **`setup()` no longer silently downscales an existing stream's replica count** — on the update path
+  the transport now preserves the server's `num_replicas` unless `stream_replicas` is explicitly
+  configured (mirroring the existing `storage` preservation). Previously a stream created with, say,
+  3 replicas in a cluster was reset to 1 whenever `setup()` ran without the option set, silently
+  eliminating its high-availability/durability.
+- **DSN credentials are decoded with `rawurldecode()` instead of `urldecode()`** — a literal `+` in a
+  username/password supplied via the DSN was being turned into a space (form-encoding semantics),
+  corrupting the credential and breaking authentication. Percent-escapes (`%40` → `@`, `%2B` → `+`)
+  still decode correctly, now matching RFC 3986 userinfo semantics and the underlying NATS client.
+- **README handler example no longer references a removed interface** — the "Handle Messages" example
+  used `Symfony\Component\Messenger\Handler\MessageHandlerInterface`, removed in Symfony 7.0 (the
+  package requires `^7.2 || ^8.0`), so copying it caused a fatal "interface not found". It now uses
+  the `#[AsMessageHandler]` attribute.
+- **`get()` LogicException message** now names the actual stamp (`TransportMessageIdStamp`) instead of
+  the unrelated `ReceivedStamp`; the README `connection_timeout` docs now state it sets the connection
+  (dial) timeout, not a per-operation socket I/O timeout.
+- **README/comment accuracy (review sweep)** — corrected three stale `Tested by:` references in the
+  README that survived the earlier docs sweep (`testSendUsesRequestWithHeadersWhenHeadersArePresent` →
+  `…UsesPublish…`; two `testGetMessageCountReturnsAckPendingWhenHigherThanPending` → `…SumsAckPendingAndPending`),
+  the Infection threshold paragraph (95/98 → 90/95) and the deprecated `composer install --dev` command;
+  reworded the `NatsTransportFactory` class docblock (the igbinary auto-default never triggers via the
+  factory, only on direct construction) and the `get()` docblock ("HTTP 404/408" → "JetStream status 404/408").
 - **Empty-payload messages no longer poison-loop** — `get()` now sends TERM for a delivered message
   with an empty payload (which can never decode into an envelope) instead of silently skipping it.
   Skipping left the message unacknowledged, so JetStream redelivered it every `ack_wait` indefinitely;

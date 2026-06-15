@@ -99,11 +99,38 @@ final class TypeCoercionTest extends TestCase
         self::assertSame('', TypeCoercion::stringValue(null));
     }
 
+    #[DataProvider('secondsToMsProvider')]
+    public function testSecondsToMs(mixed $value, float $default, int $expected): void
+    {
+        self::assertSame($expected, TypeCoercion::secondsToMs($value, $default));
+    }
+
+    /**
+     * @return iterable<string, array{mixed, float, int}>
+     */
+    public static function secondsToMsProvider(): iterable
+    {
+        yield 'whole seconds int' => [2, 0.0, 2000];
+        yield 'fractional seconds float' => [2.5, 0.0, 2500];
+        yield 'numeric string seconds' => ['1.5', 0.0, 1500];
+        yield 'sub-millisecond rounds to nearest ms' => [0.0015, 0.0, 2];
+        yield 'zero seconds' => [0, 9.0, 0];
+        yield 'non-numeric falls back to default seconds' => ['nope', 1.0, 1000];
+        yield 'null falls back to default seconds' => [null, 0.5, 500];
+        yield 'array falls back to default seconds' => [['x'], 0.0, 0];
+    }
+
+    public function testSecondsToMsDefaultIsZeroWhenOmitted(): void
+    {
+        self::assertSame(0, TypeCoercion::secondsToMs('not-a-number'));
+    }
+
     public function testMethodsAreStaticAndPure(): void
     {
         // Calling repeatedly with the same input yields the same output (no state).
         self::assertSame(TypeCoercion::intValue('7'), TypeCoercion::intValue('7'));
         self::assertSame(TypeCoercion::floatValue('7.5'), TypeCoercion::floatValue('7.5'));
         self::assertSame(TypeCoercion::stringValue(7), TypeCoercion::stringValue(7));
+        self::assertSame(TypeCoercion::secondsToMs('2.5'), TypeCoercion::secondsToMs('2.5'));
     }
 }

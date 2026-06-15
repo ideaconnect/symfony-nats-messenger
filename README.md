@@ -18,7 +18,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 249 unit tests, ~99.6% coverage, mutation-tested (~99% MSI)
+- 🧪 **Thoroughly Tested** - 262 unit tests, ~99.6% coverage, mutation-tested (~99% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -192,15 +192,16 @@ class MyController
 }
 ```
 
-> **Tested by:** `testSendPublishesEncodedBodyWithoutHeaders`, `testSendUsesRequestWithHeadersWhenHeadersArePresent`, Behat scenario `Complete message flow - send, check stats, consume, verify`
+> **Tested by:** `testSendPublishesEncodedBodyWithoutHeaders`, `testSendUsesPublishWithHeadersWhenHeadersArePresent`, Behat scenario `Complete message flow - send, check stats, consume, verify`
 
 ### 5. Handle Messages
 
 ```php
 use App\Message\MyAsyncMessage;
-use Symfony\Component\Messenger\Handler\MessageHandlerInterface;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
-class MyAsyncMessageHandler implements MessageHandlerInterface
+#[AsMessageHandler]
+class MyAsyncMessageHandler
 {
     public function __invoke(MyAsyncMessage $message): void
     {
@@ -265,7 +266,7 @@ framework:
           # Performance Tuning
           batching: 5                       # Messages per batch (default: 1)
           max_batch_timeout: 1.0            # Timeout in seconds for batch fetching (default: 1)
-          connection_timeout: 1.0           # Socket I/O timeout in seconds (default: 1)
+          connection_timeout: 1.0           # Connection (dial) timeout in seconds (default: 1)
 
           # Stream Retention Policies
           stream_max_age: 86400             # Max message age in seconds (0 = unlimited, default: 0)
@@ -449,20 +450,20 @@ options:
 
 ### Connection Timeout
 
-Controls the socket-level I/O timeout for all NATS operations:
+Controls the timeout for establishing the NATS connection (initial and reconnect dial attempts):
 
 ```yaml
 options:
-  connection_timeout: 2.0  # Socket timeout in seconds
+  connection_timeout: 2.0  # Connection (dial) timeout in seconds
 ```
 
 > **Tested by:** `testReadmeTimeoutExamplesAreAccepted` (1.0, 2.0, 3.0), `testBuildWithConnectionTimeoutPropagatesMs`
 
 **Purpose:**
-- Sets the timeout for socket read/write operations
-- Affects all NATS communication (publish, subscribe, ack, etc.)
-- Lower values fail faster on network issues
-- Higher values tolerate slower networks
+- Sets the timeout for the initial TCP/TLS dial and handshake when connecting to NATS
+- Does **not** govern per-operation read/write timeouts (publish/ack/request keep the client's own request timeout); the batch fetch is bounded separately by `max_batch_timeout`
+- Lower values fail faster on connection issues
+- Higher values tolerate slower connection establishment
 
 **When to adjust:**
 - Increase for high-latency networks or geographically distant NATS servers
@@ -520,7 +521,7 @@ options:
 
 ```bash
 # Install dependencies
-composer install --dev
+composer install
 
 # Run static analysis and the fast unit suite after every modification
 composer test
@@ -557,8 +558,8 @@ actually detect behavioral changes (not just execute lines):
 composer test:mutation
 ```
 
-Configuration lives in `infection.json5`. It enforces a minimum MSI of 95% and a minimum covered MSI of
-98%; the suite currently scores ~99% covered MSI with 100% mutation code coverage. CI runs it on the
+Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
+95%; the suite currently scores ~99% covered MSI with 100% mutation code coverage. CI runs it on the
 PHP 8.5 job.
 
 ### Functional Tests
@@ -771,7 +772,7 @@ if ($count > 0) {
 }
 ```
 
-> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountReturnsAckPendingWhenHigherThanPending`
+> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`
 
 ## Troubleshooting
 
@@ -819,7 +820,7 @@ nats consumer info my-stream my-consumer --json | jq '.state'
 # Check application logs for errors
 ```
 
-> **Operational note:** This checklist is manual guidance. Pending-count behavior is covered by `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsAckPendingWhenHigherThanPending`, and Behat scenario `Complete message flow - send, check stats, consume, verify`.
+> **Operational note:** This checklist is manual guidance. Pending-count behavior is covered by `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountSumsAckPendingAndPending`, and Behat scenario `Complete message flow - send, check stats, consume, verify`.
 
 ## Architecture
 

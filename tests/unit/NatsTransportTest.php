@@ -191,7 +191,7 @@ final class NatsTransportTest extends TestCase
         $transport = new TestableNatsTransport(self::VALID_DSN, []);
 
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('No ReceivedStamp found on the Envelope.');
+        $this->expectExceptionMessage('No TransportMessageIdStamp found on the Envelope.');
 
         $transport->ack(new Envelope(new \stdClass()));
     }
@@ -201,7 +201,7 @@ final class NatsTransportTest extends TestCase
         $transport = new TestableNatsTransport(self::VALID_DSN, []);
 
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('No ReceivedStamp found on the Envelope.');
+        $this->expectExceptionMessage('No TransportMessageIdStamp found on the Envelope.');
 
         $transport->reject(new Envelope(new \stdClass()));
     }
@@ -851,6 +851,89 @@ final class NatsTransportTest extends TestCase
 
         $transport->setup();
 
+    }
+
+    public function testSetupPreservesExistingReplicaCountWhenStreamReplicasNotConfigured(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'num_replicas' => 3,
+                ],
+            ],
+        );
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('stream name already in use', 400)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(static fn (array $options): bool => ($options['num_replicas'] ?? null) === 3))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        // No stream_replicas option => the existing server replica count (3) must be preserved,
+        // not silently reset to the managed default of 1.
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    public function testSetupOverridesExistingReplicaCountWhenStreamReplicasExplicitlyConfigured(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'num_replicas' => 3,
+                ],
+            ],
+        );
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('stream name already in use', 400)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(static fn (array $options): bool => ($options['num_replicas'] ?? null) === 5))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        // Explicit stream_replicas=5 must override the server's existing replica count.
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['stream_replicas' => 5]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
     }
 
     public function testSetupDoesNotTreatGenericBadRequestAsExistingStream(): void

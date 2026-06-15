@@ -68,7 +68,7 @@ final readonly class NatsTransportConfiguration
      */
     public function maxBatchTimeoutMs(): int
     {
-        return max(1, (int) round($this->floatOption(TransportOption::MAX_BATCH_TIMEOUT, 1.0) * 1000));
+        return max(1, TypeCoercion::secondsToMs($this->options[TransportOption::MAX_BATCH_TIMEOUT->value] ?? null, 1.0));
     }
 
     /**
@@ -89,9 +89,7 @@ final readonly class NatsTransportConfiguration
      */
     public function streamMaxBytes(): ?int
     {
-        $maxBytes = $this->options[TransportOption::STREAM_MAX_BYTES->value] ?? null;
-
-        return $maxBytes === null ? null : TypeCoercion::intValue($maxBytes);
+        return $this->nullableIntOption(TransportOption::STREAM_MAX_BYTES);
     }
 
     /**
@@ -101,9 +99,7 @@ final readonly class NatsTransportConfiguration
      */
     public function streamMaxMessages(): ?int
     {
-        $maxMessages = $this->options[TransportOption::STREAM_MAX_MESSAGES->value] ?? null;
-
-        return $maxMessages === null ? null : TypeCoercion::intValue($maxMessages);
+        return $this->nullableIntOption(TransportOption::STREAM_MAX_MESSAGES);
     }
 
     /**
@@ -113,9 +109,7 @@ final readonly class NatsTransportConfiguration
      */
     public function streamMaxMessagesPerSubject(): ?int
     {
-        $maxMessagesPerSubject = $this->options[TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT->value] ?? null;
-
-        return $maxMessagesPerSubject === null ? null : TypeCoercion::intValue($maxMessagesPerSubject);
+        return $this->nullableIntOption(TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT);
     }
 
     /**
@@ -137,6 +131,18 @@ final readonly class NatsTransportConfiguration
     public function streamReplicas(): int
     {
         return max(1, $this->intOption(TransportOption::STREAM_REPLICAS, 1));
+    }
+
+    /**
+     * Returns true when stream_replicas was explicitly configured (as opposed to defaulted).
+     *
+     * Lets {@see NatsTransport::setup()} decide, on the update path, whether to write the managed
+     * replica count or preserve the existing server value — so a stream created with more replicas
+     * (e.g. in a cluster) is not silently downscaled when setup() runs without the option set.
+     */
+    public function hasExplicitStreamReplicas(): bool
+    {
+        return ($this->options[TransportOption::STREAM_REPLICAS->value] ?? null) !== null;
     }
 
     /**
@@ -165,7 +171,7 @@ final readonly class NatsTransportConfiguration
      */
     public function nakDelayMs(): int
     {
-        return max(0, (int) round($this->floatOption(TransportOption::NAK_DELAY, 0.0) * 1000));
+        return max(0, TypeCoercion::secondsToMs($this->options[TransportOption::NAK_DELAY->value] ?? null, 0.0));
     }
 
     /**
@@ -178,7 +184,7 @@ final readonly class NatsTransportConfiguration
     {
         $ackWait = $this->options[TransportOption::ACK_WAIT->value] ?? null;
 
-        return $ackWait === null ? null : max(1, (int) round(TypeCoercion::floatValue($ackWait) * 1000));
+        return $ackWait === null ? null : max(1, TypeCoercion::secondsToMs($ackWait));
     }
 
     /**
@@ -189,9 +195,7 @@ final readonly class NatsTransportConfiguration
      */
     public function maxDeliver(): ?int
     {
-        $maxDeliver = $this->options[TransportOption::MAX_DELIVER->value] ?? null;
-
-        return $maxDeliver === null ? null : TypeCoercion::intValue($maxDeliver);
+        return $this->nullableIntOption(TransportOption::MAX_DELIVER);
     }
 
     /**
@@ -211,7 +215,7 @@ final readonly class NatsTransportConfiguration
 
         $backoffMs = [];
         foreach ($backoff as $value) {
-            $backoffMs[] = max(0, (int) round(TypeCoercion::floatValue($value) * 1000));
+            $backoffMs[] = max(0, TypeCoercion::secondsToMs($value));
         }
 
         return $backoffMs;
@@ -240,19 +244,24 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
-     * Retrieves a float option with fallback, using TypeCoercion for safe casting.
-     */
-    private function floatOption(TransportOption $option, float $default): float
-    {
-        return TypeCoercion::floatValue($this->options[$option->value] ?? null, $default);
-    }
-
-    /**
      * Retrieves an integer option with fallback, using TypeCoercion for safe casting.
      */
     private function intOption(TransportOption $option, int $default): int
     {
         return TypeCoercion::intValue($this->options[$option->value] ?? null, $default);
+    }
+
+    /**
+     * Retrieves a nullable integer option: null when the option is unset, otherwise the coerced int.
+     *
+     * Shared by the optional stream-limit and redelivery accessors so the null-passthrough policy
+     * lives in one place.
+     */
+    private function nullableIntOption(TransportOption $option): ?int
+    {
+        $value = $this->options[$option->value] ?? null;
+
+        return $value === null ? null : TypeCoercion::intValue($value);
     }
 
     /**

@@ -78,4 +78,16 @@ final class TypeCoercion
 
         return $default;
     }
+
+    /**
+     * Converts a mixed seconds value to whole milliseconds.
+     *
+     * Applies the same coercion policy as {@see floatValue()} (numeric strings/ints/floats accepted,
+     * otherwise $default) and rounds the result to an integer. Centralizes the seconds→milliseconds
+     * rule shared by the transport's timeout/delay options; callers apply their own min-clamp.
+     */
+    public static function secondsToMs(mixed $seconds, float $default = 0.0): int
+    {
+        return (int) round(self::floatValue($seconds, $default) * 1000);
+    }
 }
