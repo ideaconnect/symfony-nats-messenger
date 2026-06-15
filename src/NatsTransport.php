@@ -260,14 +260,24 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Acknowledges successful handling of a received envelope.
      *
      * Extracts the JetStream delivery token from the envelope's TransportMessageIdStamp
-     * and sends an ACK to JetStream so the message won't be redelivered.
+     * and sends an ACK to JetStream so the message won't be redelivered. When the
+     * {@see NatsTransportConfiguration::isAckSyncEnabled()} option is on, the ACK waits for
+     * server confirmation (double-ack) so a dropped ACK cannot silently cause redelivery.
      *
      * @throws LogicException If the envelope lacks a TransportMessageIdStamp
      */
     public function ack(Envelope $envelope): void
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
-        $this->jetStream()->ack($this->buildAckMessage($id))->await();
+        $message = $this->buildAckMessage($id);
+
+        if ($this->configuration->isAckSyncEnabled()) {
+            $this->jetStream()->ackSync($message)->await();
+
+            return;
+        }
+
+        $this->jetStream()->ack($message)->await();
     }
 
     /**

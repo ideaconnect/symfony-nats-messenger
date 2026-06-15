@@ -538,6 +538,23 @@ final class NatsTransportTest extends TestCase
         $transport->ack((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('message-id')));
     }
 
+    public function testAckUsesAckSyncWhenEnabled(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('ackSync')
+            ->with(self::callback(static function (NatsMessage $message): bool {
+                return $message->replyTo === 'message-id' && $message->subject === 'test-topic';
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::never())->method('ack');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['ack_sync' => true]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->ack((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('message-id')));
+    }
+
     public function testConnectInitializesJetStreamContextFromClient(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);

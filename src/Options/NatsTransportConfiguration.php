@@ -27,6 +27,7 @@ final readonly class NatsTransportConfiguration
      * @param array<string, mixed> $options                 Merged option map (method > DSN query > defaults)
      * @param bool                 $natsRetryHandlerEnabled True when retry handling is delegated to NATS (NAK mode)
      * @param bool                 $scheduledMessagesEnabled True when delayed/scheduled message publishing is enabled
+     * @param bool                 $ackSyncEnabled          True when acknowledgements should wait for server confirmation (double-ack)
      */
     public function __construct(
         public string $topic,
@@ -35,6 +36,7 @@ final readonly class NatsTransportConfiguration
         private array $options,
         private bool $natsRetryHandlerEnabled,
         private bool $scheduledMessagesEnabled = false,
+        private bool $ackSyncEnabled = false,
     ) {
     }
 
@@ -165,6 +167,17 @@ final readonly class NatsTransportConfiguration
     public function isScheduledMessagesEnabled(): bool
     {
         return $this->scheduledMessagesEnabled;
+    }
+
+    /**
+     * Returns true when acknowledgements should wait for server confirmation (JetStream double-ack).
+     *
+     * When enabled, {@see NatsTransport::ack()} uses ackSync(), trading extra latency for a guarantee
+     * that the ACK was received (a dropped ACK cannot silently lead to redelivery).
+     */
+    public function isAckSyncEnabled(): bool
+    {
+        return $this->ackSyncEnabled;
     }
 
     /**

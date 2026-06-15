@@ -405,6 +405,36 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertTrue($configuration->isScheduledMessagesEnabled());
     }
 
+    public function testBuildWithAckSyncEnabledSetsFlag(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            ['ack_sync' => true]
+        );
+
+        self::assertTrue($configuration->isAckSyncEnabled());
+    }
+
+    public function testBuildWithAckSyncDisabledByDefault(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            []
+        );
+
+        self::assertFalse($configuration->isAckSyncEnabled());
+    }
+
+    public function testBuildWithAckSyncFromDsnQueryString(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://admin:password@localhost:4222/test-stream/test-topic?ack_sync=true',
+            []
+        );
+
+        self::assertTrue($configuration->isAckSyncEnabled());
+    }
+
     public function testBuildWithDottedTopicNameSucceeds(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
@@ -630,6 +660,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'stream_storage' => 'file',
                 'stream_replicas' => 1,
                 'retry_handler' => 'symfony',
+                'ack_sync' => false,
                 'scheduled_messages' => false,
             ]
         );
@@ -644,6 +675,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame('file', $configuration->streamStorage()->value);
         self::assertSame(1, $configuration->streamReplicas());
         self::assertSame(RetryHandler::SYMFONY, $configuration->retryHandler());
+        self::assertFalse($configuration->isAckSyncEnabled());
         self::assertFalse($configuration->isScheduledMessagesEnabled());
     }
 

@@ -2,7 +2,7 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-98.03%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-98.06%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -17,7 +17,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 228 unit tests with ~98% code coverage
+- 🧪 **Thoroughly Tested** - 232 unit tests with ~98% code coverage
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -282,6 +282,12 @@ framework:
           retry_handler: 'symfony'          # symfony|nats (default: symfony)
                                             # symfony => TERM on failed/rejected message
                                             # nats    => NAK on failed/rejected message
+
+          # Acknowledgement Mode
+          ack_sync: false                   # Wait for server confirmation of each ACK (default: false)
+                                            # false => fire-and-forget ACK (lower latency)
+                                            # true  => JetStream double-ack; a dropped ACK cannot
+                                            #          silently cause redelivery, at a latency cost
 
           # Scheduled / Delayed Messages (requires NATS >= 2.12)
           scheduled_messages: false         # Enable scheduled message support (default: false)

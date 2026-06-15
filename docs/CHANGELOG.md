@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the seconds→nanoseconds conversion. No behavior change.
 
 ### Added
+- **`ack_sync` option (opt-in double-ack)** — when enabled, `ack()` uses the v2 client's `ackSync()` and
+  waits for server confirmation of each acknowledgement, so a dropped ACK cannot silently cause
+  redelivery. Defaults to `false` (fire-and-forget, lower latency).
 - **`CLAUDE.md`, `HUMANS.md`, `STRUCTURE.md`** — agent guidance, human onboarding, and an architecture/
   layout reference, respectively.
 
@@ -55,8 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JetStream's "unlimited" sentinels instead of preserving the previous server-side value.
 - **`getMessageCount()` catches `\Throwable`** (not just `\Exception`), honouring its documented
   "returns 0 if both lookups fail" contract for `\Error`-type failures surfaced by awaited futures.
-- **README accuracy** — corrected the coverage badge (`95.97%` → `98.03%`) and the test-count claim
-  (`102` → `228` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
+- **README accuracy** — corrected the coverage badge (`95.97%` → `98.06%`) and the test-count claim
+  (`102` → `232` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
   example (there is no `delay` transport option; the value was silently ignored).
 - **Documentation** — refreshed the stale `tests/functional/README.md` (removed dead benchmark-doc
   links and replaced the outdated "three scenarios" list with the full feature-file table) and removed
