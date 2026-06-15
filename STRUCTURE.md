@@ -138,8 +138,8 @@ the configuration, and the builder, and covered by its own unit tests plus a fun
 
 **Setup**
 1. `messenger:setup-transports` → `NatsTransport::setup()`.
-2. `createStream()`; on conflict, `getStream()` → merge subjects → `updateStream()`.
-3. `createConsumer()` (durable, pull, explicit ACK, deliver-all) → assert configuration.
+2. `addStream(StreamConfiguration)`; on conflict, `getStream()` → merge subjects → `updateStream()`.
+3. `addConsumer(ConsumerConfiguration)` (durable, pull, explicit ACK, deliver-all) → assert configuration.
 
 ## Dependency boundary
 

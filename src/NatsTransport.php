@@ -8,6 +8,10 @@ use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\JetStreamException;
+use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
+use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
+use IDCT\NATS\JetStream\Enum\AckPolicy;
+use IDCT\NATS\JetStream\Enum\DeliverPolicy;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
@@ -329,11 +333,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function setup(): void
     {
         try {
-            $streamOptions = $this->buildManagedStreamOptions();
             $subjects = $this->buildDesiredSubjects();
+            $streamConfiguration = $this->buildManagedStreamConfiguration($subjects);
 
             try {
-                $this->jetStream()->createStream($this->streamName, $subjects, $streamOptions)->await();
+                $this->jetStream()->addStream($streamConfiguration)->await();
             } catch (JetStreamException $streamCreateException) {
                 // Don't string-match the server's error text to detect a pre-existing stream — the
                 // message wording varies across NATS versions. Ask JetStream directly: if the stream
@@ -344,19 +348,23 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                     throw $streamCreateException;
                 }
 
-                $updatedConfiguration = $this->buildUpdatedStreamConfiguration($existingStream, $streamOptions, $subjects);
+                // The update API takes a raw config array merged with the live server config, so derive
+                // the managed fields from the same StreamConfiguration (dropping name/subjects, which
+                // the update path handles itself).
+                $managedOptions = $streamConfiguration->toArray();
+                unset($managedOptions['name'], $managedOptions['subjects']);
+
+                $updatedConfiguration = $this->buildUpdatedStreamConfiguration($existingStream, $managedOptions, $subjects);
                 $this->jetStream()->updateStream($this->streamName, $updatedConfiguration)->await();
             }
 
-            $consumerInfo = $this->jetStream()->createConsumer(
-                $this->streamName,
-                $this->configuration->consumer(),
-                $this->topic,
-                [
-                    'ack_policy' => 'explicit',
-                    'deliver_policy' => 'all',
-                ]
-            )->await();
+            $consumerConfiguration = ConsumerConfiguration::create()
+                ->durable($this->configuration->consumer())
+                ->filterSubject($this->topic)
+                ->ackPolicy(AckPolicy::Explicit)
+                ->deliverPolicy(DeliverPolicy::All);
+
+            $consumerInfo = $this->jetStream()->addConsumer($this->streamName, $consumerConfiguration)->await();
             $this->assertConsumerMatchesConfiguration($consumerInfo);
         } catch (\Throwable $e) {
             throw new RuntimeException("Failed to setup NATS stream '{$this->streamName}': " . $e->getMessage(), 0, $e);
@@ -490,41 +498,45 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Builds the stream configuration fields managed by this transport.
+     * Builds the typed stream configuration managed by this transport.
      *
-     * @return array<string, mixed>
+     * Used directly to create the stream (via {@see JetStreamContext::addStream()}) and, on the update
+     * path, via {@see StreamConfiguration::toArray()} so the managed fields have a single definition.
+     * {@see StreamConfiguration::maxAge()} performs the seconds→nanoseconds conversion internally.
+     *
+     * @param list<string> $subjects
      */
-    private function buildManagedStreamOptions(): array
+    private function buildManagedStreamConfiguration(array $subjects): StreamConfiguration
     {
-        $streamOptions = [
-            'storage' => $this->configuration->streamStorage()->value,
-        ];
+        $streamConfiguration = (new StreamConfiguration($this->streamName))
+            ->subjects(...$subjects)
+            ->storage($this->configuration->streamStorage());
 
         if ($this->configuration->streamMaxAgeSeconds() > 0) {
-            $streamOptions['max_age'] = $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS;
+            $streamConfiguration->maxAge($this->configuration->streamMaxAgeSeconds());
         }
 
         if ($this->configuration->streamMaxBytes() !== null) {
-            $streamOptions['max_bytes'] = $this->configuration->streamMaxBytes();
+            $streamConfiguration->maxBytes($this->configuration->streamMaxBytes());
         }
 
         if ($this->configuration->streamMaxMessages() !== null) {
-            $streamOptions['max_msgs'] = $this->configuration->streamMaxMessages();
+            $streamConfiguration->maxMessages($this->configuration->streamMaxMessages());
         }
 
         if ($this->configuration->streamMaxMessagesPerSubject() !== null) {
-            $streamOptions['max_msgs_per_subject'] = $this->configuration->streamMaxMessagesPerSubject();
+            $streamConfiguration->maxMsgsPerSubject($this->configuration->streamMaxMessagesPerSubject());
         }
 
         if ($this->configuration->streamReplicas() > 0) {
-            $streamOptions['num_replicas'] = $this->configuration->streamReplicas();
+            $streamConfiguration->replicas($this->configuration->streamReplicas());
         }
 
         if ($this->configuration->isScheduledMessagesEnabled()) {
-            $streamOptions['allow_msg_schedules'] = true;
+            $streamConfiguration->set('allow_msg_schedules', true);
         }
 
-        return $streamOptions;
+        return $streamConfiguration;
     }
 
     /**

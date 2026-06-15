@@ -24,11 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `intValue()` / `floatValue()` / `stringValue()` helpers. The mixed→scalar coercion policy is now a
   standalone, independently testable unit (own unit tests plus a functional DSN-coercion scenario)
   instead of a trait mixed into three classes. No behavior change.
-- **Deterministic existing-stream detection in `setup()`** — when `createStream` fails, the transport
+- **Deterministic existing-stream detection in `setup()`** — when stream creation fails, the transport
   now queries JetStream stream info (`404` ⇒ absent) to decide whether to update, instead of matching
   server-specific `"already in use"` / `"already exists"` error strings. This removes the brittle
   message parsing and collapses the previous two stream-info lookups into one (the fetched config is
   reused for the update).
+- **Typed stream/consumer configuration in `setup()`** — the stream and durable consumer are now built
+  with the v2 client's fluent `StreamConfiguration` / `ConsumerConfiguration` builders and created via
+  `addStream()` / `addConsumer()`, replacing hand-assembled option arrays. A single `StreamConfiguration`
+  is the source for both the create and update paths (the latter via `toArray()`), and `maxAge()` handles
+  the seconds→nanoseconds conversion. No behavior change.
 
 ### Added
 - **`CLAUDE.md`, `HUMANS.md`, `STRUCTURE.md`** — agent guidance, human onboarding, and an architecture/
