@@ -362,7 +362,7 @@ final class NatsTransportTest extends TestCase
         $transport->send(new Envelope(new \stdClass()));
     }
 
-    public function testGetSkipsEmptyPayloadMessages(): void
+    public function testGetTermsEmptyPayloadMessagesToStopRedelivery(): void
     {
         $serializer = $this->createMock(SerializerInterface::class);
         $serializer->expects(self::once())
@@ -377,13 +377,16 @@ final class NatsTransportTest extends TestCase
                 new NatsMessage('test-topic', 2, 'reply-valid', 'payload'),
             ]));
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
+        $transport = new RuntimeRetryHandlerNatsTransport(self::VALID_DSN, [], $serializer);
         $transport->setJetStreamContext($jetStream);
 
         $envelopes = array_values(iterator_to_array($transport->get()));
 
         self::assertCount(1, $envelopes);
         self::assertSame('reply-valid', $envelopes[0]->last(TransportMessageIdStamp::class)?->getId());
+        // The empty-payload message can never decode into an envelope, so it is TERMed (not
+        // silently skipped) to stop JetStream redelivering it forever — regardless of retry handler.
+        self::assertSame(['term:reply-empty'], $transport->failureActions);
     }
 
     public function testGetReturnsEmptyArrayWhenConsumerIsMissing(): void

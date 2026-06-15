@@ -538,6 +538,19 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['backoff' => [1, 'x']]);
     }
 
+    public function testBuildWithMaxDeliverNotExceedingBackoffThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must be greater than the number of backoff entries');
+
+        // NATS rejects a consumer whose max_deliver is not strictly greater than the backoff
+        // length; here max_deliver (2) equals the backoff count (2), so the builder fails fast.
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'max_deliver' => 2,
+            'backoff' => [1, 5],
+        ]);
+    }
+
     public function testBuildWithBackoffFromDsnQueryString(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(

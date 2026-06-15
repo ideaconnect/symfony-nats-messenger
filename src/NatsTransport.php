@@ -176,9 +176,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *
      * Fetches up to {@see NatsTransportConfiguration::batching()} messages with the
      * configured timeout. HTTP 404 (consumer not found) and 408 (timeout / no messages)
-     * are treated as empty results. Messages with an empty payload or without a reply
-     * (ack) subject are skipped, since they cannot complete the Messenger receive
-     * lifecycle. On deserialization failure the message is rejected via
+     * are treated as empty results. A message without a reply (ack) subject is skipped
+     * (it can be neither acknowledged nor rejected); a message with an empty payload is
+     * TERMed so JetStream stops redelivering it, since it can never decode into an
+     * envelope. On deserialization failure the message is rejected via
      * {@see handleFailedDelivery()} before the exception propagates.
      *
      * @return iterable<Envelope>
@@ -201,16 +202,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         foreach ($messages as $message) {
-            if ($message->payload === '') {
-                continue;
-            }
-
             // A delivered message without a reply (ack) subject can neither be acknowledged
             // nor rejected, so an envelope built from it could never be completed by the
             // worker. Skip it rather than yield an envelope with an unusable transport id.
             // (Pull-delivered JetStream data messages always carry an ack subject.)
             $replyTo = $message->replyTo;
             if ($replyTo === null || $replyTo === '') {
+                continue;
+            }
+
+            // An empty payload can never decode into a Messenger envelope. Skipping it without
+            // acknowledging would leave it unacked, so JetStream would redeliver it every ack_wait
+            // forever (a poison loop). TERM it instead — redelivery cannot fix an empty body — so
+            // it is dropped regardless of the configured retry handler.
+            if ($message->payload === '') {
+                $this->sendTerm($replyTo);
+
                 continue;
             }
 

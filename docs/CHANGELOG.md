@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Mutation testing with Infection** — added `infection/infection` (dev), an `infection.json5` config
-  (floors: `minMsi` 95 / `minCoveredMsi` 98), a `composer test:mutation` script, and a CI step. The suite
+  (floors: `minMsi` 90 / `minCoveredMsi` 95), a `composer test:mutation` script, and a CI step. The suite
   currently scores ~99% covered MSI with 100% mutation code coverage.
 - **Expanded unit coverage (~99.6% statements) and functional coverage for the new features** — added
   unit tests for previously-uncovered branches (non-scalar option coercion, too-short DSN path,
@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (per-attempt delay schedule in seconds). NAKs use the client's `nakWithDelay()` when a delay is set,
   and the durable consumer is created with the configured `ack_wait` / `max_deliver` / `backoff`. All
   default to the previous behavior (immediate NAK, server-default ack-wait, unlimited redeliveries).
+- **Up-front validation that `max_deliver` exceeds the `backoff` length** — when both options are set,
+  the builder now rejects a `max_deliver` that is not strictly greater than the number of `backoff`
+  entries (NATS requires room for at least one delivery beyond the backoff schedule), turning an opaque
+  server-side consumer-creation failure into a clear configuration error.
 - **`ack_sync` option (opt-in double-ack)** — when enabled, `ack()` uses the v2 client's `ackSync()` and
   waits for server confirmation of each acknowledgement, so a dropped ACK cannot silently cause
   redelivery. Defaults to `false` (fire-and-forget, lower latency).
@@ -57,6 +61,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout reference, respectively.
 
 ### Fixed
+- **Empty-payload messages no longer poison-loop** — `get()` now sends TERM for a delivered message
+  with an empty payload (which can never decode into an envelope) instead of silently skipping it.
+  Skipping left the message unacknowledged, so JetStream redelivered it every `ack_wait` indefinitely;
+  TERM stops redelivery regardless of the configured retry handler. A message without a reply (ack)
+  subject is still skipped, since it cannot be acknowledged at all.
+- **README serializer default clarified** — documented that under the Symfony framework the transport
+  factory always receives Symfony's resolved serializer (the framework default is the native
+  `PhpSerializer`), so the transport's built-in igbinary auto-selection only applies to direct
+  instantiation; to use igbinary under the framework, set the transport's `serializer:` key explicitly.
 - **Actionable error for `scheduled_messages` on NATS < 2.12** — when the connected server is too old
   for `allow_msg_schedules`, `setup()` now catches the client's typed `UnsupportedFeatureException` and
   fails with a clear message ("The 'scheduled_messages' option requires NATS Server >= 2.12, but the

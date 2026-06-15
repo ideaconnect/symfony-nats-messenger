@@ -2,7 +2,7 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.56%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.57%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-~99%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -18,7 +18,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 248 unit tests, ~99.6% coverage, mutation-tested (~99% MSI)
+- 🧪 **Thoroughly Tested** - 249 unit tests, ~99.6% coverage, mutation-tested (~99% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -114,9 +114,9 @@ framework:
 
 ### 3. Configure Custom Serializers (Optional)
 
-By default, the transport uses `igbinary` serialization for high performance when the extension is available. If `ext-igbinary` is not installed, it falls back to Symfony's `PhpSerializer` and emits a notice. You can also customize this explicitly:
+This transport ships with a high-performance `IgbinarySerializer`, but under the Symfony framework it is **not** selected automatically. Symfony Messenger always resolves a serializer and passes it to the transport factory — its framework default is the native `PhpSerializer` — so to use igbinary you must set the transport's `serializer:` key explicitly (shown below). The transport's *own* igbinary auto-selection (and the `PhpSerializer` fallback, with an `E_USER_WARNING`, when `ext-igbinary` is unavailable) only applies when you construct `NatsTransport` directly without passing a serializer, e.g. outside the framework.
 
-#### Using IgbinarySerializer (Default)
+#### Using IgbinarySerializer (recommended)
 
 ```yaml
 # config/packages/messenger.yaml
@@ -130,7 +130,7 @@ framework:
           consumer: 'my-consumer'
 ```
 
-**Note:** Custom serializer services are resolved by Symfony before transport creation. When no serializer service is provided, the transport instantiates its built-in default serializer and falls back to Symfony's `PhpSerializer` if `ext-igbinary` is unavailable.
+**Note:** Under the Symfony framework the serializer is resolved by Symfony *before* transport creation and always passed in, so the transport uses whatever Symfony provides — its native `PhpSerializer` by default. Set the `serializer:` key above to use igbinary instead. The transport's built-in igbinary default (and its `PhpSerializer` fallback with an `E_USER_WARNING` when `ext-igbinary` is unavailable) only takes effect when `NatsTransport` is instantiated directly without a serializer.
 
 For example:
 ```yaml

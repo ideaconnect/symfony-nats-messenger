@@ -247,6 +247,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertPositiveNumber($configuration, TransportOption::ACK_WAIT, false);
         $this->assertPositiveNumber($configuration, TransportOption::MAX_DELIVER, true);
         $this->assertBackoff($configuration);
+        $this->assertMaxDeliverExceedsBackoff($configuration);
         $this->normalizeStorageBackend($configuration);
 
         return $configuration;
@@ -335,6 +336,36 @@ final class NatsTransportConfigurationBuilder
             if ((!is_int($value) && !is_float($value) && !is_string($value)) || !is_numeric($value) || (float) $value < 0) {
                 throw new InvalidArgumentException('The backoff option must be a list of non-negative numbers (seconds).');
             }
+        }
+    }
+
+    /**
+     * Validates that max_deliver leaves room for the backoff schedule.
+     *
+     * When both options are set, NATS requires max_deliver to be strictly greater than the number
+     * of backoff entries (it must allow at least one delivery beyond the backoff schedule) and
+     * rejects the consumer otherwise. Validating here turns that into a clear configuration error
+     * instead of an opaque server failure at {@see \IDCT\NatsMessenger\NatsTransport::setup()} time.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function assertMaxDeliverExceedsBackoff(array $configuration): void
+    {
+        $backoff = $configuration[TransportOption::BACKOFF->value] ?? null;
+        $maxDeliver = $configuration[TransportOption::MAX_DELIVER->value] ?? null;
+
+        if (!is_array($backoff) || $backoff === [] || $maxDeliver === null) {
+            return;
+        }
+
+        $maxDeliverValue = TypeCoercion::intValue($maxDeliver);
+        $backoffCount = count($backoff);
+        if ($maxDeliverValue <= $backoffCount) {
+            throw new InvalidArgumentException(sprintf(
+                'The max_deliver option (%d) must be greater than the number of backoff entries (%d): NATS requires room for at least one delivery beyond the backoff schedule.',
+                $maxDeliverValue,
+                $backoffCount,
+            ));
         }
     }
 
