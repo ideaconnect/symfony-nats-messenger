@@ -7,6 +7,7 @@ use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\JetStreamException;
+use IDCT\NATS\Exception\UnsupportedFeatureException;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
 use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
 use IDCT\NATS\JetStream\JetStreamContext;
@@ -865,6 +866,53 @@ final class NatsTransportTest extends TestCase
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('Consumer must be configured as a pull consumer.');
+
+        $transport->setup();
+    }
+
+    public function testSetupGivesClearErrorWhenScheduledMessagesUnsupported(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new UnsupportedFeatureException(
+                'allow_msg_schedules',
+                '2.12',
+                '2.10.0',
+                'unknown field "allow_msg_schedules"',
+                400,
+            )));
+        // A version-feature rejection is not a pre-existing-stream conflict, so no existence check.
+        $jetStream->expects(self::never())->method('getStream');
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true]);
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("'scheduled_messages' option requires NATS Server >= 2.12, but the connected server reports 2.10.0");
+
+        $transport->setup();
+    }
+
+    public function testSetupWrapsUnsupportedFeatureGenericallyWhenNotScheduledMessages(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new UnsupportedFeatureException(
+                'allow_atomic',
+                '2.12',
+                '2.11.0',
+                'unknown field "allow_atomic"',
+                400,
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("NATS Server feature 'allow_atomic' requires version >= 2.12, but the connected server reports 2.11.0");
 
         $transport->setup();
     }

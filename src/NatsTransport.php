@@ -8,6 +8,7 @@ use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\JetStreamException;
+use IDCT\NATS\Exception\UnsupportedFeatureException;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
 use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
 use IDCT\NATS\JetStream\Enum\AckPolicy;
@@ -338,6 +339,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             try {
                 $this->jetStream()->addStream($streamConfiguration)->await();
+            } catch (UnsupportedFeatureException $unsupportedFeature) {
+                // A version-gated feature (e.g. allow_msg_schedules) was rejected by an older server.
+                // That is not a pre-existing-stream conflict, so skip the existence check and surface
+                // an actionable message via the outer handler.
+                throw $unsupportedFeature;
             } catch (JetStreamException $streamCreateException) {
                 // Don't string-match the server's error text to detect a pre-existing stream — the
                 // message wording varies across NATS versions. Ask JetStream directly: if the stream
@@ -366,6 +372,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             $consumerInfo = $this->jetStream()->addConsumer($this->streamName, $consumerConfiguration)->await();
             $this->assertConsumerMatchesConfiguration($consumerInfo);
+        } catch (UnsupportedFeatureException $unsupportedFeature) {
+            throw new RuntimeException($this->describeUnsupportedFeature($unsupportedFeature), 0, $unsupportedFeature);
         } catch (\Throwable $e) {
             throw new RuntimeException("Failed to setup NATS stream '{$this->streamName}': " . $e->getMessage(), 0, $e);
         }
@@ -495,6 +503,32 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             throw $exception;
         }
+    }
+
+    /**
+     * Builds an actionable message for a version-gated feature the connected server is too old for.
+     *
+     * The only such feature this transport enables is `allow_msg_schedules` (via `scheduled_messages`),
+     * so that case gets a tailored hint; anything else falls back to a generic message.
+     */
+    private function describeUnsupportedFeature(UnsupportedFeatureException $exception): string
+    {
+        $serverVersion = $exception->serverVersion ?? 'an older version';
+
+        if ($this->configuration->isScheduledMessagesEnabled() && $exception->feature === 'allow_msg_schedules') {
+            return sprintf(
+                "The 'scheduled_messages' option requires NATS Server >= %s, but the connected server reports %s. Disable scheduled_messages or upgrade NATS.",
+                $exception->requiredVersion,
+                $serverVersion,
+            );
+        }
+
+        return sprintf(
+            "NATS Server feature '%s' requires version >= %s, but the connected server reports %s.",
+            $exception->feature,
+            $exception->requiredVersion,
+            $serverVersion,
+        );
     }
 
     /**

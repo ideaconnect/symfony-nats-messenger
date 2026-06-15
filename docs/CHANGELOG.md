@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout reference, respectively.
 
 ### Fixed
+- **Actionable error for `scheduled_messages` on NATS < 2.12** — when the connected server is too old
+  for `allow_msg_schedules`, `setup()` now catches the client's typed `UnsupportedFeatureException` and
+  fails with a clear message ("The 'scheduled_messages' option requires NATS Server >= 2.12, but the
+  connected server reports …. Disable scheduled_messages or upgrade NATS.") instead of a generic wrapped
+  error.
 - **Publish acknowledgements always fail closed** — the previous header-publish path silently accepted
   an empty/non-JSON JetStream ack; publishing through `JetStreamContext::publish()` rejects empty,
   malformed, or error acks consistently for all messages.
@@ -50,8 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JetStream's "unlimited" sentinels instead of preserving the previous server-side value.
 - **`getMessageCount()` catches `\Throwable`** (not just `\Exception`), honouring its documented
   "returns 0 if both lookups fail" contract for `\Error`-type failures surfaced by awaited futures.
-- **README accuracy** — corrected the coverage badge (`95.97%` → `97.95%`) and the test-count claim
-  (`102` → `226` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
+- **README accuracy** — corrected the coverage badge (`95.97%` → `98.03%`) and the test-count claim
+  (`102` → `228` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
   example (there is no `delay` transport option; the value was silently ignored).
 - **Documentation** — refreshed the stale `tests/functional/README.md` (removed dead benchmark-doc
   links and replaced the outdated "three scenarios" list with the full feature-file table) and removed
