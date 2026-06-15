@@ -26,7 +26,7 @@ Symfony Messenger  ──dispatch──▶  NatsTransportFactory ──▶ NatsT
 src/
 ├── NatsTransport.php                          # Core transport: send/get/ack/reject/setup/getMessageCount
 ├── NatsTransportFactory.php                   # TransportFactoryInterface — DSN scheme detection + instantiation
-├── TypeCoercionTrait.php                      # Safe mixed → int/float/string coercion helpers
+├── TypeCoercion.php                           # Safe mixed → int/float/string coercion (final, static)
 ├── Options/
 │   ├── NatsTransportConfiguration.php         # Immutable readonly value object of resolved settings
 │   ├── NatsTransportConfigurationBuilder.php  # Parses DSN + options, validates, builds the NatsClient
@@ -116,10 +116,11 @@ NatsTransportConfiguration  ← immutable, typed accessors apply clamping/unit c
 - ⚠️ Both default serializers `unserialize()` raw payloads — only safe on trusted subjects. For
   untrusted publishers, supply a JSON/Protobuf serializer. See the README Security section.
 
-### TypeCoercionTrait
-Shared `mixed → int|float|string` helpers. DSN query params and YAML config arrive as strings, and
-JetStream JSON responses are loosely typed; this trait centralizes safe casting so every call site
-behaves the same. Used by the transport, the configuration, and the builder.
+### TypeCoercion
+A `final` class of pure, `public static` `mixed → int|float|string` helpers. DSN query params arrive
+as strings (`parse_str`) while YAML config is already typed, and JetStream JSON responses are loosely
+typed; this class centralizes safe casting so every call site behaves the same. Used by the transport,
+the configuration, and the builder, and covered by its own unit tests plus a functional scenario.
 
 ## Data flow examples
 

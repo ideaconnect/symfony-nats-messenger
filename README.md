@@ -17,7 +17,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 187 unit tests with ~98% code coverage
+- 🧪 **Thoroughly Tested** - 226 unit tests with ~98% code coverage
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 

@@ -62,6 +62,15 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Abstract serializer encode/decode** | `encode_WithValidEnvelope_ReturnsArrayWithBody`, `encode_WithEnvelopeContainingStamps_PreservesStampsInBody`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `decode_WithEmptyBody_ThrowsMessageDecodingFailedException`, `decode_WithMissingBody_ThrowsMessageDecodingFailedException`, `decode_WithNullBody_ThrowsMessageDecodingFailedException`, `decode_WhenDeserializeReturnsNonEnvelope_ThrowsMessageDecodingFailed`, `encode_ThenDecode_ReturnsEquivalentEnvelope`, `encode_WithMultipleStamps_PreservesAllStamps`, `encode_WithValidEnvelope_IncludesHeadersKey` |
 | **Igbinary serializer** | `serialize_WithValidEnvelope_ReturnsSerializedString`, `serialize_WithEnvelopeContainingStamps_PreservesStamps`, `deserialize_WithValidSerializedData_ReturnsOriginalData`, `deserialize_WithSerializedEnvelope_ReturnsEnvelope`, `deserialize_WithInvalidData_ReturnsNull`, `deserialize_WithEmptyString_ReturnsFalse`, `encode_WithValidEnvelope_ReturnsArrayWithBody`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `decode_WithEmptyBody_ThrowsMessageDecodingFailedException`, `decode_WithMissingBody_ThrowsMessageDecodingFailedException`, `decode_WithInvalidSerializedData_ThrowsMessageDecodingFailed` |
 
+### Type Coercion (`tests/unit/TypeCoercionTest.php`)
+
+| Feature | Tests |
+|---------|-------|
+| **`intValue()` coercion** | `testIntValue` (data provider: int/float-truncation/numeric-string/scientific/non-numeric/null/bool/array/object/defaults), `testIntValueDefaultIsZeroWhenOmitted` |
+| **`floatValue()` coercion** | `testFloatValue` (data provider: float/int-widening/numeric-string/scientific/non-numeric/null/bool/array/object), `testFloatValueDefaultIsZeroWhenOmitted` |
+| **`stringValue()` coercion** | `testStringValue` (data provider: string/empty/int/float/bool-true/bool-false/null/array/object), `testStringValueDefaultIsEmptyStringWhenOmitted` |
+| **Static & pure** | `testMethodsAreStaticAndPure` |
+
 ## Functional Tests (Behat)
 
 ### Stream Setup (`tests/functional/features/nats_setup.feature`)
@@ -122,6 +131,12 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 |---------|-----------|
 | **TLS connection** | TLS server connection with native PHP serializer, TLS server connection with igbinary serializer |
 | **mTLS connection** | mTLS server connection with client certificate |
+
+### Type Coercion (`tests/functional/features/nats_type_coercion.feature`)
+
+| Feature | Scenarios |
+|---------|-----------|
+| **DSN query-string coercion** | Numeric options supplied via the DSN query string are coerced and applied (max_age, max_bytes, max_messages) |
 
 ## README Example Coverage
 

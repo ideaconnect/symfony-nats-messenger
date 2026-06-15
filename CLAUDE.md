@@ -46,7 +46,7 @@ composer nats:stop               # stop NATS
 - `TransportOption` is the single source of truth for option keys; every case needs a `DEFAULT_OPTIONS`
   entry in `NatsTransportConfigurationBuilder` (guarded by `testDefaultOptionsCoversAllTransportOptionCases`).
 - Mark DSN/credential parameters with `#[\SensitiveParameter]`.
-- Use `TypeCoercionTrait` for `mixed → scalar` casting rather than ad-hoc casts.
+- Use `TypeCoercion` (static helpers) for `mixed → scalar` casting rather than ad-hoc casts.
 - Match the surrounding style: typed properties, readonly value objects, rich doc-comments.
 
 ## Non-obvious behavior (read before changing the transport)

@@ -6,7 +6,7 @@ namespace IDCT\NatsMessenger\Options;
 
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\JetStream\Enum\StorageBackend;
-use IDCT\NatsMessenger\TypeCoercionTrait;
+use IDCT\NatsMessenger\TypeCoercion;
 
 /**
  * Immutable, normalized transport configuration built from DSN and options.
@@ -20,8 +20,6 @@ use IDCT\NatsMessenger\TypeCoercionTrait;
  */
 final readonly class NatsTransportConfiguration
 {
-    use TypeCoercionTrait;
-
     /**
      * @param string               $topic                   JetStream subject name
      * @param string               $streamName              JetStream stream name backing the subject
@@ -91,7 +89,7 @@ final readonly class NatsTransportConfiguration
     {
         $maxBytes = $this->options[TransportOption::STREAM_MAX_BYTES->value] ?? null;
 
-        return $maxBytes === null ? null : $this->intValue($maxBytes);
+        return $maxBytes === null ? null : TypeCoercion::intValue($maxBytes);
     }
 
     /**
@@ -103,7 +101,7 @@ final readonly class NatsTransportConfiguration
     {
         $maxMessages = $this->options[TransportOption::STREAM_MAX_MESSAGES->value] ?? null;
 
-        return $maxMessages === null ? null : $this->intValue($maxMessages);
+        return $maxMessages === null ? null : TypeCoercion::intValue($maxMessages);
     }
 
     /**
@@ -115,7 +113,7 @@ final readonly class NatsTransportConfiguration
     {
         $maxMessagesPerSubject = $this->options[TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT->value] ?? null;
 
-        return $maxMessagesPerSubject === null ? null : $this->intValue($maxMessagesPerSubject);
+        return $maxMessagesPerSubject === null ? null : TypeCoercion::intValue($maxMessagesPerSubject);
     }
 
     /**
@@ -170,26 +168,26 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
-     * Retrieves a float option with fallback, using TypeCoercionTrait for safe casting.
+     * Retrieves a float option with fallback, using TypeCoercion for safe casting.
      */
     private function floatOption(TransportOption $option, float $default): float
     {
-        return $this->floatValue($this->options[$option->value] ?? null, $default);
+        return TypeCoercion::floatValue($this->options[$option->value] ?? null, $default);
     }
 
     /**
-     * Retrieves an integer option with fallback, using TypeCoercionTrait for safe casting.
+     * Retrieves an integer option with fallback, using TypeCoercion for safe casting.
      */
     private function intOption(TransportOption $option, int $default): int
     {
-        return $this->intValue($this->options[$option->value] ?? null, $default);
+        return TypeCoercion::intValue($this->options[$option->value] ?? null, $default);
     }
 
     /**
-     * Retrieves a string option with fallback, using TypeCoercionTrait for safe casting.
+     * Retrieves a string option with fallback, using TypeCoercion for safe casting.
      */
     private function stringOption(TransportOption $option, string $default): string
     {
-        return $this->stringValue($this->options[$option->value] ?? null, $default);
+        return TypeCoercion::stringValue($this->options[$option->value] ?? null, $default);
     }
 }

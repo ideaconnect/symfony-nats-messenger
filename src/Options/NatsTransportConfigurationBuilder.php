@@ -7,7 +7,7 @@ namespace IDCT\NatsMessenger\Options;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\JetStream\Enum\StorageBackend;
-use IDCT\NatsMessenger\TypeCoercionTrait;
+use IDCT\NatsMessenger\TypeCoercion;
 use InvalidArgumentException;
 
 /**
@@ -24,8 +24,6 @@ use InvalidArgumentException;
  */
 final class NatsTransportConfigurationBuilder
 {
-    use TypeCoercionTrait;
-
     /** Default NATS server port when not specified in DSN. */
     private const DEFAULT_NATS_PORT = 4222;
 
@@ -82,14 +80,14 @@ final class NatsTransportConfigurationBuilder
 
         [$streamName, $topic] = $this->parseStreamAndTopic($components);
 
-        $scheme = $this->resolveTransportScheme($this->stringValue($components['scheme'] ?? 'nats', 'nats'));
+        $scheme = $this->resolveTransportScheme(TypeCoercion::stringValue($components['scheme'] ?? 'nats', 'nats'));
         $host = $this->requiredString($components, 'host');
-        $port = $this->intValue($components['port'] ?? self::DEFAULT_NATS_PORT, self::DEFAULT_NATS_PORT);
+        $port = TypeCoercion::intValue($components['port'] ?? self::DEFAULT_NATS_PORT, self::DEFAULT_NATS_PORT);
         $server = sprintf('%s://%s:%d', $scheme, $host, $port);
 
         $client = new NatsClient(new NatsOptions(
             servers: [$server],
-            connectTimeoutMs: max(1, (int) round($this->floatValue($configuration[TransportOption::CONNECTION_TIMEOUT->value] ?? null, 1.0) * 1000)),
+            connectTimeoutMs: max(1, (int) round(TypeCoercion::floatValue($configuration[TransportOption::CONNECTION_TIMEOUT->value] ?? null, 1.0) * 1000)),
             pedantic: false,
             reconnectEnabled: false,
             tlsRequired: $this->toBool($configuration[TransportOption::TLS_REQUIRED->value]),
@@ -216,15 +214,15 @@ final class NatsTransportConfigurationBuilder
         /** @var array<string, mixed> $configuration */
         $configuration = $options + $query + self::DEFAULT_OPTIONS;
 
-        $retryHandler = RetryHandler::tryFrom($this->stringValue($configuration[TransportOption::RETRY_HANDLER->value] ?? RetryHandler::SYMFONY->value));
+        $retryHandler = RetryHandler::tryFrom(TypeCoercion::stringValue($configuration[TransportOption::RETRY_HANDLER->value] ?? RetryHandler::SYMFONY->value));
         if ($retryHandler === null) {
-            $invalidRetryHandler = $this->stringValue($configuration[TransportOption::RETRY_HANDLER->value] ?? null);
+            $invalidRetryHandler = TypeCoercion::stringValue($configuration[TransportOption::RETRY_HANDLER->value] ?? null);
             throw new InvalidArgumentException("Invalid retry_handler option '{$invalidRetryHandler}'. Allowed values are 'symfony' or 'nats'.");
         }
 
         $configuration[TransportOption::RETRY_HANDLER->value] = $retryHandler->value;
 
-        $consumer = trim($this->stringValue($configuration[TransportOption::CONSUMER->value] ?? null));
+        $consumer = trim(TypeCoercion::stringValue($configuration[TransportOption::CONSUMER->value] ?? null));
         if ($consumer === '') {
             throw new InvalidArgumentException('The consumer option must be a non-empty string.');
         }
@@ -251,7 +249,7 @@ final class NatsTransportConfigurationBuilder
      */
     private function normalizeStorageBackend(array &$configuration): void
     {
-        $storage = $this->stringValue(
+        $storage = TypeCoercion::stringValue(
             $configuration[TransportOption::STREAM_STORAGE->value] ?? StorageBackend::File->value,
             StorageBackend::File->value,
         );

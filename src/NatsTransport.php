@@ -43,8 +43,6 @@ use Symfony\Component\Uid\Uuid;
  */
 class NatsTransport implements TransportInterface, MessageCountAwareInterface, SetupableTransportInterface
 {
-    use TypeCoercionTrait;
-
     /** Conversion factor for stream max_age (seconds → nanoseconds as required by JetStream API). */
     private const SECONDS_TO_NANOSECONDS = 1_000_000_000;
 
@@ -141,7 +139,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw $serializationError;
         }
 
-        $payload = $this->stringValue($encodedMessage['body']);
+        $payload = TypeCoercion::stringValue($encodedMessage['body']);
         $headers = is_array($encodedMessage['headers'] ?? null) ? $encodedMessage['headers'] : [];
         $topic = $this->topic;
 
@@ -155,7 +153,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $normalizedHeaders = [];
         foreach ($headers as $name => $value) {
-            $normalizedHeaders[(string) $name] = $this->stringValue($value);
+            $normalizedHeaders[(string) $name] = TypeCoercion::stringValue($value);
         }
 
         // A single JetStream publish path for both plain and header-carrying (incl. scheduled)
@@ -262,7 +260,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     public function ack(Envelope $envelope): void
     {
-        $id = $this->stringValue($this->findReceivedStamp($envelope)->getId());
+        $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
         $this->jetStream()->ack($this->buildAckMessage($id))->await();
     }
 
@@ -276,7 +274,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     public function reject(Envelope $envelope): void
     {
-        $id = $this->stringValue($this->findReceivedStamp($envelope)->getId());
+        $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
         $this->handleFailedDelivery($id);
     }
 
@@ -301,8 +299,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     {
         try {
             $consumerInfo = $this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer())->await();
-            $ackPending = $this->intValue($consumerInfo->raw['num_ack_pending'] ?? 0);
-            $pending = $this->intValue($consumerInfo->raw['num_pending'] ?? 0);
+            $ackPending = TypeCoercion::intValue($consumerInfo->raw['num_ack_pending'] ?? 0);
+            $pending = TypeCoercion::intValue($consumerInfo->raw['num_pending'] ?? 0);
 
             return $ackPending + $pending;
         } catch (\Throwable) {
@@ -310,7 +308,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $streamInfo = $this->jetStream()->getStream($this->streamName)->await();
                 $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];
 
-                return $this->intValue($state['messages'] ?? 0);
+                return TypeCoercion::intValue($state['messages'] ?? 0);
             } catch (\Throwable) {
                 return 0;
             }

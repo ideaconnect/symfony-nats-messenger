@@ -23,7 +23,7 @@ composer test              # PHPStan + fast unit tests (run after every change)
 src/
 ├── NatsTransport.php                          # TransportInterface, MessageCountAwareInterface, SetupableTransportInterface
 ├── NatsTransportFactory.php                   # TransportFactoryInterface — DSN parsing, transport creation
-├── TypeCoercionTrait.php                      # Safe scalar type coercion helpers
+├── TypeCoercion.php                           # Safe scalar type coercion helpers (final, static)
 ├── Options/
 │   ├── NatsTransportConfiguration.php         # Immutable readonly config value object
 │   ├── NatsTransportConfigurationBuilder.php  # DSN + options parsing, validation, builds Configuration

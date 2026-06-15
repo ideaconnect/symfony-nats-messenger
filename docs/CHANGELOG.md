@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`getMessageCount()`** now returns `num_ack_pending + num_pending` (in-flight **plus** waiting)
   instead of `max(...)`, which undercounted whenever both coexisted.
 - **`declare(strict_types=1)`** is now declared in every `src/` file.
+- **`TypeCoercionTrait` replaced by a `final class TypeCoercion`** with pure `public static`
+  `intValue()` / `floatValue()` / `stringValue()` helpers. The mixed→scalar coercion policy is now a
+  standalone, independently testable unit (own unit tests plus a functional DSN-coercion scenario)
+  instead of a trait mixed into three classes. No behavior change.
 
 ### Added
 - **`CLAUDE.md`, `HUMANS.md`, `STRUCTURE.md`** — agent guidance, human onboarding, and an architecture/
@@ -37,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`getMessageCount()` catches `\Throwable`** (not just `\Exception`), honouring its documented
   "returns 0 if both lookups fail" contract for `\Error`-type failures surfaced by awaited futures.
 - **README accuracy** — corrected the coverage badge (`95.97%` → `98.00%`) and the test-count claim
-  (`102` → `187` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
+  (`102` → `226` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
   example (there is no `delay` transport option; the value was silently ignored).
 - **Documentation** — refreshed the stale `tests/functional/README.md` (removed dead benchmark-doc
   links and replaced the outdated "three scenarios" list with the full feature-file table) and removed

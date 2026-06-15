@@ -1080,6 +1080,28 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Configures a transport whose numeric stream limits are all supplied via the DSN query string.
+     *
+     * Query-string values arrive as PHP strings (`parse_str()`), so this exercises
+     * {@see \IDCT\NatsMessenger\TypeCoercion}'s string→int coercion end-to-end: the values must be
+     * coerced and applied to the real JetStream stream. The fixed values match the reused assertions
+     * (`stream_max_age=900` is 15 minutes, `stream_max_bytes=1048576`, `stream_max_messages=100`).
+     *
+     * @Given I have a messenger transport configured with numeric stream limits supplied via the DSN query string
+     */
+    public function iHaveAMessengerTransportConfiguredWithNumericLimitsViaDsnQueryString(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&stream_max_bytes=1048576&stream_max_messages=100'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
      * @Given I have a messenger transport configured with memory stream storage
      */
     public function iHaveAMessengerTransportConfiguredWithMemoryStreamStorage(): void
