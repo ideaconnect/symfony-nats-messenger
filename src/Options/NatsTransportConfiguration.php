@@ -159,6 +159,65 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns the NAK redelivery delay in milliseconds (0 = immediate redelivery).
+     *
+     * Only applies when {@see RetryHandler::NATS} is active; the source value is in seconds.
+     */
+    public function nakDelayMs(): int
+    {
+        return max(0, (int) round($this->floatOption(TransportOption::NAK_DELAY, 0.0) * 1000));
+    }
+
+    /**
+     * Returns the consumer ack-wait in milliseconds, or null to use the JetStream default.
+     *
+     * The source value (ack_wait) is in seconds; JetStream redelivers a message if it is not
+     * acknowledged within this window.
+     */
+    public function ackWaitMs(): ?int
+    {
+        $ackWait = $this->options[TransportOption::ACK_WAIT->value] ?? null;
+
+        return $ackWait === null ? null : max(1, (int) round(TypeCoercion::floatValue($ackWait) * 1000));
+    }
+
+    /**
+     * Returns the consumer max-deliver count, or null for unlimited redeliveries.
+     *
+     * Caps how many times JetStream redelivers an unacknowledged message before giving up; the
+     * primary guard against a poison message redelivering forever under {@see RetryHandler::NATS}.
+     */
+    public function maxDeliver(): ?int
+    {
+        $maxDeliver = $this->options[TransportOption::MAX_DELIVER->value] ?? null;
+
+        return $maxDeliver === null ? null : TypeCoercion::intValue($maxDeliver);
+    }
+
+    /**
+     * Returns the consumer backoff schedule in milliseconds, or null when unset.
+     *
+     * Each entry is the delay before the corresponding redelivery attempt; the source values are in
+     * seconds. Pairs with {@see maxDeliver()} under {@see RetryHandler::NATS}.
+     *
+     * @return list<int>|null
+     */
+    public function backoffMs(): ?array
+    {
+        $backoff = $this->options[TransportOption::BACKOFF->value] ?? null;
+        if (!is_array($backoff) || $backoff === []) {
+            return null;
+        }
+
+        $backoffMs = [];
+        foreach ($backoff as $value) {
+            $backoffMs[] = max(0, (int) round(TypeCoercion::floatValue($value) * 1000));
+        }
+
+        return $backoffMs;
+    }
+
+    /**
      * Returns true when delayed/scheduled message publishing is enabled.
      *
      * When enabled, messages with a {@see \Symfony\Component\Messenger\Stamp\DelayStamp}

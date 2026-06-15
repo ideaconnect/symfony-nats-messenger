@@ -236,11 +236,23 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /**
      * Sends a NAK to request redelivery in JetStream.
      *
+     * When a positive nak_delay is configured, the NAK carries that delay so JetStream waits before
+     * redelivering (backoff) instead of redelivering immediately.
+     *
      * @param string $id The replyTo address (JetStream delivery token)
      */
     protected function sendNak(string $id): void
     {
-        $this->jetStream()->nak($this->buildAckMessage($id))->await();
+        $message = $this->buildAckMessage($id);
+        $nakDelayMs = $this->configuration->nakDelayMs();
+
+        if ($nakDelayMs > 0) {
+            $this->jetStream()->nakWithDelay($message, $nakDelayMs)->await();
+
+            return;
+        }
+
+        $this->jetStream()->nak($message)->await();
     }
 
     /**
@@ -379,6 +391,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 ->filterSubject($this->topic)
                 ->ackPolicy(AckPolicy::Explicit)
                 ->deliverPolicy(DeliverPolicy::All);
+
+            // Optional NATS-native redelivery tuning (primarily relevant with retry_handler=nats).
+            $ackWaitMs = $this->configuration->ackWaitMs();
+            if ($ackWaitMs !== null) {
+                $consumerConfiguration->ackWait($ackWaitMs);
+            }
+
+            $maxDeliver = $this->configuration->maxDeliver();
+            if ($maxDeliver !== null) {
+                $consumerConfiguration->maxDeliver($maxDeliver);
+            }
+
+            $backoffMs = $this->configuration->backoffMs();
+            if ($backoffMs !== null) {
+                $consumerConfiguration->backoff($backoffMs);
+            }
 
             $consumerInfo = $this->jetStream()->addConsumer($this->streamName, $consumerConfiguration)->await();
             $this->assertConsumerMatchesConfiguration($consumerInfo);

@@ -2,7 +2,7 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-98.06%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-98.45%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -17,7 +17,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 232 unit tests with ~98% code coverage
+- 🧪 **Thoroughly Tested** - 242 unit tests with ~98% code coverage
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -283,6 +283,19 @@ framework:
                                             # symfony => TERM on failed/rejected message
                                             # nats    => NAK on failed/rejected message
 
+          # NATS-native Redelivery Tuning (mainly relevant with retry_handler: nats)
+          nak_delay: 0                      # Seconds to wait before NATS redelivers a NAK'd
+                                            # message (default: 0 = immediate). Use to back off
+                                            # instead of hot-looping a failing message.
+          ack_wait: null                    # Seconds JetStream waits for an ACK before redelivering
+                                            # (default: null = server default, ~30s). Raise it for
+                                            # slow handlers to avoid premature redelivery.
+          max_deliver: null                 # Max redelivery attempts before NATS gives up
+                                            # (default: null = unlimited). Set it to stop a poison
+                                            # message redelivering forever under retry_handler: nats.
+          backoff: null                     # List of per-attempt delays in seconds, e.g. [1, 5, 30].
+                                            # Pairs with max_deliver. (default: null)
+
           # Acknowledgement Mode
           ack_sync: false                   # Wait for server confirmation of each ACK (default: false)
                                             # false => fire-and-forget ACK (lower latency)
@@ -316,10 +329,17 @@ framework:
 
 ### Retry Handler Behavior
 
-- `retry_handler: symfony` (default) sends `TERM` when a message fails during transport decoding or is rejected.
-- `retry_handler: nats` sends `NAK` when a message fails during transport decoding or is rejected.
+- `retry_handler: symfony` (default) sends `TERM` when a message fails during transport decoding or is rejected. Symfony's retry/failure transport then handles redelivery.
+- `retry_handler: nats` sends `NAK` when a message fails during transport decoding or is rejected, so NATS redelivers the message itself.
 
-> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testBuildUsesRetryHandlerFromQuery`, Behat scenarios `nats_nak.feature` and `nats_term.feature`
+When NATS manages redelivery (`retry_handler: nats`), tune it with `nak_delay`, `ack_wait`, `max_deliver`, and `backoff`:
+
+- **`nak_delay`** delays each NAK so a failing message backs off instead of redelivering immediately (a hot loop).
+- **`max_deliver`** caps redeliveries. ⚠️ Without it, `retry_handler: nats` redelivers a permanently-failing ("poison") message **forever** — set `max_deliver` in production.
+- **`backoff`** sets an escalating per-attempt delay schedule (e.g. `[1, 5, 30]` seconds); pair it with `max_deliver` greater than the number of backoff steps.
+- **`ack_wait`** is how long JetStream waits for an ACK before considering a delivery failed and redelivering — raise it for handlers that legitimately take a while.
+
+> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, Behat scenarios `nats_nak.feature` and `nats_term.feature`
 
 ## Important: Consumer Strategies
 

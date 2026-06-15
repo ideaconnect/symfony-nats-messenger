@@ -50,6 +50,10 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_STORAGE->value => StorageBackend::File->value,
         TransportOption::STREAM_REPLICAS->value => 1,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
+        TransportOption::NAK_DELAY->value => 0,
+        TransportOption::ACK_WAIT->value => null,
+        TransportOption::MAX_DELIVER->value => null,
+        TransportOption::BACKOFF->value => null,
         TransportOption::SCHEDULED_MESSAGES->value => false,
         TransportOption::ACK_SYNC->value => false,
         TransportOption::TLS_REQUIRED->value => false,
@@ -239,6 +243,10 @@ final class NatsTransportConfigurationBuilder
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT, true);
         $this->assertPositiveNumber($configuration, TransportOption::STREAM_REPLICAS, true);
+        $this->assertNonNegativeNumber($configuration, TransportOption::NAK_DELAY);
+        $this->assertPositiveNumber($configuration, TransportOption::ACK_WAIT, false);
+        $this->assertPositiveNumber($configuration, TransportOption::MAX_DELIVER, true);
+        $this->assertBackoff($configuration);
         $this->normalizeStorageBackend($configuration);
 
         return $configuration;
@@ -304,6 +312,29 @@ final class NatsTransportConfigurationBuilder
         $number = $this->toNumber($value, $option);
         if ($number < 0 || ($integerOnly && floor($number) !== $number)) {
             throw new InvalidArgumentException(sprintf('The %s option must be a non-negative%s value.', $option->value, $integerOnly ? ' integer' : ''));
+        }
+    }
+
+    /**
+     * Validates the backoff option: a non-empty list of non-negative numbers (seconds), when set.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function assertBackoff(array $configuration): void
+    {
+        $backoff = $configuration[TransportOption::BACKOFF->value] ?? null;
+        if ($backoff === null) {
+            return;
+        }
+
+        if (!is_array($backoff) || $backoff === []) {
+            throw new InvalidArgumentException('The backoff option must be a non-empty list of non-negative numbers (seconds).');
+        }
+
+        foreach ($backoff as $value) {
+            if ((!is_int($value) && !is_float($value) && !is_string($value)) || !is_numeric($value) || (float) $value < 0) {
+                throw new InvalidArgumentException('The backoff option must be a list of non-negative numbers (seconds).');
+            }
         }
     }
 

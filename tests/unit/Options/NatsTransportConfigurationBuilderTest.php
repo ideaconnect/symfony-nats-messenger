@@ -435,6 +435,82 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertTrue($configuration->isAckSyncEnabled());
     }
 
+    public function testBuildRetryTuningDefaults(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);
+
+        self::assertSame(0, $configuration->nakDelayMs());
+        self::assertNull($configuration->ackWaitMs());
+        self::assertNull($configuration->maxDeliver());
+        self::assertNull($configuration->backoffMs());
+    }
+
+    public function testBuildAcceptsNatsRetryTuningOptions(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'nak_delay' => 2.5,
+            'ack_wait' => 30,
+            'max_deliver' => 5,
+            'backoff' => [1, 5, 30],
+        ]);
+
+        self::assertSame(2500, $configuration->nakDelayMs());
+        self::assertSame(30000, $configuration->ackWaitMs());
+        self::assertSame(5, $configuration->maxDeliver());
+        self::assertSame([1000, 5000, 30000], $configuration->backoffMs());
+    }
+
+    public function testBuildWithNegativeNakDelayThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('nak_delay option must be a non-negative');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['nak_delay' => -1]);
+    }
+
+    public function testBuildWithNonPositiveAckWaitThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('ack_wait option must be a positive');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['ack_wait' => 0]);
+    }
+
+    public function testBuildWithNonIntegerMaxDeliverThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('max_deliver option must be a positive integer');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_deliver' => 1.5]);
+    }
+
+    public function testBuildWithNonListBackoffThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('backoff option must be a non-empty list');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['backoff' => 'nope']);
+    }
+
+    public function testBuildWithNonNumericBackoffElementThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('backoff option must be a list of non-negative numbers');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['backoff' => [1, 'x']]);
+    }
+
+    public function testBuildWithBackoffFromDsnQueryString(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://admin:password@localhost:4222/test-stream/test-topic?backoff[]=1&backoff[]=5&nak_delay=2',
+            []
+        );
+
+        self::assertSame([1000, 5000], $configuration->backoffMs());
+        self::assertSame(2000, $configuration->nakDelayMs());
+    }
+
     public function testBuildWithDottedTopicNameSucceeds(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(

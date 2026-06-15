@@ -522,6 +522,68 @@ final class NatsTransportTest extends TestCase
         $method->invoke($transport, 'message-id');
     }
 
+    public function testHandleFailedDeliveryUsesNakWithDelayWhenConfigured(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('nakWithDelay')
+            ->with(
+                self::callback(static function (NatsMessage $message): bool {
+                    return $message->replyTo === 'message-id' && $message->subject === 'test-topic';
+                }),
+                5000
+            )
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::never())->method('nak');
+
+        // nak_delay is in seconds (5s) → 5000ms passed to nakWithDelay().
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats', 'nak_delay' => 5]);
+        $transport->setJetStreamContext($jetStream);
+
+        $method = (new \ReflectionClass($transport))->getMethod('handleFailedDelivery');
+        $method->invoke($transport, 'message-id');
+    }
+
+    public function testSetupAppliesConsumerRetryTuning(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::consumerConfigEquals([
+                'durable_name' => 'client',
+                'filter_subject' => 'test-topic',
+                'ack_policy' => 'explicit',
+                'deliver_policy' => 'all',
+                'ack_wait' => 30_000_000_000,
+                'max_deliver' => 5,
+                'backoff' => [1_000_000_000, 5_000_000_000],
+            ]))
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'ack_wait' => 30,
+            'max_deliver' => 5,
+            'backoff' => [1, 5],
+        ]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
     public function testAckAcknowledgesReceivedEnvelope(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
