@@ -789,6 +789,44 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Configures the NATS retry handler with a max_deliver cap, so NATS stops redelivering a
+     * permanently-failing message after the given number of attempts instead of looping forever.
+     *
+     * @Given I have a messenger transport configured with NATS retry handler and max deliver of :maxDeliver
+     */
+    public function iHaveAMessengerTransportConfiguredWithNatsRetryHandlerAndMaxDeliver(int $maxDeliver): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats&max_deliver=%d'\n                serializer: 'igbinary_serializer'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $maxDeliver
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Configures the transport with synchronous (double) acknowledgement enabled.
+     *
+     * @Given I have a messenger transport configured with synchronous acknowledgement
+     */
+    public function iHaveAMessengerTransportConfiguredWithSynchronousAcknowledgement(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&ack_sync=true'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
      * @Given I have a messenger transport with failure transport configured
      */
     public function iHaveAMessengerTransportWithFailureTransportConfigured(): void
@@ -996,6 +1034,41 @@ class NatsSetupContext implements Context
             throw new \RuntimeException(
                 sprintf('Expected message to succeed on attempt 2, but file content was: %s', $content)
             );
+        }
+    }
+
+    /**
+     * Verifies that an always-failing message was delivered exactly the expected number of times.
+     *
+     * The failing handler records every delivery attempt in `retry_state/message_<id>.attempt`. For a
+     * permanently-failing message under `retry_handler: nats` with `max_deliver=N`, NATS must redeliver
+     * it exactly N times and then stop (rather than redelivering forever). The handler must also never
+     * have produced a success marker for it.
+     *
+     * @Then the always-failing message should have been attempted :times time
+     * @Then the always-failing message should have been attempted :times times
+     */
+    public function theAlwaysFailingMessageShouldHaveBeenAttemptedTimes(int $times): void
+    {
+        $attemptFile = $this->retryStateDir . '/message_1.attempt';
+
+        if (!file_exists($attemptFile)) {
+            $consumerOutput = $this->consumerProcess ? $this->consumerProcess->getOutput() : 'N/A';
+            throw new \RuntimeException(
+                sprintf("Expected the always-failing message to be delivered, but no attempt marker was recorded.\nConsumer output: %s", $consumerOutput)
+            );
+        }
+
+        $attempts = (int) file_get_contents($attemptFile);
+        if ($attempts !== $times) {
+            $consumerOutput = $this->consumerProcess ? $this->consumerProcess->getOutput() : 'N/A';
+            throw new \RuntimeException(
+                sprintf("Expected the always-failing message to be delivered exactly %d time(s), but it was delivered %d time(s).\nConsumer output: %s", $times, $attempts, $consumerOutput)
+            );
+        }
+
+        if (file_exists($this->testFilesDir . '/failing_message_1.txt')) {
+            throw new \RuntimeException('An always-failing message must never produce a success marker.');
         }
     }
 

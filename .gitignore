@@ -9,6 +9,8 @@ coverage/
 clover.xml
 .phpunit.cache
 .phpunit.result.cache
+.infection/
+infection.log
 .vscode
 .phpstan/
 .cache

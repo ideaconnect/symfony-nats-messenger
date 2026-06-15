@@ -36,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the seconds→nanoseconds conversion. No behavior change.
 
 ### Added
+- **Mutation testing with Infection** — added `infection/infection` (dev), an `infection.json5` config
+  (floors: `minMsi` 95 / `minCoveredMsi` 98), a `composer test:mutation` script, and a CI step. The suite
+  currently scores ~99% covered MSI with 100% mutation code coverage.
+- **Expanded unit coverage (~99.6% statements) and functional coverage for the new features** — added
+  unit tests for previously-uncovered branches (non-scalar option coercion, too-short DSN path,
+  integer/uppercase boolean coercion, update-path `max_age` conversion, non-array server subjects) and
+  Behat scenarios for `ack_sync` (synchronous acknowledgement) and `max_deliver` (NATS bounds redelivery
+  of a poison message).
 - **NATS-native redelivery tuning for `retry_handler: nats`** — new options `nak_delay` (seconds to
   delay a NAK, default 0), `ack_wait` (seconds before JetStream redelivers an unacked message),
   `max_deliver` (cap on redeliveries; **prevents a poison message redelivering forever**), and `backoff`
@@ -64,8 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JetStream's "unlimited" sentinels instead of preserving the previous server-side value.
 - **`getMessageCount()` catches `\Throwable`** (not just `\Exception`), honouring its documented
   "returns 0 if both lookups fail" contract for `\Error`-type failures surfaced by awaited futures.
-- **README accuracy** — corrected the coverage badge (`95.97%` → `98.45%`) and the test-count claim
-  (`102` → `242` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
+- **README accuracy** — corrected the coverage badge (`95.97%` → `99.56%`) and the test-count claim
+  (`102` → `248` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
   example (there is no `delay` transport option; the value was silently ignored).
 - **Documentation** — refreshed the stale `tests/functional/README.md` (removed dead benchmark-doc
   links and replaced the outdated "three scenarios" list with the full feature-file table) and removed

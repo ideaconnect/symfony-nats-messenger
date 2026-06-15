@@ -257,6 +257,28 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertFalse($options->tlsVerifyPeer);
     }
 
+    public function testBuildWithNonScalarOptionsCoerceToSafeDefaults(): void
+    {
+        // A non-scalar boolean option coerces to false; a non-scalar nullable string coerces to null.
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            ['tls_required' => [], 'token' => []]
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertFalse($options->tlsRequired);
+        self::assertNull($options->token);
+    }
+
+    public function testBuildWithTooShortPathThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('NATS Stream name not provided.');
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/a', []);
+    }
+
     public function testBuildWithNegativeStreamMaxMessagesThrowsException(): void
     {
         $this->expectException(InvalidArgumentException::class);
@@ -433,6 +455,22 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         );
 
         self::assertTrue($configuration->isAckSyncEnabled());
+    }
+
+    public function testBuildCoercesNonZeroIntegerBooleanOptionToTrue(): void
+    {
+        // Exercises the integer branch of boolean coercion with a non-zero int (→ true).
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['ack_sync' => 1]);
+
+        self::assertTrue($configuration->isAckSyncEnabled());
+    }
+
+    public function testBuildCoercesUppercaseBooleanStringToTrue(): void
+    {
+        // Exercises the case-insensitive (strtolower) boolean string coercion.
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['scheduled_messages' => 'YES']);
+
+        self::assertTrue($configuration->isScheduledMessagesEnabled());
     }
 
     public function testBuildRetryTuningDefaults(): void

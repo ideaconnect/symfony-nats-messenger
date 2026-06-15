@@ -16,7 +16,10 @@
     ],
     "minimum-stability": "stable",
     "config": {
-        "process-timeout": 600
+        "process-timeout": 600,
+        "allow-plugins": {
+            "infection/extension-installer": true
+        }
     },
     "require": {
         "php": "^8.2",
@@ -29,7 +32,8 @@
         "behat/behat": "^3.29",
         "phpunit/phpunit": "^11",
         "phpstan/phpstan": "^2.1",
-        "dg/bypass-finals": "^1.9"
+        "dg/bypass-finals": "^1.9",
+        "infection/infection": "^0.32"
     },
     "scripts": {
         "analyse": "phpstan analyse --configuration phpstan.neon.dist",
@@ -44,7 +48,8 @@
         "test:functional": "cd tests/functional && vendor/bin/behat",
         "test:functional:setup": "cd tests/functional && composer install --prefer-dist --no-progress",
         "test:unit": "XDEBUG_MODE=coverage ./vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-clover clover.xml --coverage-text --colors=never --coverage-html coverage",
-        "test:unit:fast": "./vendor/bin/phpunit --configuration phpunit.xml.dist"
+        "test:unit:fast": "./vendor/bin/phpunit --configuration phpunit.xml.dist",
+        "test:mutation": "XDEBUG_MODE=coverage ./vendor/bin/infection --threads=max --no-interaction"
     },
     "suggest": {
         "ext-igbinary": "For improved serialization performance when using the default IgbinarySerializer"

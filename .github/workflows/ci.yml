@@ -77,6 +77,10 @@ jobs:
     - name: Check coverage threshold (90%)
       run: composer coverage:check
 
+    - name: Run mutation tests
+      if: matrix.php-version == '8.5'
+      run: composer test:mutation
+
     - name: Install functional test dependencies
       run: composer test:functional:setup
 
