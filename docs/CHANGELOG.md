@@ -5,10 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **NATS client upgraded to `idct/php-nats-jetstream-client` `^2.4`** (from `^1`). The v2 client is a
+  major release (Object Store / Services / custom-transport breaking changes) but none of those touch
+  this bridge's API surface; every method this transport uses changed only by gaining optional trailing
+  parameters. All 189 unit tests pass and PHPStan stays clean at level max with no source changes required.
+
+### Added
+- **`CLAUDE.md`, `HUMANS.md`, `STRUCTURE.md`** — agent guidance, human onboarding, and an architecture/
+  layout reference, respectively.
+
+### Fixed
+- **README accuracy** — corrected the coverage badge (`95.97%` → `97.32%`) and the test-count claim
+  (`102` → `189` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
+  example (there is no `delay` transport option; the value was silently ignored).
+
 ## [4.0.0]
 
 ### Added
-- **IDCT NATS JetStream Client** — Replaced `basis-company/nats` with `idct/php-nats-jetstream-client` (`dev-main`) for amphp-based coroutine support, active maintenance, and access to newer NATS features.
+- **IDCT NATS JetStream Client** — Replaced `basis-company/nats` with `idct/php-nats-jetstream-client` (`^1`) for amphp-based coroutine support, active maintenance, and access to newer NATS features.
 - **Configurable retry handler** — New `retry_handler` option (`symfony` or `nats`) controls failure behavior. `symfony` (default) sends TERM; `nats` sends NAK for NATS-managed redelivery.
 - **Scheduled / delayed messages** — `scheduled_messages` option enables Symfony `DelayStamp` support via NATS scheduled message headers (`Nats-Schedule`, `Nats-Schedule-Target`). Requires NATS >= 2.12.
 - **Multi-subject streams** — Multiple transports can share a single NATS stream with different subjects. Setup merges subjects without duplicating or overwriting existing ones.

@@ -2,7 +2,7 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-95.97%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-97.32%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -17,7 +17,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 102 unit tests with ~96% code coverage
+- 🧪 **Thoroughly Tested** - 189 unit tests with ~97% code coverage
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -614,7 +614,6 @@ framework:
         dsn: 'nats-jetstream://localhost/events/orders'
         options:
           consumer: 'order-consumer'
-          delay: 0.5
           batching: 1
           stream_max_age: 300
 
@@ -622,7 +621,6 @@ framework:
         dsn: 'nats-jetstream://localhost/events/payments'
         options:
           consumer: 'payment-consumer'
-          delay: 1
           batching: 2
 ```
 

@@ -8,6 +8,7 @@ tests/functional/var/cache/
 coverage/
 clover.xml
 .phpunit.cache
+.phpunit.result.cache
 .vscode
 .phpstan/
 .cache
