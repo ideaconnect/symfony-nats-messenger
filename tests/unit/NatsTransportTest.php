@@ -85,6 +85,18 @@ class RuntimeRetryHandlerNatsTransport extends TestableRetryHandlerNatsTransport
     }
 }
 
+/**
+ * Exercises the real {@see NatsTransport::connect()} (it is NOT overridden here) with an
+ * injectable mock client, so the lazy-connect path can be covered without a live broker.
+ */
+class RealConnectNatsTransport extends NatsTransport
+{
+    public function setClient(NatsClient $client): void
+    {
+        $this->client = $client;
+    }
+}
+
 final class NatsTransportTest extends TestCase
 {
     private const VALID_DSN = 'nats://admin:password@localhost:4222/test-stream/test-topic';
@@ -279,7 +291,7 @@ final class NatsTransportTest extends TestCase
         self::assertSame('reply-id', $envelopes[0]->last(TransportMessageIdStamp::class)?->getId());
     }
 
-    public function testSendUsesRequestWithHeadersWhenHeadersArePresent(): void
+    public function testSendUsesPublishWithHeadersWhenHeadersArePresent(): void
     {
         $serializer = $this->createMock(SerializerInterface::class);
         $serializer->expects(self::once())
@@ -289,17 +301,13 @@ final class NatsTransportTest extends TestCase
                 'headers' => ['x-test' => 123],
             ]);
 
-        $client = $this->createMock(NatsClient::class);
-        $client->expects(self::once())
-            ->method('requestWithHeaders')
-            ->with('test-topic', 'encoded-payload', ['x-test' => '123'])
-            ->willReturn(Future::complete(new NatsMessage('test-topic', 1, null, '{}')));
-
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::once())
+            ->method('publish')
+            ->with('test-topic', 'encoded-payload', ['x-test' => '123'])
+            ->willReturn(Future::complete());
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
-        $transport->setClient($client);
         $transport->setJetStreamContext($jetStream);
 
         $result = $transport->send(new Envelope(new \stdClass()));
@@ -317,16 +325,15 @@ final class NatsTransportTest extends TestCase
                 'headers' => ['x-test' => '123'],
             ]);
 
-        $client = $this->createMock(NatsClient::class);
-        $client->expects(self::once())
-            ->method('requestWithHeaders')
-            ->willReturn(Future::complete(new NatsMessage('test-topic', 1, null, '{"error":{"description":"publish failed","code":503}}')));
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('publish')
+            ->willReturn(Future::error(new JetStreamException('publish failed', 503)));
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
-        $transport->setClient($client);
-        $transport->setJetStreamContext($this->createMock(JetStreamContext::class));
+        $transport->setJetStreamContext($jetStream);
 
-        $this->expectException(\RuntimeException::class);
+        $this->expectException(JetStreamException::class);
         $this->expectExceptionMessage('publish failed');
 
         $transport->send(new Envelope(new \stdClass()));
@@ -434,30 +441,27 @@ final class NatsTransportTest extends TestCase
         self::assertSame(['term:reply-id'], $transport->failureActions);
     }
 
-    public function testGetDecodeFailureDoesNotInvokeRetryHandlingWithoutReplySubject(): void
+    public function testGetSkipsMessagesWithoutReplySubject(): void
     {
         $serializer = $this->createMock(SerializerInterface::class);
-        $serializer->expects(self::once())
-            ->method('decode')
-            ->willThrowException(new \RuntimeException('decode failed'));
+        $serializer->expects(self::never())->method('decode');
 
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->expects(self::once())
             ->method('fetchBatch')
             ->willReturn(Future::complete([
                 new NatsMessage('test-topic', 1, null, 'payload'),
+                new NatsMessage('test-topic', 2, '', 'payload'),
             ]));
 
         $transport = new RuntimeRetryHandlerNatsTransport(self::VALID_DSN, [], $serializer);
         $transport->setJetStreamContext($jetStream);
 
-        try {
-            iterator_to_array($transport->get());
-            self::fail('Expected decode exception was not thrown.');
-        } catch (\RuntimeException $exception) {
-            self::assertSame('decode failed', $exception->getMessage());
-        }
+        $envelopes = array_values(iterator_to_array($transport->get()));
 
+        // A message without a reply (ack) subject cannot be acked/rejected, so it is skipped
+        // before decoding and never triggers retry handling.
+        self::assertSame([], $envelopes);
         self::assertSame([], $transport->failureActions);
     }
 
@@ -511,6 +515,38 @@ final class NatsTransportTest extends TestCase
         $transport->ack((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('message-id')));
     }
 
+    public function testConnectInitializesJetStreamContextFromClient(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('ack')
+            ->willReturn(Future::complete());
+
+        $client = $this->createMock(NatsClient::class);
+        $client->expects(self::once())->method('connect')->willReturn(Future::complete());
+        $client->expects(self::once())->method('jetStream')->willReturn($jetStream);
+
+        // RealConnectNatsTransport does not override connect(), so this exercises the lazy
+        // connectIfNeeded() -> connect() path that injects the JetStream context from the client.
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, []);
+        $transport->setClient($client);
+
+        $transport->ack((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('message-id')));
+    }
+
+    public function testJetStreamThrowsWhenConnectLeavesContextUnavailable(): void
+    {
+        // TestableNatsTransport::connect() is a no-op, so the lazy connect leaves the JetStream
+        // context null; the guard in jetStream() must surface a clear LogicException.
+        $transport = new TestableNatsTransport(self::VALID_DSN, []);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('message-id'));
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('JetStream context is not available.');
+
+        $transport->ack($envelope);
+    }
+
     public function testGetMessageCountReturnsConsumerPendingMessages(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -530,7 +566,8 @@ final class NatsTransportTest extends TestCase
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
         $transport->setJetStreamContext($jetStream);
 
-        self::assertSame(5, $transport->getMessageCount());
+        // 2 in-flight (unacked) + 5 waiting = 7 outstanding.
+        self::assertSame(7, $transport->getMessageCount());
     }
 
     public function testGetMessageCountFallsBackToStreamState(): void
@@ -676,7 +713,7 @@ final class NatsTransportTest extends TestCase
             ->willReturn(Future::complete($streamInfo));
         $jetStream->expects(self::once())
             ->method('updateStream')
-            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1])
+            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1, 'max_age' => 0, 'max_bytes' => -1, 'max_msgs' => -1, 'max_msgs_per_subject' => -1])
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
             ->method('createConsumer')
@@ -744,7 +781,7 @@ final class NatsTransportTest extends TestCase
             ->willReturnOnConsecutiveCalls(Future::complete($streamInfo), Future::complete($streamInfo));
         $jetStream->expects(self::once())
             ->method('updateStream')
-            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1])
+            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1, 'max_age' => 0, 'max_bytes' => -1, 'max_msgs' => -1, 'max_msgs_per_subject' => -1])
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
             ->method('createConsumer')
@@ -833,9 +870,10 @@ final class NatsTransportTest extends TestCase
         }
 
         self::assertNotNull($capturedError);
-        self::assertSame(E_USER_NOTICE, $capturedError[0]);
+        self::assertSame(E_USER_WARNING, $capturedError[0]);
         self::assertStringContainsString('The igbinary extension is not installed.', $capturedError[1]);
-        self::assertStringContainsString('Falling back to Symfony\\Component\\Messenger\\Transport\\Serialization\\PhpSerializer.', $capturedError[1]);
+        self::assertStringContainsString('Falling back to Symfony\\Component\\Messenger\\Transport\\Serialization\\PhpSerializer', $capturedError[1]);
+        self::assertStringContainsString('untrusted-deserialization', $capturedError[1]);
 
         self::assertInstanceOf(NatsTransport::class, $transport);
 
@@ -851,28 +889,6 @@ final class NatsTransportTest extends TestCase
         $this->expectExceptionMessage("Invalid retry_handler option 'invalid'. Allowed values are 'symfony' or 'nats'.");
 
         new TestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'invalid']);
-    }
-
-    public function testAssertJetStreamPublishSucceededThrowsWhenErrorIsString(): void
-    {
-        $transport = new TestableNatsTransport(self::VALID_DSN, []);
-        $method = (new \ReflectionClass($transport))->getMethod('assertJetStreamPublishSucceeded');
-
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('publish failed');
-
-        $method->invoke($transport, '{"error":"publish failed","code":503}');
-    }
-
-    public function testAssertJetStreamPublishSucceededThrowsWhenErrorPayloadIsMalformed(): void
-    {
-        $transport = new TestableNatsTransport(self::VALID_DSN, []);
-        $method = (new \ReflectionClass($transport))->getMethod('assertJetStreamPublishSucceeded');
-
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('JetStream publish error');
-
-        $method->invoke($transport, '{"error":true}');
     }
 
     public function testAssertConsumerMatchesConfigurationRejectsUnexpectedConfig(): void
@@ -898,7 +914,7 @@ final class NatsTransportTest extends TestCase
         $method->invoke($transport, $consumerInfo);
     }
 
-    public function testGetMessageCountReturnsAckPendingWhenHigherThanPending(): void
+    public function testGetMessageCountSumsAckPendingAndPending(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->expects(self::once())
@@ -917,7 +933,8 @@ final class NatsTransportTest extends TestCase
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
         $transport->setJetStreamContext($jetStream);
 
-        self::assertSame(10, $transport->getMessageCount());
+        // 10 in-flight (unacked) + 3 waiting = 13 outstanding.
+        self::assertSame(13, $transport->getMessageCount());
     }
 
     public function testSetupUpdatesStreamWhenAlreadyInUseMessage(): void
@@ -942,7 +959,7 @@ final class NatsTransportTest extends TestCase
             ->willReturn(Future::complete($streamInfo));
         $jetStream->expects(self::once())
             ->method('updateStream')
-            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1])
+            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1, 'max_age' => 0, 'max_bytes' => -1, 'max_msgs' => -1, 'max_msgs_per_subject' => -1])
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
             ->method('createConsumer')
@@ -988,7 +1005,7 @@ final class NatsTransportTest extends TestCase
             ->willReturn(Future::complete($streamInfo));
         $jetStream->expects(self::once())
             ->method('updateStream')
-            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1])
+            ->with('test-stream', ['subjects' => ['test-topic'], 'storage' => 'file', 'num_replicas' => 1, 'max_age' => 0, 'max_bytes' => -1, 'max_msgs' => -1, 'max_msgs_per_subject' => -1])
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
             ->method('createConsumer')
@@ -1010,39 +1027,6 @@ final class NatsTransportTest extends TestCase
 
         $transport->setup();
 
-    }
-
-    public function testAssertJetStreamPublishSucceededPassesOnValidAck(): void
-    {
-        $this->expectNotToPerformAssertions();
-
-        $transport = new TestableNatsTransport(self::VALID_DSN, []);
-        $method = (new \ReflectionClass($transport))->getMethod('assertJetStreamPublishSucceeded');
-
-        $method->invoke($transport, '{"stream":"s","seq":1}');
-
-    }
-
-    public function testAssertJetStreamPublishSucceededPassesOnEmptyPayload(): void
-    {
-        $this->expectNotToPerformAssertions();
-
-        $transport = new TestableNatsTransport(self::VALID_DSN, []);
-        $method = (new \ReflectionClass($transport))->getMethod('assertJetStreamPublishSucceeded');
-
-        $method->invoke($transport, '');
-
-    }
-
-    public function testAssertJetStreamPublishSucceededThrowsOnInvalidJson(): void
-    {
-        $transport = new TestableNatsTransport(self::VALID_DSN, []);
-        $method = (new \ReflectionClass($transport))->getMethod('assertJetStreamPublishSucceeded');
-
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Unexpected JetStream publish response.');
-
-        $method->invoke($transport, 'not-json');
     }
 
     public function testAssertConsumerMatchesConfigurationRejectsWrongDeliverPolicy(): void
@@ -1162,9 +1146,9 @@ final class NatsTransportTest extends TestCase
             ->method('encode')
             ->willReturn(['body' => 'encoded-payload']);
 
-        $client = $this->createMock(NatsClient::class);
-        $client->expects(self::once())
-            ->method('requestWithHeaders')
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('publish')
             ->with(
                 self::matchesRegularExpression('/^test-topic\.delayed\.[0-9a-f-]{36}$/'),
                 'encoded-payload',
@@ -1175,13 +1159,9 @@ final class NatsTransportTest extends TestCase
                         && $headers['Nats-Schedule-Target'] === 'test-topic';
                 })
             )
-            ->willReturn(Future::complete(new NatsMessage('test-topic', 1, null, '{}')));
-
-        $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::never())->method('publish');
+            ->willReturn(Future::complete());
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true], $serializer);
-        $transport->setClient($client);
         $transport->setJetStreamContext($jetStream);
 
         $envelope = new Envelope(new \stdClass(), [new DelayStamp(5000)]);
@@ -1605,6 +1585,64 @@ final class NatsTransportTest extends TestCase
 
     }
 
+    public function testSetupUpdateResetsUnsetStreamLimitsToUnlimited(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                    // Stream was previously created with limits in place.
+                    'max_age' => 3_600_000_000_000,
+                    'max_bytes' => 1024,
+                    'max_msgs' => 500,
+                    'max_msgs_per_subject' => 50,
+                ],
+            ],
+        );
+        $jetStream->expects(self::once())
+            ->method('createStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(function (array $options): bool {
+                return ($options['max_age'] ?? null) === 0
+                    && ($options['max_bytes'] ?? null) === -1
+                    && ($options['max_msgs'] ?? null) === -1
+                    && ($options['max_msgs_per_subject'] ?? null) === -1;
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('createConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: [
+                    'config' => [
+                        'ack_policy' => 'explicit',
+                        'deliver_policy' => 'all',
+                        'filter_subject' => 'test-topic',
+                    ],
+                ],
+            )));
+
+        // No stream_max_* options provided, so the previously-configured limits must be reset to
+        // JetStream's unlimited sentinels on update rather than preserved from the server config.
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
     public function testGetDecodeFailureUsesNakWhenRetryHandlerIsNats(): void
     {
         $serializer = $this->createMock(SerializerInterface::class);
@@ -1769,9 +1807,9 @@ final class NatsTransportTest extends TestCase
                 'headers' => ['x-custom' => 'value'],
             ]);
 
-        $client = $this->createMock(NatsClient::class);
-        $client->expects(self::once())
-            ->method('requestWithHeaders')
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('publish')
             ->with(
                 self::matchesRegularExpression('/^test-topic\.delayed\.[0-9a-f-]{36}$/'),
                 'encoded-payload',
@@ -1782,13 +1820,9 @@ final class NatsTransportTest extends TestCase
                         && $headers['Nats-Schedule-Target'] === 'test-topic';
                 })
             )
-            ->willReturn(Future::complete(new NatsMessage('test-topic', 1, null, '{}')));
-
-        $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::never())->method('publish');
+            ->willReturn(Future::complete());
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true], $serializer);
-        $transport->setClient($client);
         $transport->setJetStreamContext($jetStream);
 
         $envelope = new Envelope(new \stdClass(), [new DelayStamp(3000)]);

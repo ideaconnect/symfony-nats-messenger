@@ -2,7 +2,7 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-97.32%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-98.00%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -17,7 +17,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 189 unit tests with ~97% code coverage
+- 🧪 **Thoroughly Tested** - 187 unit tests with ~98% code coverage
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -820,6 +820,8 @@ The bridge consists of two main components:
 ### ⚠️ Deserialization of Untrusted Data
 
 The default `IgbinarySerializer` (and any serializer extending `AbstractEnveloperSerializer`) deserializes raw message payloads from NATS into PHP objects. PHP object unserialization is a [well-known attack vector](https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/) — a crafted payload can trigger arbitrary code execution via magic methods (`__wakeup`, `__destruct`, etc.).
+
+> **⚠️ PhpSerializer fallback:** when no serializer is configured **and `ext-igbinary` is not installed**, the transport automatically falls back to Symfony's `PhpSerializer`, which uses native `unserialize()` — the **same** untrusted-deserialization (object injection) risk as igbinary, not a safer alternative. The transport emits an `E_USER_WARNING` when this happens. Do not rely on the fallback in production: either install `ext-igbinary` or explicitly configure a serializer (ideally a safe-format one, per below).
 
 **If your NATS topics are not fully trusted** (e.g. shared infrastructure, external publishers), you should:
 - Implement a custom serializer that uses a safe format (JSON, Protobuf) instead of PHP object serialization

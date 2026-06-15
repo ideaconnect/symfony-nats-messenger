@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace IDCT\NatsMessenger\Options;
 
 use IDCT\NATS\Core\NatsClient;

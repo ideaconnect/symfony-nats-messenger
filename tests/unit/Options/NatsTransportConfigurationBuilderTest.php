@@ -9,6 +9,7 @@ use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Options\TransportOption;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class NatsTransportConfigurationBuilderTest extends TestCase
@@ -520,9 +521,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
     /**
      * Verifies that every exact DSN string from README.md parses without error.
-     *
-     * @dataProvider readmeDsnExamplesProvider
      */
+    #[DataProvider('readmeDsnExamplesProvider')]
     public function testReadmeDsnExamplesParseSuccessfully(string $dsn, string $expectedStream, string $expectedTopic): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, []);
@@ -750,7 +750,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
-     * Verifies README multi-subject delayed DSN example with options.
+     * Verifies the README multi-subject DSN example with options.
      */
     public function testReadmeMultiSubjectOptionsAreAccepted(): void
     {
@@ -759,7 +759,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         // Orders transport
         $config = $builder->build('nats-jetstream://localhost/events/orders', [
             'consumer' => 'order-consumer',
-            'delay' => 0.5,
             'batching' => 1,
             'stream_max_age' => 300,
         ]);
@@ -772,7 +771,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         // Payments transport
         $config = $builder->build('nats-jetstream://localhost/events/payments', [
             'consumer' => 'payment-consumer',
-            'delay' => 1,
             'batching' => 2,
         ]);
         self::assertSame('events', $config->streamName);

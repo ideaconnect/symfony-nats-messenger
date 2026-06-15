@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace IDCT\NatsMessenger;
 
 use IDCT\NATS\Core\NatsClient;
@@ -82,8 +84,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         } elseif ($this->isExtensionLoaded('igbinary')) {
             $this->serializer = new IgbinarySerializer();
         } else {
+            // PhpSerializer uses native unserialize(), which is the same untrusted-deserialization
+            // (object injection) sink as igbinary. Emit a warning — not a quiet notice — so the
+            // fallback is not silently relied upon in production. See the README security section.
             trigger_error(
-                'The igbinary extension is not installed. Falling back to Symfony\\Component\\Messenger\\Transport\\Serialization\\PhpSerializer. Install ext-igbinary for better performance or provide a custom serializer.',
+                'The igbinary extension is not installed. Falling back to Symfony\\Component\\Messenger\\Transport\\Serialization\\PhpSerializer, which uses native unserialize() and carries the same untrusted-deserialization (object injection) risk as igbinary. Install ext-igbinary, or explicitly configure a safe serializer — especially when consuming from untrusted NATS subjects.',
+                E_USER_WARNING,
             );
             $this->serializer = new PhpSerializer();
         }
@@ -107,16 +113,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Sends a messenger envelope to JetStream.
      *
      * Assigns a UUID v4 transport message ID, serializes the envelope, and publishes
-     * the payload to the configured subject. When the serialized envelope includes
-     * headers, uses request-with-headers and validates the JetStream publish ack.
+     * the payload (with any envelope headers) to the configured subject via
+     * {@see JetStreamContext::publish()}, which validates the JetStream publish
+     * acknowledgement and fails closed on an error or malformed response.
      *
      * When scheduled messages are enabled and the envelope carries a {@see DelayStamp},
      * the message is published to a unique delayed subject with NATS schedule headers,
      * causing JetStream to hold it until the scheduled time before delivering it to
      * the original topic.
      *
-     * @throws RuntimeException If serialization fails due to an existing ErrorDetailsStamp,
-     *                          or if JetStream returns a publish error.
+     * @throws RuntimeException     If serialization fails due to an existing ErrorDetailsStamp.
+     * @throws JetStreamException   If JetStream rejects the publish or returns an invalid ack.
      */
     public function send(Envelope $envelope): Envelope
     {
@@ -146,19 +153,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $topic = $this->topic . '.delayed.' . $uuid;
         }
 
-        $jetStream = $this->jetStream();
-
-        if ($headers === []) {
-            $jetStream->publish($topic, $payload)->await();
-        } else {
-            $normalizedHeaders = [];
-            foreach ($headers as $name => $value) {
-                $normalizedHeaders[(string) $name] = $this->stringValue($value);
-            }
-
-            $reply = $this->client->requestWithHeaders($topic, $payload, $normalizedHeaders)->await();
-            $this->assertJetStreamPublishSucceeded($this->stringValue($reply->payload));
+        $normalizedHeaders = [];
+        foreach ($headers as $name => $value) {
+            $normalizedHeaders[(string) $name] = $this->stringValue($value);
         }
+
+        // A single JetStream publish path for both plain and header-carrying (incl. scheduled)
+        // messages. JetStreamContext::publish() retries transient 503 "no responders" and parses
+        // the PubAck, throwing JetStreamException on an empty/malformed reply or a reported error —
+        // so the publish fails closed instead of silently accepting an invalid acknowledgement.
+        $this->jetStream()->publish($topic, $payload, $normalizedHeaders)->await();
 
         return $envelope;
     }
@@ -168,8 +172,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *
      * Fetches up to {@see NatsTransportConfiguration::batching()} messages with the
      * configured timeout. HTTP 404 (consumer not found) and 408 (timeout / no messages)
-     * are treated as empty results. On deserialization failure the message is rejected
-     * via {@see handleFailedDelivery()} before the exception propagates.
+     * are treated as empty results. Messages with an empty payload or without a reply
+     * (ack) subject are skipped, since they cannot complete the Messenger receive
+     * lifecycle. On deserialization failure the message is rejected via
+     * {@see handleFailedDelivery()} before the exception propagates.
      *
      * @return iterable<Envelope>
      */
@@ -195,6 +201,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 continue;
             }
 
+            // A delivered message without a reply (ack) subject can neither be acknowledged
+            // nor rejected, so an envelope built from it could never be completed by the
+            // worker. Skip it rather than yield an envelope with an unusable transport id.
+            // (Pull-delivered JetStream data messages always carry an ack subject.)
+            $replyTo = $message->replyTo;
+            if ($replyTo === null || $replyTo === '') {
+                continue;
+            }
+
             $headers = ($message->rawHeaders !== null && $message->rawHeaders !== '')
                 ? NatsHeaders::fromWireBlock($message->rawHeaders)
                 : [];
@@ -205,14 +220,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                     'headers' => $headers,
                 ]);
             } catch (\Throwable $e) {
-                if ($message->replyTo !== null && $message->replyTo !== '') {
-                    $this->handleFailedDelivery($message->replyTo);
-                }
+                $this->handleFailedDelivery($replyTo);
 
                 throw $e;
             }
 
-            yield $decoded->with(new TransportMessageIdStamp((string) $message->replyTo));
+            yield $decoded->with(new TransportMessageIdStamp($replyTo));
         }
     }
 
@@ -277,10 +290,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Returns an approximate message count from consumer or stream state.
+     * Returns an approximate count of messages still to be processed.
      *
-     * Tries the consumer info first (num_ack_pending / num_pending), then falls
-     * back to stream-level message count. Returns 0 if both queries fail.
+     * Tries the consumer info first and returns num_ack_pending + num_pending: those two
+     * counts describe disjoint sets (delivered-but-unacked vs. not-yet-delivered), so the
+     * total outstanding work is their sum. Falls back to the stream-level message count,
+     * then to 0 if both queries fail.
      */
     public function getMessageCount(): int
     {
@@ -289,14 +304,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $ackPending = $this->intValue($consumerInfo->raw['num_ack_pending'] ?? 0);
             $pending = $this->intValue($consumerInfo->raw['num_pending'] ?? 0);
 
-            return max($ackPending, $pending);
-        } catch (\Exception $e) {
+            return $ackPending + $pending;
+        } catch (\Throwable) {
             try {
                 $streamInfo = $this->jetStream()->getStream($this->streamName)->await();
                 $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];
 
                 return $this->intValue($state['messages'] ?? 0);
-            } catch (\Exception $streamException) {
+            } catch (\Throwable) {
                 return 0;
             }
         }
@@ -421,47 +436,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             replyTo: $replyTo,
             payload: ''
         );
-    }
-
-    /**
-     * Validates JetStream publish response payload and throws on protocol-level errors.
-     *
-     * Parses the JSON response from a JetStream publish-with-headers request.
-     * If the response contains an "error" key, extracts the description and code
-     * to throw a meaningful RuntimeException.
-     *
-     * @param string $payload Raw JSON response body from JetStream
-     *
-     * @throws RuntimeException If the response contains a JetStream error
-     */
-    private function assertJetStreamPublishSucceeded(string $payload): void
-    {
-        if ($payload === '') {
-            return;
-        }
-
-        $decoded = json_decode($payload, true);
-        if (!is_array($decoded)) {
-            throw new RuntimeException('Unexpected JetStream publish response.');
-        }
-
-        if (!array_key_exists('error', $decoded)) {
-            return;
-        }
-
-        $error = $decoded['error'];
-        if (is_array($error)) {
-            $description = $this->stringValue($error['description'] ?? 'JetStream publish error', 'JetStream publish error');
-            $code = $this->intValue($error['code'] ?? 0);
-
-            throw new RuntimeException($description, $code);
-        }
-
-        if (is_string($error) && $error !== '') {
-            throw new RuntimeException($error, $this->intValue($decoded['code'] ?? 0));
-        }
-
-        throw new RuntimeException('JetStream publish error');
     }
 
     /**
@@ -619,6 +593,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $updatedConfiguration = array_merge($serverConfiguration, $managedOptions, [
             'subjects' => $mergedSubjects,
         ]);
+
+        // The transport authoritatively manages these retention limits. On update we always write
+        // the value — including JetStream's "unlimited" sentinels (max_age 0, others -1) when the
+        // option is unset — so a previously-configured limit is actually relaxed/cleared instead of
+        // being preserved from the existing server configuration by the array_merge above.
+        $updatedConfiguration['max_age'] = $this->configuration->streamMaxAgeSeconds() > 0
+            ? $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS
+            : 0;
+        $updatedConfiguration['max_bytes'] = $this->configuration->streamMaxBytes() ?? -1;
+        $updatedConfiguration['max_msgs'] = $this->configuration->streamMaxMessages() ?? -1;
+        $updatedConfiguration['max_msgs_per_subject'] = $this->configuration->streamMaxMessagesPerSubject() ?? -1;
 
         if (array_key_exists('storage', $serverConfiguration)) {
             $updatedConfiguration['storage'] = $serverConfiguration['storage'];

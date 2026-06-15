@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace IDCT\NatsMessenger\Serializer;
 
 use Symfony\Component\Messenger\Envelope;

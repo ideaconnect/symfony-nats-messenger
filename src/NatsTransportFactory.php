@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace IDCT\NatsMessenger;
 
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;

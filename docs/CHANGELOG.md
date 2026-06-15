@@ -11,16 +11,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **NATS client upgraded to `idct/php-nats-jetstream-client` `^2.4`** (from `^1`). The v2 client is a
   major release (Object Store / Services / custom-transport breaking changes) but none of those touch
   this bridge's API surface; every method this transport uses changed only by gaining optional trailing
-  parameters. All 189 unit tests pass and PHPStan stays clean at level max with no source changes required.
+  parameters. The unit suite and PHPStan (level max) stay green.
+- **Unified message publishing** — `send()` now publishes both plain and header-carrying (including
+  scheduled/delayed) messages through `JetStreamContext::publish()` instead of dropping to the low-level
+  `requestWithHeaders()` for header messages. Header/scheduled publishes therefore gain the client's
+  built-in transient-503 ("no responders") retry and consistent `JetStreamException` error reporting.
+  The hand-rolled `assertJetStreamPublishSucceeded()` validator was removed.
+- **`getMessageCount()`** now returns `num_ack_pending + num_pending` (in-flight **plus** waiting)
+  instead of `max(...)`, which undercounted whenever both coexisted.
+- **`declare(strict_types=1)`** is now declared in every `src/` file.
 
 ### Added
 - **`CLAUDE.md`, `HUMANS.md`, `STRUCTURE.md`** — agent guidance, human onboarding, and an architecture/
   layout reference, respectively.
 
 ### Fixed
-- **README accuracy** — corrected the coverage badge (`95.97%` → `97.32%`) and the test-count claim
-  (`102` → `189` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
+- **Publish acknowledgements always fail closed** — the previous header-publish path silently accepted
+  an empty/non-JSON JetStream ack; publishing through `JetStreamContext::publish()` rejects empty,
+  malformed, or error acks consistently for all messages.
+- **`get()` skips messages without a reply (ack) subject** instead of yielding an envelope with an
+  unusable transport message id that would later fail at ack/reject time.
+- **`setup()` can now relax or clear stream limits** — on update, unset `stream_max_age` /
+  `stream_max_bytes` / `stream_max_messages` / `stream_max_messages_per_subject` options reset to
+  JetStream's "unlimited" sentinels instead of preserving the previous server-side value.
+- **`getMessageCount()` catches `\Throwable`** (not just `\Exception`), honouring its documented
+  "returns 0 if both lookups fail" contract for `\Error`-type failures surfaced by awaited futures.
+- **README accuracy** — corrected the coverage badge (`95.97%` → `98.00%`) and the test-count claim
+  (`102` → `187` unit tests), and removed a non-existent `delay` option from the Multi-Subject Streams
   example (there is no `delay` transport option; the value was silently ignored).
+- **Documentation** — refreshed the stale `tests/functional/README.md` (removed dead benchmark-doc
+  links and replaced the outdated "three scenarios" list with the full feature-file table) and removed
+  the non-existent `delay` option from the builder tests and `docs/TESTS.md`.
+- **Test suite** — migrated the last doc-comment `@dataProvider` to the `#[DataProvider]` attribute
+  (PHPUnit 12-ready), hardened the Behat consumed-message check to use the deterministic marker-file
+  count as the primary signal, and added unit coverage for the lazy-connect path.
+
+### Security
+- **PhpSerializer fallback now warns loudly** — when `ext-igbinary` is missing and no serializer is
+  configured, the transport emits an `E_USER_WARNING` (previously a quiet `E_USER_NOTICE`) explaining
+  that the `PhpSerializer` fallback uses native `unserialize()` and carries the same object-injection
+  risk as igbinary. The README security section now documents this explicitly.
 
 ## [4.0.0]
 

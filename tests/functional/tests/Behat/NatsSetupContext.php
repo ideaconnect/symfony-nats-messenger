@@ -491,13 +491,13 @@ class NatsSetupContext implements Context
     /**
      * Verifies that all sent messages were consumed by the consumer process.
      *
-     * Uses a multi-tier verification strategy:
-     * 1. Regex patterns on consumer stdout (`[OK] Consumed`, `Processing message`, etc.)
-     * 2. Limit-reached string detection in output
-     * 3. File-based fallback: counts `message_*.txt` marker files in var/test_files/
-     *
-     * If none of these approaches can confirm consumption, the step fails. This avoids
-     * false positives from exit-code-only checks.
+     * The authoritative signal is the set of marker files written by the test message handler:
+     * it creates exactly one unique `message_<id>.txt` per successfully-processed message and
+     * refuses to overwrite, so the file count is an exact, order- and output-format-independent
+     * measure of consumption. (Scenarios reset this directory via the "test files directory is
+     * clean" step beforehand.) Console-output parsing is logged for diagnostics only and never
+     * used to pass the assertion, because console formatting varies across Symfony console
+     * versions.
      *
      * @Then all :count messages should be consumed
      */
@@ -510,60 +510,65 @@ class NatsSetupContext implements Context
         $output = $this->consumerProcess->getOutput();
         $errorOutput = $this->consumerProcess->getErrorOutput();
 
-        // Debug: Show the full consumer output
+        // Debug: show the consumer output to aid diagnosis on failure.
         echo "Consumer output:\n" . $output . "\n";
         if (!empty($errorOutput)) {
             echo "Consumer error output:\n" . $errorOutput . "\n";
         }
 
-        // Count successful message processing
-        $successPatterns = [
-            '/\[OK\].*consumed/i',
-            '/\[OK\].*Consumed message/i',
-            '/Received message.*from transport/i',
-            '/Processing message/i'
-        ];
+        $markerCount = $this->countConsumedMarkerFiles();
+        $consoleCount = $this->countConsumedFromOutput($output);
+        echo sprintf(
+            "Consumption check: %d marker files, ~%d console confirmations (expected %d).\n",
+            $markerCount,
+            $consoleCount,
+            $count
+        );
 
-        $consumedCount = 0;
-        foreach ($successPatterns as $pattern) {
-            $matches = preg_match_all($pattern, $output);
-            if ($matches !== false && $matches > 0) {
-                $consumedCount = max($consumedCount, $matches);
-                break;
-            }
-        }
-
-        // If pattern matching fails, check for the message limit reached
-        if ($consumedCount === 0) {
-            if (str_contains($output, 'limit of ' . $count . ' messages reached') ||
-                str_contains($output, 'limit of ' . $count . ' exceeded') ||
-                str_contains($output, $count . ' messages')) {
-                $consumedCount = $count;
-            }
-        }
-
-        // File-based fallback: count marker files created by the message handler
-        if ($consumedCount === 0 && is_dir($this->testFilesDir)) {
-            $files = glob($this->testFilesDir . '/message_*.txt');
-            $fileCount = $files !== false ? count($files) : 0;
-            if ($fileCount >= $count) {
-                echo "Note: Output parsing could not verify consumption, but found {$fileCount} marker files (expected {$count}).\n";
-                $consumedCount = $fileCount;
-            }
-        }
-
-        if ($consumedCount < $count) {
+        if ($markerCount < $count) {
             throw new \RuntimeException(
                 sprintf(
-                    'Expected %d messages to be consumed, but could only verify %d. Consumer output: %s',
+                    'Expected %d messages to be consumed, but only %d marker file(s) were created. Consumer output: %s',
                     $count,
-                    $consumedCount,
+                    $markerCount,
                     $output
                 )
             );
         }
 
         $this->messagesConsumed = $count;
+    }
+
+    /**
+     * Counts the unique per-message marker files written by the test message handler.
+     */
+    private function countConsumedMarkerFiles(): int
+    {
+        if (!is_dir($this->testFilesDir)) {
+            return 0;
+        }
+
+        $files = glob($this->testFilesDir . '/message_*.txt');
+
+        return $files !== false ? count($files) : 0;
+    }
+
+    /**
+     * Best-effort count of consumption confirmations in consumer stdout, aggregated across all
+     * known output formats (not broken on the first matching pattern). Advisory/diagnostic only —
+     * never used to pass the assertion.
+     */
+    private function countConsumedFromOutput(string $output): int
+    {
+        $total = 0;
+        foreach (['/\[OK\].*consumed/i', '/Received message.*from transport/i', '/Processing message/i'] as $pattern) {
+            $matches = preg_match_all($pattern, $output);
+            if ($matches !== false) {
+                $total += $matches;
+            }
+        }
+
+        return $total;
     }
 
     /**
