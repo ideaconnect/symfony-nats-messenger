@@ -1759,6 +1759,34 @@ final class NatsTransportTest extends TestCase
         self::assertGreaterThan($before, $scheduled, 'A sub-second delay must still schedule in the future, not immediately.');
     }
 
+    public function testSendDelayedMessageWithLargeDelaySchedulesFarInTheFuture(): void
+    {
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->expects(self::once())->method('encode')->willReturn(['body' => 'encoded-payload']);
+
+        $capturedHeaders = [];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturnCallback(
+            function (string $subject, string $payload, array $headers) use (&$capturedHeaders): Future {
+                $capturedHeaders = $headers;
+
+                return Future::complete();
+            }
+        );
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        // A 1-hour delay must schedule ~3600s out with no precision loss or overflow, and never earlier.
+        $before = time();
+        $transport->send(new Envelope(new \stdClass(), [new DelayStamp(3_600_000)]));
+
+        self::assertArrayHasKey('Nats-Schedule', $capturedHeaders);
+        $delaySeconds = (new \DateTimeImmutable(substr($capturedHeaders['Nats-Schedule'], 4)))->getTimestamp() - $before;
+        self::assertGreaterThanOrEqual(3600, $delaySeconds);
+        self::assertLessThanOrEqual(3602, $delaySeconds);
+    }
+
     public function testSendPublishesLargePayloadWithoutTruncation(): void
     {
         // 1 MiB body - exercises that the transport never truncates or mangles a large serialized

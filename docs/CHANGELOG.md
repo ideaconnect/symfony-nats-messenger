@@ -44,6 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature `nats_large_messages.feature` round-trips 128 KB / 64 KB messages through one consumer and
   load-balances them across two, and `nats_delayed.feature` gains a scenario asserting a delayed message
   is not visible to the consumer before its scheduled time. The send command gained a `--size` option.
+  Further hardening: a 5-consumer / 100-message shared-consumer load-balancing scenario
+  (`nats_consumer.feature`), larger delayed batches and delayed-message load balancing across 3 consumers
+  (`nats_delayed.feature`), and a unit test for a far-future (1-hour) delay
+  (`testSendDelayedMessageWithLargeDelaySchedulesFarInTheFuture`). The CI "Run functional tests" step
+  timeout was raised from 10 to 25 minutes (and the job cap from 20 to 40) to accommodate the fuller
+  matrix; the new delayed scenarios use count-limited consumers so they exit promptly after the delay
+  rather than waiting out a fixed time limit.
 - **README PHP examples are syntax-checked in CI** - `ReadmeExamplesTest` lints every fenced ` ```php `
   block in the README (and pins their count), so a snippet that stops being valid PHP fails the build.
   This complements the existing tests that exercise the README's DSN, option, and serializer examples.
