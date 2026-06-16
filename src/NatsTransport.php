@@ -128,7 +128,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * causing JetStream to hold it until the scheduled time before delivering it to
      * the original topic.
      *
-     * @throws RuntimeException     If serialization fails due to an existing ErrorDetailsStamp.
+     * @throws RuntimeException     If serialization fails and the envelope carries an ErrorDetailsStamp.
+     * @throws \Throwable           The original serializer exception when serialization fails and the
+     *                              envelope carries no ErrorDetailsStamp (re-thrown unchanged).
      * @throws JetStreamException   If JetStream rejects the publish or returns an invalid ack.
      */
     public function send(Envelope $envelope): Envelope

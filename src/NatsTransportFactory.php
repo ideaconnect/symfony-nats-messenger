@@ -11,9 +11,8 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
 /**
  * NATS JetStream Transport Factory
  *
- * This factory creates NATS JetStream transport instances for Symfony Messenger.
- * It implements the TransportFactoryInterface to integrate seamlessly with
- * Symfony's messenger transport discovery and instantiation system.
+ * Implements TransportFactoryInterface so Symfony Messenger's transport registry discovers and
+ * instantiates {@see NatsTransport} for the recognized DSN schemes (see supports()).
  *
  * The factory always passes Symfony's resolved serializer into the transport (the
  * interface signature is non-nullable). When a transport configures no serializer,
