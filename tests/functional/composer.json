@@ -8,7 +8,7 @@
         "ext-ctype": "*",
         "ext-iconv": "*",
         "idct/php-nats-jetstream-client": "dev-main",
-        "phpdocumentor/reflection-docblock": "^5.6.7",
+        "phpdocumentor/reflection-docblock": "^6.0.3",
         "phpstan/phpdoc-parser": "^2.3.2",
         "symfony/console": "^7.4.7 || ^8",
         "symfony/dotenv": "^7 || ^8.0.7",
