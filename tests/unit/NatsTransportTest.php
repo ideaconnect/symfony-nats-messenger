@@ -89,6 +89,28 @@ class RuntimeRetryHandlerNatsTransport extends TestableRetryHandlerNatsTransport
 }
 
 /**
+ * Rejects failed deliveries by throwing, so a test can prove the original decode error survives a
+ * secondary NAK/TERM transport failure instead of being masked by it.
+ */
+class ThrowingFailureNatsTransport extends TestableNatsTransport
+{
+    public function setJetStreamContext(JetStreamContext $jetStream): void
+    {
+        $this->jetStream = $jetStream;
+    }
+
+    protected function sendTerm(string $id): void
+    {
+        throw new \RuntimeException('term transport failure');
+    }
+
+    protected function sendNak(string $id): void
+    {
+        throw new \RuntimeException('nak transport failure');
+    }
+}
+
+/**
  * Exercises the real {@see NatsTransport::connect()} (it is NOT overridden here) with an
  * injectable mock client, so the lazy-connect path can be covered without a live broker.
  */
@@ -488,6 +510,33 @@ final class NatsTransportTest extends TestCase
         }
 
         self::assertSame(['term:reply-id'], $transport->failureActions);
+    }
+
+    public function testGetDecodeFailureKeepsOriginalErrorWhenRejectAlsoFails(): void
+    {
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->expects(self::once())
+            ->method('decode')
+            ->willThrowException(new \RuntimeException('decode failed'));
+
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('fetchBatch')
+            ->willReturn(Future::complete([
+                new NatsMessage('test-topic', 1, 'reply-id', 'payload'),
+            ]));
+
+        $transport = new ThrowingFailureNatsTransport(self::VALID_DSN, [], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        // The reject (TERM) transport call throws, but the decode error is the root cause an operator
+        // needs, so it - not the secondary acknowledgement failure - must be the exception that escapes.
+        try {
+            iterator_to_array($transport->get());
+            self::fail('Expected the original decode exception to propagate.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('decode failed', $exception->getMessage());
+        }
     }
 
     public function testGetSkipsMessagesWithoutReplySubject(): void
@@ -1858,6 +1907,56 @@ final class NatsTransportTest extends TestCase
             ->method('updateStream')
             // A server too old for the field never had the key; disabling scheduling must not introduce it.
             ->with('test-stream', self::callback(static fn (array $options): bool => !array_key_exists('allow_msg_schedules', $options)))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    public function testSetupUpdateRemovesOrphanedDelayedSubjectWhenScheduledMessagesDisabled(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic', 'test-topic.delayed.>', 'operator.added'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic', 'test-topic.delayed.>', 'operator.added'],
+                    'allow_msg_schedules' => true,
+                ],
+            ],
+        );
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('stream already exists', 400)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            // scheduled_messages is off, so the transport-managed '{topic}.delayed.>' subject left over
+            // from a previous run must be dropped, while the plain topic and any operator-added subject
+            // are preserved.
+            ->with('test-stream', self::callback(static function (array $options): bool {
+                $subjects = $options['subjects'] ?? [];
+
+                return is_array($subjects)
+                    && !in_array('test-topic.delayed.>', $subjects, true)
+                    && in_array('test-topic', $subjects, true)
+                    && in_array('operator.added', $subjects, true);
+            }))
             ->willReturn(Future::complete());
         $jetStream->expects(self::once())
             ->method('addConsumer')

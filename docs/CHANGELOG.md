@@ -90,6 +90,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   null-passthrough definition).
 
 ### Fixed
+- **A failed NAK/TERM no longer masks the original decode error in `get()`** (#34) - when a delivered
+  message fails to deserialize, the transport still rejects it, but a secondary failure while
+  acknowledging (e.g. a dropped connection) can no longer replace the decode exception that propagates.
+  The decode error is the root cause an operator needs, so it stays the one that escapes `get()`.
+- **`setup()` removes an orphaned `{topic}.delayed.>` subject when `scheduled_messages` is disabled**
+  (#35) - the stream-update subject merge previously only ever added subjects, so a stream that once had
+  scheduling enabled kept the transport-managed delayed subject forever. The update now drops that
+  specific subject when scheduling is off (operator-added subjects are preserved), mirroring the
+  `allow_msg_schedules=false` clearing.
+- **Clarified `getMessageCount()`'s fallback semantics** (#36) - documented that the stream-level
+  fallback (used when consumer info is unavailable) is a loose upper bound, not an exact backlog: under
+  the default limits retention policy it counts already-acknowledged-but-retained messages. The accurate
+  consumer-info path (`num_ack_pending + num_pending`) is unaffected.
 - **README/docs accuracy** - corrected the Architecture "serialization (igbinary)" bullet to describe the
   pluggable `SerializerInterface`, listed the full set of implemented Messenger interfaces, fixed the
   `docs/TESTS.md` mutation thresholds (95/98 -> 90/95), and refreshed the test count and coverage badge.

@@ -235,7 +235,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                     'headers' => $headers,
                 ]);
             } catch (\Throwable $e) {
-                $this->handleFailedDelivery($replyTo);
+                // Reject the undecodable message, but never let a NAK/TERM transport failure (e.g. a
+                // dropped connection while acknowledging) replace the decode exception: that original
+                // error is the root cause an operator needs, so it stays the one that propagates.
+                try {
+                    $this->handleFailedDelivery($replyTo);
+                } catch (\Throwable) {
+                    // Intentionally swallowed - $e is rethrown below as the primary failure.
+                }
 
                 throw $e;
             }
@@ -363,8 +370,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *
      * Tries the consumer info first and returns num_ack_pending + num_pending: those two
      * counts describe disjoint sets (delivered-but-unacked vs. not-yet-delivered), so the
-     * total outstanding work is their sum. Falls back to the stream-level message count,
-     * then to 0 if both queries fail.
+     * total outstanding work is their sum - the accurate measure of work left for this consumer.
+     *
+     * Falls back to the stream-level message count when consumer info is unavailable (e.g. the
+     * consumer has not been created yet), then to 0 if both queries fail. Treat that fallback as a
+     * loose upper bound, not an exact backlog: under the default limits retention policy the stream
+     * retains already-acknowledged messages, so the count can stay above 0 even when nothing is left
+     * to process. The consumer-info path does not have this limitation.
      */
     public function getMessageCount(): int
     {
@@ -688,6 +700,19 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $serverSubjects = $this->normalizeSubjects($serverConfiguration['subjects'] ?? $streamInfo->subjects);
         $mergedSubjects = $this->mergeSubjects($serverSubjects, $desiredSubjects);
+
+        // When scheduled messages are disabled, actively drop the transport-managed '{topic}.delayed.>'
+        // subject so a stream that previously had scheduling enabled does not keep an orphaned binding.
+        // mergeSubjects() only ever adds, so without this an operator turning scheduled_messages off
+        // could never remove it. Only this transport's own pattern is dropped; operator-added subjects
+        // are preserved. Pairs with the allow_msg_schedules=false clearing below.
+        if (!$this->configuration->isScheduledMessagesEnabled()) {
+            $delayedSubject = $this->topic . '.delayed.>';
+            $mergedSubjects = array_values(array_filter(
+                $mergedSubjects,
+                static fn (string $subject): bool => $subject !== $delayedSubject,
+            ));
+        }
 
         $updatedConfiguration = array_merge($serverConfiguration, $managedOptions, [
             'subjects' => $mergedSubjects,
