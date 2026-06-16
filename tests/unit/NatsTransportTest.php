@@ -603,6 +603,32 @@ final class NatsTransportTest extends TestCase
         $transport->ack((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('message-id')));
     }
 
+    public function testKeepaliveSendsInProgressForReplyToken(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('inProgress')
+            ->with(self::callback(static function (NatsMessage $message): bool {
+                return $message->replyTo === 'message-id' && $message->subject === 'test-topic';
+            }))
+            ->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->keepalive((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('message-id')));
+    }
+
+    public function testKeepaliveWithoutTransportStampThrowsException(): void
+    {
+        $transport = new TestableNatsTransport(self::VALID_DSN, []);
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('No TransportMessageIdStamp found on the Envelope.');
+
+        $transport->keepalive(new Envelope(new \stdClass()));
+    }
+
     public function testAckUsesAckSyncWhenEnabled(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);

@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the seconds→nanoseconds conversion. No behavior change.
 
 ### Added
+- **`KeepaliveReceiverInterface` support** - the transport now implements Symfony Messenger's
+  `keepalive()`, sending an in-progress (`+WPI`) acknowledgement so a long-running handler resets the
+  JetStream redelivery timer instead of losing its message to `ack_wait` expiry. NATS resets to the
+  consumer's configured `ack_wait`, so the advisory `$seconds` hint is not forwarded.
 - **Mutation testing with Infection** — added `infection/infection` (dev), an `infection.json5` config
   (floors: `minMsi` 90 / `minCoveredMsi` 95), a `composer test:mutation` script, and a CI step. The suite
   currently scores ~99% covered MSI with 100% mutation code coverage.

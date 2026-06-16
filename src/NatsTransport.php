@@ -27,6 +27,7 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
+use Symfony\Component\Messenger\Transport\Receiver\KeepaliveReceiverInterface;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
@@ -47,7 +48,7 @@ use Symfony\Component\Uid\Uuid;
  * @see NatsTransportFactory     Creates instances of this transport from Symfony DSN configuration.
  * @see NatsTransportConfiguration  Holds the resolved, immutable runtime settings.
  */
-class NatsTransport implements TransportInterface, MessageCountAwareInterface, SetupableTransportInterface
+class NatsTransport implements TransportInterface, MessageCountAwareInterface, SetupableTransportInterface, KeepaliveReceiverInterface
 {
     /** Conversion factor for stream max_age (seconds → nanoseconds as required by JetStream API). */
     private const SECONDS_TO_NANOSECONDS = 1_000_000_000;
@@ -311,6 +312,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
         $this->handleFailedDelivery($id);
+    }
+
+    /**
+     * Signals to JetStream that a received message is still being processed.
+     *
+     * Sends an in-progress (+WPI) acknowledgement so the server resets the redelivery timer,
+     * preventing a long-running handler from losing its message to ack_wait expiry before it
+     * finishes. NATS resets the timer to the consumer's configured ack_wait, so the $seconds
+     * hint from Symfony is advisory and not forwarded.
+     *
+     * @throws LogicException If the envelope lacks a TransportMessageIdStamp
+     */
+    public function keepalive(Envelope $envelope, ?int $seconds = null): void
+    {
+        $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
+        $this->jetStream()->inProgress($this->buildAckMessage($id))->await();
     }
 
     /**
