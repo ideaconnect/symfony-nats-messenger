@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-06-17
+
+This is a **major** release. It is backward-incompatible for two reasons even though the transport's own
+PHP API is largely additive: the required `idct/php-nats-jetstream-client` constraint moves from `^1` to
+`^2.4` (a major dependency upgrade), and the internal `TypeCoercionTrait` was replaced by a `TypeCoercion`
+final class. There are also two minor validation/behavior changes (see Fixed): `stream_max_age` now
+rejects fractional values, and DSN/option credentials are no longer trimmed. PHP (`^8.2`) and Symfony
+(`^7.2 || ^8`) requirements are unchanged from 4.0.0.
+
 ### Changed
 - **Readability: removed two small internal duplications (BC-safe, no behavior change)** - the
   `{topic}.delayed.>` wildcard subject now has a single `delayedSubjectPattern()` definition shared by
