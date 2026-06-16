@@ -74,6 +74,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   null-passthrough definition).
 
 ### Fixed
+- **DSN/option credentials are no longer trimmed** - leading or trailing whitespace in a username or
+  password is significant and was previously stripped (corrupting the credential). Credential resolution
+  now maps only null/empty to null without trimming; TLS file paths are still trimmed.
+- **Disabling `scheduled_messages` clears `allow_msg_schedules` on an existing stream** - the `setup()`
+  update path now writes the flag explicitly (false when disabling) instead of preserving the server's
+  previous `true`. The field is still omitted entirely when scheduling is off and the stream never had
+  it, so nothing unknown is sent to a server older than NATS 2.12.
 - **`setup()` no longer silently downscales an existing stream's replica count** — on the update path
   the transport now preserves the server's `num_replicas` unless `stream_replicas` is explicitly
   configured (mirroring the existing `storage` preservation). Previously a stream created with, say,

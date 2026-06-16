@@ -463,14 +463,31 @@ final class NatsTransportConfigurationBuilder
      */
     private function resolveCredential(array $components, array $configuration, TransportOption $option, string $componentKey): ?string
     {
-        $configured = $this->toNullableString($configuration[$option->value]);
+        $configured = $this->normalizeCredential($configuration[$option->value] ?? null);
         if ($configured !== null) {
             return $configured;
         }
 
         $value = $components[$componentKey] ?? null;
 
-        return is_string($value) ? $this->toNullableString(rawurldecode($value)) : null;
+        return is_string($value) ? $this->normalizeCredential(rawurldecode($value)) : null;
+    }
+
+    /**
+     * Normalizes a credential value: maps null, non-scalar, and the empty string to null.
+     *
+     * Unlike toNullableString() this does NOT trim, because leading or trailing whitespace can be a
+     * significant part of a username or password and trimming it would silently corrupt the credential.
+     */
+    private function normalizeCredential(mixed $value): ?string
+    {
+        if (!is_string($value) && !is_int($value) && !is_float($value) && !is_bool($value)) {
+            return null;
+        }
+
+        $string = (string) $value;
+
+        return $string === '' ? null : $string;
     }
 
     /**

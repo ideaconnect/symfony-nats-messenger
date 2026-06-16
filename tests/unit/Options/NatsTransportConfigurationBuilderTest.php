@@ -230,6 +230,33 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame('S3cr3t+P@ss', $options->password);
     }
 
+    public function testBuildPreservesSignificantWhitespaceInDsnCredentials(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://%20user%20:%20p%40ss%20@localhost/test-stream/test-topic',
+            []
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        // Leading/trailing whitespace is significant in a credential and must NOT be trimmed away.
+        self::assertSame(' user ', $options->username);
+        self::assertSame(' p@ss ', $options->password);
+    }
+
+    public function testBuildPreservesSignificantWhitespaceInExplicitCredentialOptions(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            ['username' => '  user  ', 'password' => '  secret  ']
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertSame('  user  ', $options->username);
+        self::assertSame('  secret  ', $options->password);
+    }
+
     public function testBuildNormalizesStringBooleanAndNullableStringOptions(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(

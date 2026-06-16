@@ -680,6 +680,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $updatedConfiguration['num_replicas'] = $serverConfiguration['num_replicas'];
         }
 
+        // Authoritatively manage allow_msg_schedules: write true when scheduled_messages is enabled,
+        // and explicitly false when it is disabled on a stream that previously had the flag set, so
+        // turning the option off actually clears it instead of the array_merge preserving the server's
+        // true. When the flag is off and the server never had it, leave it absent so the field is not
+        // sent to a server too old to understand it (NATS < 2.12).
+        if ($this->configuration->isScheduledMessagesEnabled()) {
+            $updatedConfiguration['allow_msg_schedules'] = true;
+        } elseif (array_key_exists('allow_msg_schedules', $serverConfiguration)) {
+            $updatedConfiguration['allow_msg_schedules'] = false;
+        }
+
         /** @var array<string, mixed> $updatedConfiguration */
         return $updatedConfiguration;
     }
