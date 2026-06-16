@@ -7,6 +7,7 @@
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
+![Made in the EU](https://raw.githubusercontent.com/ideaconnect/made-in-the-eu/main/software-badge/made-in-the-eu.svg)
 
 A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream), enabling reliable asynchronous messaging with persistent message streaming.
 
@@ -25,14 +26,6 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 * ☕ **Buy me a coffee**: https://buymeacoffee.com/idct
 
 * 💝 **Sponsor**: https://github.com/sponsors/ideaconnect
-
-* 🪙 **BTC**: bc1qntms755swm3nplsjpllvx92u8wdzrvs474a0hr
-
-* 💎 **ETH**: 0x08E27250c91540911eD27F161572aFA53Ca24C0a
-
-* ⚡ **TRX**: TVXWaU4ScNV9RBYX5RqFmySuB4zF991QaE
-
-* 🚀 **LTC**: LN5ApP1Yhk4iU9Bo1tLU8eHX39zDzzyZxB
 
 ## Requirements
 
@@ -171,11 +164,11 @@ For reference implementations, see:
 
 ```php
 use App\Message\MyAsyncMessage;
-use Symfony\Component\Messenger\MessageBus;
+use Symfony\Component\Messenger\MessageBusInterface;
 
 class MyController
 {
-    public function __construct(private MessageBus $bus) {}
+    public function __construct(private MessageBusInterface $bus) {}
 
     public function send(): void
     {
@@ -549,7 +542,7 @@ composer test:mutation
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite currently scores ~99% covered MSI with 100% mutation code coverage. CI runs it on the
+95%; the suite currently scores 100% covered MSI with 100% mutation code coverage. CI runs it on the
 PHP 8.5 job.
 
 ### Functional Tests
@@ -749,7 +742,7 @@ nats consumer info my-stream my-consumer --json | jq '.state.num_pending'
 ### Manual Message Operations
 
 ```php
-use Symfony\Component\Messenger\MessageBus;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
 
 // Get message count
@@ -867,7 +860,7 @@ If you experience unexpected behavior during stream setup, confirm the stream ca
 
 ### Publish Response Validation
 
-When JetStream publish acknowledgements are received through the header-aware request path, the transport parses the response as JSON and throws an exception if JetStream reports an error or the response is not valid JSON. This makes proxy or protocol misconfiguration fail closed instead of silently accepting an invalid publish acknowledgement.
+On `send()`, the transport awaits the JetStream publish acknowledgement returned by the client's `publish()` call. The client validates that acknowledgement and raises a `JetStreamException` if JetStream reports an error or returns an empty/malformed response, so a proxy or protocol misconfiguration fails closed instead of silently accepting an invalid publish acknowledgement.
 
 ### General Recommendations
 
@@ -930,12 +923,3 @@ For issues, questions, or suggestions:
 1. Check the [troubleshooting](#troubleshooting) section
 2. Check existing issues on GitHub
 3. Create a new issue with detailed information
-
-# 💖 Love the project? Support it! 🚀
-
-* 🪙 **BTC**: bc1qntms755swm3nplsjpllvx92u8wdzrvs474a0hr
-* 💎 **ETH**: 0x08E27250c91540911eD27F161572aFA53Ca24C0a
-* ⚡ **TRX**: TVXWaU4ScNV9RBYX5RqFmySuB4zF991QaE
-* 🚀 **LTC**: LN5ApP1Yhk4iU9Bo1tLU8eHX39zDzzyZxB
-* ☕ **Buy me a coffee**: https://buymeacoffee.com/idct
-* 💝 **Sponsor**: https://github.com/sponsors/ideaconnect

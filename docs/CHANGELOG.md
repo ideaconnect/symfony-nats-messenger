@@ -117,6 +117,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   null-passthrough definition).
 
 ### Fixed
+- **README accuracy pass** - updated the stale "~99% covered MSI" figure to 100% (matching the badge),
+  rewrote the "Publish Response Validation" section to describe the current client-side `publish()` ack
+  validation (the old hand-rolled JSON/"header-aware request path" wording was removed long ago), and
+  fixed the Quick Start send example to inject `MessageBusInterface` (Symfony does not autowire the
+  concrete `MessageBus`). A full audit confirmed every other example, option default, "Tested by"
+  method, Behat scenario, and DSN data-provider case in the README still matches the code.
 - **Scheduled (delayed) messages are never delivered before the requested delay** (#37) - the
   `DelayStamp` delay maps onto a whole-second NATS `@at` schedule that previously *truncated* the
   sub-second part, so a small delay could fire immediately and any delay could arrive up to ~1s early.
