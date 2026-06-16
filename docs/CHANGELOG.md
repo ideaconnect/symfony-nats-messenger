@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the seconds→nanoseconds conversion. No behavior change.
 
 ### Added
+- **README PHP examples are syntax-checked in CI** - `ReadmeExamplesTest` lints every fenced ` ```php `
+  block in the README (and pins their count), so a snippet that stops being valid PHP fails the build.
+  This complements the existing tests that exercise the README's DSN, option, and serializer examples.
 - **`CloseableTransportInterface` support** - the transport now implements `close()`, which disconnects
   the NATS client and resets the lazy connection state so resources are released on demand (e.g. on
   worker shutdown). It is a no-op when no connection was opened, and the transport reconnects lazily on
@@ -87,6 +90,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   null-passthrough definition).
 
 ### Fixed
+- **README/docs accuracy** - corrected the Architecture "serialization (igbinary)" bullet to describe the
+  pluggable `SerializerInterface`, listed the full set of implemented Messenger interfaces, fixed the
+  `docs/TESTS.md` mutation thresholds (95/98 -> 90/95), and refreshed the test count and coverage badge.
 - **DSN/option credentials are no longer trimmed** - leading or trailing whitespace in a username or
   password is significant and was previously stripped (corrupting the credential). Credential resolution
   now maps only null/empty to null without trimming; TLS file paths are still trimmed.

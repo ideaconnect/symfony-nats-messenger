@@ -2,7 +2,7 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.57%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.58%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-~99%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -18,7 +18,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 262 unit tests, ~99.6% coverage, mutation-tested (~99% MSI)
+- 🧪 **Thoroughly Tested** - 296 unit tests, ~99.6% coverage, mutation-tested (~99% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -812,9 +812,9 @@ The bridge consists of two main components:
 - Validates configuration
 
 ### NatsTransport
-- Implements Symfony's `TransportInterface`
+- Implements Symfony's `TransportInterface`, `MessageCountAwareInterface`, `SetupableTransportInterface`, `KeepaliveReceiverInterface`, and `CloseableTransportInterface`
 - Manages stream and consumer connections
-- Handles message serialization (igbinary)
+- Handles message serialization via a pluggable `SerializerInterface` (igbinary when constructed directly without one)
 - Supports batching and explicit acknowledgment
 
 ## Performance Tips

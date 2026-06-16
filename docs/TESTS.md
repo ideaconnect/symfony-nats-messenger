@@ -77,6 +77,12 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **`secondsToMs()` conversion** | `testSecondsToMs` (data provider: whole/fractional/numeric-string/sub-ms-rounding/zero/non-numeric/null/array), `testSecondsToMsDefaultIsZeroWhenOmitted` |
 | **Static & pure** | `testMethodsAreStaticAndPure` |
 
+### README Examples (`tests/unit/ReadmeExamplesTest.php`)
+
+| Feature | Tests |
+|---------|-------|
+| **Every README ` ```php ` block is valid PHP** | `testReadmePhpExampleIsSyntacticallyValid` (data provider, one case per block), `testReadmeContainsThePhpExamplesWeExpect` |
+
 ## Functional Tests (Behat)
 
 ### Stream Setup (`tests/functional/features/nats_setup.feature`)
@@ -159,7 +165,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 ## Mutation Testing
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
-with `composer test:mutation`. It enforces a minimum MSI of 95% and a minimum covered MSI of 98%; CI runs it
+with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
 on the PHP 8.5 job. The suite currently scores ~99% covered MSI with 100% mutation code coverage.
 
 ## README Example Coverage
@@ -185,14 +191,18 @@ This section maps every code example in `README.md` to the test(s) that verify i
 
 ### PHP Code Examples
 
+Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
+`ReadmeExamplesTest::testReadmePhpExampleIsSyntacticallyValid` (and the count is pinned by
+`testReadmeContainsThePhpExamplesWeExpect`), so a snippet that stops being valid PHP fails CI.
+
 | README Example | Tests |
 |---|---|
-| Custom serializer extending `AbstractEnveloperSerializer` | `readmeCustomSerializerExample_EncodeDecode_RoundTrips`, `readmeCustomSerializerExample_DecodeInvalidBody_ThrowsException` |
+| Custom serializer extending `AbstractEnveloperSerializer` | `readmeCustomSerializerExample_EncodeDecode_RoundTrips`, `readmeCustomSerializerExample_DecodeInvalidBody_ThrowsException`, `testReadmePhpExampleIsSyntacticallyValid` |
 | Igbinary serializer configuration example | `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash` |
 | `$bus->dispatch(new MyMessage(), [new DelayStamp(30000)])` | `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders` |
 | `$transport->getMessageCount()` | `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending` |
-| Controller dispatching message (`MessageBus`) | `testSendPublishesEncodedBodyWithoutHeaders`, `testSendUsesPublishWithHeadersWhenHeadersArePresent`, Behat scenario `Complete message flow - send, check stats, consume, verify` |
-| Handler implementing `MessageHandlerInterface` | Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, `High-volume message processing with file output verification` |
+| Controller dispatching message (`MessageBus`) | `testReadmePhpExampleIsSyntacticallyValid`, `testSendPublishesEncodedBodyWithoutHeaders`, `testSendUsesPublishWithHeadersWhenHeadersArePresent`, Behat scenario `Complete message flow - send, check stats, consume, verify` |
+| Handler using the `#[AsMessageHandler]` attribute | `testReadmePhpExampleIsSyntacticallyValid`, Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, `High-volume message processing with file output verification` |
 | `symfony console messenger:consume nats_transport` | Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, `Partial message consumption with multiple consumers` |
 | `symfony console messenger:setup-transports nats_transport` | `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, `Custom consumer name is registered in JetStream` |
 
