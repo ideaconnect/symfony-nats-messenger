@@ -148,13 +148,10 @@ final class NatsTransportConfigurationBuilder
             throw new InvalidArgumentException('NATS Stream name not provided.');
         }
 
-        $path = $components['path'];
-        if (!is_string($path) || $path === '') {
-            throw new InvalidArgumentException('NATS Stream name not provided.');
-        }
-
-        // A valid path is exactly two non-empty slash-separated tokens (/stream/topic). This single
-        // check rejects every malformed path - too few or too many segments, or an empty token.
+        // A valid path is exactly two non-empty slash-separated tokens (/stream/topic). Coercing a
+        // non-string/empty path to '' lets this single check reject every malformed path - missing,
+        // too few or too many segments, or an empty token.
+        $path = is_string($components['path']) ? $components['path'] : '';
         $pathParts = explode('/', trim($path, '/'));
         if (count($pathParts) !== 2 || $pathParts[0] === '' || $pathParts[1] === '') {
             throw new InvalidArgumentException('NATS DSN must contain both stream name and topic name (format: /stream/topic).');

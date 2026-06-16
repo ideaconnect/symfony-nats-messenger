@@ -279,6 +279,32 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertNull($options->token);
     }
 
+    #[DataProvider('falseyBooleanStringProvider')]
+    public function testBuildTreatsNonAllowlistedBooleanStringsAsFalse(string $value): void
+    {
+        // Only 1/true/yes/on are truthy; everything else (false/no/off/2/unknown/empty) is false.
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'ack_sync' => $value,
+            'scheduled_messages' => $value,
+        ]);
+
+        self::assertFalse($configuration->isAckSyncEnabled());
+        self::assertFalse($configuration->isScheduledMessagesEnabled());
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function falseyBooleanStringProvider(): iterable
+    {
+        yield 'false' => ['false'];
+        yield 'no' => ['no'];
+        yield 'off' => ['off'];
+        yield 'numeric 2' => ['2'];
+        yield 'unknown word' => ['disabled'];
+        yield 'empty string' => [''];
+    }
+
     public function testBuildWithNonNumericBatchingThrowsException(): void
     {
         $this->expectException(InvalidArgumentException::class);
@@ -539,6 +565,46 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(30000, $configuration->ackWaitMs());
         self::assertSame(5, $configuration->maxDeliver());
         self::assertSame([1000, 5000, 30000], $configuration->backoffMs());
+    }
+
+    public function testBuildClampsSubMillisecondAckWaitToOneMs(): void
+    {
+        // A positive sub-millisecond ack_wait must floor to 1ms, never 0 (JetStream treats ack_wait=0
+        // as "use the server default", silently disabling the configured redelivery window).
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['ack_wait' => 0.0001]);
+
+        self::assertSame(1, $configuration->ackWaitMs());
+    }
+
+    public function testBuildClampsSubMillisecondMaxBatchTimeoutToOneMs(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_batch_timeout' => 0.0001]);
+
+        self::assertSame(1, $configuration->maxBatchTimeoutMs());
+    }
+
+    public function testBuildWithMaxDeliverBelowBackoffCountThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must be greater than the number of backoff entries');
+
+        // max_deliver (1) is below the backoff length (3); NATS would reject the consumer at setup.
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'max_deliver' => 1,
+            'backoff' => [1, 5, 30],
+        ]);
+    }
+
+    public function testBuildWithMaxDeliverJustAboveBackoffCountIsAccepted(): void
+    {
+        // Boundary: max_deliver (3) is exactly one more than the backoff length (2), which is accepted.
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'max_deliver' => 3,
+            'backoff' => [1, 5],
+        ]);
+
+        self::assertSame(3, $configuration->maxDeliver());
+        self::assertSame([1000, 5000], $configuration->backoffMs());
     }
 
     public function testBuildWithNegativeNakDelayThrowsException(): void
