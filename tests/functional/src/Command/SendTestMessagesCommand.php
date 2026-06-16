@@ -28,6 +28,7 @@ class SendTestMessagesCommand extends Command
     {
         $this->addArgument('count', InputArgument::REQUIRED, 'Number of messages to send');
         $this->addOption('delay', 'd', InputOption::VALUE_REQUIRED, 'Delay in milliseconds before delivery', '0');
+        $this->addOption('size', null, InputOption::VALUE_REQUIRED, 'Payload size in KB (pads message content for large-message tests)', '0');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -35,15 +36,22 @@ class SendTestMessagesCommand extends Command
         $io = new SymfonyStyle($input, $output);
         $count = (int) $input->getArgument('count');
         $delayMs = (int) $input->getOption('delay');
+        $sizeKb = (int) $input->getOption('size');
 
         $io->title('Sending Test Messages');
-        $io->info("Sending {$count} test messages..." . ($delayMs > 0 ? " (delay: {$delayMs}ms)" : ''));
+        $io->info("Sending {$count} test messages..."
+            . ($delayMs > 0 ? " (delay: {$delayMs}ms)" : '')
+            . ($sizeKb > 0 ? " (size: {$sizeKb}KB)" : ''));
 
         $stamps = $delayMs > 0 ? [new DelayStamp($delayMs)] : [];
 
         for ($i = 1; $i <= $count; $i++) {
             $message = new TestMessage();
             $message->content = "Test message {$i} of {$count}";
+            if ($sizeKb > 0) {
+                // Pad the body to the requested size so the large-payload round-trip is exercised.
+                $message->content = str_pad($message->content, $sizeKb * 1024, 'X');
+            }
             $message->timestamp = time();
             $message->messageId = $i;
 

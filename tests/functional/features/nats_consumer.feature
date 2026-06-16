@@ -22,3 +22,16 @@ Feature: Custom NATS Consumer
     Given I have a messenger transport configured with consumer name "verified-consumer"
     And the NATS stream is set up
     Then the NATS stream should have a consumer named "verified-consumer"
+
+  @consumer
+  Scenario: Many workers sharing one durable consumer each process a distinct share
+    Given I have a messenger transport configured with consumer name "shared-pool"
+    And the NATS stream is set up
+    And the test files directory is clean
+    When I send 100 messages to the transport
+    Then the messenger stats should show 100 messages waiting
+    When I start 5 consumers that each process 20 messages
+    And I wait for the consumers to finish
+    Then 100 messages should have been processed by the consumers
+    And the test files directory should contain exactly 100 files
+    And the messenger stats should show 0 messages waiting

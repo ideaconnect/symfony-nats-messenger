@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace IDCT\NatsMessenger;
 
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
@@ -9,13 +11,14 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
 /**
  * NATS JetStream Transport Factory
  *
- * This factory creates NATS JetStream transport instances for Symfony Messenger.
- * It implements the TransportFactoryInterface to integrate seamlessly with
- * Symfony's messenger transport discovery and instantiation system.
+ * Implements TransportFactoryInterface so Symfony Messenger's transport registry discovers and
+ * instantiates {@see NatsTransport} for the recognized DSN schemes (see supports()).
  *
- * The factory passes Symfony's resolved serializer into the transport. When no
- * serializer service is configured for the transport, the transport falls back
- * to its default igbinary serializer.
+ * The factory always passes Symfony's resolved serializer into the transport (the
+ * interface signature is non-nullable). When a transport configures no serializer,
+ * Symfony injects its default serializer service - the native PhpSerializer unless
+ * reconfigured - never null, so the transport's built-in igbinary auto-default only
+ * applies when {@see NatsTransport} is constructed directly with a null serializer.
  *
  * DSN Format: nats-jetstream://[user:pass@]host:port/stream_name/topic_name
  *

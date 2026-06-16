@@ -22,8 +22,8 @@ composer test              # PHPStan + fast unit tests (run after every change)
 ```
 src/
 ├── NatsTransport.php                          # TransportInterface, MessageCountAwareInterface, SetupableTransportInterface
-├── NatsTransportFactory.php                   # TransportFactoryInterface — DSN parsing, transport creation
-├── TypeCoercionTrait.php                      # Safe scalar type coercion helpers
+├── NatsTransportFactory.php                   # TransportFactoryInterface - DSN parsing, transport creation
+├── TypeCoercion.php                           # Safe scalar type coercion helpers (final, static)
 ├── Options/
 │   ├── NatsTransportConfiguration.php         # Immutable readonly config value object
 │   ├── NatsTransportConfigurationBuilder.php  # DSN + options parsing, validation, builds Configuration
@@ -37,7 +37,7 @@ src/
 ```
 tests/
 ├── bootstrap.php
-├── unit/                                       # PHPUnit 11 — fast, no NATS required
+├── unit/                                       # PHPUnit 11 - fast, no NATS required
 │   ├── NatsTransportTest.php                   # Transport core: setup, send, get, ack, reject, retry
 │   ├── NatsTransportFactoryTest.php            # Factory: DSN scheme detection, transport creation
 │   ├── Options/
@@ -46,7 +46,7 @@ tests/
 │   └── Serializer/
 │       ├── AbstractEnveloperSerializerTest.php  # Encode/decode round-trips, error cases
 │       └── IgbinarySerializerTest.php           # Igbinary serialize/deserialize
-├── functional/                                 # Behat — requires running NATS server
+├── functional/                                 # Behat - requires running NATS server
 │   ├── features/
 │   │   ├── nats_setup.feature                  # Stream creation, update, multi-subject, message flow
 │   │   ├── nats_stream_limits.feature          # max_bytes, max_msgs, max_msgs_per_subject
@@ -73,7 +73,7 @@ tests/
 - **Replication**: `stream_replicas` for HA
 - **Consumer strategies**: shared (batching=1) or independent consumers
 - **Batching**: configurable `batching` count and `max_batch_timeout`
-- **Retry handling**: `retry_handler` — `symfony` (TERM, default) or `nats` (NAK)
+- **Retry handling**: `retry_handler` - `symfony` (TERM, default) or `nats` (NAK)
 - **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers
 - **TLS/mTLS**: full TLS config options including client certificates
 - **Authentication**: username/password, token, JWT, NKey

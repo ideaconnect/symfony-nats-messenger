@@ -1,13 +1,21 @@
 <?php
 
+declare(strict_types=1);
+
 namespace IDCT\NatsMessenger;
 
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\JetStreamException;
+use IDCT\NATS\Exception\UnsupportedFeatureException;
+use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
+use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
+use IDCT\NATS\JetStream\Enum\AckPolicy;
+use IDCT\NATS\JetStream\Enum\DeliverPolicy;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
+use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NATS\JetStream\Schedule;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
@@ -19,8 +27,10 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
+use Symfony\Component\Messenger\Transport\Receiver\KeepaliveReceiverInterface;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
+use Symfony\Component\Messenger\Transport\CloseableTransportInterface;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\SetupableTransportInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
@@ -39,10 +49,8 @@ use Symfony\Component\Uid\Uuid;
  * @see NatsTransportFactory     Creates instances of this transport from Symfony DSN configuration.
  * @see NatsTransportConfiguration  Holds the resolved, immutable runtime settings.
  */
-class NatsTransport implements TransportInterface, MessageCountAwareInterface, SetupableTransportInterface
+class NatsTransport implements TransportInterface, MessageCountAwareInterface, SetupableTransportInterface, KeepaliveReceiverInterface, CloseableTransportInterface
 {
-    use TypeCoercionTrait;
-
     /** Conversion factor for stream max_age (seconds → nanoseconds as required by JetStream API). */
     private const SECONDS_TO_NANOSECONDS = 1_000_000_000;
 
@@ -82,8 +90,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         } elseif ($this->isExtensionLoaded('igbinary')) {
             $this->serializer = new IgbinarySerializer();
         } else {
+            // PhpSerializer uses native unserialize(), which is the same untrusted-deserialization
+            // (object injection) sink as igbinary. Emit a warning - not a quiet notice - so the
+            // fallback is not silently relied upon in production. See the README security section.
             trigger_error(
-                'The igbinary extension is not installed. Falling back to Symfony\\Component\\Messenger\\Transport\\Serialization\\PhpSerializer. Install ext-igbinary for better performance or provide a custom serializer.',
+                'The igbinary extension is not installed. Falling back to Symfony\\Component\\Messenger\\Transport\\Serialization\\PhpSerializer, which uses native unserialize() and carries the same untrusted-deserialization (object injection) risk as igbinary. Install ext-igbinary, or explicitly configure a safe serializer - especially when consuming from untrusted NATS subjects.',
+                E_USER_WARNING,
             );
             $this->serializer = new PhpSerializer();
         }
@@ -107,16 +119,19 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Sends a messenger envelope to JetStream.
      *
      * Assigns a UUID v4 transport message ID, serializes the envelope, and publishes
-     * the payload to the configured subject. When the serialized envelope includes
-     * headers, uses request-with-headers and validates the JetStream publish ack.
+     * the payload (with any envelope headers) to the configured subject via
+     * {@see JetStreamContext::publish()}, which validates the JetStream publish
+     * acknowledgement and fails closed on an error or malformed response.
      *
      * When scheduled messages are enabled and the envelope carries a {@see DelayStamp},
      * the message is published to a unique delayed subject with NATS schedule headers,
      * causing JetStream to hold it until the scheduled time before delivering it to
      * the original topic.
      *
-     * @throws RuntimeException If serialization fails due to an existing ErrorDetailsStamp,
-     *                          or if JetStream returns a publish error.
+     * @throws RuntimeException     If serialization fails and the envelope carries an ErrorDetailsStamp.
+     * @throws \Throwable           The original serializer exception when serialization fails and the
+     *                              envelope carries no ErrorDetailsStamp (re-thrown unchanged).
+     * @throws JetStreamException   If JetStream rejects the publish or returns an invalid ack.
      */
     public function send(Envelope $envelope): Envelope
     {
@@ -134,31 +149,35 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw $serializationError;
         }
 
-        $payload = $this->stringValue($encodedMessage['body']);
+        $payload = TypeCoercion::stringValue($encodedMessage['body']);
         $headers = is_array($encodedMessage['headers'] ?? null) ? $encodedMessage['headers'] : [];
         $topic = $this->topic;
 
         $delayMs = $envelope->last(DelayStamp::class)?->getDelay() ?? 0;
         if ($delayMs > 0 && $this->configuration->isScheduledMessagesEnabled()) {
             $deliverAt = new \DateTimeImmutable('+' . $delayMs . ' milliseconds');
+            // The @at schedule expression has whole-second resolution and truncates any sub-second
+            // component. Round up to the next whole second when one is present so a delayed message is
+            // never delivered before the requested delay elapses - truncating down could otherwise fire
+            // it up to ~1s early, and would make a sub-second delay fire immediately.
+            if ((int) $deliverAt->format('u') !== 0) {
+                $deliverAt = $deliverAt->modify('+1 second');
+            }
             $headers['Nats-Schedule'] = Schedule::at($deliverAt);
             $headers['Nats-Schedule-Target'] = $this->topic;
             $topic = $this->topic . '.delayed.' . $uuid;
         }
 
-        $jetStream = $this->jetStream();
-
-        if ($headers === []) {
-            $jetStream->publish($topic, $payload)->await();
-        } else {
-            $normalizedHeaders = [];
-            foreach ($headers as $name => $value) {
-                $normalizedHeaders[(string) $name] = $this->stringValue($value);
-            }
-
-            $reply = $this->client->requestWithHeaders($topic, $payload, $normalizedHeaders)->await();
-            $this->assertJetStreamPublishSucceeded($this->stringValue($reply->payload));
+        $normalizedHeaders = [];
+        foreach ($headers as $name => $value) {
+            $normalizedHeaders[(string) $name] = TypeCoercion::stringValue($value);
         }
+
+        // A single JetStream publish path for both plain and header-carrying (incl. scheduled)
+        // messages. JetStreamContext::publish() retries transient 503 "no responders" and parses
+        // the PubAck, throwing JetStreamException on an empty/malformed reply or a reported error -
+        // so the publish fails closed instead of silently accepting an invalid acknowledgement.
+        $this->jetStream()->publish($topic, $payload, $normalizedHeaders)->await();
 
         return $envelope;
     }
@@ -167,9 +186,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Pulls and decodes a batch of envelopes from JetStream.
      *
      * Fetches up to {@see NatsTransportConfiguration::batching()} messages with the
-     * configured timeout. HTTP 404 (consumer not found) and 408 (timeout / no messages)
-     * are treated as empty results. On deserialization failure the message is rejected
-     * via {@see handleFailedDelivery()} before the exception propagates.
+     * configured timeout. JetStream status 404 (consumer not found) and 408 (timeout / no messages)
+     * are treated as empty results. A message without a reply (ack) subject is skipped
+     * (it can be neither acknowledged nor rejected); a message with an empty payload is
+     * TERMed so JetStream stops redelivering it, since it can never decode into an
+     * envelope. On deserialization failure the message is rejected via
+     * {@see handleFailedDelivery()} before the exception propagates.
      *
      * @return iterable<Envelope>
      */
@@ -191,7 +213,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         foreach ($messages as $message) {
+            // A delivered message without a reply (ack) subject can neither be acknowledged
+            // nor rejected, so an envelope built from it could never be completed by the
+            // worker. Skip it rather than yield an envelope with an unusable transport id.
+            // (Pull-delivered JetStream data messages always carry an ack subject.)
+            $replyTo = $message->replyTo;
+            if ($replyTo === null || $replyTo === '') {
+                continue;
+            }
+
+            // An empty payload can never decode into a Messenger envelope. Skipping it without
+            // acknowledging would leave it unacked, so JetStream would redeliver it every ack_wait
+            // forever (a poison loop). TERM it instead - redelivery cannot fix an empty body - so
+            // it is dropped regardless of the configured retry handler.
             if ($message->payload === '') {
+                $this->sendTerm($replyTo);
+
                 continue;
             }
 
@@ -205,25 +242,42 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                     'headers' => $headers,
                 ]);
             } catch (\Throwable $e) {
-                if ($message->replyTo !== null && $message->replyTo !== '') {
-                    $this->handleFailedDelivery($message->replyTo);
+                // Reject the undecodable message, but never let a NAK/TERM transport failure (e.g. a
+                // dropped connection while acknowledging) replace the decode exception: that original
+                // error is the root cause an operator needs, so it stays the one that propagates.
+                try {
+                    $this->handleFailedDelivery($replyTo);
+                } catch (\Throwable) {
+                    // Intentionally swallowed - $e is rethrown below as the primary failure.
                 }
 
                 throw $e;
             }
 
-            yield $decoded->with(new TransportMessageIdStamp((string) $message->replyTo));
+            yield $decoded->with(new TransportMessageIdStamp($replyTo));
         }
     }
 
     /**
      * Sends a NAK to request redelivery in JetStream.
      *
+     * When a positive nak_delay is configured, the NAK carries that delay so JetStream waits before
+     * redelivering (backoff) instead of redelivering immediately.
+     *
      * @param string $id The replyTo address (JetStream delivery token)
      */
     protected function sendNak(string $id): void
     {
-        $this->jetStream()->nak($this->buildAckMessage($id))->await();
+        $message = $this->buildAckMessage($id);
+        $nakDelayMs = $this->configuration->nakDelayMs();
+
+        if ($nakDelayMs > 0) {
+            $this->jetStream()->nakWithDelay($message, $nakDelayMs)->await();
+
+            return;
+        }
+
+        $this->jetStream()->nak($message)->await();
     }
 
     /**
@@ -243,14 +297,24 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Acknowledges successful handling of a received envelope.
      *
      * Extracts the JetStream delivery token from the envelope's TransportMessageIdStamp
-     * and sends an ACK to JetStream so the message won't be redelivered.
+     * and sends an ACK to JetStream so the message won't be redelivered. When the
+     * {@see NatsTransportConfiguration::isAckSyncEnabled()} option is on, the ACK waits for
+     * server confirmation (double-ack) so a dropped ACK cannot silently cause redelivery.
      *
      * @throws LogicException If the envelope lacks a TransportMessageIdStamp
      */
     public function ack(Envelope $envelope): void
     {
-        $id = $this->stringValue($this->findReceivedStamp($envelope)->getId());
-        $this->jetStream()->ack($this->buildAckMessage($id))->await();
+        $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
+        $message = $this->buildAckMessage($id);
+
+        if ($this->configuration->isAckSyncEnabled()) {
+            $this->jetStream()->ackSync($message)->await();
+
+            return;
+        }
+
+        $this->jetStream()->ack($message)->await();
     }
 
     /**
@@ -263,8 +327,40 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     public function reject(Envelope $envelope): void
     {
-        $id = $this->stringValue($this->findReceivedStamp($envelope)->getId());
+        $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
         $this->handleFailedDelivery($id);
+    }
+
+    /**
+     * Signals to JetStream that a received message is still being processed.
+     *
+     * Sends an in-progress (+WPI) acknowledgement so the server resets the redelivery timer,
+     * preventing a long-running handler from losing its message to ack_wait expiry before it
+     * finishes. NATS resets the timer to the consumer's configured ack_wait, so the $seconds
+     * hint from Symfony is advisory and not forwarded.
+     *
+     * @throws LogicException If the envelope lacks a TransportMessageIdStamp
+     */
+    public function keepalive(Envelope $envelope, ?int $seconds = null): void
+    {
+        $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
+        $this->jetStream()->inProgress($this->buildAckMessage($id))->await();
+    }
+
+    /**
+     * Closes the NATS connection and releases the transport's resources.
+     *
+     * No-op when no connection was ever opened (the connection is lazy). After closing, the next
+     * transport operation reconnects lazily via {@see jetStream()}, so the transport stays reusable.
+     */
+    public function close(): void
+    {
+        if ($this->jetStream === null) {
+            return;
+        }
+
+        $this->client->disconnect()->await();
+        $this->jetStream = null;
     }
 
     /**
@@ -277,26 +373,33 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Returns an approximate message count from consumer or stream state.
+     * Returns an approximate count of messages still to be processed.
      *
-     * Tries the consumer info first (num_ack_pending / num_pending), then falls
-     * back to stream-level message count. Returns 0 if both queries fail.
+     * Tries the consumer info first and returns num_ack_pending + num_pending: those two
+     * counts describe disjoint sets (delivered-but-unacked vs. not-yet-delivered), so the
+     * total outstanding work is their sum - the accurate measure of work left for this consumer.
+     *
+     * Falls back to the stream-level message count when consumer info is unavailable (e.g. the
+     * consumer has not been created yet), then to 0 if both queries fail. Treat that fallback as a
+     * loose upper bound, not an exact backlog: under the default limits retention policy the stream
+     * retains already-acknowledged messages, so the count can stay above 0 even when nothing is left
+     * to process. The consumer-info path does not have this limitation.
      */
     public function getMessageCount(): int
     {
         try {
             $consumerInfo = $this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer())->await();
-            $ackPending = $this->intValue($consumerInfo->raw['num_ack_pending'] ?? 0);
-            $pending = $this->intValue($consumerInfo->raw['num_pending'] ?? 0);
+            $ackPending = TypeCoercion::intValue($consumerInfo->raw['num_ack_pending'] ?? 0);
+            $pending = TypeCoercion::intValue($consumerInfo->raw['num_pending'] ?? 0);
 
-            return max($ackPending, $pending);
-        } catch (\Exception $e) {
+            return $ackPending + $pending;
+        } catch (\Throwable) {
             try {
                 $streamInfo = $this->jetStream()->getStream($this->streamName)->await();
                 $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];
 
-                return $this->intValue($state['messages'] ?? 0);
-            } catch (\Exception $streamException) {
+                return TypeCoercion::intValue($state['messages'] ?? 0);
+            } catch (\Throwable) {
                 return 0;
             }
         }
@@ -315,32 +418,62 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function setup(): void
     {
         try {
-            $streamOptions = $this->buildManagedStreamOptions();
             $subjects = $this->buildDesiredSubjects();
+            $streamConfiguration = $this->buildManagedStreamConfiguration($subjects);
 
             try {
-                $this->jetStream()->createStream($this->streamName, $subjects, $streamOptions)->await();
+                $this->jetStream()->addStream($streamConfiguration)->await();
+            } catch (UnsupportedFeatureException $unsupportedFeature) {
+                // A version-gated feature (e.g. allow_msg_schedules) was rejected by an older server.
+                // That is not a pre-existing-stream conflict, so skip the existence check and surface
+                // an actionable message via the outer handler.
+                throw $unsupportedFeature;
             } catch (JetStreamException $streamCreateException) {
-                if (!$this->shouldUpdateExistingStream($streamCreateException)) {
+                // Don't string-match the server's error text to detect a pre-existing stream - the
+                // message wording varies across NATS versions. Ask JetStream directly: if the stream
+                // now exists, update it (reusing the fetched config); if it does not (404), the create
+                // failure was a genuine error, so rethrow it.
+                $existingStream = $this->getExistingStream();
+                if ($existingStream === null) {
                     throw $streamCreateException;
                 }
 
-                $existingStream = $this->jetStream()->getStream($this->streamName)->await();
-                $updatedConfiguration = $this->buildUpdatedStreamConfiguration($existingStream, $streamOptions, $subjects);
+                // The update API takes a raw config array merged with the live server config, so derive
+                // the managed fields from the same StreamConfiguration (dropping name/subjects, which
+                // the update path handles itself).
+                $managedOptions = $streamConfiguration->toArray();
+                unset($managedOptions['name'], $managedOptions['subjects']);
 
+                $updatedConfiguration = $this->buildUpdatedStreamConfiguration($existingStream, $managedOptions, $subjects);
                 $this->jetStream()->updateStream($this->streamName, $updatedConfiguration)->await();
             }
 
-            $consumerInfo = $this->jetStream()->createConsumer(
-                $this->streamName,
-                $this->configuration->consumer(),
-                $this->topic,
-                [
-                    'ack_policy' => 'explicit',
-                    'deliver_policy' => 'all',
-                ]
-            )->await();
+            $consumerConfiguration = ConsumerConfiguration::create()
+                ->durable($this->configuration->consumer())
+                ->filterSubject($this->topic)
+                ->ackPolicy(AckPolicy::Explicit)
+                ->deliverPolicy(DeliverPolicy::All);
+
+            // Optional NATS-native redelivery tuning (primarily relevant with retry_handler=nats).
+            $ackWaitMs = $this->configuration->ackWaitMs();
+            if ($ackWaitMs !== null) {
+                $consumerConfiguration->ackWait($ackWaitMs);
+            }
+
+            $maxDeliver = $this->configuration->maxDeliver();
+            if ($maxDeliver !== null) {
+                $consumerConfiguration->maxDeliver($maxDeliver);
+            }
+
+            $backoffMs = $this->configuration->backoffMs();
+            if ($backoffMs !== null) {
+                $consumerConfiguration->backoff($backoffMs);
+            }
+
+            $consumerInfo = $this->jetStream()->addConsumer($this->streamName, $consumerConfiguration)->await();
             $this->assertConsumerMatchesConfiguration($consumerInfo);
+        } catch (UnsupportedFeatureException $unsupportedFeature) {
+            throw new RuntimeException($this->describeUnsupportedFeature($unsupportedFeature), 0, $unsupportedFeature);
         } catch (\Throwable $e) {
             throw new RuntimeException("Failed to setup NATS stream '{$this->streamName}': " . $e->getMessage(), 0, $e);
         }
@@ -355,7 +488,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $receivedStamp = $envelope->last(TransportMessageIdStamp::class);
 
         if (null === $receivedStamp) {
-            throw new LogicException('No ReceivedStamp found on the Envelope.');
+            throw new LogicException('No TransportMessageIdStamp found on the Envelope.');
         }
 
         return $receivedStamp;
@@ -424,47 +557,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Validates JetStream publish response payload and throws on protocol-level errors.
-     *
-     * Parses the JSON response from a JetStream publish-with-headers request.
-     * If the response contains an "error" key, extracts the description and code
-     * to throw a meaningful RuntimeException.
-     *
-     * @param string $payload Raw JSON response body from JetStream
-     *
-     * @throws RuntimeException If the response contains a JetStream error
-     */
-    private function assertJetStreamPublishSucceeded(string $payload): void
-    {
-        if ($payload === '') {
-            return;
-        }
-
-        $decoded = json_decode($payload, true);
-        if (!is_array($decoded)) {
-            throw new RuntimeException('Unexpected JetStream publish response.');
-        }
-
-        if (!array_key_exists('error', $decoded)) {
-            return;
-        }
-
-        $error = $decoded['error'];
-        if (is_array($error)) {
-            $description = $this->stringValue($error['description'] ?? 'JetStream publish error', 'JetStream publish error');
-            $code = $this->intValue($error['code'] ?? 0);
-
-            throw new RuntimeException($description, $code);
-        }
-
-        if (is_string($error) && $error !== '') {
-            throw new RuntimeException($error, $this->intValue($decoded['code'] ?? 0));
-        }
-
-        throw new RuntimeException('JetStream publish error');
-    }
-
-    /**
      * Verifies that the configured durable consumer was created with the expected pull settings.
      */
     private function assertConsumerMatchesConfiguration(ConsumerInfo $consumerInfo): void
@@ -494,37 +586,19 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Determines whether a failed createStream should be treated as an update of an existing stream.
+     * Returns the existing stream, or null when it does not exist.
      *
-     * NATS commonly reports stream conflicts as 400 responses, but 400 can also indicate
-     * unrelated invalid configuration. Prefer explicit conflict messages; for ambiguous 400s,
-     * verify the stream actually exists before attempting an update.
+     * Detects existence deterministically via a JetStream stream-info lookup (a 404 means the stream
+     * is absent), instead of matching server-specific "already in use" / "already exists" error
+     * strings, whose wording varies across NATS versions. Any non-404 error propagates.
      */
-    private function shouldUpdateExistingStream(JetStreamException $exception): bool
-    {
-        if ($this->hasStreamAlreadyExistsMessage($exception)) {
-            return true;
-        }
-
-        if ($exception->getCode() !== 400) {
-            return false;
-        }
-
-        return $this->streamExists();
-    }
-
-    /**
-     * Checks whether the current stream already exists in JetStream.
-     */
-    private function streamExists(): bool
+    private function getExistingStream(): ?StreamInfo
     {
         try {
-            $streamInfo = $this->jetStream()->getStream($this->streamName)->await();
-
-            return $streamInfo->name === $this->streamName;
+            return $this->jetStream()->getStream($this->streamName)->await();
         } catch (JetStreamException $exception) {
             if ($exception->getCode() === 404) {
-                return false;
+                return null;
             }
 
             throw $exception;
@@ -532,53 +606,71 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Matches known NATS stream-conflict messages returned by different server versions.
+     * Builds an actionable message for a version-gated feature the connected server is too old for.
+     *
+     * The only such feature this transport enables is `allow_msg_schedules` (via `scheduled_messages`),
+     * so that case gets a tailored hint; anything else falls back to a generic message.
      */
-    private function hasStreamAlreadyExistsMessage(JetStreamException $exception): bool
+    private function describeUnsupportedFeature(UnsupportedFeatureException $exception): string
     {
-        $message = strtolower($exception->getMessage());
+        $serverVersion = $exception->serverVersion ?? 'an older version';
 
-        return str_contains($message, 'already in use')
-            || str_contains($message, 'stream name already in use')
-            || str_contains($message, 'already exists');
+        if ($this->configuration->isScheduledMessagesEnabled() && $exception->feature === 'allow_msg_schedules') {
+            return sprintf(
+                "The 'scheduled_messages' option requires NATS Server >= %s, but the connected server reports %s. Disable scheduled_messages or upgrade NATS.",
+                $exception->requiredVersion,
+                $serverVersion,
+            );
+        }
+
+        return sprintf(
+            "NATS Server feature '%s' requires version >= %s, but the connected server reports %s.",
+            $exception->feature,
+            $exception->requiredVersion,
+            $serverVersion,
+        );
     }
 
     /**
-     * Builds the stream configuration fields managed by this transport.
+     * Builds the typed stream configuration managed by this transport.
      *
-     * @return array<string, mixed>
+     * Used directly to create the stream (via {@see JetStreamContext::addStream()}) and, on the update
+     * path, via {@see StreamConfiguration::toArray()} so the managed fields have a single definition.
+     * {@see StreamConfiguration::maxAge()} performs the seconds→nanoseconds conversion internally.
+     *
+     * @param list<string> $subjects
      */
-    private function buildManagedStreamOptions(): array
+    private function buildManagedStreamConfiguration(array $subjects): StreamConfiguration
     {
-        $streamOptions = [
-            'storage' => $this->configuration->streamStorage()->value,
-        ];
+        $streamConfiguration = (new StreamConfiguration($this->streamName))
+            ->subjects(...$subjects)
+            ->storage($this->configuration->streamStorage());
 
         if ($this->configuration->streamMaxAgeSeconds() > 0) {
-            $streamOptions['max_age'] = $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS;
+            $streamConfiguration->maxAge($this->configuration->streamMaxAgeSeconds());
         }
 
         if ($this->configuration->streamMaxBytes() !== null) {
-            $streamOptions['max_bytes'] = $this->configuration->streamMaxBytes();
+            $streamConfiguration->maxBytes($this->configuration->streamMaxBytes());
         }
 
         if ($this->configuration->streamMaxMessages() !== null) {
-            $streamOptions['max_msgs'] = $this->configuration->streamMaxMessages();
+            $streamConfiguration->maxMessages($this->configuration->streamMaxMessages());
         }
 
         if ($this->configuration->streamMaxMessagesPerSubject() !== null) {
-            $streamOptions['max_msgs_per_subject'] = $this->configuration->streamMaxMessagesPerSubject();
+            $streamConfiguration->maxMsgsPerSubject($this->configuration->streamMaxMessagesPerSubject());
         }
 
         if ($this->configuration->streamReplicas() > 0) {
-            $streamOptions['num_replicas'] = $this->configuration->streamReplicas();
+            $streamConfiguration->replicas($this->configuration->streamReplicas());
         }
 
         if ($this->configuration->isScheduledMessagesEnabled()) {
-            $streamOptions['allow_msg_schedules'] = true;
+            $streamConfiguration->set('allow_msg_schedules', true);
         }
 
-        return $streamOptions;
+        return $streamConfiguration;
     }
 
     /**
@@ -590,10 +682,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     {
         $subjects = [$this->topic];
         if ($this->configuration->isScheduledMessagesEnabled()) {
-            $subjects[] = $this->topic . '.delayed.>';
+            $subjects[] = $this->delayedSubjectPattern();
         }
 
         return $subjects;
+    }
+
+    /**
+     * The transport-managed wildcard subject that holds scheduled messages until their delivery time.
+     *
+     * Defined once so the add ({@see buildDesiredSubjects()}) and drop ({@see buildUpdatedStreamConfiguration()})
+     * sides of the scheduled-messages toggle can never disagree on the pattern. This is distinct from the
+     * per-message publish subject `{topic}.delayed.{uuid}` built in {@see send()}.
+     */
+    private function delayedSubjectPattern(): string
+    {
+        return $this->topic . '.delayed.>';
     }
 
     /**
@@ -604,7 +708,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * @return array<string, mixed>
      */
     private function buildUpdatedStreamConfiguration(
-        \IDCT\NATS\JetStream\Models\StreamInfo $streamInfo,
+        StreamInfo $streamInfo,
         array $managedOptions,
         array $desiredSubjects,
     ): array {
@@ -616,12 +720,55 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $serverSubjects = $this->normalizeSubjects($serverConfiguration['subjects'] ?? $streamInfo->subjects);
         $mergedSubjects = $this->mergeSubjects($serverSubjects, $desiredSubjects);
 
+        // When scheduled messages are disabled, actively drop the transport-managed '{topic}.delayed.>'
+        // subject so a stream that previously had scheduling enabled does not keep an orphaned binding.
+        // mergeSubjects() only ever adds, so without this an operator turning scheduled_messages off
+        // could never remove it. Only this transport's own pattern is dropped; operator-added subjects
+        // are preserved. Pairs with the allow_msg_schedules=false clearing below.
+        if (!$this->configuration->isScheduledMessagesEnabled()) {
+            $delayedSubject = $this->delayedSubjectPattern();
+            $mergedSubjects = array_values(array_filter(
+                $mergedSubjects,
+                static fn (string $subject): bool => $subject !== $delayedSubject,
+            ));
+        }
+
         $updatedConfiguration = array_merge($serverConfiguration, $managedOptions, [
             'subjects' => $mergedSubjects,
         ]);
 
+        // The transport authoritatively manages these retention limits. On update we always write
+        // the value - including JetStream's "unlimited" sentinels (max_age 0, others -1) when the
+        // option is unset - so a previously-configured limit is actually relaxed/cleared instead of
+        // being preserved from the existing server configuration by the array_merge above.
+        $updatedConfiguration['max_age'] = $this->configuration->streamMaxAgeSeconds() > 0
+            ? $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS
+            : 0;
+        $updatedConfiguration['max_bytes'] = $this->configuration->streamMaxBytes() ?? -1;
+        $updatedConfiguration['max_msgs'] = $this->configuration->streamMaxMessages() ?? -1;
+        $updatedConfiguration['max_msgs_per_subject'] = $this->configuration->streamMaxMessagesPerSubject() ?? -1;
+
         if (array_key_exists('storage', $serverConfiguration)) {
             $updatedConfiguration['storage'] = $serverConfiguration['storage'];
+        }
+
+        // Preserve the existing replica count unless stream_replicas was explicitly configured.
+        // The managed default (num_replicas = 1) would otherwise overwrite the server value via the
+        // array_merge above and silently downscale a stream created with more replicas (e.g. in a
+        // cluster), eliminating its high-availability/durability with no warning.
+        if (!$this->configuration->hasExplicitStreamReplicas() && array_key_exists('num_replicas', $serverConfiguration)) {
+            $updatedConfiguration['num_replicas'] = $serverConfiguration['num_replicas'];
+        }
+
+        // Authoritatively manage allow_msg_schedules: write true when scheduled_messages is enabled,
+        // and explicitly false when it is disabled on a stream that previously had the flag set, so
+        // turning the option off actually clears it instead of the array_merge preserving the server's
+        // true. When the flag is off and the server never had it, leave it absent so the field is not
+        // sent to a server too old to understand it (NATS < 2.12).
+        if ($this->configuration->isScheduledMessagesEnabled()) {
+            $updatedConfiguration['allow_msg_schedules'] = true;
+        } elseif (array_key_exists('allow_msg_schedules', $serverConfiguration)) {
+            $updatedConfiguration['allow_msg_schedules'] = false;
         }
 
         /** @var array<string, mixed> $updatedConfiguration */

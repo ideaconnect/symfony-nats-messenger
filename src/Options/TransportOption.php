@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace IDCT\NatsMessenger\Options;
 
 /**
@@ -11,7 +13,8 @@ namespace IDCT\NatsMessenger\Options;
  * **Consumer & Batching:** CONSUMER, BATCHING, MAX_BATCH_TIMEOUT, CONNECTION_TIMEOUT
  * **Stream Limits:** STREAM_MAX_AGE, STREAM_MAX_BYTES, STREAM_MAX_MESSAGES,
  *                    STREAM_MAX_MESSAGES_PER_SUBJECT, STREAM_STORAGE, STREAM_REPLICAS
- * **Retry Strategy:** RETRY_HANDLER
+ * **Retry Strategy:** RETRY_HANDLER, NAK_DELAY, ACK_WAIT, MAX_DELIVER, BACKOFF
+ * **Acknowledgement:** ACK_SYNC
  * **Scheduling:** SCHEDULED_MESSAGES
  * **TLS:** TLS_REQUIRED, TLS_HANDSHAKE_FIRST, TLS_CA_FILE, TLS_CERT_FILE, TLS_KEY_FILE,
  *          TLS_KEY_PASSPHRASE, TLS_PEER_NAME, TLS_VERIFY_PEER
@@ -30,7 +33,12 @@ enum TransportOption: string
     case STREAM_STORAGE = 'stream_storage';
     case STREAM_REPLICAS = 'stream_replicas';
     case RETRY_HANDLER = 'retry_handler';
+    case NAK_DELAY = 'nak_delay';
+    case ACK_WAIT = 'ack_wait';
+    case MAX_DELIVER = 'max_deliver';
+    case BACKOFF = 'backoff';
     case SCHEDULED_MESSAGES = 'scheduled_messages';
+    case ACK_SYNC = 'ack_sync';
 
     case TLS_REQUIRED = 'tls_required';
     case TLS_HANDSHAKE_FIRST = 'tls_handshake_first';

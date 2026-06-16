@@ -1,0 +1,26 @@
+{
+    // Mutation testing configuration. Run with: composer test:mutation
+    // See https://infection.github.io/guide/usage.html
+    "$schema": "vendor/infection/infection/resources/schema.json",
+    "source": {
+        "directories": [
+            "src"
+        ]
+    },
+    "mutators": {
+        "@default": true
+    },
+    "logs": {
+        "text": "infection.log"
+    },
+    "tmpDir": ".infection",
+    // Generous per-mutant timeout so only genuine infinite loops time out — fast mutants never
+    // straddle the boundary and get classified non-deterministically on a loaded CI runner.
+    "timeout": 60,
+    // Regression floors. The suite currently scores 100% covered MSI (the earlier survivors were
+    // equivalent mutants - duplicate guard `throw`s re-raising the same exception - since removed by
+    // collapsing those guards); these floors keep headroom so the gate fails on real regressions, not
+    // run-to-run variance.
+    "minMsi": 90,
+    "minCoveredMsi": 95
+}

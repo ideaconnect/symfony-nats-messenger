@@ -191,4 +191,18 @@ class NatsTransportFactoryTest extends TestCase
 
         $this->assertFalse($result);
     }
+
+    #[Test]
+    public function supports_WithLeadingWhitespaceDsn_ReturnsFalse(): void
+    {
+        // str_starts_with is prefix-strict: a leading space is not the scheme prefix.
+        $this->assertFalse($this->factory->supports(' nats-jetstream://localhost:4222/s/t', []));
+    }
+
+    #[Test]
+    public function supports_WithUppercaseScheme_ReturnsFalse(): void
+    {
+        // Scheme matching is case-sensitive, matching how Symfony dispatches DSNs to factories.
+        $this->assertFalse($this->factory->supports('NATS-JETSTREAM://localhost:4222/s/t', []));
+    }
 }

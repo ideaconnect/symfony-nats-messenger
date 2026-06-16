@@ -118,7 +118,7 @@ class NatsSetupContext implements Context
     /**
      * Creates a NATS stream via the JetStream API with minimal configuration.
      *
-     * Note: this creates a "bare" stream with only name + subject — no retention
+     * Note: this creates a "bare" stream with only name + subject - no retention
      * policy, storage type, or replication settings. This is intentional: it simulates
      * a pre-existing stream that the transport's setup() must gracefully handle
      * and update with its own configuration.
@@ -491,13 +491,13 @@ class NatsSetupContext implements Context
     /**
      * Verifies that all sent messages were consumed by the consumer process.
      *
-     * Uses a multi-tier verification strategy:
-     * 1. Regex patterns on consumer stdout (`[OK] Consumed`, `Processing message`, etc.)
-     * 2. Limit-reached string detection in output
-     * 3. File-based fallback: counts `message_*.txt` marker files in var/test_files/
-     *
-     * If none of these approaches can confirm consumption, the step fails. This avoids
-     * false positives from exit-code-only checks.
+     * The authoritative signal is the set of marker files written by the test message handler:
+     * it creates exactly one unique `message_<id>.txt` per successfully-processed message and
+     * refuses to overwrite, so the file count is an exact, order- and output-format-independent
+     * measure of consumption. (Scenarios reset this directory via the "test files directory is
+     * clean" step beforehand.) Console-output parsing is logged for diagnostics only and never
+     * used to pass the assertion, because console formatting varies across Symfony console
+     * versions.
      *
      * @Then all :count messages should be consumed
      */
@@ -510,60 +510,65 @@ class NatsSetupContext implements Context
         $output = $this->consumerProcess->getOutput();
         $errorOutput = $this->consumerProcess->getErrorOutput();
 
-        // Debug: Show the full consumer output
+        // Debug: show the consumer output to aid diagnosis on failure.
         echo "Consumer output:\n" . $output . "\n";
         if (!empty($errorOutput)) {
             echo "Consumer error output:\n" . $errorOutput . "\n";
         }
 
-        // Count successful message processing
-        $successPatterns = [
-            '/\[OK\].*consumed/i',
-            '/\[OK\].*Consumed message/i',
-            '/Received message.*from transport/i',
-            '/Processing message/i'
-        ];
+        $markerCount = $this->countConsumedMarkerFiles();
+        $consoleCount = $this->countConsumedFromOutput($output);
+        echo sprintf(
+            "Consumption check: %d marker files, ~%d console confirmations (expected %d).\n",
+            $markerCount,
+            $consoleCount,
+            $count
+        );
 
-        $consumedCount = 0;
-        foreach ($successPatterns as $pattern) {
-            $matches = preg_match_all($pattern, $output);
-            if ($matches !== false && $matches > 0) {
-                $consumedCount = max($consumedCount, $matches);
-                break;
-            }
-        }
-
-        // If pattern matching fails, check for the message limit reached
-        if ($consumedCount === 0) {
-            if (str_contains($output, 'limit of ' . $count . ' messages reached') ||
-                str_contains($output, 'limit of ' . $count . ' exceeded') ||
-                str_contains($output, $count . ' messages')) {
-                $consumedCount = $count;
-            }
-        }
-
-        // File-based fallback: count marker files created by the message handler
-        if ($consumedCount === 0 && is_dir($this->testFilesDir)) {
-            $files = glob($this->testFilesDir . '/message_*.txt');
-            $fileCount = $files !== false ? count($files) : 0;
-            if ($fileCount >= $count) {
-                echo "Note: Output parsing could not verify consumption, but found {$fileCount} marker files (expected {$count}).\n";
-                $consumedCount = $fileCount;
-            }
-        }
-
-        if ($consumedCount < $count) {
+        if ($markerCount < $count) {
             throw new \RuntimeException(
                 sprintf(
-                    'Expected %d messages to be consumed, but could only verify %d. Consumer output: %s',
+                    'Expected %d messages to be consumed, but only %d marker file(s) were created. Consumer output: %s',
                     $count,
-                    $consumedCount,
+                    $markerCount,
                     $output
                 )
             );
         }
 
         $this->messagesConsumed = $count;
+    }
+
+    /**
+     * Counts the unique per-message marker files written by the test message handler.
+     */
+    private function countConsumedMarkerFiles(): int
+    {
+        if (!is_dir($this->testFilesDir)) {
+            return 0;
+        }
+
+        $files = glob($this->testFilesDir . '/message_*.txt');
+
+        return $files !== false ? count($files) : 0;
+    }
+
+    /**
+     * Best-effort count of consumption confirmations in consumer stdout, aggregated across all
+     * known output formats (not broken on the first matching pattern). Advisory/diagnostic only -
+     * never used to pass the assertion.
+     */
+    private function countConsumedFromOutput(string $output): int
+    {
+        $total = 0;
+        foreach (['/\[OK\].*consumed/i', '/Received message.*from transport/i', '/Processing message/i'] as $pattern) {
+            $matches = preg_match_all($pattern, $output);
+            if ($matches !== false) {
+                $total += $matches;
+            }
+        }
+
+        return $total;
     }
 
     /**
@@ -718,7 +723,7 @@ class NatsSetupContext implements Context
         $caFile = realpath(__DIR__ . '/../../../nats/certs/ca.pem');
 
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4223/%s/%s?stream_max_age=900&tls_ca_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: '%s'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4223/%s/%s?stream_max_age=900&tls_handshake_first=true&tls_ca_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: '%s'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             $caFile,
@@ -754,7 +759,7 @@ class NatsSetupContext implements Context
         $keyFile = realpath(__DIR__ . '/../../../nats/certs/client-key.pem');
 
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4224/%s/%s?stream_max_age=900&tls_ca_file=%s&tls_cert_file=%s&tls_key_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: 'igbinary_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4224/%s/%s?stream_max_age=900&tls_handshake_first=true&tls_ca_file=%s&tls_cert_file=%s&tls_key_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: 'igbinary_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             $caFile,
@@ -774,6 +779,44 @@ class NatsSetupContext implements Context
     {
         $configContent = sprintf(
             "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats'\n                serializer: 'igbinary_serializer'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Configures the NATS retry handler with a max_deliver cap, so NATS stops redelivering a
+     * permanently-failing message after the given number of attempts instead of looping forever.
+     *
+     * @Given I have a messenger transport configured with NATS retry handler and max deliver of :maxDeliver
+     */
+    public function iHaveAMessengerTransportConfiguredWithNatsRetryHandlerAndMaxDeliver(int $maxDeliver): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats&max_deliver=%d'\n                serializer: 'igbinary_serializer'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $maxDeliver
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Configures the transport with synchronous (double) acknowledgement enabled.
+     *
+     * @Given I have a messenger transport configured with synchronous acknowledgement
+     */
+    public function iHaveAMessengerTransportConfiguredWithSynchronousAcknowledgement(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&ack_sync=true'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject
         );
@@ -995,6 +1038,41 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Verifies that an always-failing message was delivered exactly the expected number of times.
+     *
+     * The failing handler records every delivery attempt in `retry_state/message_<id>.attempt`. For a
+     * permanently-failing message under `retry_handler: nats` with `max_deliver=N`, NATS must redeliver
+     * it exactly N times and then stop (rather than redelivering forever). The handler must also never
+     * have produced a success marker for it.
+     *
+     * @Then the always-failing message should have been attempted :times time
+     * @Then the always-failing message should have been attempted :times times
+     */
+    public function theAlwaysFailingMessageShouldHaveBeenAttemptedTimes(int $times): void
+    {
+        $attemptFile = $this->retryStateDir . '/message_1.attempt';
+
+        if (!file_exists($attemptFile)) {
+            $consumerOutput = $this->consumerProcess ? $this->consumerProcess->getOutput() : 'N/A';
+            throw new \RuntimeException(
+                sprintf("Expected the always-failing message to be delivered, but no attempt marker was recorded.\nConsumer output: %s", $consumerOutput)
+            );
+        }
+
+        $attempts = (int) file_get_contents($attemptFile);
+        if ($attempts !== $times) {
+            $consumerOutput = $this->consumerProcess ? $this->consumerProcess->getOutput() : 'N/A';
+            throw new \RuntimeException(
+                sprintf("Expected the always-failing message to be delivered exactly %d time(s), but it was delivered %d time(s).\nConsumer output: %s", $times, $attempts, $consumerOutput)
+            );
+        }
+
+        if (file_exists($this->testFilesDir . '/failing_message_1.txt')) {
+            throw new \RuntimeException('An always-failing message must never produce a success marker.');
+        }
+    }
+
+    /**
      * Verifies that the failure transport received the expected number of permanently
      * failed messages by parsing `messenger:stats` output for the `failed_transport` queue.
      *
@@ -1068,6 +1146,28 @@ class NatsSetupContext implements Context
             $this->testStreamName,
             $this->testSubject,
             $maxMessages
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Configures a transport whose numeric stream limits are all supplied via the DSN query string.
+     *
+     * Query-string values arrive as PHP strings (`parse_str()`), so this exercises
+     * {@see \IDCT\NatsMessenger\TypeCoercion}'s string→int coercion end-to-end: the values must be
+     * coerced and applied to the real JetStream stream. The fixed values match the reused assertions
+     * (`stream_max_age=900` is 15 minutes, `stream_max_bytes=1048576`, `stream_max_messages=100`).
+     *
+     * @Given I have a messenger transport configured with numeric stream limits supplied via the DSN query string
+     */
+    public function iHaveAMessengerTransportConfiguredWithNumericLimitsViaDsnQueryString(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&stream_max_bytes=1048576&stream_max_messages=100'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
         );
 
         file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
@@ -1355,6 +1455,38 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * @When I send :count messages of :sizeKb KB to the transport
+     */
+    public function iSendMessagesOfKbToTheTransport(int $count, int $sizeKb): void
+    {
+        $this->messagesSent = $count;
+
+        $command = [
+            'php',
+            'bin/console',
+            'app:send-test-messages',
+            (string) $count,
+            '--size=' . $sizeKb,
+            '--env=test'
+        ];
+
+        $sendProcess = new Process($command, __DIR__ . '/../..');
+        $sendProcess->setTimeout(max(120, $count));
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Failed to send large messages. Exit code: %d. Output: %s. Error: %s',
+                    $sendProcess->getExitCode(),
+                    $sendProcess->getOutput(),
+                    $sendProcess->getErrorOutput()
+                )
+            );
+        }
+    }
+
+    /**
      * Cleans up all test resources after each scenario.
      *
      * Stops consumer processes, deletes NATS streams (test + failure), clears
@@ -1586,6 +1718,7 @@ class NatsSetupContext implements Context
             password: 'password',
             connectTimeoutMs: 5000,
             tlsRequired: true,
+            tlsHandshakeFirst: true,
             tlsCaFile: $caFile,
             tlsVerifyPeer: true,
             tlsPeerName: 'localhost',
@@ -1635,6 +1768,7 @@ class NatsSetupContext implements Context
             password: 'password',
             connectTimeoutMs: 5000,
             tlsRequired: true,
+            tlsHandshakeFirst: true,
             tlsCaFile: $caFile,
             tlsCertFile: $certFile,
             tlsKeyFile: $keyFile,

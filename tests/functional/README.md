@@ -104,12 +104,9 @@ The benchmark produces a comparison table:
 └───────────────────┴──────────────┴──────────────┴────────────┴──────────────┴────────────────┴──────────────────┘
 ```
 
-### Benchmark Documentation
+### Benchmark Components
 
-For detailed information on the benchmark suite, see:
-- [BENCHMARK.md](./BENCHMARK.md) - Comprehensive benchmark documentation
-- [BENCHMARK_QUICK_REFERENCE.md](./BENCHMARK_QUICK_REFERENCE.md) - Quick reference guide
-
+The benchmark suite is driven by `run-benchmark.sh` (see the `composer test:benchmark` script).
 Key components:
 - `BenchmarkMessage.php` - Lightweight message for testing
 - `BenchmarkMessageHandler.php` - Zero-work handler
@@ -119,27 +116,20 @@ Key components:
 
 ## Test Scenarios
 
-The functional tests cover three main scenarios:
+The functional suite is organized into the following feature files under `features/`. For the full
+scenario-to-test mapping, see [`docs/TESTS.md`](../../docs/TESTS.md) in the repository root.
 
-### 1. **Setup NATS stream with max age configuration**
-- ✅ Starts NATS server automatically
-- ✅ Configures messenger transport with 15-minute max age
-- ✅ Runs `messenger:setup-transports` command
-- ✅ Verifies stream is created successfully
-- ✅ Validates stream has correct max age (15 minutes = 900,000,000,000 nanoseconds)
-- ✅ Confirms stream is configured with correct subject
-
-### 2. **Setup command handles existing streams gracefully**
-- ✅ Creates stream manually before running setup
-- ✅ Runs setup command on existing stream
-- ✅ Verifies command completes successfully
-- ✅ Confirms existing configuration is preserved
-
-### 3. **Setup command fails gracefully when NATS is unavailable**
-- ✅ Ensures NATS server is stopped
-- ✅ Attempts to run setup command
-- ✅ Verifies command fails with connection error
-- ✅ Validates error message is descriptive
+| Feature file | Covers |
+|--------------|--------|
+| `nats_setup.feature` | Stream creation, existing-stream handling, multi-subject merge, NATS-unavailable failure, full send→consume flow |
+| `nats_consumer.feature` | Custom durable consumer names |
+| `nats_batching.feature` | Batch consumption (various batch sizes) |
+| `nats_stream_limits.feature` | `max_bytes`, `max_msgs`, `max_msgs_per_subject` enforcement |
+| `nats_nak.feature` | `retry_handler: nats` (NAK redelivery) |
+| `nats_term.feature` | `retry_handler: symfony` (TERM, stop redelivery) |
+| `nats_delayed.feature` | Scheduled / delayed messages (`DelayStamp` → NATS schedule headers) |
+| `nats_tls.feature` | TLS connections |
+| `nats_mtls.feature` | mTLS with client certificates |
 
 ## Test Architecture
 

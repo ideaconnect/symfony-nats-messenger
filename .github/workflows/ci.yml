@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20  # Set explicit timeout for the entire job
+    timeout-minutes: 40  # Whole-job cap: install + analysis + unit/coverage + mutation (8.5) + functional + benchmark
 
     strategy:
       matrix:
@@ -77,11 +77,15 @@ jobs:
     - name: Check coverage threshold (90%)
       run: composer coverage:check
 
+    - name: Run mutation tests
+      if: matrix.php-version == '8.5'
+      run: composer test:mutation
+
     - name: Install functional test dependencies
       run: composer test:functional:setup
 
     - name: Run functional tests
-      timeout-minutes: 10  # Set explicit timeout for functional tests
+      timeout-minutes: 25  # Behat suite runs the full matrix (plain/TLS/mTLS) incl. high-volume, large-message and scheduled scenarios
       run: composer test:functional
 
     - name: Run benchmark tests

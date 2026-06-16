@@ -25,15 +25,17 @@ class FailingMessageHandler
 
     public function __invoke(FailingMessage $message): void
     {
-        if (!$message->shouldEventuallySucceed) {
-            echo "[FAIL] Message {$message->messageId} always fails\n";
-            throw new \RuntimeException("Message {$message->messageId} is configured to always fail.");
-        }
-
+        // Record the delivery attempt for every message (including always-failing ones) so tests can
+        // assert how many times NATS redelivered - e.g. that max_deliver bounds a poison message.
         $attemptFile = sprintf('%s/message_%d.attempt', $this->retryStateDir, $message->messageId);
         $attempt = file_exists($attemptFile) ? (int) file_get_contents($attemptFile) : 0;
         $attempt++;
         file_put_contents($attemptFile, (string) $attempt);
+
+        if (!$message->shouldEventuallySucceed) {
+            echo "[FAIL] Message {$message->messageId} attempt {$attempt} - always fails\n";
+            throw new \RuntimeException("Message {$message->messageId} is configured to always fail.");
+        }
 
         if ($attempt < 2) {
             echo "[FAIL] Message {$message->messageId} attempt {$attempt} - failing for retry\n";

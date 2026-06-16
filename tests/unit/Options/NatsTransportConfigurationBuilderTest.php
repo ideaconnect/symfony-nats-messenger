@@ -9,6 +9,7 @@ use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Options\TransportOption;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class NatsTransportConfigurationBuilderTest extends TestCase
@@ -214,6 +215,48 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame('dsn-pass', $options->password);
     }
 
+    public function testBuildDecodesDsnCredentialsWithRawUrlDecodePreservingLiteralPlus(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://user:S3cr3t+P%40ss@localhost/test-stream/test-topic',
+            []
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        // rawurldecode (not urldecode) decodes %40 -> @ while preserving a literal '+'.
+        // urldecode would corrupt the password to "S3cr3t P@ss" by turning '+' into a space.
+        self::assertSame('user', $options->username);
+        self::assertSame('S3cr3t+P@ss', $options->password);
+    }
+
+    public function testBuildPreservesSignificantWhitespaceInDsnCredentials(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://%20user%20:%20p%40ss%20@localhost/test-stream/test-topic',
+            []
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        // Leading/trailing whitespace is significant in a credential and must NOT be trimmed away.
+        self::assertSame(' user ', $options->username);
+        self::assertSame(' p@ss ', $options->password);
+    }
+
+    public function testBuildPreservesSignificantWhitespaceInExplicitCredentialOptions(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            ['username' => '  user  ', 'password' => '  secret  ']
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertSame('  user  ', $options->username);
+        self::assertSame('  secret  ', $options->password);
+    }
+
     public function testBuildNormalizesStringBooleanAndNullableStringOptions(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
@@ -236,6 +279,32 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertNull($options->token);
     }
 
+    #[DataProvider('falseyBooleanStringProvider')]
+    public function testBuildTreatsNonAllowlistedBooleanStringsAsFalse(string $value): void
+    {
+        // Only 1/true/yes/on are truthy; everything else (false/no/off/2/unknown/empty) is false.
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'ack_sync' => $value,
+            'scheduled_messages' => $value,
+        ]);
+
+        self::assertFalse($configuration->isAckSyncEnabled());
+        self::assertFalse($configuration->isScheduledMessagesEnabled());
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function falseyBooleanStringProvider(): iterable
+    {
+        yield 'false' => ['false'];
+        yield 'no' => ['no'];
+        yield 'off' => ['off'];
+        yield 'numeric 2' => ['2'];
+        yield 'unknown word' => ['disabled'];
+        yield 'empty string' => [''];
+    }
+
     public function testBuildWithNonNumericBatchingThrowsException(): void
     {
         $this->expectException(InvalidArgumentException::class);
@@ -254,6 +323,29 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         $options = $this->extractNatsOptions($configuration->client);
 
         self::assertFalse($options->tlsVerifyPeer);
+    }
+
+    public function testBuildWithNonScalarOptionsCoerceToSafeDefaults(): void
+    {
+        // A non-scalar boolean option coerces to false; a non-scalar nullable string coerces to null.
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            ['tls_required' => [], 'token' => []]
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertFalse($options->tlsRequired);
+        self::assertNull($options->token);
+    }
+
+    public function testBuildWithPathMissingTopicThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('NATS DSN must contain both stream name and topic name (format: /stream/topic).');
+
+        // A path with only a stream and no topic ("/a") is reported by the structural segment check.
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/a', []);
     }
 
     public function testBuildWithNegativeStreamMaxMessagesThrowsException(): void
@@ -404,6 +496,181 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertTrue($configuration->isScheduledMessagesEnabled());
     }
 
+    public function testBuildWithAckSyncEnabledSetsFlag(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            ['ack_sync' => true]
+        );
+
+        self::assertTrue($configuration->isAckSyncEnabled());
+    }
+
+    public function testBuildWithAckSyncDisabledByDefault(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            []
+        );
+
+        self::assertFalse($configuration->isAckSyncEnabled());
+    }
+
+    public function testBuildWithAckSyncFromDsnQueryString(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://admin:password@localhost:4222/test-stream/test-topic?ack_sync=true',
+            []
+        );
+
+        self::assertTrue($configuration->isAckSyncEnabled());
+    }
+
+    public function testBuildCoercesNonZeroIntegerBooleanOptionToTrue(): void
+    {
+        // Exercises the integer branch of boolean coercion with a non-zero int (→ true).
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['ack_sync' => 1]);
+
+        self::assertTrue($configuration->isAckSyncEnabled());
+    }
+
+    public function testBuildCoercesUppercaseBooleanStringToTrue(): void
+    {
+        // Exercises the case-insensitive (strtolower) boolean string coercion.
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['scheduled_messages' => 'YES']);
+
+        self::assertTrue($configuration->isScheduledMessagesEnabled());
+    }
+
+    public function testBuildRetryTuningDefaults(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);
+
+        self::assertSame(0, $configuration->nakDelayMs());
+        self::assertNull($configuration->ackWaitMs());
+        self::assertNull($configuration->maxDeliver());
+        self::assertNull($configuration->backoffMs());
+    }
+
+    public function testBuildAcceptsNatsRetryTuningOptions(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'nak_delay' => 2.5,
+            'ack_wait' => 30,
+            'max_deliver' => 5,
+            'backoff' => [1, 5, 30],
+        ]);
+
+        self::assertSame(2500, $configuration->nakDelayMs());
+        self::assertSame(30000, $configuration->ackWaitMs());
+        self::assertSame(5, $configuration->maxDeliver());
+        self::assertSame([1000, 5000, 30000], $configuration->backoffMs());
+    }
+
+    public function testBuildClampsSubMillisecondAckWaitToOneMs(): void
+    {
+        // A positive sub-millisecond ack_wait must floor to 1ms, never 0 (JetStream treats ack_wait=0
+        // as "use the server default", silently disabling the configured redelivery window).
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['ack_wait' => 0.0001]);
+
+        self::assertSame(1, $configuration->ackWaitMs());
+    }
+
+    public function testBuildClampsSubMillisecondMaxBatchTimeoutToOneMs(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_batch_timeout' => 0.0001]);
+
+        self::assertSame(1, $configuration->maxBatchTimeoutMs());
+    }
+
+    public function testBuildWithMaxDeliverBelowBackoffCountThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must be greater than the number of backoff entries');
+
+        // max_deliver (1) is below the backoff length (3); NATS would reject the consumer at setup.
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'max_deliver' => 1,
+            'backoff' => [1, 5, 30],
+        ]);
+    }
+
+    public function testBuildWithMaxDeliverJustAboveBackoffCountIsAccepted(): void
+    {
+        // Boundary: max_deliver (3) is exactly one more than the backoff length (2), which is accepted.
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'max_deliver' => 3,
+            'backoff' => [1, 5],
+        ]);
+
+        self::assertSame(3, $configuration->maxDeliver());
+        self::assertSame([1000, 5000], $configuration->backoffMs());
+    }
+
+    public function testBuildWithNegativeNakDelayThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('nak_delay option must be a non-negative');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['nak_delay' => -1]);
+    }
+
+    public function testBuildWithNonPositiveAckWaitThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('ack_wait option must be a positive');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['ack_wait' => 0]);
+    }
+
+    public function testBuildWithNonIntegerMaxDeliverThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('max_deliver option must be a positive integer');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_deliver' => 1.5]);
+    }
+
+    public function testBuildWithNonListBackoffThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('backoff option must be a non-empty list');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['backoff' => 'nope']);
+    }
+
+    public function testBuildWithNonNumericBackoffElementThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('backoff option must be a list of non-negative numbers');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['backoff' => [1, 'x']]);
+    }
+
+    public function testBuildWithMaxDeliverNotExceedingBackoffThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must be greater than the number of backoff entries');
+
+        // NATS rejects a consumer whose max_deliver is not strictly greater than the backoff
+        // length; here max_deliver (2) equals the backoff count (2), so the builder fails fast.
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'max_deliver' => 2,
+            'backoff' => [1, 5],
+        ]);
+    }
+
+    public function testBuildWithBackoffFromDsnQueryString(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://admin:password@localhost:4222/test-stream/test-topic?backoff[]=1&backoff[]=5&nak_delay=2',
+            []
+        );
+
+        self::assertSame([1000, 5000], $configuration->backoffMs());
+        self::assertSame(2000, $configuration->nakDelayMs());
+    }
+
     public function testBuildWithDottedTopicNameSucceeds(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
@@ -494,6 +761,16 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_age' => 'old']);
     }
 
+    public function testBuildWithNonIntegerStreamMaxAgeThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_max_age option must be a non-negative integer value.');
+
+        // Fractional seconds are silently truncated by the accessor, so reject them for a clear
+        // error, consistent with the sibling integer-only stream limits (max_bytes/max_msgs/...).
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_age' => 2.5]);
+    }
+
     public function testBuildWithArrayBatchingThrowsException(): void
     {
         $this->expectException(InvalidArgumentException::class);
@@ -520,9 +797,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
     /**
      * Verifies that every exact DSN string from README.md parses without error.
-     *
-     * @dataProvider readmeDsnExamplesProvider
      */
+    #[DataProvider('readmeDsnExamplesProvider')]
     public function testReadmeDsnExamplesParseSuccessfully(string $dsn, string $expectedStream, string $expectedTopic): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, []);
@@ -630,6 +906,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'stream_storage' => 'file',
                 'stream_replicas' => 1,
                 'retry_handler' => 'symfony',
+                'ack_sync' => false,
                 'scheduled_messages' => false,
             ]
         );
@@ -644,6 +921,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame('file', $configuration->streamStorage()->value);
         self::assertSame(1, $configuration->streamReplicas());
         self::assertSame(RetryHandler::SYMFONY, $configuration->retryHandler());
+        self::assertFalse($configuration->isAckSyncEnabled());
         self::assertFalse($configuration->isScheduledMessagesEnabled());
     }
 
@@ -750,7 +1028,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
-     * Verifies README multi-subject delayed DSN example with options.
+     * Verifies the README multi-subject DSN example with options.
      */
     public function testReadmeMultiSubjectOptionsAreAccepted(): void
     {
@@ -759,7 +1037,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         // Orders transport
         $config = $builder->build('nats-jetstream://localhost/events/orders', [
             'consumer' => 'order-consumer',
-            'delay' => 0.5,
             'batching' => 1,
             'stream_max_age' => 300,
         ]);
@@ -772,7 +1049,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         // Payments transport
         $config = $builder->build('nats-jetstream://localhost/events/payments', [
             'consumer' => 'payment-consumer',
-            'delay' => 1,
             'batching' => 2,
         ]);
         self::assertSame('events', $config->streamName);

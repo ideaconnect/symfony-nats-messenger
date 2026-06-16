@@ -1,10 +1,12 @@
 <?php
 
+declare(strict_types=1);
+
 namespace IDCT\NatsMessenger\Options;
 
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\JetStream\Enum\StorageBackend;
-use IDCT\NatsMessenger\TypeCoercionTrait;
+use IDCT\NatsMessenger\TypeCoercion;
 
 /**
  * Immutable, normalized transport configuration built from DSN and options.
@@ -18,8 +20,6 @@ use IDCT\NatsMessenger\TypeCoercionTrait;
  */
 final readonly class NatsTransportConfiguration
 {
-    use TypeCoercionTrait;
-
     /**
      * @param string               $topic                   JetStream subject name
      * @param string               $streamName              JetStream stream name backing the subject
@@ -27,6 +27,7 @@ final readonly class NatsTransportConfiguration
      * @param array<string, mixed> $options                 Merged option map (method > DSN query > defaults)
      * @param bool                 $natsRetryHandlerEnabled True when retry handling is delegated to NATS (NAK mode)
      * @param bool                 $scheduledMessagesEnabled True when delayed/scheduled message publishing is enabled
+     * @param bool                 $ackSyncEnabled          True when acknowledgements should wait for server confirmation (double-ack)
      */
     public function __construct(
         public string $topic,
@@ -35,6 +36,7 @@ final readonly class NatsTransportConfiguration
         private array $options,
         private bool $natsRetryHandlerEnabled,
         private bool $scheduledMessagesEnabled = false,
+        private bool $ackSyncEnabled = false,
     ) {
     }
 
@@ -66,7 +68,7 @@ final readonly class NatsTransportConfiguration
      */
     public function maxBatchTimeoutMs(): int
     {
-        return max(1, (int) round($this->floatOption(TransportOption::MAX_BATCH_TIMEOUT, 1.0) * 1000));
+        return max(1, TypeCoercion::secondsToMs($this->options[TransportOption::MAX_BATCH_TIMEOUT->value] ?? null, 1.0));
     }
 
     /**
@@ -87,9 +89,7 @@ final readonly class NatsTransportConfiguration
      */
     public function streamMaxBytes(): ?int
     {
-        $maxBytes = $this->options[TransportOption::STREAM_MAX_BYTES->value] ?? null;
-
-        return $maxBytes === null ? null : $this->intValue($maxBytes);
+        return $this->nullableIntOption(TransportOption::STREAM_MAX_BYTES);
     }
 
     /**
@@ -99,9 +99,7 @@ final readonly class NatsTransportConfiguration
      */
     public function streamMaxMessages(): ?int
     {
-        $maxMessages = $this->options[TransportOption::STREAM_MAX_MESSAGES->value] ?? null;
-
-        return $maxMessages === null ? null : $this->intValue($maxMessages);
+        return $this->nullableIntOption(TransportOption::STREAM_MAX_MESSAGES);
     }
 
     /**
@@ -111,9 +109,7 @@ final readonly class NatsTransportConfiguration
      */
     public function streamMaxMessagesPerSubject(): ?int
     {
-        $maxMessagesPerSubject = $this->options[TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT->value] ?? null;
-
-        return $maxMessagesPerSubject === null ? null : $this->intValue($maxMessagesPerSubject);
+        return $this->nullableIntOption(TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT);
     }
 
     /**
@@ -138,6 +134,18 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns true when stream_replicas was explicitly configured (as opposed to defaulted).
+     *
+     * Lets {@see NatsTransport::setup()} decide, on the update path, whether to write the managed
+     * replica count or preserve the existing server value - so a stream created with more replicas
+     * (e.g. in a cluster) is not silently downscaled when setup() runs without the option set.
+     */
+    public function hasExplicitStreamReplicas(): bool
+    {
+        return ($this->options[TransportOption::STREAM_REPLICAS->value] ?? null) !== null;
+    }
+
+    /**
      * Returns normalized retry handler mode.
      *
      * @see RetryHandler::SYMFONY TERM the message; Symfony handles redelivery via failure transport.
@@ -157,6 +165,63 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns the NAK redelivery delay in milliseconds (0 = immediate redelivery).
+     *
+     * Only applies when {@see RetryHandler::NATS} is active; the source value is in seconds.
+     */
+    public function nakDelayMs(): int
+    {
+        return max(0, TypeCoercion::secondsToMs($this->options[TransportOption::NAK_DELAY->value] ?? null, 0.0));
+    }
+
+    /**
+     * Returns the consumer ack-wait in milliseconds, or null to use the JetStream default.
+     *
+     * The source value (ack_wait) is in seconds; JetStream redelivers a message if it is not
+     * acknowledged within this window.
+     */
+    public function ackWaitMs(): ?int
+    {
+        $ackWait = $this->options[TransportOption::ACK_WAIT->value] ?? null;
+
+        return $ackWait === null ? null : max(1, TypeCoercion::secondsToMs($ackWait));
+    }
+
+    /**
+     * Returns the consumer max-deliver count, or null for unlimited redeliveries.
+     *
+     * Caps how many times JetStream redelivers an unacknowledged message before giving up; the
+     * primary guard against a poison message redelivering forever under {@see RetryHandler::NATS}.
+     */
+    public function maxDeliver(): ?int
+    {
+        return $this->nullableIntOption(TransportOption::MAX_DELIVER);
+    }
+
+    /**
+     * Returns the consumer backoff schedule in milliseconds, or null when unset.
+     *
+     * Each entry is the delay before the corresponding redelivery attempt; the source values are in
+     * seconds. Pairs with {@see maxDeliver()} under {@see RetryHandler::NATS}.
+     *
+     * @return list<int>|null
+     */
+    public function backoffMs(): ?array
+    {
+        $backoff = $this->options[TransportOption::BACKOFF->value] ?? null;
+        if (!is_array($backoff) || $backoff === []) {
+            return null;
+        }
+
+        $backoffMs = [];
+        foreach ($backoff as $value) {
+            $backoffMs[] = max(0, TypeCoercion::secondsToMs($value));
+        }
+
+        return $backoffMs;
+    }
+
+    /**
      * Returns true when delayed/scheduled message publishing is enabled.
      *
      * When enabled, messages with a {@see \Symfony\Component\Messenger\Stamp\DelayStamp}
@@ -168,26 +233,42 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
-     * Retrieves a float option with fallback, using TypeCoercionTrait for safe casting.
+     * Returns true when acknowledgements should wait for server confirmation (JetStream double-ack).
+     *
+     * When enabled, {@see NatsTransport::ack()} uses ackSync(), trading extra latency for a guarantee
+     * that the ACK was received (a dropped ACK cannot silently lead to redelivery).
      */
-    private function floatOption(TransportOption $option, float $default): float
+    public function isAckSyncEnabled(): bool
     {
-        return $this->floatValue($this->options[$option->value] ?? null, $default);
+        return $this->ackSyncEnabled;
     }
 
     /**
-     * Retrieves an integer option with fallback, using TypeCoercionTrait for safe casting.
+     * Retrieves an integer option with fallback, using TypeCoercion for safe casting.
      */
     private function intOption(TransportOption $option, int $default): int
     {
-        return $this->intValue($this->options[$option->value] ?? null, $default);
+        return TypeCoercion::intValue($this->options[$option->value] ?? null, $default);
     }
 
     /**
-     * Retrieves a string option with fallback, using TypeCoercionTrait for safe casting.
+     * Retrieves a nullable integer option: null when the option is unset, otherwise the coerced int.
+     *
+     * Shared by the optional stream-limit and redelivery accessors so the null-passthrough policy
+     * lives in one place.
+     */
+    private function nullableIntOption(TransportOption $option): ?int
+    {
+        $value = $this->options[$option->value] ?? null;
+
+        return $value === null ? null : TypeCoercion::intValue($value);
+    }
+
+    /**
+     * Retrieves a string option with fallback, using TypeCoercion for safe casting.
      */
     private function stringOption(TransportOption $option, string $default): string
     {
-        return $this->stringValue($this->options[$option->value] ?? null, $default);
+        return TypeCoercion::stringValue($this->options[$option->value] ?? null, $default);
     }
 }

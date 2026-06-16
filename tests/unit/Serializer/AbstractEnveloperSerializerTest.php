@@ -39,7 +39,7 @@ class TestableEnveloperSerializer extends AbstractEnveloperSerializer
 
 /**
  * Mirrors the exact custom serializer example from README.md.
- * This class must compile and work correctly — if the AbstractEnveloperSerializer API
+ * This class must compile and work correctly - if the AbstractEnveloperSerializer API
  * changes (method signatures, return types), this test class will break, catching drift.
  */
 class ReadmeExampleSerializer extends AbstractEnveloperSerializer
