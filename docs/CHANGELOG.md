@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Readability: removed two small internal duplications (BC-safe, no behavior change)** - the
+  `{topic}.delayed.>` wildcard subject now has a single `delayedSubjectPattern()` definition shared by
+  the add ({@see buildDesiredSubjects}) and drop ({@see buildUpdatedStreamConfiguration}) sides so they
+  cannot drift, and `AbstractEnveloperSerializer::decode()` folds its missing-`body` guard into the
+  null/non-string/empty check via `?? null` (one gate instead of two with the same message). A deep
+  readability review (with adversarial verification) considered several other extractions and rejected
+  them as taste-driven churn in this deliberately-verbose, multiply-reviewed code.
 - **Collapsed redundant double-guards in DSN/option validation** - `toNumber()` now gates solely on
   `is_numeric()` (which already rejects every non-numeric type), and `parseDsn()` validates the
   `parse_url()` result and the missing host in a single throw. The previous split guards threw the same

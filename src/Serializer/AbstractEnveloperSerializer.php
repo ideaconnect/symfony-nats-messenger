@@ -29,11 +29,10 @@ abstract class AbstractEnveloperSerializer implements SerializerInterface
      */
     public function decode(array $encodedEnvelope): Envelope
     {
-        if (!array_key_exists('body', $encodedEnvelope)) {
-            throw new MessageDecodingFailedException('Encoded envelope should at least have a "body".');
-        }
-
-        $body = $encodedEnvelope['body'];
+        // A single gate for a usable body: '?? null' folds the missing-key case into the same check
+        // that rejects a null, non-string, or empty body - all of which are equally undecodable and
+        // share one error message. A separate array_key_exists() guard would be redundant.
+        $body = $encodedEnvelope['body'] ?? null;
         if (!is_string($body) || $body === '') {
             throw new MessageDecodingFailedException('Encoded envelope should at least have a "body".');
         }

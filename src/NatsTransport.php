@@ -682,10 +682,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     {
         $subjects = [$this->topic];
         if ($this->configuration->isScheduledMessagesEnabled()) {
-            $subjects[] = $this->topic . '.delayed.>';
+            $subjects[] = $this->delayedSubjectPattern();
         }
 
         return $subjects;
+    }
+
+    /**
+     * The transport-managed wildcard subject that holds scheduled messages until their delivery time.
+     *
+     * Defined once so the add ({@see buildDesiredSubjects()}) and drop ({@see buildUpdatedStreamConfiguration()})
+     * sides of the scheduled-messages toggle can never disagree on the pattern. This is distinct from the
+     * per-message publish subject `{topic}.delayed.{uuid}` built in {@see send()}.
+     */
+    private function delayedSubjectPattern(): string
+    {
+        return $this->topic . '.delayed.>';
     }
 
     /**
@@ -714,7 +726,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // could never remove it. Only this transport's own pattern is dropped; operator-added subjects
         // are preserved. Pairs with the allow_msg_schedules=false clearing below.
         if (!$this->configuration->isScheduledMessagesEnabled()) {
-            $delayedSubject = $this->topic . '.delayed.>';
+            $delayedSubject = $this->delayedSubjectPattern();
             $mergedSubjects = array_values(array_filter(
                 $mergedSubjects,
                 static fn (string $subject): bool => $subject !== $delayedSubject,
