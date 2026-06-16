@@ -91,10 +91,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $this->serializer = new IgbinarySerializer();
         } else {
             // PhpSerializer uses native unserialize(), which is the same untrusted-deserialization
-            // (object injection) sink as igbinary. Emit a warning — not a quiet notice — so the
+            // (object injection) sink as igbinary. Emit a warning - not a quiet notice - so the
             // fallback is not silently relied upon in production. See the README security section.
             trigger_error(
-                'The igbinary extension is not installed. Falling back to Symfony\\Component\\Messenger\\Transport\\Serialization\\PhpSerializer, which uses native unserialize() and carries the same untrusted-deserialization (object injection) risk as igbinary. Install ext-igbinary, or explicitly configure a safe serializer — especially when consuming from untrusted NATS subjects.',
+                'The igbinary extension is not installed. Falling back to Symfony\\Component\\Messenger\\Transport\\Serialization\\PhpSerializer, which uses native unserialize() and carries the same untrusted-deserialization (object injection) risk as igbinary. Install ext-igbinary, or explicitly configure a safe serializer - especially when consuming from untrusted NATS subjects.',
                 E_USER_WARNING,
             );
             $this->serializer = new PhpSerializer();
@@ -168,7 +168,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         // A single JetStream publish path for both plain and header-carrying (incl. scheduled)
         // messages. JetStreamContext::publish() retries transient 503 "no responders" and parses
-        // the PubAck, throwing JetStreamException on an empty/malformed reply or a reported error —
+        // the PubAck, throwing JetStreamException on an empty/malformed reply or a reported error -
         // so the publish fails closed instead of silently accepting an invalid acknowledgement.
         $this->jetStream()->publish($topic, $payload, $normalizedHeaders)->await();
 
@@ -217,7 +217,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             // An empty payload can never decode into a Messenger envelope. Skipping it without
             // acknowledging would leave it unacked, so JetStream would redeliver it every ack_wait
-            // forever (a poison loop). TERM it instead — redelivery cannot fix an empty body — so
+            // forever (a poison loop). TERM it instead - redelivery cannot fix an empty body - so
             // it is dropped regardless of the configured retry handler.
             if ($message->payload === '') {
                 $this->sendTerm($replyTo);
@@ -410,7 +410,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 // an actionable message via the outer handler.
                 throw $unsupportedFeature;
             } catch (JetStreamException $streamCreateException) {
-                // Don't string-match the server's error text to detect a pre-existing stream — the
+                // Don't string-match the server's error text to detect a pre-existing stream - the
                 // message wording varies across NATS versions. Ask JetStream directly: if the stream
                 // now exists, update it (reusing the fetched config); if it does not (404), the create
                 // failure was a genuine error, so rethrow it.
@@ -694,8 +694,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         ]);
 
         // The transport authoritatively manages these retention limits. On update we always write
-        // the value — including JetStream's "unlimited" sentinels (max_age 0, others -1) when the
-        // option is unset — so a previously-configured limit is actually relaxed/cleared instead of
+        // the value - including JetStream's "unlimited" sentinels (max_age 0, others -1) when the
+        // option is unset - so a previously-configured limit is actually relaxed/cleared instead of
         // being preserved from the existing server configuration by the array_merge above.
         $updatedConfiguration['max_age'] = $this->configuration->streamMaxAgeSeconds() > 0
             ? $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS

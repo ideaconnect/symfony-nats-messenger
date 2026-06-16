@@ -408,7 +408,7 @@ final class NatsTransportTest extends TestCase
         self::assertCount(1, $envelopes);
         self::assertSame('reply-valid', $envelopes[0]->last(TransportMessageIdStamp::class)?->getId());
         // The empty-payload message can never decode into an envelope, so it is TERMed (not
-        // silently skipped) to stop JetStream redelivering it forever — regardless of retry handler.
+        // silently skipped) to stop JetStream redelivering it forever - regardless of retry handler.
         self::assertSame(['term:reply-empty'], $transport->failureActions);
     }
 

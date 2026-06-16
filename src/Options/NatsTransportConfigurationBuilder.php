@@ -449,7 +449,7 @@ final class NatsTransportConfigurationBuilder
      *
      * The explicit option takes precedence. The DSN component is decoded with rawurldecode()
      * (RFC 3986 userinfo semantics): %XX escapes are decoded (e.g. %40 → @, %2B → +) while a
-     * literal '+' is preserved. urldecode() must NOT be used here — it would turn a literal '+'
+     * literal '+' is preserved. urldecode() must NOT be used here - it would turn a literal '+'
      * in a username/password into a space and silently corrupt the credential.
      *
      * @param array<string, mixed> $components    Parsed DSN components

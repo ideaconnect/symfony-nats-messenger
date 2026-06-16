@@ -89,7 +89,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Per-subject message limit** | Setup NATS stream with max messages per subject configuration |
 | **Multi-subject streams** | Setup command merges subjects for transports sharing one stream |
 | **Unavailable server** | Setup command fails gracefully when NATS is unavailable |
-| **Full message flow** | Complete message flow — send, check stats, consume, verify (native PHP serializer, igbinary) |
+| **Full message flow** | Complete message flow - send, check stats, consume, verify (native PHP serializer, igbinary) |
 | **Partial consumption** | Partial message consumption with multiple consumers (native PHP serializer, igbinary) |
 | **High-volume processing** | High-volume message processing with file output verification (native PHP serializer, igbinary) |
 

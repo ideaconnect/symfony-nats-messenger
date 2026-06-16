@@ -13,7 +13,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 ## Features
 
 - 🚀 **High-Performance Messaging** - Leverage NATS JetStream for fast, reliable message delivery
-- 📦 **Symfony Integration** - Seamless integration with Symfony Messenger
+- 📦 **Symfony Integration** - Implements Messenger's `TransportInterface`, `MessageCountAwareInterface`, `SetupableTransportInterface`, `KeepaliveReceiverInterface`, and `CloseableTransportInterface`
 - ⚙️ **Configurable Consumers** - Support for multiple consumer strategies
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
@@ -47,8 +47,6 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 composer require idct/symfony-nats-messenger
 ```
 
-> **Operational note:** This is the package installation command, not a runtime behavior covered by the library test suite. The installed package is exercised by the unit and functional tests documented below.
-
 ### Development Setup
 
 For contributors and development:
@@ -76,8 +74,6 @@ composer test:functional
 composer nats:stop
 ```
 
-> **Verification note:** This is the repository verification workflow used for this package. The same command sequence is run when validating documentation and code changes in this repository.
-
 ## Quick Start
 
 ### 1. Configure NATS Server
@@ -87,8 +83,6 @@ Ensure your NATS server has JetStream enabled:
 ```bash
 nats-server -js
 ```
-
-> **Operational note:** Starting `nats-server -js` is an environment prerequisite rather than package behavior. Automated coverage begins once JetStream is available and the transport is exercised by the functional scenarios below.
 
 ### 2. Set Up Transport in Symfony
 
@@ -114,7 +108,7 @@ framework:
 
 ### 3. Configure Custom Serializers (Optional)
 
-This transport ships with a high-performance `IgbinarySerializer`, but under the Symfony framework it is **not** selected automatically. Symfony Messenger always resolves a serializer and passes it to the transport factory — its framework default is the native `PhpSerializer` — so to use igbinary you must set the transport's `serializer:` key explicitly (shown below). The transport's *own* igbinary auto-selection (and the `PhpSerializer` fallback, with an `E_USER_WARNING`, when `ext-igbinary` is unavailable) only applies when you construct `NatsTransport` directly without passing a serializer, e.g. outside the framework.
+This transport ships with a high-performance `IgbinarySerializer`, but under the Symfony framework it is **not** selected automatically. Symfony Messenger always resolves a serializer and passes it to the transport factory - its framework default is the native `PhpSerializer` - so to use igbinary you must set the transport's `serializer:` key explicitly (shown below). The transport's *own* igbinary auto-selection (and the `PhpSerializer` fallback, with an `E_USER_WARNING`, when `ext-igbinary` is unavailable) only applies when you construct `NatsTransport` directly without passing a serializer, e.g. outside the framework.
 
 #### Using IgbinarySerializer (recommended)
 
@@ -130,9 +124,7 @@ framework:
           consumer: 'my-consumer'
 ```
 
-**Note:** Under the Symfony framework the serializer is resolved by Symfony *before* transport creation and always passed in, so the transport uses whatever Symfony provides — its native `PhpSerializer` by default. Set the `serializer:` key above to use igbinary instead. The transport's built-in igbinary default (and its `PhpSerializer` fallback with an `E_USER_WARNING` when `ext-igbinary` is unavailable) only takes effect when `NatsTransport` is instantiated directly without a serializer.
-
-For example:
+Register the serializer service the `serializer:` key refers to. For example:
 ```yaml
     igbinary_serializer:
         class: IDCT\NatsMessenger\Serializer\IgbinarySerializer
@@ -169,7 +161,7 @@ class MyCustomSerializer extends AbstractEnveloperSerializer
 }
 ```
 
-> **Tested by:** `readmeCustomSerializerExample_EncodeDecode_RoundTrips`, `readmeCustomSerializerExample_DecodeInvalidBody_ThrowsException` — the exact code above is compiled and exercised via `ReadmeExampleSerializer` in the unit tests.
+> **Tested by:** `readmeCustomSerializerExample_EncodeDecode_RoundTrips`, `readmeCustomSerializerExample_DecodeInvalidBody_ThrowsException` - the exact code above is compiled and exercised via `ReadmeExampleSerializer` in the unit tests.
 
 For reference implementations, see:
 - `src/Serializer/IgbinarySerializer.php` - Binary serialization
@@ -210,7 +202,7 @@ class MyAsyncMessageHandler
 }
 ```
 
-> **Tested by:** Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, and `High-volume message processing with file output verification` — handlers are exercised through real `messenger:consume` runs.
+> **Tested by:** Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, and `High-volume message processing with file output verification` - handlers are exercised through real `messenger:consume` runs.
 
 ### 6. Consume Messages
 
@@ -218,7 +210,7 @@ class MyAsyncMessageHandler
 symfony console messenger:consume nats_transport
 ```
 
-> **Tested by:** Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, and `Partial message consumption with multiple consumers` — the Behat context runs `messenger:consume` as a Symfony CLI process.
+> **Tested by:** Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, and `Partial message consumption with multiple consumers` - the Behat context runs `messenger:consume` as a Symfony CLI process.
 
 ## Configuration Guide
 
@@ -249,7 +241,7 @@ nats-jetstream://localhost/my-stream/my-topic?consumer=worker&batching=10
 nats-jetstream+tls://localhost:4222/my-stream/my-topic
 ```
 
-> **Tested by:** `testReadmeDsnExamplesParseSuccessfully` — each DSN above is parsed through the configuration builder via a dedicated data provider case.
+> **Tested by:** `testReadmeDsnExamplesParseSuccessfully` - each DSN above is parsed through the configuration builder via a dedicated data provider case.
 
 ### Configuration Options
 
@@ -337,9 +329,9 @@ framework:
 When NATS manages redelivery (`retry_handler: nats`), tune it with `nak_delay`, `ack_wait`, `max_deliver`, and `backoff`:
 
 - **`nak_delay`** delays each NAK so a failing message backs off instead of redelivering immediately (a hot loop).
-- **`max_deliver`** caps redeliveries. ⚠️ Without it, `retry_handler: nats` redelivers a permanently-failing ("poison") message **forever** — set `max_deliver` in production.
+- **`max_deliver`** caps redeliveries. ⚠️ Without it, `retry_handler: nats` redelivers a permanently-failing ("poison") message **forever** - set `max_deliver` in production.
 - **`backoff`** sets an escalating per-attempt delay schedule (e.g. `[1, 5, 30]` seconds); pair it with `max_deliver` greater than the number of backoff steps.
-- **`ack_wait`** is how long JetStream waits for an ACK before considering a delivery failed and redelivering — raise it for handlers that legitimately take a while.
+- **`ack_wait`** is how long JetStream waits for an ACK before considering a delivery failed and redelivering - raise it for handlers that legitimately take a while.
 
 > **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, Behat scenarios `nats_nak.feature` and `nats_term.feature`
 
@@ -428,7 +420,7 @@ options:
   batching: 20       # Fetch 20 messages (high throughput)
 ```
 
-> **Tested by:** `testReadmeBatchingExamplesAreAccepted` — values 1, 5, 10, 20, 50 are all verified.
+> **Tested by:** `testReadmeBatchingExamplesAreAccepted` - values 1, 5, 10, 20, 50 are all verified.
 
 ### Batch Timeout
 
@@ -441,7 +433,7 @@ options:
                           # Returns early if timeout reached
 ```
 
-> **Tested by:** `testReadmeTimeoutExamplesAreAccepted` — values 0.5, 1.0, 2.0 are verified. Behat scenarios `nats_batching.feature`.
+> **Tested by:** `testReadmeTimeoutExamplesAreAccepted` - values 0.5, 1.0, 2.0 are verified. Behat scenarios `nats_batching.feature`.
 
 **Example scenarios:**
 - If you set `batching: 10` and `max_batch_timeout: 0.5`
@@ -498,7 +490,7 @@ options:
   stream_max_messages_per_subject: null
 ```
 
-> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` — all retention options above are verified. Behat scenarios `nats_stream_limits.feature`.
+> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` - all retention options above are verified. Behat scenarios `nats_stream_limits.feature`.
 
 > **Note:** `stream_max_messages` limits the total number of messages stored in the stream (maps to NATS `max_msgs`), while `stream_max_messages_per_subject` limits messages retained per individual subject (maps to NATS `max_msgs_per_subject`). The per-subject limit is especially useful with [multi-subject streams](#multi-subject-streams) to prevent one high-volume subject from dominating retention.
 
@@ -535,8 +527,6 @@ composer test:unit
 # Or run tests manually
 ./vendor/bin/phpunit
 ```
-
-> **Verification note:** This block documents the supported contributor workflow. The same `composer test` and `composer test:unit` commands are used to verify changes in this repository.
 
 The target is to have at least 90% of code coverage.
 
@@ -580,8 +570,6 @@ composer test:functional
 composer nats:stop
 ```
 
-> **Verification note:** This is the scripted functional test workflow used for the transport's end-to-end verification.
-
 **Manual approach:**
 ```bash
 # Set up NATS in Docker (optional)
@@ -596,8 +584,6 @@ cd ../functional
 cd ../nats
 docker-compose down
 ```
-
-> **Operational note:** This manual Docker/Behat flow mirrors the scripted functional commands above and is not asserted separately by the package tests.
 
 **What's tested:**
 - Message publishing
@@ -755,8 +741,6 @@ nats consumer info my-stream my-consumer
 nats consumer info my-stream my-consumer --json | jq '.state.num_pending'
 ```
 
-> **Operational note:** These are NATS CLI inspection commands, so this package does not assert their exact textual output directly. The underlying stream, consumer, and message-count state is covered by Behat scenarios `Setup NATS stream with max age configuration`, `Custom consumer name is registered in JetStream`, `Complete message flow - send, check stats, consume, verify`, and the `getMessageCount()` unit tests.
-
 ### Manual Message Operations
 
 ```php
@@ -811,16 +795,12 @@ nats consumer info my-stream my-consumer
 nats consumer info my-stream my-consumer --json | jq '.state'
 ```
 
-> **Operational note:** These are manual diagnosis commands. The actual consume path is covered by Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, and `Partial message consumption with multiple consumers`.
-
 **Messages stuck in pending**
 ```bash
 # Check handler is not throwing exceptions
 # Verify handler implementation
 # Check application logs for errors
 ```
-
-> **Operational note:** This checklist is manual guidance. Pending-count behavior is covered by `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountSumsAckPendingAndPending`, and Behat scenario `Complete message flow - send, check stats, consume, verify`.
 
 ## Architecture
 
@@ -863,9 +843,9 @@ The bridge consists of two main components:
 
 ### ⚠️ Deserialization of Untrusted Data
 
-The default `IgbinarySerializer` (and any serializer extending `AbstractEnveloperSerializer`) deserializes raw message payloads from NATS into PHP objects. PHP object unserialization is a [well-known attack vector](https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/) — a crafted payload can trigger arbitrary code execution via magic methods (`__wakeup`, `__destruct`, etc.).
+The default `IgbinarySerializer` (and any serializer extending `AbstractEnveloperSerializer`) deserializes raw message payloads from NATS into PHP objects. PHP object unserialization is a [well-known attack vector](https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/) - a crafted payload can trigger arbitrary code execution via magic methods (`__wakeup`, `__destruct`, etc.).
 
-> **⚠️ PhpSerializer fallback:** when no serializer is configured **and `ext-igbinary` is not installed**, the transport automatically falls back to Symfony's `PhpSerializer`, which uses native `unserialize()` — the **same** untrusted-deserialization (object injection) risk as igbinary, not a safer alternative. The transport emits an `E_USER_WARNING` when this happens. Do not rely on the fallback in production: either install `ext-igbinary` or explicitly configure a serializer (ideally a safe-format one, per below).
+> **⚠️ PhpSerializer fallback:** when no serializer is configured **and `ext-igbinary` is not installed**, the transport automatically falls back to Symfony's `PhpSerializer`, which uses native `unserialize()` - the **same** untrusted-deserialization (object injection) risk as igbinary, not a safer alternative. The transport emits an `E_USER_WARNING` when this happens. Do not rely on the fallback in production: either install `ext-igbinary` or explicitly configure a serializer (ideally a safe-format one, per below).
 
 **If your NATS topics are not fully trusted** (e.g. shared infrastructure, external publishers), you should:
 - Implement a custom serializer that uses a safe format (JSON, Protobuf) instead of PHP object serialization
@@ -934,8 +914,6 @@ composer test:functional
 # 5. Clean up
 composer nats:stop
 ```
-
-> **Verification note:** This is the exact end-to-end verification sequence required for repository changes and the same sequence used for this task.
 
 ## License
 

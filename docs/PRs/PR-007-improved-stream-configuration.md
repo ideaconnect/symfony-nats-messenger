@@ -1,19 +1,19 @@
-# PR #7 — Improved Stream Configuration
+# PR #7 - Improved Stream Configuration
 
 - **Author:** [coff33cat](https://github.com/coff33cat) (gogol-medien)
 - **Branch:** `gogol-medien:stream-declaration-enhancements` → `ideaconnect:main`
 - **PR:** https://github.com/ideaconnect/symfony-nats-messenger/pull/7
-- **Status:** Features adapted into v4.0 (not merged directly — reimplemented on the new IDCT NATS client)
+- **Status:** Features adapted into v4.0 (not merged directly - reimplemented on the new IDCT NATS client)
 
 ## What the PR Proposed
 
-1. **Fix `stream_max_messages`** — The configuration parameter was not applied during stream creation; streams were always initialized with the NATS default. The PR fixed the mapping and clarified that the parameter maps to NATS `max_msgs_per_subject`.
+1. **Fix `stream_max_messages`** - The configuration parameter was not applied during stream creation; streams were always initialized with the NATS default. The PR fixed the mapping and clarified that the parameter maps to NATS `max_msgs_per_subject`.
 
-2. **Stream storage type** — Allow setting the storage backend (`file` or `memory`) via a new `stream_storage` option. The storage type is silently preserved for existing streams since NATS does not allow changing it after creation.
+2. **Stream storage type** - Allow setting the storage backend (`file` or `memory`) via a new `stream_storage` option. The storage type is silently preserved for existing streams since NATS does not allow changing it after creation.
 
-3. **Multi-subject streams** — Refactored stream creation to support multiple transports sharing one NATS stream with different subjects (e.g. `orders` and `payments` on the `events` stream). On setup, new subjects are merged into the existing stream without overwriting.
+3. **Multi-subject streams** - Refactored stream creation to support multiple transports sharing one NATS stream with different subjects (e.g. `orders` and `payments` on the `events` stream). On setup, new subjects are merged into the existing stream without overwriting.
 
-4. **Improved stream update handling** — When a stream already exists, setup now reads the current JetStream configuration, merges subjects, and overlays only the managed settings.
+4. **Improved stream update handling** - When a stream already exists, setup now reads the current JetStream configuration, merges subjects, and overlays only the managed settings.
 
 ## How We Implemented It
 

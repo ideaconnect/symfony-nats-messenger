@@ -137,7 +137,7 @@ final readonly class NatsTransportConfiguration
      * Returns true when stream_replicas was explicitly configured (as opposed to defaulted).
      *
      * Lets {@see NatsTransport::setup()} decide, on the update path, whether to write the managed
-     * replica count or preserve the existing server value — so a stream created with more replicas
+     * replica count or preserve the existing server value - so a stream created with more replicas
      * (e.g. in a cluster) is not silently downscaled when setup() runs without the option set.
      */
     public function hasExplicitStreamReplicas(): bool

@@ -1,6 +1,6 @@
 # Project Structure
 
-Architecture and layout reference for `idct/symfony-nats-messenger` — a Symfony Messenger
+Architecture and layout reference for `idct/symfony-nats-messenger` - a Symfony Messenger
 transport that bridges Symfony's message bus to [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream).
 
 For day-to-day commands and conventions see [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md).
@@ -25,7 +25,7 @@ Symfony Messenger  ──dispatch──▶  NatsTransportFactory ──▶ NatsT
 ```
 src/
 ├── NatsTransport.php                          # Core transport: send/get/ack/reject/setup/getMessageCount
-├── NatsTransportFactory.php                   # TransportFactoryInterface — DSN scheme detection + instantiation
+├── NatsTransportFactory.php                   # TransportFactoryInterface - DSN scheme detection + instantiation
 ├── TypeCoercion.php                           # Safe mixed → int/float/string coercion (final, static)
 ├── Options/
 │   ├── NatsTransportConfiguration.php         # Immutable readonly value object of resolved settings
@@ -38,7 +38,7 @@ src/
 
 tests/
 ├── bootstrap.php
-├── unit/                                       # PHPUnit 11 — fast, no live NATS required
+├── unit/                                       # PHPUnit 11 - fast, no live NATS required
 │   ├── NatsTransportTest.php                   # send/get/ack/reject/setup/retry/count/scheduled
 │   ├── NatsTransportFactoryTest.php            # scheme detection, transport creation
 │   ├── Options/
@@ -47,7 +47,7 @@ tests/
 │   └── Serializer/
 │       ├── AbstractEnveloperSerializerTest.php
 │       └── IgbinarySerializerTest.php
-├── functional/                                 # Behat — requires a running NATS server (Docker)
+├── functional/                                 # Behat - requires a running NATS server (Docker)
 │   ├── features/*.feature                      # setup, batching, consumer, nak, term, delayed, tls, mtls, stream_limits
 │   ├── tests/Behat/NatsSetupContext.php        # all step definitions
 │   └── src/, config/, bin/, public/            # a minimal Symfony app exercising the transport end-to-end
@@ -85,7 +85,7 @@ Cross-cutting behavior:
 - **Pull consumers, explicit ACK.** Messages are only considered processed once explicitly ACK'd;
   this is what makes `retry_handler` and shared-consumer load balancing work.
 
-### Options/ — configuration model
+### Options/ - configuration model
 Configuration is resolved once, up front, into an **immutable** object:
 
 ```
@@ -103,17 +103,17 @@ NatsTransportConfiguration  ← immutable, typed accessors apply clamping/unit c
 
 - **`TransportOption`** is the single source of truth for option keys; `DEFAULT_OPTIONS` must have an
   entry for every case (enforced by `testDefaultOptionsCoversAllTransportOptionCases`).
-- **`NatsTransportConfiguration`** never returns raw option values — accessors normalize (e.g.
+- **`NatsTransportConfiguration`** never returns raw option values - accessors normalize (e.g.
   `maxBatchTimeoutMs()` converts seconds→ms and clamps to ≥1, `streamMaxAgeSeconds()` clamps to ≥0).
 - **`RetryHandler`** encodes the TERM-vs-NAK failure strategy.
 
-### Serializer/ — payload encoding
+### Serializer/ - payload encoding
 - `AbstractEnveloperSerializer` implements Symfony's `SerializerInterface` `encode()`/`decode()`,
   wrapping the `body`/`headers` envelope shape and validating that decode produces a real `Envelope`.
 - Concrete serializers only implement `serialize()`/`deserialize()` for the raw format.
 - `IgbinarySerializer` is the default (compact binary). If `ext-igbinary` is missing, the transport
   emits a notice and falls back to Symfony's `PhpSerializer`.
-- ⚠️ Both default serializers `unserialize()` raw payloads — only safe on trusted subjects. For
+- ⚠️ Both default serializers `unserialize()` raw payloads - only safe on trusted subjects. For
   untrusted publishers, supply a JSON/Protobuf serializer. See the README Security section.
 
 ### TypeCoercion

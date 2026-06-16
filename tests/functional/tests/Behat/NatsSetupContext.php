@@ -118,7 +118,7 @@ class NatsSetupContext implements Context
     /**
      * Creates a NATS stream via the JetStream API with minimal configuration.
      *
-     * Note: this creates a "bare" stream with only name + subject — no retention
+     * Note: this creates a "bare" stream with only name + subject - no retention
      * policy, storage type, or replication settings. This is intentional: it simulates
      * a pre-existing stream that the transport's setup() must gracefully handle
      * and update with its own configuration.
@@ -555,7 +555,7 @@ class NatsSetupContext implements Context
 
     /**
      * Best-effort count of consumption confirmations in consumer stdout, aggregated across all
-     * known output formats (not broken on the first matching pattern). Advisory/diagnostic only —
+     * known output formats (not broken on the first matching pattern). Advisory/diagnostic only -
      * never used to pass the assertion.
      */
     private function countConsumedFromOutput(string $output): int

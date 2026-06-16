@@ -16,8 +16,8 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
  *
  * The factory always passes Symfony's resolved serializer into the transport (the
  * interface signature is non-nullable). When a transport configures no serializer,
- * Symfony injects its default serializer service — the native PhpSerializer unless
- * reconfigured — never null, so the transport's built-in igbinary auto-default only
+ * Symfony injects its default serializer service - the native PhpSerializer unless
+ * reconfigured - never null, so the transport's built-in igbinary auto-default only
  * applies when {@see NatsTransport} is constructed directly with a null serializer.
  *
  * DSN Format: nats-jetstream://[user:pass@]host:port/stream_name/topic_name

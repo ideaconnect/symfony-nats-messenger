@@ -18,7 +18,7 @@ NATS via the async `idct/php-nats-jetstream-client` (`^2.4`, amphp-based).
 ```bash
 composer install                 # install dependencies
 
-composer test                    # PHPStan (level max) + fast unit suite — RUN AFTER EVERY CHANGE
+composer test                    # PHPStan (level max) + fast unit suite - RUN AFTER EVERY CHANGE
 composer analyse                 # PHPStan only
 composer test:unit:fast          # PHPUnit only, no coverage
 composer test:unit               # PHPUnit with coverage → clover.xml + coverage/ (HTML)
@@ -40,7 +40,7 @@ composer nats:stop               # stop NATS
 
 ## Conventions
 
-- PHPStan **level max** must stay clean — no new baseline entries; fix the types instead.
+- PHPStan **level max** must stay clean - no new baseline entries; fix the types instead.
 - Keep PHPUnit metadata as **attributes** (`#[DataProvider]`, `#[Test]`), not doc-comment annotations
   (doc-comment metadata is deprecated in PHPUnit 11, removed in 12).
 - `TransportOption` is the single source of truth for option keys; every case needs a `DEFAULT_OPTIONS`
@@ -53,25 +53,25 @@ composer nats:stop               # stop NATS
 
 - **Async client, sync contract.** Client calls return `Amp\Future`; resolve them with `->await()`.
   Symfony Messenger's transport API is blocking.
-- **Lazy connection.** No socket opens in the constructor — `jetStream()` connects on first use.
+- **Lazy connection.** No socket opens in the constructor - `jetStream()` connects on first use.
 - **Pull consumers + explicit ACK.** A message is only "processed" once ACK'd. This underpins
   `retry_handler` and shared-consumer load balancing.
 - **`get()` swallows JetStream 404 and 408** (consumer-missing / timeout-empty) as empty results;
   other codes propagate.
 - **`setup()` create-then-update.** On a stream conflict it reads the live config, **merges** subjects,
-  preserves server fields, and updates — it never blindly overwrites an existing stream.
+  preserves server fields, and updates - it never blindly overwrites an existing stream.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
   `retry_handler=nats` → NAK (NATS redelivers).
 - **Scheduled messages:** only when `scheduled_messages=true` does a `DelayStamp` route to
   `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored.
-- **Serializer security:** the default `IgbinarySerializer` `unserialize()`s payloads — unsafe on
+- **Serializer security:** the default `IgbinarySerializer` `unserialize()`s payloads - unsafe on
   untrusted subjects. Don't weaken the README security warnings.
 
 ## Documentation maintenance (required, per AGENTS.md)
 
-- `docs/TESTS.md` — update whenever tests are added, removed, or renamed (feature → test map).
-- `docs/CHANGELOG.md` — Keep a Changelog format; add items under `## [Unreleased]` as you go.
-- `docs/PRs/` — when a PR is merged or adapted, add `PR-NNN-short-description.md`.
+- `docs/TESTS.md` - update whenever tests are added, removed, or renamed (feature → test map).
+- `docs/CHANGELOG.md` - Keep a Changelog format; add items under `## [Unreleased]` as you go.
+- `docs/PRs/` - when a PR is merged or adapted, add `PR-NNN-short-description.md`.
 - Keep README "Tested by:" references pointing at real test method names.
 
 ## Repository facts

@@ -26,7 +26,7 @@ class FailingMessageHandler
     public function __invoke(FailingMessage $message): void
     {
         // Record the delivery attempt for every message (including always-failing ones) so tests can
-        // assert how many times NATS redelivered — e.g. that max_deliver bounds a poison message.
+        // assert how many times NATS redelivered - e.g. that max_deliver bounds a poison message.
         $attemptFile = sprintf('%s/message_%d.attempt', $this->retryStateDir, $message->messageId);
         $attempt = file_exists($attemptFile) ? (int) file_get_contents($attemptFile) : 0;
         $attempt++;
