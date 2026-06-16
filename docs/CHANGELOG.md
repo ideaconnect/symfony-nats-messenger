@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the seconds→nanoseconds conversion. No behavior change.
 
 ### Added
+- **Daily scheduled mutation-testing workflow and Dependabot** - `.github/workflows/mutation.yml` re-runs
+  Infection daily (03:17 UTC) and on demand (`workflow_dispatch`) against the default branch, a safety net
+  beyond the per-push/PR mutation step in the main CI; it uploads `infection.log` on failure.
+  `.github/dependabot.yml` keeps the root and `tests/functional` Composer dependencies and the GitHub
+  Actions up to date on a weekly cadence (minor/patch bumps grouped to cut PR noise).
 - **Hardened large-message, multi-consumer, and scheduled-message coverage** - new unit tests for
   large (1 MiB) payload round-tripping on both the send and receive paths
   (`testSendPublishesLargePayloadWithoutTruncation`, `testGetDecodesLargePayloadWithoutTruncation`),

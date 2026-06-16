@@ -1,0 +1,46 @@
+name: Mutation Tests
+
+# Mutation testing also runs inside the main CI on every push/PR (PHP 8.5 job). This scheduled run is a
+# safety net that re-checks the floors daily against the default branch and can be triggered on demand.
+# Note: scheduled workflows only run from the repository's default branch.
+on:
+  schedule:
+    # Daily at 03:17 UTC (off-the-hour to dodge GitHub's top-of-hour scheduling congestion).
+    - cron: '17 3 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  infection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.5'
+        extensions: igbinary, json, mbstring
+        coverage: xdebug
+        tools: composer:v2
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    # Runs the unit suite under Infection (no NATS needed); enforces infection.json5's
+    # minMsi 90 / minCoveredMsi 95 floors, failing the scheduled run on a real regression.
+    - name: Run mutation tests
+      run: composer test:mutation
+
+    - name: Upload Infection log on failure
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: infection-log
+        path: infection.log
+        retention-days: 14

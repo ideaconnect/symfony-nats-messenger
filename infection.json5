@@ -17,9 +17,10 @@
     // Generous per-mutant timeout so only genuine infinite loops time out — fast mutants never
     // straddle the boundary and get classified non-deterministically on a loaded CI runner.
     "timeout": 60,
-    // Regression floors. The suite currently scores ~99% covered MSI (the only survivors are
-    // equivalent mutants — duplicate guard `throw`s that re-raise the same exception); these floors
-    // keep comfortable headroom so the CI gate fails on real regressions, not run-to-run variance.
+    // Regression floors. The suite currently scores 100% covered MSI (the earlier survivors were
+    // equivalent mutants - duplicate guard `throw`s re-raising the same exception - since removed by
+    // collapsing those guards); these floors keep headroom so the gate fails on real regressions, not
+    // run-to-run variance.
     "minMsi": 90,
     "minCoveredMsi": 95
 }
