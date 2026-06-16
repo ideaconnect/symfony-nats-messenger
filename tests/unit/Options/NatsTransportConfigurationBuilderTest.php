@@ -313,11 +313,12 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertNull($options->token);
     }
 
-    public function testBuildWithTooShortPathThrowsException(): void
+    public function testBuildWithPathMissingTopicThrowsException(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('NATS Stream name not provided.');
+        $this->expectExceptionMessage('NATS DSN must contain both stream name and topic name (format: /stream/topic).');
 
+        // A path with only a stream and no topic ("/a") is reported by the structural segment check.
         (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/a', []);
     }
 

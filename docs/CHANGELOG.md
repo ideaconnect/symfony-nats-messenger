@@ -69,6 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout reference, respectively.
 
 ### Changed
+- **Simplified DSN path validation** (internal) - removed the redundant `MIN_PATH_LENGTH` guard, which
+  was fully subsumed by the stream/topic segment check. A path that supplies a stream but no topic
+  (e.g. `/a`) now reports the more accurate "must contain both stream name and topic name" error instead
+  of "Stream name not provided." The two numeric validators now share a symmetric `$integerOnly = false`
+  signature.
 - **`stream_max_age` now rejects non-integer values** instead of silently truncating them (e.g. `2.5`
   was accepted and coerced to `2`). The option is integer seconds; fractional values now raise a clear
   validation error, consistent with the other integer-only stream limits.

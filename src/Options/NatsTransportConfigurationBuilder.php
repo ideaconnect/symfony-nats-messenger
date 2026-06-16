@@ -27,9 +27,6 @@ final class NatsTransportConfigurationBuilder
     /** Default NATS server port when not specified in DSN. */
     private const DEFAULT_NATS_PORT = 4222;
 
-    /** Minimum DSN path length to contain both stream and topic (e.g. "/a/b"). */
-    private const MIN_PATH_LENGTH = 4;
-
     /**
      * Default option values.
      *
@@ -152,10 +149,12 @@ final class NatsTransportConfigurationBuilder
         }
 
         $path = $components['path'];
-        if (!is_string($path) || $path === '' || strlen($path) < self::MIN_PATH_LENGTH) {
+        if (!is_string($path) || $path === '') {
             throw new InvalidArgumentException('NATS Stream name not provided.');
         }
 
+        // A valid path is exactly two non-empty slash-separated tokens (/stream/topic). This single
+        // check rejects every malformed path - too few or too many segments, or an empty token.
         $pathParts = explode('/', trim($path, '/'));
         if (count($pathParts) !== 2 || $pathParts[0] === '' || $pathParts[1] === '') {
             throw new InvalidArgumentException('NATS DSN must contain both stream name and topic name (format: /stream/topic).');
@@ -236,15 +235,15 @@ final class NatsTransportConfigurationBuilder
         $configuration[TransportOption::CONSUMER->value] = $consumer;
 
         $this->assertPositiveNumber($configuration, TransportOption::BATCHING, true);
-        $this->assertPositiveNumber($configuration, TransportOption::MAX_BATCH_TIMEOUT, false);
-        $this->assertPositiveNumber($configuration, TransportOption::CONNECTION_TIMEOUT, false);
+        $this->assertPositiveNumber($configuration, TransportOption::MAX_BATCH_TIMEOUT);
+        $this->assertPositiveNumber($configuration, TransportOption::CONNECTION_TIMEOUT);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_AGE, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_BYTES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT, true);
         $this->assertPositiveNumber($configuration, TransportOption::STREAM_REPLICAS, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::NAK_DELAY);
-        $this->assertPositiveNumber($configuration, TransportOption::ACK_WAIT, false);
+        $this->assertPositiveNumber($configuration, TransportOption::ACK_WAIT);
         $this->assertPositiveNumber($configuration, TransportOption::MAX_DELIVER, true);
         $this->assertBackoff($configuration);
         $this->assertMaxDeliverExceedsBackoff($configuration);
@@ -283,7 +282,7 @@ final class NatsTransportConfigurationBuilder
      * @param TransportOption      $option        The option key to validate
      * @param bool                 $integerOnly   When true, also rejects non-integer values
      */
-    private function assertPositiveNumber(array $configuration, TransportOption $option, bool $integerOnly): void
+    private function assertPositiveNumber(array $configuration, TransportOption $option, bool $integerOnly = false): void
     {
         $value = $configuration[$option->value] ?? null;
         if ($value === null) {
