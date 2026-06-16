@@ -177,7 +177,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
-on the PHP 8.5 job. The suite currently scores ~99% covered MSI with 100% mutation code coverage.
+on the PHP 8.5 job. The suite currently scores 100% covered MSI with 100% mutation code coverage.
 
 ## README Example Coverage
 

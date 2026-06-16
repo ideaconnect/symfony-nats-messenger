@@ -125,11 +125,12 @@ final class NatsTransportConfigurationBuilder
      */
     private function parseDsn(string $dsn): array
     {
-        if (false === $components = parse_url($dsn)) {
-            throw new InvalidArgumentException('The given NATS DSN is invalid.');
-        }
-
-        if (!isset($components['host'])) {
+        // A single gate for both structural failures: parse_url() returns false on a seriously
+        // malformed DSN, and a hostless URL (e.g. "nats:///stream/topic") has no 'host'. Both are
+        // equally invalid, so they share one throw - splitting them into two guards with the identical
+        // message would be redundant (each masks the other, leaving an undetectable equivalent mutant).
+        $components = parse_url($dsn);
+        if (!is_array($components) || !isset($components['host'])) {
             throw new InvalidArgumentException('The given NATS DSN is invalid.');
         }
 
@@ -372,10 +373,10 @@ final class NatsTransportConfigurationBuilder
      */
     private function toNumber(mixed $value, TransportOption $option): float
     {
-        if (!is_int($value) && !is_float($value) && !is_string($value)) {
-            throw new InvalidArgumentException(sprintf('The %s option must be numeric.', $option->value));
-        }
-
+        // is_numeric() is the single sufficient gate: it returns false for every non-numeric input -
+        // arrays, bools, null and objects included - so a separate is_int/is_float/is_string guard
+        // would be redundant (it could only throw the identical error for the same inputs). It also
+        // narrows the value to int|float|numeric-string for the cast below.
         if (!is_numeric($value)) {
             throw new InvalidArgumentException(sprintf('The %s option must be numeric.', $option->value));
         }

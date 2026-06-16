@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Collapsed redundant double-guards in DSN/option validation** - `toNumber()` now gates solely on
+  `is_numeric()` (which already rejects every non-numeric type), and `parseDsn()` validates the
+  `parse_url()` result and the missing host in a single throw. The previous split guards threw the same
+  message for the same inputs, so each masked the other - leaving undetectable (equivalent) mutants.
+  No behavior change; mutation Covered MSI rises from ~99% to 100%.
 - **NATS client upgraded to `idct/php-nats-jetstream-client` `^2.4`** (from `^1`). The v2 client is a
   major release (Object Store / Services / custom-transport breaking changes) but none of those touch
   this bridge's API surface; every method this transport uses changed only by gaining optional trailing
@@ -64,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumer's configured `ack_wait`, so the advisory `$seconds` hint is not forwarded.
 - **Mutation testing with Infection** - added `infection/infection` (dev), an `infection.json5` config
   (floors: `minMsi` 90 / `minCoveredMsi` 95), a `composer test:mutation` script, and a CI step. The suite
-  currently scores ~99% covered MSI with 100% mutation code coverage.
+  currently scores 100% covered MSI with 100% mutation code coverage.
 - **Expanded unit coverage (~99.6% statements) and functional coverage for the new features** - added
   unit tests for previously-uncovered branches (non-scalar option coercion, too-short DSN path,
   integer/uppercase boolean coercion, update-path `max_age` conversion, non-array server subjects) and
