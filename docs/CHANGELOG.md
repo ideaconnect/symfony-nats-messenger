@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the seconds→nanoseconds conversion. No behavior change.
 
 ### Added
+- **`CloseableTransportInterface` support** - the transport now implements `close()`, which disconnects
+  the NATS client and resets the lazy connection state so resources are released on demand (e.g. on
+  worker shutdown). It is a no-op when no connection was opened, and the transport reconnects lazily on
+  the next operation.
 - **`KeepaliveReceiverInterface` support** - the transport now implements Symfony Messenger's
   `keepalive()`, sending an in-progress (`+WPI`) acknowledgement so a long-running handler resets the
   JetStream redelivery timer instead of losing its message to `ack_wait` expiry. NATS resets to the

@@ -30,6 +30,7 @@ use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\KeepaliveReceiverInterface;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
+use Symfony\Component\Messenger\Transport\CloseableTransportInterface;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\SetupableTransportInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
@@ -48,7 +49,7 @@ use Symfony\Component\Uid\Uuid;
  * @see NatsTransportFactory     Creates instances of this transport from Symfony DSN configuration.
  * @see NatsTransportConfiguration  Holds the resolved, immutable runtime settings.
  */
-class NatsTransport implements TransportInterface, MessageCountAwareInterface, SetupableTransportInterface, KeepaliveReceiverInterface
+class NatsTransport implements TransportInterface, MessageCountAwareInterface, SetupableTransportInterface, KeepaliveReceiverInterface, CloseableTransportInterface
 {
     /** Conversion factor for stream max_age (seconds → nanoseconds as required by JetStream API). */
     private const SECONDS_TO_NANOSECONDS = 1_000_000_000;
@@ -328,6 +329,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
         $this->jetStream()->inProgress($this->buildAckMessage($id))->await();
+    }
+
+    /**
+     * Closes the NATS connection and releases the transport's resources.
+     *
+     * No-op when no connection was ever opened (the connection is lazy). After closing, the next
+     * transport operation reconnects lazily via {@see jetStream()}, so the transport stays reusable.
+     */
+    public function close(): void
+    {
+        if ($this->jetStream === null) {
+            return;
+        }
+
+        $this->client->disconnect()->await();
+        $this->jetStream = null;
     }
 
     /**

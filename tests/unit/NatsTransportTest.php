@@ -665,6 +665,38 @@ final class NatsTransportTest extends TestCase
         $transport->ack((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('message-id')));
     }
 
+    public function testCloseDisconnectsTheClientAndReconnectsOnNextOperation(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('ack')->willReturn(Future::complete());
+
+        $client = $this->createMock(NatsClient::class);
+        // Two connects (the second proves close() reset the lazy state so the transport reconnects),
+        // and exactly one disconnect from close().
+        $client->expects(self::exactly(2))->method('connect')->willReturn(Future::complete());
+        $client->expects(self::exactly(2))->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::once())->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, []);
+        $transport->setClient($client);
+
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('message-id'));
+        $transport->ack($envelope);
+        $transport->close();
+        $transport->ack($envelope);
+    }
+
+    public function testCloseIsNoOpWhenNeverConnected(): void
+    {
+        $client = $this->createMock(NatsClient::class);
+        $client->expects(self::never())->method('disconnect');
+
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, []);
+        $transport->setClient($client);
+
+        $transport->close();
+    }
+
     public function testJetStreamThrowsWhenConnectLeavesContextUnavailable(): void
     {
         // TestableNatsTransport::connect() is a no-op, so the lazy connect leaves the JetStream
