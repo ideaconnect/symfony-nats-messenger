@@ -9,9 +9,9 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | Feature | Tests |
 |---------|-------|
 | **DSN parsing & validation** | `testConstructorWithValidDsnInitializesTransport`, `testConstructorWithDottedTopicInitializesTransport`, `testConstructorWithInvalidDsnThrowsException`, `testConstructorWithoutPathThrowsException`, `testConstructorWithoutTopicThrowsException`, `testConstructorWithWildcardTopicThrowsException` |
-| **Message sending** | `testSendPublishesEncodedBodyWithoutHeaders`, `testSendUsesPublishWithHeadersWhenHeadersArePresent`, `testSendSerializationFailureUsesErrorDetailsStampMessage`, `testSendSerializationFailureRethrowsOriginalExceptionWithoutErrorDetailsStamp` |
+| **Message sending** | `testSendPublishesEncodedBodyWithoutHeaders`, `testSendUsesPublishWithHeadersWhenHeadersArePresent`, `testSendSerializationFailureUsesErrorDetailsStampMessage`, `testSendSerializationFailureRethrowsOriginalExceptionWithoutErrorDetailsStamp`, `testSendPublishesLargePayloadWithoutTruncation` |
 | **Publish error handling** | `testSendThrowsWhenJetStreamHeaderPublishReturnsError` (publish ack parsing/validation is delegated to the client's `JetStreamContext::publish()`, surfaced as a `JetStreamException`) |
-| **Message receiving** | `testGetReturnsDecodedEnvelopeWithHeadersAndMessageId`, `testGetTermsEmptyPayloadMessagesToStopRedelivery`, `testGetSkipsMessagesWithoutReplySubject`, `testGetReturnsEmptyArrayWhenConsumerIsMissing`, `testGetReturnsEmptyArrayWhenBatchRequestTimesOut`, `testGetRethrowsUnexpectedJetStreamExceptions`, `testGetDecodeFailureUsesTermWhenReplySubjectExists`, `testGetDecodeFailureUsesNakWhenRetryHandlerIsNats`, `testGetDecodeFailureKeepsOriginalErrorWhenRejectAlsoFails`, `testGetWithMultipleValidMessagesReturnsAll`, `testGetWithBatchingConfigPassesBatchSizeToFetchBatch` |
+| **Message receiving** | `testGetReturnsDecodedEnvelopeWithHeadersAndMessageId`, `testGetTermsEmptyPayloadMessagesToStopRedelivery`, `testGetSkipsMessagesWithoutReplySubject`, `testGetReturnsEmptyArrayWhenConsumerIsMissing`, `testGetReturnsEmptyArrayWhenBatchRequestTimesOut`, `testGetRethrowsUnexpectedJetStreamExceptions`, `testGetDecodeFailureUsesTermWhenReplySubjectExists`, `testGetDecodeFailureUsesNakWhenRetryHandlerIsNats`, `testGetDecodeFailureKeepsOriginalErrorWhenRejectAlsoFails`, `testGetWithMultipleValidMessagesReturnsAll`, `testGetWithBatchingConfigPassesBatchSizeToFetchBatch`, `testGetDecodesLargePayloadWithoutTruncation`, `testGetUsesConfiguredConsumerNameSoWorkersShareOneDurableConsumer` |
 | **ACK / reject** | `testFindReceivedStampReturnsTransportStamp`, `testAckWithoutTransportStampThrowsException`, `testAckAcknowledgesReceivedEnvelope`, `testAckUsesAckSyncWhenEnabled`, `testRejectWithoutTransportStampThrowsException`, `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats` |
 | **Retry handler (TERM / NAK)** | `testHandleFailedDeliveryUsesTermByDefault`, `testHandleFailedDeliveryUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesBaseTermTransportPath`, `testHandleFailedDeliveryUsesBaseNakTransportPath`, `testConstructorWithInvalidRetryHandlerThrowsException` |
 | **NATS-native retry tuning** | `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning` |
@@ -22,7 +22,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Consumer validation** | `testSetupRejectsUnexpectedConsumerConfiguration`, `testAssertConsumerMatchesConfigurationRejectsUnexpectedConfig`, `testAssertConsumerMatchesConfigurationRejectsWrongDeliverPolicy`, `testAssertConsumerMatchesConfigurationRejectsWrongFilterSubject`, `testAssertConsumerMatchesConfigurationRejectsWrongStreamOrConsumerName` |
 | **Message count** | `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending` |
 | **Connection (lazy init)** | `testConnectInitializesJetStreamContextFromClient`, `testJetStreamThrowsWhenConnectLeavesContextUnavailable` |
-| **Scheduled / delayed messages** | `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders`, `testSendWithDelayStampButScheduledMessagesDisabledPublishesNormally`, `testSendWithZeroDelayPublishesNormally`, `testSendWithNegativeDelayPublishesNormally`, `testSendWithDelayStampAndExistingHeadersMergesScheduleHeaders`, `testSetupWithScheduledMessagesAddsDelayedSubjectAndFlag`, `testSetupUpdateStreamWithScheduledMessagesIncludesDelayedSubject`, `testSetupUpdateRemovesOrphanedDelayedSubjectWhenScheduledMessagesDisabled` |
+| **Scheduled / delayed messages** | `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders`, `testSendDelayedMessageSchedulesAtRequestedDelay`, `testSendDelayedMessageNeverSchedulesBeforeRequestedDelay`, `testSendWithDelayStampButScheduledMessagesDisabledPublishesNormally`, `testSendWithZeroDelayPublishesNormally`, `testSendWithNegativeDelayPublishesNormally`, `testSendWithDelayStampAndExistingHeadersMergesScheduleHeaders`, `testSetupWithScheduledMessagesAddsDelayedSubjectAndFlag`, `testSetupUpdateStreamWithScheduledMessagesIncludesDelayedSubject`, `testSetupUpdateRemovesOrphanedDelayedSubjectWhenScheduledMessagesDisabled` |
 | **Igbinary fallback** | `testConstructorWithoutIgbinaryDoesNotCrash` |
 | **TLS DSN** | `testConstructorWithTlsDsnInitializesTransport` |
 
@@ -136,6 +136,14 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | Feature | Scenarios |
 |---------|-----------|
 | **Scheduled delivery** | Delayed messages are delivered after the scheduled time |
+| **Not delivered early** | Delayed messages are not available to the consumer before the scheduled time |
+
+### Large Messages (`tests/functional/features/nats_large_messages.feature`)
+
+| Feature | Scenarios |
+|---------|-----------|
+| **Single-consumer round-trip** | Round-trip large messages through a single consumer (native PHP + igbinary serializers, 128 KB) |
+| **Multi-consumer load balancing** | Large messages are load-balanced across consumers, each processed exactly once (64 KB) |
 
 ### TLS (`tests/functional/features/nats_tls.feature`, `nats_mtls.feature`)
 

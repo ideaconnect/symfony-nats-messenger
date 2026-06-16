@@ -1455,6 +1455,38 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * @When I send :count messages of :sizeKb KB to the transport
+     */
+    public function iSendMessagesOfKbToTheTransport(int $count, int $sizeKb): void
+    {
+        $this->messagesSent = $count;
+
+        $command = [
+            'php',
+            'bin/console',
+            'app:send-test-messages',
+            (string) $count,
+            '--size=' . $sizeKb,
+            '--env=test'
+        ];
+
+        $sendProcess = new Process($command, __DIR__ . '/../..');
+        $sendProcess->setTimeout(max(120, $count));
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Failed to send large messages. Exit code: %d. Output: %s. Error: %s',
+                    $sendProcess->getExitCode(),
+                    $sendProcess->getOutput(),
+                    $sendProcess->getErrorOutput()
+                )
+            );
+        }
+    }
+
+    /**
      * Cleans up all test resources after each scenario.
      *
      * Stops consumer processes, deletes NATS streams (test + failure), clears

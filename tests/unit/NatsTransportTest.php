@@ -563,6 +563,56 @@ final class NatsTransportTest extends TestCase
         self::assertSame([], $transport->failureActions);
     }
 
+    public function testGetDecodesLargePayloadWithoutTruncation(): void
+    {
+        // 1 MiB payload - the full body must reach the serializer intact on the receive path.
+        $largePayload = str_repeat('B', 1024 * 1024);
+        $decodedEnvelope = new Envelope(new \stdClass());
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->expects(self::once())->method('decode')->willReturnCallback(
+            function (array $encoded) use ($decodedEnvelope, $largePayload): Envelope {
+                self::assertSame($largePayload, $encoded['body']);
+
+                return $decodedEnvelope;
+            }
+        );
+
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('fetchBatch')
+            ->willReturn(Future::complete([
+                new NatsMessage('test-topic', 1, 'reply-id', $largePayload),
+            ]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        $envelopes = array_values(iterator_to_array($transport->get()));
+
+        self::assertCount(1, $envelopes);
+    }
+
+    public function testGetUsesConfiguredConsumerNameSoWorkersShareOneDurableConsumer(): void
+    {
+        // Multiple workers configured with the same `consumer` name must all pull from that one durable
+        // pull consumer - this is what lets JetStream load-balance a batch across them. Assert the
+        // configured name (not the default 'client') is the one passed to fetchBatch.
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->expects(self::never())->method('decode');
+
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('fetchBatch')
+            ->with('test-stream', 'shared-workers', self::anything(), self::anything())
+            ->willReturn(Future::complete([]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['consumer' => 'shared-workers'], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame([], array_values(iterator_to_array($transport->get())));
+    }
+
     public function testHandleFailedDeliveryUsesBaseTermTransportPath(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -1673,12 +1723,68 @@ final class NatsTransportTest extends TestCase
 
         self::assertArrayHasKey('Nats-Schedule', $capturedHeaders);
         self::assertStringStartsWith('@at ', $capturedHeaders['Nats-Schedule']);
-        // The DelayStamp(5000) must be honored: a regression that scheduled +0s (or ignored the
-        // stamp) would land outside the [+4s, +6s] window around the send time.
+        // The DelayStamp(5000) must be honored, and the whole-second @at resolution is rounded UP, so
+        // the scheduled time is never before the requested delay (5s) and at most ~1s beyond it.
         $scheduled = new \DateTimeImmutable(substr($capturedHeaders['Nats-Schedule'], 4));
         $delaySeconds = $scheduled->getTimestamp() - $before;
-        self::assertGreaterThanOrEqual(4, $delaySeconds);
-        self::assertLessThanOrEqual(6, $delaySeconds);
+        self::assertGreaterThanOrEqual(5, $delaySeconds);
+        self::assertLessThanOrEqual(7, $delaySeconds);
+    }
+
+    public function testSendDelayedMessageNeverSchedulesBeforeRequestedDelay(): void
+    {
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->expects(self::once())->method('encode')->willReturn(['body' => 'encoded-payload']);
+
+        $capturedHeaders = [];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturnCallback(
+            function (string $subject, string $payload, array $headers) use (&$capturedHeaders): Future {
+                $capturedHeaders = $headers;
+
+                return Future::complete();
+            }
+        );
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        // A sub-second delay must NOT collapse to "now": the @at second resolution is rounded up, so a
+        // 300ms delay still schedules at a strictly future whole second rather than firing immediately.
+        $before = microtime(true);
+        $transport->send(new Envelope(new \stdClass(), [new DelayStamp(300)]));
+
+        self::assertArrayHasKey('Nats-Schedule', $capturedHeaders);
+        $scheduled = (new \DateTimeImmutable(substr($capturedHeaders['Nats-Schedule'], 4)))->getTimestamp();
+        self::assertGreaterThan($before, $scheduled, 'A sub-second delay must still schedule in the future, not immediately.');
+    }
+
+    public function testSendPublishesLargePayloadWithoutTruncation(): void
+    {
+        // 1 MiB body - exercises that the transport never truncates or mangles a large serialized
+        // envelope on the publish path (the exact bytes must reach the client unchanged).
+        $largeBody = str_repeat('A', 1024 * 1024);
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->expects(self::once())->method('encode')->willReturn(['body' => $largeBody]);
+
+        $capturedPayload = null;
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturnCallback(
+            function (string $subject, string $payload) use (&$capturedPayload): Future {
+                $capturedPayload = $payload;
+
+                return Future::complete();
+            }
+        );
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->send(new Envelope(new \stdClass()));
+
+        self::assertSame(1024 * 1024, strlen((string) $capturedPayload));
+        self::assertSame($largeBody, $capturedPayload);
     }
 
     public function testSendTwoDelayedMessagesUseDistinctDelayedSubjects(): void

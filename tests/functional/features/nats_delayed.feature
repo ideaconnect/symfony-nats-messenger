@@ -17,3 +17,15 @@ Feature: Delayed Messages via NATS Scheduled Messages
     And I wait for messages to be consumed
     Then all 3 messages should be consumed
     And the test files directory should contain 3 files
+
+  @delayed
+  Scenario: Delayed messages are not available to the consumer before the scheduled time
+    Given I have a messenger transport configured with scheduled messages enabled
+    And the NATS stream is set up
+    And the test files directory is clean
+    When I send 3 messages with 3000 milliseconds delay to the transport
+    Then the messenger stats should show 0 messages waiting
+    When I start a messenger consumer with high limit
+    And I wait for messages to be consumed
+    Then all 3 messages should be consumed
+    And the test files directory should contain 3 files

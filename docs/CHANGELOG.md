@@ -36,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the seconds→nanoseconds conversion. No behavior change.
 
 ### Added
+- **Hardened large-message, multi-consumer, and scheduled-message coverage** - new unit tests for
+  large (1 MiB) payload round-tripping on both the send and receive paths
+  (`testSendPublishesLargePayloadWithoutTruncation`, `testGetDecodesLargePayloadWithoutTruncation`),
+  shared-durable-consumer routing (`testGetUsesConfiguredConsumerNameSoWorkersShareOneDurableConsumer`),
+  and never-early scheduling (`testSendDelayedMessageNeverSchedulesBeforeRequestedDelay`). New Behat
+  feature `nats_large_messages.feature` round-trips 128 KB / 64 KB messages through one consumer and
+  load-balances them across two, and `nats_delayed.feature` gains a scenario asserting a delayed message
+  is not visible to the consumer before its scheduled time. The send command gained a `--size` option.
 - **README PHP examples are syntax-checked in CI** - `ReadmeExamplesTest` lints every fenced ` ```php `
   block in the README (and pins their count), so a snippet that stops being valid PHP fails the build.
   This complements the existing tests that exercise the README's DSN, option, and serializer examples.
@@ -90,6 +98,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   null-passthrough definition).
 
 ### Fixed
+- **Scheduled (delayed) messages are never delivered before the requested delay** (#37) - the
+  `DelayStamp` delay maps onto a whole-second NATS `@at` schedule that previously *truncated* the
+  sub-second part, so a small delay could fire immediately and any delay could arrive up to ~1s early.
+  `send()` now rounds the delivery time **up** to the next whole second, so the message is never
+  delivered before the requested delay elapses (at most ~1s late). See the README for the
+  second-resolution caveat.
 - **A failed NAK/TERM no longer masks the original decode error in `get()`** (#34) - when a delivered
   message fails to deserialize, the transport still rejects it, but a secondary failure while
   acknowledging (e.g. a dropped connection) can no longer replace the decode exception that propagates.

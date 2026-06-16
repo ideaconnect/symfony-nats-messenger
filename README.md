@@ -705,13 +705,18 @@ use Symfony\Component\Messenger\Stamp\DelayStamp;
 $bus->dispatch(new MyMessage(), [new DelayStamp(30000)]);
 ```
 
-> **Tested by:** `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders`, `testReadmeScheduledMessagesDsnEnablesFeature`, Behat scenario `Delayed messages are delivered after the scheduled time`
+> **Tested by:** `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders`, `testSendDelayedMessageSchedulesAtRequestedDelay`, `testSendDelayedMessageNeverSchedulesBeforeRequestedDelay`, `testReadmeScheduledMessagesDsnEnablesFeature`, Behat scenarios `Delayed messages are delivered after the scheduled time` and `Delayed messages are not available to the consumer before the scheduled time`
 
 When `scheduled_messages` is enabled and a `DelayStamp` is present:
 - The message is published to a `{topic}.delayed.{uuid}` subject with `Nats-Schedule` and `Nats-Schedule-Target` headers
 - The stream is created with an additional `{topic}.delayed.>` subject and `allow_msg_schedules` enabled
 - NATS holds the message and delivers it to the original topic at the scheduled time
 - The consumer processes it like any other message
+
+The `DelayStamp` delay (milliseconds) maps onto a NATS `@at` schedule, which has **whole-second
+resolution**. The delay is rounded **up** to the next whole second, so a message is never delivered
+*before* the requested delay elapses (it may arrive up to ~1 second later); a sub-second delay therefore
+schedules at the next whole second rather than firing immediately.
 
 When `scheduled_messages` is disabled (the default), any `DelayStamp` on the envelope is silently ignored and messages are published immediately.
 

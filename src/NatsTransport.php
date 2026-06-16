@@ -156,6 +156,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $delayMs = $envelope->last(DelayStamp::class)?->getDelay() ?? 0;
         if ($delayMs > 0 && $this->configuration->isScheduledMessagesEnabled()) {
             $deliverAt = new \DateTimeImmutable('+' . $delayMs . ' milliseconds');
+            // The @at schedule expression has whole-second resolution and truncates any sub-second
+            // component. Round up to the next whole second when one is present so a delayed message is
+            // never delivered before the requested delay elapses - truncating down could otherwise fire
+            // it up to ~1s early, and would make a sub-second delay fire immediately.
+            if ((int) $deliverAt->format('u') !== 0) {
+                $deliverAt = $deliverAt->modify('+1 second');
+            }
             $headers['Nats-Schedule'] = Schedule::at($deliverAt);
             $headers['Nats-Schedule-Target'] = $this->topic;
             $topic = $this->topic . '.delayed.' . $uuid;
