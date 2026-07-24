@@ -151,6 +151,30 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(20, $configuration->streamMaxMessagesPerSubject());
     }
 
+    public function testBuildWithInvalidRetentionThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("Invalid retention option 'archive'. Allowed values are 'limits', 'interest' or 'workqueue'.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retention' => 'archive']);
+    }
+
+    public function testBuildDefaultsRetentionToLimits(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);
+
+        self::assertSame('limits', $configuration->retention()->value);
+    }
+
+    public function testBuildNormalizesRetentionPolicy(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+        foreach (['limits', 'interest', 'workqueue'] as $policy) {
+            self::assertSame($policy, $builder->build(self::VALID_DSN, ['retention' => $policy])->retention()->value);
+        }
+        self::assertSame('workqueue', $builder->build(self::VALID_DSN, ['retention' => 'WorkQueue'])->retention()->value);
+    }
+
     public function testBuildWithTlsSchemeUsesTlsServerProtocol(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
@@ -459,7 +483,9 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     public function testDefaultOptionsCoversAllTransportOptionCases(): void
     {
         $reflection = new \ReflectionClass(NatsTransportConfigurationBuilder::class);
-        $defaultOptions = $reflection->getConstant('DEFAULT_OPTIONS');
+        $method = $reflection->getMethod('defaultOptions');
+        $method->setAccessible(true);
+        $defaultOptions = $method->invoke(null);
 
         $enumValues = array_map(static fn (TransportOption $case): string => $case->value, TransportOption::cases());
 
@@ -905,6 +931,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'stream_max_messages_per_subject' => 1000,
                 'stream_storage' => 'file',
                 'stream_replicas' => 1,
+                'retention' => 'limits',
                 'retry_handler' => 'symfony',
                 'ack_sync' => false,
                 'scheduled_messages' => false,
@@ -912,6 +939,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         );
 
         self::assertSame('my-consumer', $configuration->consumer());
+        self::assertSame('limits', $configuration->retention()->value);
         self::assertSame(5, $configuration->batching());
         self::assertSame(1000, $configuration->maxBatchTimeoutMs());
         self::assertSame(86400, $configuration->streamMaxAgeSeconds());
@@ -998,6 +1026,12 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         $config = $builder->build(self::VALID_DSN, ['stream_storage' => 'memory']);
         self::assertSame('memory', $config->streamStorage()->value);
+
+        // retention: 'limits' (default), 'interest' and 'workqueue'
+        foreach (['limits', 'interest', 'workqueue'] as $policy) {
+            $config = $builder->build(self::VALID_DSN, ['retention' => $policy]);
+            self::assertSame($policy, $config->retention()->value);
+        }
     }
 
     /**

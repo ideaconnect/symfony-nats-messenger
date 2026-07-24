@@ -68,7 +68,8 @@ tests/
 
 - **DSN schemes**: `nats-jetstream://` and `nats-jetstream+tls://`
 - **Stream management**: create, update existing (subject merging, config preservation)
-- **Retention policies**: `stream_max_age`, `stream_max_bytes`, `stream_max_messages`, `stream_max_messages_per_subject`
+- **Retention limits**: `stream_max_age`, `stream_max_bytes`, `stream_max_messages`, `stream_max_messages_per_subject`
+- **Retention policy**: `retention` - `limits` (default), `interest`, or `workqueue` (immutable after creation; preserved on update)
 - **Storage backends**: `file` or `memory` via `stream_storage`
 - **Replication**: `stream_replicas` for HA
 - **Consumer strategies**: shared (batching=1) or independent consumers

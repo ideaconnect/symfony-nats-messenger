@@ -644,7 +644,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     {
         $streamConfiguration = (new StreamConfiguration($this->streamName))
             ->subjects(...$subjects)
-            ->storage($this->configuration->streamStorage());
+            ->storage($this->configuration->streamStorage())
+            ->retention($this->configuration->retention());
 
         if ($this->configuration->streamMaxAgeSeconds() > 0) {
             $streamConfiguration->maxAge($this->configuration->streamMaxAgeSeconds());
@@ -750,6 +751,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         if (array_key_exists('storage', $serverConfiguration)) {
             $updatedConfiguration['storage'] = $serverConfiguration['storage'];
+        }
+
+        // Preserve the existing retention policy: like storage, JetStream rejects changing a stream's
+        // retention after creation, so the managed value from the array_merge above must not overwrite
+        // it. Switching a stream to WorkQueue/Interest therefore requires recreating it, not an update.
+        if (array_key_exists('retention', $serverConfiguration)) {
+            $updatedConfiguration['retention'] = $serverConfiguration['retention'];
         }
 
         // Preserve the existing replica count unless stream_replicas was explicitly configured.

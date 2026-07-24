@@ -265,6 +265,14 @@ framework:
           # High Availability
           stream_replicas: 1                # Number of replicas (default: 1)
 
+          # Retention Policy
+          retention: 'limits'               # limits|interest|workqueue (default: limits)
+                                            # workqueue/interest remove a message once it is
+                                            # acknowledged; limits keeps it until the stream limits
+                                            # above are hit. Immutable after stream creation:
+                                            # preserved on update, so switching requires recreating
+                                            # the stream.
+
           # Failure Handling Strategy
           retry_handler: 'symfony'          # symfony|nats (default: symfony)
                                             # symfony => TERM on failed/rejected message
@@ -486,6 +494,23 @@ options:
 > **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` - all retention options above are verified. Behat scenarios `nats_stream_limits.feature`.
 
 > **Note:** `stream_max_messages` limits the total number of messages stored in the stream (maps to NATS `max_msgs`), while `stream_max_messages_per_subject` limits messages retained per individual subject (maps to NATS `max_msgs_per_subject`). The per-subject limit is especially useful with [multi-subject streams](#multi-subject-streams) to prevent one high-volume subject from dominating retention.
+
+### Retention Policy
+
+Controls *when* a message is removed once stored (distinct from the size/age limits above):
+
+```yaml
+options:
+  retention: 'limits'      # default: keep until the stream limits above are hit
+  retention: 'workqueue'   # remove a message as soon as it is acknowledged
+  retention: 'interest'    # remove once all interested consumers have acknowledged
+```
+
+`workqueue` is the idiomatic way to avoid retaining successfully-processed messages: an `ACK` deletes the message immediately, so only unacknowledged messages (e.g. failed and still redelivering) remain and age out via the limits above.
+
+The retention policy is **immutable after stream creation** — JetStream rejects changing it on an existing stream. The transport writes it only when creating the stream and **preserves the server's value on update**; switching an existing stream to another policy requires recreating it.
+
+> **Tested by:** `testBuildNormalizesRetentionPolicy`, `testBuildDefaultsRetentionToLimits`, `testBuildWithInvalidRetentionThrowsException`, `testReadmeStreamRetentionExamplesAreAccepted`, `testSetupCreatesStreamWithConfiguredRetentionPolicy`, `testSetupPreservesExistingRetentionPolicyOnUpdate`
 
 ### High Availability
 

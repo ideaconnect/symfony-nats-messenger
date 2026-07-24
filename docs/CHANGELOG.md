@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+- **Stream retention policy** — new `retention` transport option (`limits` (default), `interest`, or `workqueue`) controlling the JetStream stream retention policy, mapping to the client `RetentionPolicy` enum. `workqueue`/`interest` let acknowledged messages be removed immediately (idiomatic way to avoid retaining successfully-processed messages). Like `stream_storage`, the policy is immutable on an existing stream: it is written only at stream creation and the server's value is preserved on update, so switching an existing stream requires recreating it.
 
 ## [5.0.0] - 2026-06-17
 

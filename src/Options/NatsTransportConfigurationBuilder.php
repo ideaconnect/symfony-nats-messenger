@@ -6,6 +6,7 @@ namespace IDCT\NatsMessenger\Options;
 
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
+use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NATS\JetStream\Enum\StorageBackend;
 use IDCT\NatsMessenger\TypeCoercion;
 use InvalidArgumentException;
@@ -46,6 +47,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_MAX_MESSAGES_PER_SUBJECT->value => null,
         TransportOption::STREAM_STORAGE->value => StorageBackend::File->value,
         TransportOption::STREAM_REPLICAS->value => null,
+        TransportOption::RETENTION->value => RetentionPolicy::Limits->value,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
@@ -246,8 +248,32 @@ final class NatsTransportConfigurationBuilder
         $this->assertBackoff($configuration);
         $this->assertMaxDeliverExceedsBackoff($configuration);
         $this->normalizeStorageBackend($configuration);
+        $this->normalizeRetentionPolicy($configuration);
 
         return $configuration;
+    }
+
+    /**
+     * Validates and normalizes the configured stream retention policy.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function normalizeRetentionPolicy(array &$configuration): void
+    {
+        $retention = TypeCoercion::stringValue(
+            $configuration[TransportOption::RETENTION->value] ?? RetentionPolicy::Limits->value,
+            RetentionPolicy::Limits->value,
+        );
+
+        $retentionPolicy = RetentionPolicy::tryFrom(strtolower($retention));
+        if ($retentionPolicy === null) {
+            throw new InvalidArgumentException(sprintf(
+                "Invalid retention option '%s'. Allowed values are 'limits', 'interest' or 'workqueue'.",
+                $retention,
+            ));
+        }
+
+        $configuration[TransportOption::RETENTION->value] = $retentionPolicy->value;
     }
 
     /**

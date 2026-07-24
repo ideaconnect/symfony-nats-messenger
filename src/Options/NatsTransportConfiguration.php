@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace IDCT\NatsMessenger\Options;
 
 use IDCT\NATS\Core\NatsClient;
+use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NATS\JetStream\Enum\StorageBackend;
 use IDCT\NatsMessenger\TypeCoercion;
 
@@ -120,6 +121,20 @@ final readonly class NatsTransportConfiguration
         $storage = $this->stringOption(TransportOption::STREAM_STORAGE, StorageBackend::File->value);
 
         return StorageBackend::from($storage);
+    }
+
+    /**
+     * Returns the configured stream retention policy.
+     *
+     * Governs when JetStream removes a message: `Limits` (default) keeps it until the stream
+     * limits are hit, `WorkQueue` removes it as soon as it is acknowledged, `Interest` removes it
+     * once all interested consumers have acknowledged it.
+     */
+    public function retention(): RetentionPolicy
+    {
+        $retention = $this->stringOption(TransportOption::RETENTION, RetentionPolicy::Limits->value);
+
+        return RetentionPolicy::from($retention);
     }
 
     /**

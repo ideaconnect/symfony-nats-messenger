@@ -3,6 +3,7 @@
 namespace IDCT\NatsMessenger\Tests\Unit\Options;
 
 use IDCT\NATS\Core\NatsClient;
+use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NATS\JetStream\Enum\StorageBackend;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use PHPUnit\Framework\TestCase;
@@ -25,6 +26,7 @@ final class NatsTransportConfigurationTest extends TestCase
                 'stream_max_messages_per_subject' => '25',
                 'stream_storage' => 'memory',
                 'stream_replicas' => '-1',
+                'retention' => 'workqueue',
             ],
             natsRetryHandlerEnabled: true,
         );
@@ -38,6 +40,7 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertSame(25, $configuration->streamMaxMessagesPerSubject());
         self::assertSame(StorageBackend::Memory, $configuration->streamStorage());
         self::assertSame(1, $configuration->streamReplicas());
+        self::assertSame(RetentionPolicy::WorkQueue, $configuration->retention());
         self::assertTrue($configuration->isNatsRetryHandlerEnabled());
     }
 
@@ -60,6 +63,7 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertNull($configuration->streamMaxMessagesPerSubject());
         self::assertSame(StorageBackend::File, $configuration->streamStorage());
         self::assertSame(1, $configuration->streamReplicas());
+        self::assertSame(RetentionPolicy::Limits, $configuration->retention());
         self::assertFalse($configuration->isNatsRetryHandlerEnabled());
     }
 
