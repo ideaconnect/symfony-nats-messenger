@@ -29,6 +29,16 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Igbinary fallback** | `testConstructorWithoutIgbinaryDoesNotCrash` |
 | **TLS DSN** | `testConstructorWithTlsDsnInitializesTransport` |
 
+### Bundle (`tests/unit/IDCTNatsMessengerBundleTest.php`)
+
+| Feature | Tests |
+|---------|-------|
+| **Transport factory registration** | `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery` |
+| **IgbinarySerializer registration + class-name alias** | `igbinarySerializerIsRegisteredWithClassNameAlias` |
+
+The functional Behat suite also exercises the bundle end-to-end: the test app enables it in
+`config/bundles.php` and every scenario relies on its service registration.
+
 ### Transport Factory (`tests/unit/NatsTransportFactoryTest.php`)
 
 | Feature | Tests |

@@ -1,7 +1,7 @@
 {
     "name": "idct/symfony-nats-messenger",
     "description": "Symfony NATS (JetStream) Messenger Bridge",
-    "type": "library",
+    "type": "symfony-bundle",
     "license": "MIT",
     "autoload": {
         "psr-4": {

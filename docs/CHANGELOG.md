@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`IDCTNatsMessengerBundle`** - a Symfony bundle that registers the transport factory and the
+  igbinary serializer (aliased to its class name) automatically, so projects no longer need
+  manual `services.yaml` entries to use the transport.
+
 ## [5.1.0] - 2026-08-09
 
 A **minor** release. It adds fifteen new DSN options and the `auto_setup` provisioning mode, and fixes

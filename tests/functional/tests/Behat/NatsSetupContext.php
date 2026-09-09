@@ -95,7 +95,7 @@ class NatsSetupContext implements Context
      * @Given I have a messenger transport configured with max age of :maxAge minutes
      * @Given I have a messenger transport configured with max age of :maxAge minutes using :serializer
      */
-    public function iHaveAMessengerTransportConfiguredWithMaxAgeOfMinutes(int $maxAge, string $serializer = 'igbinary_serializer'): void
+    public function iHaveAMessengerTransportConfiguredWithMaxAgeOfMinutes(int $maxAge, string $serializer = 'idct_nats_messenger.serializer.igbinary'): void
     {
         // Create a temporary messenger configuration for testing
         $maxAgeSeconds = $maxAge * 60;
@@ -759,7 +759,7 @@ class NatsSetupContext implements Context
     /**
      * @Given I have a TLS messenger transport configured using :serializer
      */
-    public function iHaveATlsMessengerTransportConfiguredUsing(string $serializer = 'igbinary_serializer'): void
+    public function iHaveATlsMessengerTransportConfiguredUsing(string $serializer = 'idct_nats_messenger.serializer.igbinary'): void
     {
         $caFile = realpath(__DIR__ . '/../../../nats/certs/ca.pem');
 
@@ -800,7 +800,7 @@ class NatsSetupContext implements Context
         $keyFile = realpath(__DIR__ . '/../../../nats/certs/client-key.pem');
 
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4224/%s/%s?stream_max_age=900&tls_handshake_first=true&tls_ca_file=%s&tls_cert_file=%s&tls_key_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: 'igbinary_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream+tls://admin:password@localhost:4224/%s/%s?stream_max_age=900&tls_handshake_first=true&tls_ca_file=%s&tls_cert_file=%s&tls_key_file=%s&tls_verify_peer=true&tls_peer_name=localhost'\n                serializer: 'idct_nats_messenger.serializer.igbinary'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             $caFile,
@@ -819,7 +819,7 @@ class NatsSetupContext implements Context
     public function iHaveAMessengerTransportConfiguredWithNatsRetryHandler(): void
     {
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats'\n                serializer: 'igbinary_serializer'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats'\n                serializer: 'idct_nats_messenger.serializer.igbinary'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject
         );
@@ -838,7 +838,7 @@ class NatsSetupContext implements Context
     public function iHaveAMessengerTransportConfiguredWithNatsRetryHandlerAndMaxDeliver(int $maxDeliver): void
     {
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats&max_deliver=%d'\n                serializer: 'igbinary_serializer'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats&max_deliver=%d'\n                serializer: 'idct_nats_messenger.serializer.igbinary'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             $maxDeliver
