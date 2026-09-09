@@ -19,7 +19,7 @@ Feature: TLS NATS Transport
   @tls
   Scenario: TLS server connection with igbinary serializer
     Given NATS TLS server is running
-    And I have a TLS messenger transport configured using "igbinary_serializer"
+    And I have a TLS messenger transport configured using "idct_nats_messenger.serializer.igbinary"
     And the NATS stream is set up
     And the test files directory is clean
     When I send 5 messages to the transport

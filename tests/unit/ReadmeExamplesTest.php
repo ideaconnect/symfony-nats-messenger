@@ -43,7 +43,7 @@ final class ReadmeExamplesTest extends TestCase
     public function testReadmeContainsThePhpExamplesWeExpect(): void
     {
         // Pin the count so a future edit that drops (or stops fencing) an example is noticed.
-        self::assertCount(5, iterator_to_array(self::readmePhpBlocksProvider()));
+        self::assertCount(6, iterator_to_array(self::readmePhpBlocksProvider()));
     }
 
     /**
