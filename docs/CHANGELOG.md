@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`IDCTNatsMessengerBundle`** - a Symfony bundle that registers the transport factory and the
+  igbinary serializer (aliased to its class name) automatically, so projects no longer need
+  manual `services.yaml` entries to use the transport.
+
 ### Changed
 - **The unanswered-pull unit test tells the client's inbox fence from a connection check.** Client 2.19.0 writes a
   PING behind each pull inbox's SUB in the same write, to learn whether the server took the subscription, and its

@@ -22,11 +22,11 @@ Feature: Large Messages
     Examples:
       | serializer                                |
       | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | idct_nats_messenger.serializer.igbinary   |
 
   @large-messages
   Scenario: Large messages are load-balanced across consumers, each processed exactly once
-    Given I have a messenger transport configured with max age of 15 minutes using "igbinary_serializer"
+    Given I have a messenger transport configured with max age of 15 minutes using "idct_nats_messenger.serializer.igbinary"
     And the NATS stream is set up
     And the test files directory is clean
     When I send 20 messages of 64 KB to the transport

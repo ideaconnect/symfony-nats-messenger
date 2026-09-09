@@ -24,6 +24,7 @@ Symfony Messenger  ──dispatch──▶  NatsTransportFactory ──▶ NatsT
 
 ```
 src/
+├── IDCTNatsMessengerBundle.php                # Symfony bundle: auto-registers the factory + serializer services
 ├── NatsTransport.php                          # Core transport: send/get/ack/reject/setup/getMessageCount
 ├── NatsTransportFactory.php                   # TransportFactoryInterface - DSN scheme detection + instantiation
 ├── TypeCoercion.php                           # Safe mixed → int/float/string coercion (final, static)
@@ -44,6 +45,7 @@ tests/
 │   ├── PhpProcess.php                          # runs a PHP script in a child process
 │   └── StrictHeaderNameSerializer.php          # a serializer that reads header names as strings under strict types
 ├── unit/                                       # PHPUnit 11 - fast, no live NATS required
+│   ├── IDCTNatsMessengerBundleTest.php         # bundle service registration (factory tag, serializer alias)
 │   ├── NatsTransportTest.php                   # send/get/ack/reject/setup/retry/count/scheduled
 │   ├── NatsTransportFactoryTest.php            # scheme detection, transport creation
 │   ├── MutationTestingBootstrapTest.php        # mutant processes can double final classes and load the mutant
@@ -77,6 +79,14 @@ docs/
 ```
 
 ## Components
+
+### IDCTNatsMessengerBundle
+- A thin `AbstractBundle` (no semantic configuration) registering the library's services in the
+  application container: `idct_nats_messenger.transport_factory` (`NatsTransportFactory`) and
+  `idct_nats_messenger.serializer.igbinary` (`IgbinarySerializer`, aliased to its class name).
+- Symfony Flex enables the bundle automatically on install; without Flex it is added to
+  `config/bundles.php` manually. Manual service registration (the pre-bundle approach) keeps
+  working alongside it.
 
 ### NatsTransportFactory
 - Recognizes two DSN schemes: `nats-jetstream://` and `nats-jetstream+tls://` (see `supports()`).
