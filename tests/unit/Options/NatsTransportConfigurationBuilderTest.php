@@ -1193,6 +1193,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'stream_max_consumers' => 10,
                 'stream_storage' => 'file',
                 'stream_replicas' => 1,
+                'stream_placement_cluster' => 'east',
+                'stream_placement_tags' => ['ssd', 'eu-west'],
                 'stream_retention' => 'limits',
                 'stream_discard' => 'old',
                 'stream_duplicate_window' => 120,
@@ -1224,6 +1226,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(10, $configuration->streamMaxConsumers());
         self::assertSame('file', $configuration->streamStorage()->value);
         self::assertSame(1, $configuration->streamReplicas());
+        self::assertSame(['cluster' => 'east', 'tags' => ['ssd', 'eu-west']], $configuration->streamPlacement());
         self::assertSame('limits', $configuration->streamRetention()?->value);
         self::assertSame('old', $configuration->streamDiscard()?->value);
         self::assertSame(120, $configuration->streamDuplicateWindowSeconds());
@@ -1454,6 +1457,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertNull($config->inactiveThresholdMs());
         self::assertNull($config->replayPolicy());
         self::assertFalse($config->isAutoSetupEnabled());
+        self::assertNull($config->streamPlacement());
     }
 
     public function testBuildWithInvalidRetentionThrowsException(): void
@@ -1680,5 +1684,95 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(RetentionPolicy::Interest, $config->streamRetention());
         self::assertSame(ReplayPolicy::Original, $config->replayPolicy());
         self::assertTrue($config->isAutoSetupEnabled());
+    }
+
+    public function testBuildAcceptsStreamPlacementOptions(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'stream_placement_cluster' => ' eu-west ',
+            'stream_placement_tags' => ['ssd', ' rack-1 ', 'ssd', ''],
+        ]);
+
+        self::assertSame('eu-west', $configuration->streamPlacementCluster());
+        self::assertSame(['ssd', 'rack-1'], $configuration->streamPlacementTags());
+        self::assertSame(['cluster' => 'eu-west', 'tags' => ['ssd', 'rack-1']], $configuration->streamPlacement());
+    }
+
+    public function testBuildSplitsCommaSeparatedStreamPlacementTags(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'stream_placement_tags' => 'ssd, eu-west,,',
+        ]);
+
+        self::assertNull($configuration->streamPlacementCluster());
+        self::assertSame(['ssd', 'eu-west'], $configuration->streamPlacementTags());
+        self::assertSame(['tags' => ['ssd', 'eu-west']], $configuration->streamPlacement());
+    }
+
+    public function testBuildParsesStreamPlacementFromDsnQueryString(): void
+    {
+        $listForm = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?stream_placement_cluster=east&stream_placement_tags[]=ssd&stream_placement_tags[]=fast',
+            []
+        );
+        $commaForm = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?stream_placement_tags=ssd,fast',
+            []
+        );
+
+        self::assertSame(['cluster' => 'east', 'tags' => ['ssd', 'fast']], $listForm->streamPlacement());
+        self::assertSame(['tags' => ['ssd', 'fast']], $commaForm->streamPlacement());
+    }
+
+    public function testBuildLeavesStreamPlacementUnsetByDefault(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);
+
+        self::assertNull($configuration->streamPlacementCluster());
+        self::assertNull($configuration->streamPlacementTags());
+        self::assertNull($configuration->streamPlacement());
+    }
+
+    #[DataProvider('invalidStreamPlacementClusterProvider')]
+    public function testBuildWithInvalidStreamPlacementClusterThrowsException(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_placement_cluster option must be a non-empty string.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_placement_cluster' => $value]);
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function invalidStreamPlacementClusterProvider(): iterable
+    {
+        yield 'empty string' => [''];
+        yield 'whitespace only' => ['   '];
+        yield 'boolean' => [true];
+        yield 'array' => [['east']];
+    }
+
+    #[DataProvider('invalidStreamPlacementTagsProvider')]
+    public function testBuildWithInvalidStreamPlacementTagsThrowsException(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_placement_tags option must be a non-empty list of non-empty strings, or a comma-separated string of them.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_placement_tags' => $value]);
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function invalidStreamPlacementTagsProvider(): iterable
+    {
+        yield 'empty string' => [''];
+        yield 'only separators and whitespace' => [' , ,'];
+        yield 'empty list' => [[]];
+        yield 'list with only blank tags' => [['', '  ']];
+        yield 'list with a nested array' => [['ssd', ['nested']]];
+        yield 'list with a boolean' => [['ssd', true]];
+        yield 'boolean' => [false];
     }
 }

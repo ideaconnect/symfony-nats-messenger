@@ -168,10 +168,43 @@ final class TypeCoercionTest extends TestCase
         self::assertFalse(TypeCoercion::boolValue(null));
     }
 
+    /**
+     * @param list<string> $expected
+     */
+    #[DataProvider('stringListValueProvider')]
+    public function testStringListValue(mixed $value, array $expected): void
+    {
+        self::assertSame($expected, TypeCoercion::stringListValue($value));
+    }
+
+    /**
+     * @return iterable<string, array{mixed, list<string>}>
+     */
+    public static function stringListValueProvider(): iterable
+    {
+        yield 'list of strings passes through' => [['a', 'b'], ['a', 'b']];
+        yield 'elements are trimmed' => [[' a ', "\tb"], ['a', 'b']];
+        yield 'empty and blank elements are dropped' => [['a', '', '  ', 'b'], ['a', 'b']];
+        yield 'duplicates are dropped, first occurrence wins' => [['a', 'b', 'a'], ['a', 'b']];
+        yield 'integer elements are stringified' => [[1, 'a', 2], ['1', 'a', '2']];
+        yield 'non-scalar and non-string elements are dropped' => [['a', ['nested'], true, 1.5, null, 'b'], ['a', 'b']];
+        yield 'associative array keeps the values as a list' => [['x' => 'a', 'y' => 'b'], ['a', 'b']];
+        yield 'comma-separated string is split and trimmed' => ['a, b ,c', ['a', 'b', 'c']];
+        yield 'comma-separated string drops empty segments' => [',a,,b,', ['a', 'b']];
+        yield 'single string without commas' => ['a', ['a']];
+        yield 'integer becomes a single-element list' => [7, ['7']];
+        yield 'empty string yields an empty list' => ['', []];
+        yield 'null yields an empty list' => [null, []];
+        yield 'bool yields an empty list' => [true, []];
+        yield 'float yields an empty list' => [1.5, []];
+        yield 'object yields an empty list' => [new \stdClass(), []];
+    }
+
     public function testMethodsAreStaticAndPure(): void
     {
         // Calling repeatedly with the same input yields the same output (no state).
         self::assertSame(TypeCoercion::intValue('7'), TypeCoercion::intValue('7'));
+        self::assertSame(TypeCoercion::stringListValue('a,b'), TypeCoercion::stringListValue('a,b'));
         self::assertSame(TypeCoercion::floatValue('7.5'), TypeCoercion::floatValue('7.5'));
         self::assertSame(TypeCoercion::stringValue(7), TypeCoercion::stringValue(7));
         self::assertSame(TypeCoercion::boolValue('yes'), TypeCoercion::boolValue('yes'));
