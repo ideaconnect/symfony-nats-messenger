@@ -350,6 +350,11 @@ framework:
 
           # High Availability
           stream_replicas: 1                # Number of replicas (default: 1)
+          stream_placement_cluster: null    # Pin the stream to a named JetStream cluster
+                                            # (null = leave the stream's placement untouched)
+          stream_placement_tags: null       # Only place the stream on servers carrying ALL of these
+                                            # tags, e.g. ['ssd', 'eu-west'] (or 'ssd,eu-west' in a DSN)
+                                            # (null = leave the stream's placement untouched)
 
           # Failure Handling Strategy
           retry_handler: 'symfony'          # symfony|nats (default: symfony)
@@ -409,7 +414,7 @@ framework:
           nkey: null                        # NKey public value
 ```
 
-> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`
+> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`
 
 ### Retry Handler Behavior
 
@@ -787,6 +792,39 @@ options:
 
 > **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`
 
+### Stream Placement
+
+In a JetStream cluster you can pin a stream to a named cluster and/or to the servers that carry specific
+tags (`server_tags` in the NATS server configuration). A stream is only placed on servers carrying
+**all** of the listed tags:
+
+```yaml
+options:
+  # Only on servers tagged both "ssd" and "eu-west"
+  stream_placement_tags: ['ssd', 'eu-west']
+
+  # In the "east" cluster of a super-cluster
+  stream_placement_cluster: 'east'
+
+  # Both at once
+  stream_placement_cluster: 'east'
+  stream_placement_tags: ['ssd']
+```
+
+In a DSN the tags are a comma-separated list: `?stream_placement_tags=ssd,eu-west`.
+
+> **Tested by:** `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, Behat scenarios in `nats_stream_placement.feature`
+
+- Both options default to `null`, which leaves the stream's placement untouched: a new stream gets the
+  server's default placement and an existing stream keeps whatever placement it already has. This
+  matters because a JetStream update that omits `placement` clears it, so the transport echoes the live
+  value back whenever the options are unset.
+- Setting either option on an existing stream updates its placement, and NATS then moves the stream's
+  replicas onto matching servers. To remove a placement entirely, change it in NATS directly.
+- On a clustered server, tags that no server carries make stream creation fail with a JetStream error such
+  as `no suitable peers for placement`. A standalone (non-clustered) server accepts and stores any
+  placement without acting on it.
+
 ## Testing
 
 ### Unit Tests
@@ -1026,7 +1064,12 @@ framework:
 > already-created stream works on NATS 2.12 and newer, and is rejected by the server on older versions -
 > recreate the stream to change it there.
 
-> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, and `Custom consumer name is registered in JetStream`
+> **Note on placement:** `stream_placement_cluster` and `stream_placement_tags` follow the same rule as
+> `stream_max_consumers`: they are written only when you set them, and unset options leave the stream's
+> existing placement in place. A JetStream update that omits `placement` would clear it, so the transport
+> echoes the live value back whenever the options are unset. See [Stream Placement](#stream-placement).
+
+> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, and `Custom consumer name is registered in JetStream`
 
 ### Delayed / Scheduled Messages
 

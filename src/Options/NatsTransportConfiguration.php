@@ -305,6 +305,66 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns the JetStream cluster the stream is pinned to, or null to leave placement untouched.
+     */
+    public function streamPlacementCluster(): ?string
+    {
+        $value = $this->options[TransportOption::STREAM_PLACEMENT_CLUSTER->value] ?? null;
+        if ($value === null) {
+            return null;
+        }
+
+        $cluster = trim(TypeCoercion::stringValue($value));
+
+        return $cluster === '' ? null : $cluster;
+    }
+
+    /**
+     * Returns the server tags the stream must be placed on, or null to leave placement untouched.
+     *
+     * Accepts the normalized list the builder stores, a raw list, or a comma-separated string.
+     *
+     * @return list<string>|null
+     */
+    public function streamPlacementTags(): ?array
+    {
+        $value = $this->options[TransportOption::STREAM_PLACEMENT_TAGS->value] ?? null;
+        if ($value === null) {
+            return null;
+        }
+
+        $tags = TypeCoercion::stringListValue($value);
+
+        return $tags === [] ? null : $tags;
+    }
+
+    /**
+     * Returns the JetStream `placement` block built from the two placement options, or null when
+     * neither is set.
+     *
+     * Used by {@see NatsTransport::setup()}: written to the stream when non-null, otherwise the
+     * stream's existing placement is left as the server reports it.
+     *
+     * @return array{cluster?: string, tags?: list<string>}|null
+     */
+    public function streamPlacement(): ?array
+    {
+        $placement = [];
+
+        $cluster = $this->streamPlacementCluster();
+        if ($cluster !== null) {
+            $placement['cluster'] = $cluster;
+        }
+
+        $tags = $this->streamPlacementTags();
+        if ($tags !== null) {
+            $placement['tags'] = $tags;
+        }
+
+        return $placement === [] ? null : $placement;
+    }
+
+    /**
      * Returns the consumer max-ack-pending limit, or null to use the JetStream default.
      *
      * Caps how many delivered-but-unacknowledged messages a consumer may have outstanding; the

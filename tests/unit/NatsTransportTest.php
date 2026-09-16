@@ -5169,4 +5169,152 @@ final class NatsTransportTest extends TestCase
 
         self::assertInstanceOf(TransportMessageIdStamp::class, $result->last(TransportMessageIdStamp::class));
     }
+
+    /**
+     * @param array<string, mixed> $options
+     * @param array<string, mixed> $expectedPlacement
+     */
+    #[DataProvider('streamPlacementProvider')]
+    public function testSetupPassesStreamPlacementOnCreate(array $options, array $expectedPlacement): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->with(self::streamConfigEquals([
+                'storage' => 'file',
+                'num_replicas' => 1,
+                'placement' => $expectedPlacement,
+                'name' => 'test-stream',
+                'subjects' => ['test-topic'],
+            ]))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, array<string, mixed>}>
+     */
+    public static function streamPlacementProvider(): iterable
+    {
+        yield 'cluster and tags' => [
+            ['stream_placement_cluster' => 'east', 'stream_placement_tags' => ['ssd', 'fast']],
+            ['cluster' => 'east', 'tags' => ['ssd', 'fast']],
+        ];
+        yield 'tags only, comma-separated' => [
+            ['stream_placement_tags' => 'ssd,fast'],
+            ['tags' => ['ssd', 'fast']],
+        ];
+        yield 'cluster only' => [
+            ['stream_placement_cluster' => 'east'],
+            ['cluster' => 'east'],
+        ];
+    }
+
+    public function testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                    'placement' => ['cluster' => 'west'],
+                ],
+            ],
+        );
+
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(static function (array $options): bool {
+                return ($options['placement'] ?? null) === ['cluster' => 'east', 'tags' => ['ssd']];
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'stream_placement_cluster' => 'east',
+            'stream_placement_tags' => ['ssd'],
+        ]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    /**
+     * A STREAM.UPDATE payload that omits `placement` clears it on the server (verified against
+     * nats-server 2.14), so an operator-pinned placement survives only because the transport echoes
+     * the live value back whenever the placement options are unset.
+     */
+    public function testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                    'placement' => ['tags' => ['hdd']],
+                ],
+            ],
+        );
+
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(static function (array $options): bool {
+                return ($options['placement'] ?? null) === ['tags' => ['hdd']];
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
 }

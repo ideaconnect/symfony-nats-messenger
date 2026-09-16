@@ -125,4 +125,41 @@ final class TypeCoercion
     {
         return (int) round(self::floatValue($seconds, $default) * 1000);
     }
+
+    /**
+     * Coerces a list-like option value to a de-duplicated list of trimmed, non-empty strings.
+     *
+     * Accepts a PHP array (a YAML list, or `option[]=a&option[]=b` from a DSN query string) whose
+     * elements are strings or integers, or a single comma-separated string (`option=a,b` from a DSN
+     * query string). Elements of any other type, and elements that are empty once trimmed, are
+     * dropped. A value that is neither an array nor a string/integer yields an empty list.
+     *
+     * @return list<string>
+     */
+    public static function stringListValue(mixed $value): array
+    {
+        if (is_string($value) || is_int($value)) {
+            $value = explode(',', (string) $value);
+        }
+
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $list = [];
+        foreach ($value as $element) {
+            if (!is_string($element) && !is_int($element)) {
+                continue;
+            }
+
+            $normalized = trim((string) $element);
+            if ($normalized === '' || in_array($normalized, $list, true)) {
+                continue;
+            }
+
+            $list[] = $normalized;
+        }
+
+        return $list;
+    }
 }

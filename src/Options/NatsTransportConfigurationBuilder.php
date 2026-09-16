@@ -71,6 +71,8 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_DENY_PURGE->value => null,
         TransportOption::STREAM_ALLOW_DIRECT->value => null,
         TransportOption::STREAM_ALLOW_ROLLUP_HEADERS->value => null,
+        TransportOption::STREAM_PLACEMENT_CLUSTER->value => null,
+        TransportOption::STREAM_PLACEMENT_TAGS->value => null,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
@@ -302,6 +304,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertNotExceedingInt32($configuration, TransportOption::STREAM_MAX_MESSAGE_SIZE);
         $this->assertStreamDescriptionLength($configuration);
         $this->assertTriStateBooleans($configuration);
+        $this->normalizeStreamPlacement($configuration);
         $this->assertNonNegativeNumber($configuration, TransportOption::NAK_DELAY);
         $this->assertPositiveNumber($configuration, TransportOption::ACK_WAIT);
         $this->assertPositiveNumber($configuration, TransportOption::MAX_DELIVER, true);
@@ -528,6 +531,53 @@ final class NatsTransportConfigurationBuilder
                 strlen($description),
             ));
         }
+    }
+
+    /**
+     * Validates and normalizes the two stream placement options.
+     *
+     * `stream_placement_cluster` must be a non-empty string when set. `stream_placement_tags` accepts a
+     * list of non-empty strings (a YAML list, or `stream_placement_tags[]=a&stream_placement_tags[]=b`
+     * in a DSN query string) or a single comma-separated string (`stream_placement_tags=a,b`); it is
+     * stored back as the normalized list so every reader of the option sees one shape. Both default to
+     * null, which leaves the stream's placement untouched.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function normalizeStreamPlacement(array &$configuration): void
+    {
+        $cluster = $configuration[TransportOption::STREAM_PLACEMENT_CLUSTER->value] ?? null;
+        if ($cluster !== null) {
+            $normalizedCluster = is_string($cluster) || is_int($cluster) ? trim((string) $cluster) : '';
+            if ($normalizedCluster === '') {
+                throw new InvalidArgumentException(sprintf(
+                    'The %s option must be a non-empty string.',
+                    TransportOption::STREAM_PLACEMENT_CLUSTER->value,
+                ));
+            }
+
+            $configuration[TransportOption::STREAM_PLACEMENT_CLUSTER->value] = $normalizedCluster;
+        }
+
+        $tags = $configuration[TransportOption::STREAM_PLACEMENT_TAGS->value] ?? null;
+        if ($tags === null) {
+            return;
+        }
+
+        // Reject loudly rather than silently dropping a malformed element: a tag that is quietly
+        // ignored would place the stream somewhere other than where the operator asked.
+        $elementsAreScalar = is_array($tags)
+            ? count(array_filter($tags, static fn (mixed $tag): bool => is_string($tag) || is_int($tag))) === count($tags)
+            : is_string($tags) || is_int($tags);
+        $normalizedTags = $elementsAreScalar ? TypeCoercion::stringListValue($tags) : [];
+        if ($normalizedTags === []) {
+            throw new InvalidArgumentException(sprintf(
+                'The %s option must be a non-empty list of non-empty strings, or a comma-separated string of them.',
+                TransportOption::STREAM_PLACEMENT_TAGS->value,
+            ));
+        }
+
+        $configuration[TransportOption::STREAM_PLACEMENT_TAGS->value] = $normalizedTags;
     }
 
     /**

@@ -1179,6 +1179,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $streamConfiguration->allowRollupHeaders($this->configuration->streamAllowRollupHeaders());
         }
 
+        // Placement has no dedicated setter on the client's StreamConfiguration, so it goes through the
+        // generic escape hatch. The block is built by the configuration object so cluster-only,
+        // tags-only and combined placements all serialize the way the JetStream API expects.
+        $placement = $this->configuration->streamPlacement();
+        if ($placement !== null) {
+            $streamConfiguration->set('placement', $placement);
+        }
+
         if ($this->configuration->isScheduledMessagesEnabled()) {
             $streamConfiguration->set('allow_msg_schedules', true);
         }
@@ -1284,6 +1292,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         //  - max_msg_size: mutable on every supported version, so it fails silently rather than
         //    loudly - a stream capped at 1 MiB by an operator would be reset to unlimited on the next
         //    setup() run, with nothing in the output to say so.
+        //  - placement (stream_placement_cluster / stream_placement_tags): pinned by operators in
+        //    clustered deployments; dropping it would let the server migrate the stream's replicas
+        //    onto arbitrary peers. Written only when configured, echoed otherwise.
         //
         // Preservation works by echo, not by omission: a field left out of a STREAM.UPDATE payload is
         // read as the Go zero value and reset (verified against nats-server), so the values survive

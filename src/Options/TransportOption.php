@@ -58,6 +58,8 @@ enum TransportOption: string
     case STREAM_DENY_PURGE = 'stream_deny_purge';
     case STREAM_ALLOW_DIRECT = 'stream_allow_direct';
     case STREAM_ALLOW_ROLLUP_HEADERS = 'stream_allow_rollup_headers';
+    case STREAM_PLACEMENT_CLUSTER = 'stream_placement_cluster';
+    case STREAM_PLACEMENT_TAGS = 'stream_placement_tags';
     case RETRY_HANDLER = 'retry_handler';
     case NAK_DELAY = 'nak_delay';
     case ACK_WAIT = 'ack_wait';

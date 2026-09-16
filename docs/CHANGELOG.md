@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default `null` = the client's own default of 10) caps the re-dial attempts per outage. With reconnect
   enabled the same retry loop also covers a failed initial connect. Both options work from the DSN query
   string too.
+- **`stream_placement_cluster` and `stream_placement_tags` options** exposing JetStream stream placement
+  (`placement.cluster` / `placement.tags`). Tags accept a YAML list or a comma-separated string, so they
+  work from a DSN query string as `stream_placement_tags=ssd,eu-west`. Both default to `null`, which
+  leaves the stream's placement untouched: on the update path the transport echoes the live server value
+  back, because a JetStream update that omits `placement` clears it (verified against nats-server 2.14).
+- **`TypeCoercion::stringListValue()`** centralizing the list-or-comma-separated-string coercion used by
+  `stream_placement_tags`.
 
 ## [5.4.1] - 2026-10-05
 
