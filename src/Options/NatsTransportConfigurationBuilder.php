@@ -49,6 +49,8 @@ final class NatsTransportConfigurationBuilder
         TransportOption::PING_AFTER_IDLE->value => 30,
         // The client's own default, so a transport that does not set it behaves as before the option existed.
         TransportOption::REQUEST_TIMEOUT->value => 10,
+        TransportOption::RECONNECT->value => false,
+        TransportOption::MAX_RECONNECT_ATTEMPTS->value => null,
         TransportOption::MAX_ACK_PENDING->value => null,
         TransportOption::INACTIVE_THRESHOLD->value => null,
         TransportOption::REPLAY_POLICY->value => null,
@@ -112,14 +114,22 @@ final class NatsTransportConfigurationBuilder
         $port = TypeCoercion::intValue($components['port'] ?? self::DEFAULT_NATS_PORT, self::DEFAULT_NATS_PORT);
         $server = sprintf('%s://%s:%d', $scheme, $host, $port);
 
+        // max_reconnect_attempts is forwarded only when configured so that the client's own default
+        // applies otherwise; repeating that default here would silently diverge from the client over time.
+        $reconnectArguments = ['reconnectEnabled' => $this->toBool($configuration[TransportOption::RECONNECT->value])];
+        $maxReconnectAttempts = $configuration[TransportOption::MAX_RECONNECT_ATTEMPTS->value] ?? null;
+        if ($maxReconnectAttempts !== null) {
+            $reconnectArguments['maxReconnectAttempts'] = TypeCoercion::intValue($maxReconnectAttempts);
+        }
+
         $client = new NatsClient(new NatsOptions(
+            ...$reconnectArguments,
             servers: [$server],
             connectTimeoutMs: max(1, TypeCoercion::secondsToMs($configuration[TransportOption::CONNECTION_TIMEOUT->value] ?? null, 1.0)),
             // How long a request waits for the server's reply: the publish acknowledgement of send(), an
             // ack_sync ACK, and the JetStream API calls of setup() and getMessageCount().
             requestTimeoutMs: max(1, TypeCoercion::secondsToMs($configuration[TransportOption::REQUEST_TIMEOUT->value] ?? null, 10.0)),
             pedantic: false,
-            reconnectEnabled: false,
             tlsRequired: $this->toBool($configuration[TransportOption::TLS_REQUIRED->value]),
             tlsHandshakeFirst: $this->toBool($configuration[TransportOption::TLS_HANDSHAKE_FIRST->value]),
             tlsCaFile: $this->toNullableString($configuration[TransportOption::TLS_CA_FILE->value]),
@@ -271,6 +281,8 @@ final class NatsTransportConfigurationBuilder
         $this->assertPositiveNumber($configuration, TransportOption::REQUEST_TIMEOUT);
         // 0 is meaningful here: it turns the check off.
         $this->assertNonNegativeNumber($configuration, TransportOption::PING_AFTER_IDLE);
+        // null defers to the client's default; 0 would only spell "reconnect disabled" a second way.
+        $this->assertPositiveNumber($configuration, TransportOption::MAX_RECONNECT_ATTEMPTS, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_AGE, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_BYTES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES, true);

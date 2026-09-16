@@ -1185,6 +1185,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'ping_after_idle' => 30,
                 'request_timeout' => 10,
                 'deduplicate' => false,
+                'reconnect' => false,
+                'max_reconnect_attempts' => 10,
                 'stream_max_age' => 86400,
                 'stream_max_bytes' => 1073741824,
                 'stream_max_messages' => 1000000,
@@ -1224,6 +1226,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(10, $configuration->streamMaxConsumers());
         self::assertSame('file', $configuration->streamStorage()->value);
         self::assertSame(1, $configuration->streamReplicas());
+        self::assertFalse($configuration->isReconnectEnabled());
+        self::assertSame(10, $configuration->maxReconnectAttempts());
         self::assertSame('limits', $configuration->streamRetention()?->value);
         self::assertSame('old', $configuration->streamDiscard()?->value);
         self::assertSame(120, $configuration->streamDuplicateWindowSeconds());
@@ -1454,6 +1458,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertNull($config->inactiveThresholdMs());
         self::assertNull($config->replayPolicy());
         self::assertFalse($config->isAutoSetupEnabled());
+        self::assertFalse($config->isReconnectEnabled());
+        self::assertNull($config->maxReconnectAttempts());
     }
 
     public function testBuildWithInvalidRetentionThrowsException(): void
@@ -1680,5 +1686,75 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(RetentionPolicy::Interest, $config->streamRetention());
         self::assertSame(ReplayPolicy::Original, $config->replayPolicy());
         self::assertTrue($config->isAutoSetupEnabled());
+    }
+
+    public function testBuildLeavesReconnectDisabledByDefault(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertFalse($configuration->isReconnectEnabled());
+        self::assertNull($configuration->maxReconnectAttempts());
+        self::assertFalse($options->reconnectEnabled);
+        self::assertSame((new NatsOptions())->maxReconnectAttempts, $options->maxReconnectAttempts);
+    }
+
+    public function testBuildWithReconnectOptionsPropagatesToNatsOptions(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'reconnect' => 'true',
+            'max_reconnect_attempts' => '25',
+        ]);
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertTrue($configuration->isReconnectEnabled());
+        self::assertSame(25, $configuration->maxReconnectAttempts());
+        self::assertTrue($options->reconnectEnabled);
+        self::assertSame(25, $options->maxReconnectAttempts);
+    }
+
+    public function testBuildWithReconnectFromDsnQueryString(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?reconnect=1&max_reconnect_attempts=3',
+            []
+        );
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertTrue($options->reconnectEnabled);
+        self::assertSame(3, $options->maxReconnectAttempts);
+    }
+
+    /**
+     * The attempt count is forwarded only when configured, so the client's own default must survive
+     * a bare `reconnect: true` - otherwise a client-side change of that default would be masked here.
+     */
+    public function testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['reconnect' => true]);
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertTrue($options->reconnectEnabled);
+        self::assertSame((new NatsOptions())->maxReconnectAttempts, $options->maxReconnectAttempts);
+    }
+
+    #[DataProvider('invalidMaxReconnectAttemptsProvider')]
+    public function testBuildWithInvalidMaxReconnectAttemptsThrowsException(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('max_reconnect_attempts');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_reconnect_attempts' => $value]);
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function invalidMaxReconnectAttemptsProvider(): iterable
+    {
+        yield 'zero' => [0];
+        yield 'negative' => [-1];
+        yield 'fractional' => [1.5];
+        yield 'non-numeric' => ['many'];
     }
 }

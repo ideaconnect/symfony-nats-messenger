@@ -284,6 +284,13 @@ framework:
           request_timeout: 10               # Seconds to wait for the server's reply to a publish,
                                             # an ack_sync ACK, setup() or a message count (default: 10)
 
+          # Connection Resilience
+          reconnect: false                  # Re-dial automatically after the connection drops (default: false)
+                                            # false => the next send()/get() fails and the worker exits
+                                            # true  => the NATS client reconnects with exponential backoff
+          max_reconnect_attempts: null      # Re-dial attempts per outage before giving up
+                                            # (null = the client's own default of 10). Positive integer.
+
           # Consumer Flow Control & Lifecycle
           max_ack_pending: 1000             # Max delivered-but-unacked messages outstanding
                                             # (null = server default). Primary flow-control lever.
@@ -402,7 +409,7 @@ framework:
           nkey: null                        # NKey public value
 ```
 
-> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`
+> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`
 
 ### Retry Handler Behavior
 
@@ -667,8 +674,9 @@ options:
 
 ### Losing the Connection
 
-The transport does not reconnect in the background, and nothing in Symfony calls `close()`. When the
-connection has been lost, the next operation dials again instead:
+Unless [`reconnect`](#automatic-reconnect) is on, the transport does not reconnect in the background, and
+nothing in Symfony calls `close()`. When the connection has been lost, the next operation dials again
+instead:
 
 - A connection is lost when the NATS server restarts, when the network drops it, or when the server closes
   it because the client stopped answering its pings. A PHP process answers them only while it is inside a
@@ -703,6 +711,37 @@ options:
 ```
 
 > **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testBuildWithInvalidPingAfterIdleThrowsException`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
+
+### Automatic Reconnect
+
+By default the NATS client does **not** reconnect on its own: the transport dials again on the next
+operation instead, and the operation that runs into the lost connection fails (see
+[Losing the Connection](#losing-the-connection)). Enable `reconnect` to have the NATS client re-dial in the
+background as soon as the connection drops:
+
+```yaml
+options:
+  reconnect: true             # re-dial after a dropped connection (default: false)
+  max_reconnect_attempts: 20  # re-dial attempts per outage (default: null = the client's default of 10)
+```
+
+> **Tested by:** `testBuildLeavesReconnectDisabledByDefault`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`
+
+**What `reconnect: true` does** (all of it inside the NATS client; the transport only switches it on):
+- After the connection is lost the client re-dials with exponential backoff (starting at 100 ms and capped
+  at 10 s, with jitter) and re-establishes its subscriptions.
+- Operations issued while the connection is down wait for the reconnect instead of failing at once,
+  bounded by the client's request timeout. Publishes are buffered and flushed once reconnected.
+- Once `max_reconnect_attempts` is exhausted the client closes the connection for good, and from then on
+  the transport behaves as it does without reconnect: the next operation dials again. Rejected credentials
+  are not retried at all.
+- The same retry loop also covers a failed **initial** connect, so `messenger:setup-transports` against a
+  NATS server that is down keeps re-dialling through all attempts before it fails, instead of failing on
+  the first refused connection.
+
+**When to enable:** long-running workers against a NATS cluster whose nodes restart or fail over. Leave it
+disabled if you rely on the process supervisor to restart the worker on any connection loss, or if you
+want `messenger:setup-transports` to fail fast when NATS is unreachable.
 
 ## Stream Configuration
 

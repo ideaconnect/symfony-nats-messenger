@@ -309,4 +309,27 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertTrue($enabled->isAutoSetupEnabled());
         self::assertFalse($disabled->isAutoSetupEnabled());
     }
+
+    public function testReconnectAccessorsReadTheOptions(): void
+    {
+        $configured = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: ['reconnect' => 'yes', 'max_reconnect_attempts' => '7'],
+            natsRetryHandlerEnabled: false,
+        );
+        $defaults = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: [],
+            natsRetryHandlerEnabled: false,
+        );
+
+        self::assertTrue($configured->isReconnectEnabled());
+        self::assertSame(7, $configured->maxReconnectAttempts());
+        self::assertFalse($defaults->isReconnectEnabled());
+        self::assertNull($defaults->maxReconnectAttempts());
+    }
 }
