@@ -16,7 +16,7 @@ Symfony Messenger  ──dispatch──▶  NatsTransportFactory ──▶ NatsT
 - **Symfony side:** the library implements `TransportInterface`, `MessageCountAwareInterface`,
   and `SetupableTransportInterface`, so it plugs into `messenger:consume`, `messenger:setup-transports`,
   and the failure/retry machinery like any first-party transport.
-- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.4`,
+- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.10`,
   amphp-based). Calls return `Amp\Future`; the transport resolves them synchronously with `->await()`
   because Symfony Messenger's transport contract is blocking.
 

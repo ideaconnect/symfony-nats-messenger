@@ -7,7 +7,7 @@
         "php": ">=8.2",
         "ext-ctype": "*",
         "ext-iconv": "*",
-        "idct/php-nats-jetstream-client": "dev-main",
+        "idct/php-nats-jetstream-client": "^2.10",
         "phpdocumentor/reflection-docblock": "^6.0.3",
         "phpstan/phpdoc-parser": "^2.3.2",
         "symfony/console": "^7.4.7 || ^8",
@@ -28,7 +28,6 @@
             "symfony/flex": true,
             "symfony/runtime": true
         },
-        "bump-after-update": true,
         "sort-packages": true
     },
     "autoload": {

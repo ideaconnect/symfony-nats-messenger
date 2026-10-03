@@ -11,9 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40  # Whole-job cap: install + analysis + unit/coverage + mutation (8.5) + functional + benchmark
 
+    # The oldest PHP runs against the lowest client release the transport allows, the newest PHP against
+    # the latest client release, so CI tests the client versions users install (#52).
     strategy:
       matrix:
-        php-version: [8.2, 8.5]
+        include:
+          - php-version: '8.2'
+            client: lowest
+          - php-version: '8.5'
+            client: latest
 
     steps:
     - name: Checkout code
@@ -45,6 +51,13 @@ jobs:
 
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
+
+    - name: Use the lowest client release the transport allows
+      if: matrix.client == 'lowest'
+      run: composer update idct/php-nats-jetstream-client --prefer-lowest --prefer-dist --no-progress
+
+    - name: Show the client release under test
+      run: composer show idct/php-nats-jetstream-client | grep -E '^versions'
 
     - name: Run static analysis and fast unit tests
       run: composer test
@@ -83,6 +96,21 @@ jobs:
 
     - name: Install functional test dependencies
       run: composer test:functional:setup
+
+    - name: Use the lowest client release in the functional test app
+      if: matrix.client == 'lowest'
+      working-directory: tests/functional
+      run: composer update idct/php-nats-jetstream-client --prefer-lowest --prefer-dist --no-progress
+
+    # The functional test app installs the client on its own, so make sure it runs the release the unit tests
+    # above ran: otherwise the job would report the lowest release as tested while running another.
+    - name: Check the functional test app runs the client release under test
+      working-directory: tests/functional
+      run: |
+        APP=$(composer show idct/php-nats-jetstream-client | awk '/^versions/ {print $NF}')
+        ROOT=$(composer --working-dir=../.. show idct/php-nats-jetstream-client | awk '/^versions/ {print $NF}')
+        echo "functional test app: client $APP; unit tests: client $ROOT"
+        [ "$APP" = "$ROOT" ] || { echo "::error::The functional test app runs client $APP, the unit tests ran $ROOT"; exit 1; }
 
     - name: Run functional tests
       timeout-minutes: 25  # Behat suite runs the full matrix (plain/TLS/mTLS) incl. high-volume, large-message and scheduled scenarios
