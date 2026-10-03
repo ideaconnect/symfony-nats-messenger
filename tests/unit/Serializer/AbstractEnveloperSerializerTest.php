@@ -9,7 +9,11 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
+use Symfony\Component\Messenger\Stamp\AckStamp;
 use Symfony\Component\Messenger\Stamp\BusNameStamp;
+use Symfony\Component\Messenger\Stamp\ConsumedByWorkerStamp;
+use Symfony\Component\Messenger\Stamp\DelayStamp;
+use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 
 /**
  * Concrete implementation of AbstractEnveloperSerializer for testing purposes.
@@ -95,6 +99,64 @@ class AbstractEnveloperSerializerTest extends TestCase
         $busStamp = $decoded->last(BusNameStamp::class);
         $this->assertInstanceOf(BusNameStamp::class, $busStamp);
         $this->assertEquals('test-bus', $busStamp->getBusName());
+    }
+
+    /**
+     * Stamps Symfony marks as non-sendable are left out, as its own serializers leave them out: they describe
+     * the envelope's journey through this process, and the AckStamp a worker adds holds a closure that cannot
+     * be serialized at all (#46). Sendable stamps travel as before.
+     */
+    #[Test]
+    public function encode_WithNonSendableStamps_LeavesThemOutAndKeepsTheRest(): void
+    {
+        $envelope = new Envelope(new \stdClass(), [
+            new BusNameStamp('bus'),
+            new DelayStamp(1000),
+            new ReceivedStamp('async'),
+            new ConsumedByWorkerStamp(),
+            new AckStamp(static function (): void {}),
+        ]);
+
+        $decoded = $this->serializer->decode($this->serializer->encode($envelope));
+
+        $this->assertSame('bus', $decoded->last(BusNameStamp::class)?->getBusName());
+        $this->assertSame(1000, $decoded->last(DelayStamp::class)?->getDelay());
+        $this->assertSame([], $decoded->all(ReceivedStamp::class));
+        $this->assertSame([], $decoded->all(ConsumedByWorkerStamp::class));
+        $this->assertSame([], $decoded->all(AckStamp::class));
+    }
+
+    /**
+     * A serializer that adds headers sees the envelope as it is sent, without the non-sendable stamps.
+     */
+    #[Test]
+    public function encode_GivesHeadersTheEnvelopeWithoutNonSendableStamps(): void
+    {
+        $serializer = new class extends AbstractEnveloperSerializer {
+            /** @var list<string> */
+            public array $stampsSeenByHeaders = [];
+
+            protected function headers(Envelope $envelope): array
+            {
+                $this->stampsSeenByHeaders = array_keys($envelope->all());
+
+                return [];
+            }
+
+            protected function serialize(Envelope $envelope): string
+            {
+                return serialize($envelope);
+            }
+
+            protected function deserialize(string $data): mixed
+            {
+                return unserialize($data);
+            }
+        };
+
+        $serializer->encode(new Envelope(new \stdClass(), [new BusNameStamp('bus'), new ReceivedStamp('async')]));
+
+        $this->assertSame([BusNameStamp::class], $serializer->stampsSeenByHeaders);
     }
 
     #[Test]

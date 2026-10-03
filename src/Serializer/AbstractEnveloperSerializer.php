@@ -6,6 +6,7 @@ namespace IDCT\NatsMessenger\Serializer;
 
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
+use Symfony\Component\Messenger\Stamp\NonSendableStampInterface;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 
 /**
@@ -49,10 +50,19 @@ abstract class AbstractEnveloperSerializer implements SerializerInterface
     /**
      * Encodes an envelope to transport payload shape.
      *
+     * Stamps marked {@see NonSendableStampInterface} are removed first, as Symfony's own serializers do: they
+     * describe the envelope's journey through this process and are not meant to travel. One of them, the
+     * AckStamp a worker adds to every message it handles, holds a closure, which cannot be serialized. Every
+     * re-send of a received message - Symfony's retry, or its failure transport - failed on it and stopped
+     * the worker before it could reject the message, which JetStream then redelivered into the same failure,
+     * over and over (#46).
+     *
      * @return array{body: string, headers: array<string, string>}
      */
     public function encode(Envelope $envelope): array
     {
+        $envelope = $envelope->withoutStampsOfType(NonSendableStampInterface::class);
+
         return [
             'body' => $this->serialize($envelope),
             'headers' => $this->headers($envelope),

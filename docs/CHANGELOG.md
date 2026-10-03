@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Retrying a failed message no longer crashes the worker when the transport uses `IgbinarySerializer`
+  (#46).** `AbstractEnveloperSerializer::encode()` serialized the whole envelope, including the stamps
+  Symfony marks as not to be sent (`NonSendableStampInterface`). One of them, the `AckStamp` a worker adds
+  to every message it handles, holds a closure, which igbinary cannot serialize, so every re-send of a
+  received message - Symfony's retry, and the send to a NATS failure transport - threw "Serialization of
+  'Closure' is not allowed". The exception stopped the worker before it rejected the message, JetStream
+  redelivered it after `ack_wait`, and the next worker failed the same way, running the handler again each
+  time. `encode()` now leaves those stamps out before serializing, as Symfony's own serializers do, for
+  every serializer extending `AbstractEnveloperSerializer`.
+
 ## [5.2.0] - 2026-10-03
 
 A **minor** release. It fixes a transport instance that, once its connection was lost, failed every later

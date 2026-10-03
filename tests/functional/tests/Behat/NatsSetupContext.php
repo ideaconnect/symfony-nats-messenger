@@ -872,12 +872,25 @@ class NatsSetupContext implements Context
      */
     public function iHaveAMessengerTransportWithFailureTransportConfigured(): void
     {
+        $this->iHaveAMessengerTransportWithFailureTransportConfiguredUsingTheSerializer('messenger.transport.native_php_serializer');
+    }
+
+    /**
+     * Both transports use the given serializer service, so a message the retry or the failure transport
+     * re-sends goes through it too.
+     *
+     * @Given I have a messenger transport with failure transport configured using the :serializer serializer
+     */
+    public function iHaveAMessengerTransportWithFailureTransportConfiguredUsingTheSerializer(string $serializer): void
+    {
         $configContent = sprintf(
-            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n                retry_strategy:\n                    max_retries: 1\n                    delay: 100\n                    multiplier: 1\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: 1\n                    delay: 100\n                    multiplier: 1\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
+            $serializer,
             $this->failedStreamName,
-            $this->failedSubject
+            $this->failedSubject,
+            $serializer
         );
 
         file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);

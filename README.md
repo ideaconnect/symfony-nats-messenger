@@ -128,7 +128,12 @@ or:
     IDCT\NatsMessenger\Serializer\IgbinarySerializer: ~
 ```
 
-> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`
+Like Symfony's own serializers, it leaves out the stamps Symfony marks as not to be sent
+(`NonSendableStampInterface`), such as the `AckStamp` a worker adds to the message it handles, so a message
+Symfony re-sends for a retry or to the failure transport is serialized without them. Any serializer extending
+`AbstractEnveloperSerializer` does the same.
+
+> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`, `encode_EnvelopeAWorkerIsHandling_EncodesWithoutItsNonSendableStamps`, `encode_WithNonSendableStamps_LeavesThemOutAndKeepsTheRest`, Behat scenario `Failed message routed to Symfony failure transport via TERM with the igbinary serializer`
 
 #### Creating Custom Serializers
 

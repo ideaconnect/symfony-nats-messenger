@@ -9,7 +9,9 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
+use Symfony\Component\Messenger\Stamp\AckStamp;
 use Symfony\Component\Messenger\Stamp\BusNameStamp;
+use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 
 class IgbinarySerializerTest extends TestCase
 {
@@ -147,6 +149,26 @@ class IgbinarySerializerTest extends TestCase
         $unserialized = \igbinary_unserialize($result['body']);
         $this->assertInstanceOf(Envelope::class, $unserialized);
         $this->assertEquals($message->content, $unserialized->getMessage()->content);
+    }
+
+    /**
+     * A worker adds an AckStamp, which holds a closure, to every message it handles, and Symfony's retry and
+     * failure transport re-send that envelope. igbinary cannot serialize a closure, so the re-send threw
+     * "Serialization of 'Closure' is not allowed" and stopped the worker; JetStream then redelivered the
+     * message into the same failure (#46).
+     */
+    #[Test]
+    public function encode_EnvelopeAWorkerIsHandling_EncodesWithoutItsNonSendableStamps(): void
+    {
+        $message = new \stdClass();
+        $message->content = 'retry me';
+        $envelope = new Envelope($message, [new ReceivedStamp('async'), new AckStamp(static function (): void {})]);
+
+        $decoded = $this->serializer->decode($this->serializer->encode($envelope));
+
+        $this->assertSame('retry me', $decoded->getMessage()->content);
+        $this->assertSame([], $decoded->all(AckStamp::class));
+        $this->assertSame([], $decoded->all(ReceivedStamp::class));
     }
 
     #[Test]
