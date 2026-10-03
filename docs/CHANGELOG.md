@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.3] - 2026-10-03
+
+A **patch** release with a security fix: a `tls_verify_peer` value the transport does not recognize no
+longer turns TLS peer verification off (#42). The README now also says that Symfony's retry delays need
+`scheduled_messages` (#50). The public PHP API and the requirements are unchanged.
+
 ### Fixed
 - **The README now says that Symfony's retry delays need `scheduled_messages: true` (#50).** Symfony's
   retry strategy waits between attempts by re-sending the failed message with a `DelayStamp`, which the
