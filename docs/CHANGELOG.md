@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `DelayStamp` is ignored. The retry section now says so too, and names the alternative for older servers:
   `retry_handler: nats` with `nak_delay` or `backoff`, `max_deliver`, and `max_retries: 0`.
 
+### Security
+- **An unrecognized `tls_verify_peer` value no longer turns TLS peer verification off (#42).** It is the
+  only boolean option that defaults to `true`, but it went through the same coercion as the others, which
+  turns any value outside `1`, `true`, `yes` and `on` into `false`. So `tls_verify_peer=enabled`, `y`, an
+  empty value (`?tls_verify_peer=`, easy to get from an unset environment variable in a templated DSN) or a
+  `null` option made the transport connect over TLS without verifying the server's certificate, and said
+  nothing. Now only `false`, `0`, `no` or `off` turns verification off, and any other value keeps it on. A
+  transport configured with such a value whose server certificate cannot be verified now fails the TLS
+  handshake instead of connecting unverified; set `tls_verify_peer: false` if that is really intended.
+
 ## [5.2.2] - 2026-10-03
 
 A **patch** release with one fix: `messenger:consume --keepalive` no longer stops the worker, or fails the
