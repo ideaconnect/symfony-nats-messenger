@@ -329,6 +329,63 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertFalse($options->tlsVerifyPeer);
     }
 
+    /**
+     * Only a value that explicitly disables it turns TLS peer verification off. Any other value keeps the
+     * secure default, including one the coercion does not recognize and an empty one, which used to turn
+     * verification off without a word (#42).
+     */
+    #[DataProvider('tlsVerifyPeerValues')]
+    public function testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled(mixed $value, bool $expected): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['tls_verify_peer' => $value]);
+
+        self::assertSame($expected, $this->extractNatsOptions($configuration->client)->tlsVerifyPeer);
+    }
+
+    /**
+     * @return iterable<string, array{mixed, bool}>
+     */
+    public static function tlsVerifyPeerValues(): iterable
+    {
+        foreach (['false', 'FALSE', '0', 'no', 'Off'] as $disabling) {
+            yield "'{$disabling}' disables it" => [$disabling, false];
+        }
+        yield 'false disables it' => [false, false];
+        yield '0 disables it' => [0, false];
+
+        foreach (['true', '1', 'yes', 'on', 'enabled', 'y', 'verify', ''] as $other) {
+            yield "'{$other}' keeps it on" => [$other, true];
+        }
+        yield 'true keeps it on' => [true, true];
+        yield '1 keeps it on' => [1, true];
+        yield 'null keeps it on' => [null, true];
+        yield 'a non-scalar keeps it on' => [[], true];
+    }
+
+    /**
+     * The same holds for a value given in the DSN query string, where an unset environment variable in a
+     * templated DSN leaves an empty one.
+     */
+    #[DataProvider('tlsVerifyPeerQueries')]
+    public function testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled(string $query, bool $expected): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN . $query);
+
+        self::assertSame($expected, $this->extractNatsOptions($configuration->client)->tlsVerifyPeer);
+    }
+
+    /**
+     * @return iterable<string, array{string, bool}>
+     */
+    public static function tlsVerifyPeerQueries(): iterable
+    {
+        yield 'left out' => ['', true];
+        yield 'empty' => ['?tls_verify_peer=', true];
+        yield 'unrecognized' => ['?tls_verify_peer=enabled', true];
+        yield 'false' => ['?tls_verify_peer=false', false];
+        yield 'off' => ['?tls_verify_peer=off', false];
+    }
+
     public function testBuildWithNonScalarOptionsCoerceToSafeDefaults(): void
     {
         // A non-scalar boolean option coerces to false; a non-scalar nullable string coerces to null.

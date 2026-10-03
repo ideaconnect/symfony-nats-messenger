@@ -364,7 +364,9 @@ framework:
           tls_key_file: null                # Path to client private key
           tls_key_passphrase: null          # Passphrase for encrypted private key
           tls_peer_name: null               # Override TLS peer name for certificate validation
-          tls_verify_peer: true             # Verify TLS peer certificate (default: true)
+          tls_verify_peer: true             # Verify TLS peer certificate (default: true). Only
+                                            # false, 0, no or off turns it off; any other value,
+                                            # an empty one included, keeps it on
 
           # Additional Authentication
           token: null                       # NATS token authentication
@@ -374,7 +376,7 @@ framework:
           nkey: null                        # NKey public value
 ```
 
-> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`
+> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`
 
 ### Retry Handler Behavior
 

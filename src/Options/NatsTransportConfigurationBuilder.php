@@ -121,7 +121,10 @@ final class NatsTransportConfigurationBuilder
             tlsKeyFile: $this->toNullableString($configuration[TransportOption::TLS_KEY_FILE->value]),
             tlsKeyPassphrase: $this->toNullableString($configuration[TransportOption::TLS_KEY_PASSPHRASE->value]),
             tlsPeerName: $this->toNullableString($configuration[TransportOption::TLS_PEER_NAME->value]),
-            tlsVerifyPeer: $this->toBool($configuration[TransportOption::TLS_VERIFY_PEER->value]),
+            // Unlike the other boolean options, this one defaults to true, so a value the coercion does not
+            // recognize has to keep it on: only false, 0, no or off turns peer verification off. Any other
+            // value, an empty one included, used to turn it off without a word (#42).
+            tlsVerifyPeer: TypeCoercion::boolValue($configuration[TransportOption::TLS_VERIFY_PEER->value], true),
             token: $this->toNullableString($configuration[TransportOption::TOKEN->value]),
             username: $this->resolveCredential($components, $configuration, TransportOption::USERNAME, 'user'),
             password: $this->resolveCredential($components, $configuration, TransportOption::PASSWORD, 'pass'),
