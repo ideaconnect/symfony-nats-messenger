@@ -1540,6 +1540,22 @@ final class NatsTransportTest extends TestCase
      * When the consumer lookup fails on the connection, getMessageCount() checks it before its stream-level
      * fallback, so the fallback runs on a new connection and still reports the stream's messages.
      */
+    /**
+     * Against a server that cannot be reached, the count is 0 after a single connection attempt: the stream
+     * lookup used to dial a second time, which doubled the wait (#54).
+     */
+    public function testMessageCountThatCannotConnectDialsOnceAndReturnsZero(): void
+    {
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::error(new ConnectionException('Connection refused'))]);
+        $client->expects(self::never())->method('jetStream');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, []);
+        $transport->setClient($client);
+
+        self::assertSame(0, $transport->getMessageCount());
+    }
+
     public function testMessageCountFallbackRunsOnANewConnectionAfterTheLookupFailedOnTheOldOne(): void
     {
         $oldConnection = $this->createMock(JetStreamContext::class);
