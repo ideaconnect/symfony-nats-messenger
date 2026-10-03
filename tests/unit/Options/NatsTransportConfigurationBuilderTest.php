@@ -470,6 +470,47 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(2500, $options->connectTimeoutMs);
     }
 
+    /**
+     * Before request_timeout existed, every request waited the client's default of 10 seconds (#51).
+     */
+    public function testRequestTimeoutDefaultsToTenSeconds(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN);
+
+        self::assertSame(10_000, $this->extractNatsOptions($configuration->client)->requestTimeoutMs);
+    }
+
+    /**
+     * Seconds, fractions kept, from the options and from the DSN query, the options winning (#51).
+     */
+    public function testBuildWithRequestTimeoutPropagatesMs(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        self::assertSame(2500, $this->extractNatsOptions($builder->build(self::VALID_DSN, ['request_timeout' => 2.5])->client)->requestTimeoutMs);
+        self::assertSame(30_000, $this->extractNatsOptions($builder->build(self::VALID_DSN . '?request_timeout=30')->client)->requestTimeoutMs);
+        self::assertSame(45_000, $this->extractNatsOptions($builder->build(self::VALID_DSN . '?request_timeout=30', ['request_timeout' => 45])->client)->requestTimeoutMs);
+    }
+
+    #[DataProvider('invalidRequestTimeoutValues')]
+    public function testBuildWithInvalidRequestTimeoutThrowsException(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('request_timeout');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['request_timeout' => $value]);
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function invalidRequestTimeoutValues(): iterable
+    {
+        yield 'zero' => [0];
+        yield 'negative' => [-1];
+        yield 'non-numeric' => ['soon'];
+    }
+
     private function extractNatsOptions(NatsClient $client): NatsOptions
     {
         $clientReflection = new \ReflectionClass($client);
@@ -998,6 +1039,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'max_batch_timeout' => 1.0,
                 'connection_timeout' => 1.0,
                 'ping_after_idle' => 30,
+                'request_timeout' => 10,
                 'stream_max_age' => 86400,
                 'stream_max_bytes' => 1073741824,
                 'stream_max_messages' => 1000000,
@@ -1086,6 +1128,12 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         foreach ([1.0, 2.0, 3.0] as $timeout) {
             $configuration = $builder->build(self::VALID_DSN, ['connection_timeout' => $timeout]);
             self::assertNotNull($configuration, "connection_timeout {$timeout} should be accepted");
+        }
+
+        // request_timeout examples: 10 (the default) and 30
+        foreach ([[10, 10_000], [30, 30_000]] as [$timeout, $expectedMs]) {
+            $configuration = $builder->build(self::VALID_DSN, ['request_timeout' => $timeout]);
+            self::assertSame($expectedMs, $this->extractNatsOptions($configuration->client)->requestTimeoutMs, "request_timeout {$timeout} should produce {$expectedMs}ms");
         }
     }
 

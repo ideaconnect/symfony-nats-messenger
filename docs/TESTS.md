@@ -50,6 +50,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Stream max messages per subject validation** | `testBuildWithNegativeStreamMaxMessagesPerSubjectThrowsException`, `testBuildWithNonIntegerStreamMaxMessagesPerSubjectThrowsException` |
 | **Stream max bytes validation** | `testBuildWithNegativeStreamMaxBytesThrowsException` |
 | **Connection timeout propagation** | `testBuildWithConnectionTimeoutPropagatesMs` |
+| **Request timeout (`request_timeout`)** | `testRequestTimeoutDefaultsToTenSeconds`, `testBuildWithRequestTimeoutPropagatesMs` (options, DSN query, options over query), `testBuildWithInvalidRequestTimeoutThrowsException` (zero, negative, non-numeric), `testReadmeConfigurationOptionsAreAccepted` |
 | **Idle connection check (`ping_after_idle`)** | `testPingAfterIdleDefaultsToThirtySeconds`, `testPingAfterIdleAcceptsZeroAndFractionsFromTheQueryAndTheOptions`, `testBuildWithInvalidPingAfterIdleThrowsException` (negative, non-numeric), `testReadmeConfigurationOptionsAreAccepted` |
 | **Retry handler** | `testBuildUsesRetryHandlerFromQuery`, `testBuildWithInvalidRetryHandlerThrowsException` |
 | **TLS configuration** | `testBuildWithTlsSchemeUsesTlsServerProtocol`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions` |
@@ -255,6 +256,7 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 | `batching: 1 / 5 / 10 / 20 / 50` | `testReadmeBatchingExamplesAreAccepted`, `testReadmeConfigurationOptionsAreAccepted` |
 | `max_batch_timeout: 0.5 / 1.0 / 2.0` | `testReadmeTimeoutExamplesAreAccepted`, `testReadmeConfigurationOptionsAreAccepted` |
 | `connection_timeout: 1.0 / 2.0 / 3.0` | `testReadmeTimeoutExamplesAreAccepted`, `testBuildWithConnectionTimeoutPropagatesMs` |
+| `request_timeout: 10 / 30` | `testReadmeTimeoutExamplesAreAccepted`, `testBuildWithRequestTimeoutPropagatesMs`, `testReadmeConfigurationOptionsAreAccepted` |
 | `stream_max_age: 0 / 86400` | `testReadmeStreamRetentionExamplesAreAccepted`, `testReadmeConfigurationOptionsAreAccepted` |
 | `stream_max_bytes: 1073741824` | `testReadmeStreamRetentionExamplesAreAccepted`, `testReadmeConfigurationOptionsAreAccepted` |
 | `stream_max_messages: 1000000` | `testReadmeStreamRetentionExamplesAreAccepted`, `testReadmeConfigurationOptionsAreAccepted` |

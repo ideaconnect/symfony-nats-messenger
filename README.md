@@ -261,6 +261,8 @@ framework:
                                             # operation checks it with a PING and dials again if the
                                             # server does not answer (default: 30; 0 turns it off).
                                             # See "Losing the Connection".
+          request_timeout: 10               # Seconds to wait for the server's reply to a publish,
+                                            # an ack_sync ACK, setup() or a message count (default: 10)
 
           # Consumer Flow Control & Lifecycle
           max_ack_pending: 1000             # Max delivered-but-unacked messages outstanding
@@ -574,7 +576,7 @@ options:
 **Purpose:**
 - Sets the timeout for the initial TCP/TLS dial and handshake when connecting to NATS
 - Also bounds the PING that checks a connection which sat idle (`ping_after_idle`): a server that does not answer within it is treated as gone
-- Does **not** govern per-operation read/write timeouts (publish/ack/request keep the client's own request timeout); the batch fetch is bounded separately by `max_batch_timeout`
+- Does **not** bound how long an operation waits for the server's reply, which is `request_timeout`; the batch fetch is bounded separately by `max_batch_timeout`
 - Lower values fail faster on connection issues
 - Higher values tolerate slower connection establishment
 
@@ -583,6 +585,25 @@ options:
 - Decrease for faster failure detection in local environments
 - Default of 1 second works well for most local/regional deployments
 - Don't wait forever for the batch to fill
+
+### Request Timeout
+
+Controls how long an operation waits for the server's reply: the publish acknowledgement of `send()`, the
+confirmation of an ACK with `ack_sync`, and the JetStream API calls of `setup()` and `getMessageCount()`:
+
+```yaml
+options:
+  request_timeout: 30  # seconds (default: 10)
+```
+
+> **Tested by:** `testRequestTimeoutDefaultsToTenSeconds`, `testBuildWithRequestTimeoutPropagatesMs`, `testBuildWithInvalidRequestTimeoutThrowsException`, `testReadmeTimeoutExamplesAreAccepted` (10, 30)
+
+A reply that does not arrive in time fails the operation with the client's `TimeoutException`. For `send()`
+that does not prove the message was not stored: the server may have stored it and only its acknowledgement
+was late, so dispatching the message again can store it twice. Raise the value for a slow or distant server,
+or for a stream whose writes can take long, such as a replicated one under load; lower it to fail faster.
+The wait of a pull in `get()` is bounded by `max_batch_timeout` instead, and the dial by
+`connection_timeout`.
 
 ### Losing the Connection
 
