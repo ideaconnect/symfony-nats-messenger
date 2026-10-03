@@ -2,6 +2,7 @@
 
 namespace IDCT\NatsMessenger\Tests\Unit;
 
+use Amp\DeferredFuture;
 use Amp\Future;
 use IDCT\NATS\Connection\Enum\ConnectionState;
 use IDCT\NATS\Core\NatsClient;
@@ -20,6 +21,7 @@ use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Revolt\EventLoop;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
@@ -122,6 +124,20 @@ class RealConnectNatsTransport extends NatsTransport
     public function setClient(NatsClient $client): void
     {
         $this->client = $client;
+    }
+}
+
+/**
+ * The real connect() (as {@see RealConnectNatsTransport}) with a clock the test moves, for the check of a
+ * connection that sat idle.
+ */
+class ClockedNatsTransport extends RealConnectNatsTransport
+{
+    public float $now = 1000.0;
+
+    protected function monotonicSeconds(): float
+    {
+        return $this->now;
     }
 }
 
@@ -998,6 +1014,277 @@ final class NatsTransportTest extends TestCase
 
         // The failed dial left the client closed: the next operation dials again.
         $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * A connection that went unused for longer than ping_after_idle is checked with one PING before the next
+     * operation; answered, it is used as it is.
+     */
+    public function testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::complete(0.001));
+        $client->expects(self::never())->method('disconnect');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+
+        $transport->now += 31;
+        $transport->ack($envelope);
+    }
+
+    /**
+     * A server drops a client that stops answering its pings - a PHP process between requests does - with
+     * -ERR 'Stale Connection', and the client only finds out when it next uses the connection. An idle
+     * connection that does not answer the PING is given up and the operation runs on a new one, instead of
+     * being the operation that fails (#49).
+     */
+    public function testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation(): void
+    {
+        $oldConnection = $this->createMock(JetStreamContext::class);
+        $oldConnection->expects(self::once())->method('ack')->willReturn(Future::complete());
+        $newConnection = $this->createMock(JetStreamContext::class);
+        $newConnection->expects(self::once())->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->expects(self::exactly(2))->method('jetStream')->willReturnOnConsecutiveCalls($oldConnection, $newConnection);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::error(
+            new ConnectionException("Server sent error frame: 'Stale Connection'"),
+        ));
+        $client->expects(self::once())->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+
+        $transport->now += 31;
+        $transport->ack($envelope);
+    }
+
+    /**
+     * Closing the connection that failed the PING may fail as well - its socket is already dead - and that
+     * must not stop the transport from moving to a new connection.
+     */
+    public function testFailedCloseOfTheIdleConnectionDoesNotStopItsReplacement(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->method('rtt')->willReturn(Future::error(new ConnectionException('Connection lost')));
+        $client->expects(self::once())->method('disconnect')->willReturn(Future::error(new \RuntimeException('Broken pipe')));
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+
+        $transport->now += 31;
+        $transport->ack($envelope);
+    }
+
+    /**
+     * A PING still unanswered after connection_timeout counts as no answer: a server that cannot answer in the
+     * time a fresh dial may take is treated as gone, rather than holding the operation up.
+     */
+    public function testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::once())->method('rtt')->willReturn((new DeferredFuture())->getFuture());
+        $client->expects(self::once())->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30, 'connection_timeout' => 0.1]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+
+        $transport->now += 31;
+        // A real socket's watcher keeps the event loop alive while the PING is outstanding; without one the
+        // loop would run out of work and end the wait by itself.
+        $socketWatcher = EventLoop::delay(5.0, static function (): void {});
+        $start = hrtime(true);
+        try {
+            $transport->ack($envelope);
+        } finally {
+            EventLoop::cancel($socketWatcher);
+        }
+
+        self::assertLessThan(1.0, (hrtime(true) - $start) / 1e9, 'gave up the PING at connection_timeout');
+    }
+
+    /**
+     * A connection used within ping_after_idle is not checked: the PING costs a round trip, which only a
+     * connection that went quiet for a while needs.
+     */
+    public function testRecentlyUsedConnectionIsNotPinged(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(3))->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+        $transport->now += 20;
+        $transport->ack($envelope);
+        // Measured from the last use, not from the first.
+        $transport->now += 20;
+        $transport->ack($envelope);
+    }
+
+    public function testPingAfterIdleZeroTurnsTheCheckOff(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+        $transport->now += 3600;
+        $transport->ack($envelope);
+    }
+
+    /**
+     * A pull can wait up to max_batch_timeout for messages, with the connection in use all that time: the idle
+     * time counts from when the pull ended, so a long max_batch_timeout does not make every pull PING first.
+     */
+    public function testIdleTimeCountsFromTheEndOfAPull(): void
+    {
+        $transport = null;
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturnCallback(
+            static function () use (&$transport): Future {
+                // The pull waits 40 s for messages before the server reports none.
+                $transport->now += 40;
+
+                return Future::complete([]);
+            },
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30, 'max_batch_timeout' => 40]);
+        $transport->setClient($client);
+        iterator_to_array($transport->get());
+        $transport->now += 5;
+        iterator_to_array($transport->get());
+    }
+
+    /**
+     * With auto_setup, the connection that replaces one that failed the PING is verified again before it is
+     * used, as after close().
+     */
+    public function testAutoSetupVerifiesTheConnectionThatReplacedAnIdleOne(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))->method('addConsumer')->willReturn(Future::complete(new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+        )));
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::error(new ConnectionException('Connection lost')));
+        $client->method('disconnect')->willReturn(Future::complete());
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30, 'auto_setup' => true], $serializer);
+        $transport->setClient($client);
+        $transport->send(new Envelope(new \stdClass()));
+
+        $transport->now += 31;
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * With auto_setup the connection is reached twice in one send() - by the provisioning check, then by the
+     * publish - and an answered PING counts as use, so the idle connection is checked once, not twice.
+     */
+    public function testAnsweredPingCountsAsUseSoOneOperationPingsOnce(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete());
+        $jetStream->method('addConsumer')->willReturn(Future::complete(new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+        )));
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::complete(0.001));
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30, 'auto_setup' => true], $serializer);
+        $transport->setClient($client);
+        $transport->send(new Envelope(new \stdClass()));
+
+        $transport->now += 31;
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * Symfony calls keepalive() from a signal handler (#48), so it adds no PING or dial: it uses the
+     * connection as it is, however long the handler has been running.
+     */
+    public function testKeepaliveNeitherPingsNorDials(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('ack')->willReturn(Future::complete());
+        $jetStream->expects(self::once())->method('inProgress')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+
+        $transport->now += 600;
+        $transport->keepalive($envelope);
     }
 
     /**

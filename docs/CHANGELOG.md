@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`ping_after_idle` option (seconds, default `30`; `0` turns it off) (#49).** An operation that finds
+  the connection unused for longer than this first checks it with one PING, answered within
+  `connection_timeout`, and runs on a new connection if the server does not answer. A server drops a
+  client that stops answering its pings, which a PHP process does whenever it is outside a transport call,
+  and load balancers and NAT gateways drop idle connections too, none of which the client notices until it
+  writes: without the check, the first message after a quiet period was the one that failed. `keepalive()`
+  is never checked, since Symfony calls it from a signal handler. `NatsTransportConfiguration` gains
+  `pingAfterIdleSeconds()` and `connectionTimeoutSeconds()`.
+
 ### Fixed
 - **A lost connection is re-established by the next operation instead of failing every operation until
   the process restarts (#49).** The client runs with reconnect off, so once a connection is lost - the

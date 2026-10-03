@@ -252,6 +252,10 @@ framework:
           batching: 5                       # Messages per batch (default: 1)
           max_batch_timeout: 1.0            # Timeout in seconds for batch fetching (default: 1)
           connection_timeout: 1.0           # Connection (dial) timeout in seconds (default: 1)
+          ping_after_idle: 30               # Seconds the connection may go unused before the next
+                                            # operation checks it with a PING and dials again if the
+                                            # server does not answer (default: 30; 0 turns it off).
+                                            # See "Losing the Connection".
 
           # Consumer Flow Control & Lifecycle
           max_ack_pending: 1000             # Max delivered-but-unacked messages outstanding
@@ -499,6 +503,7 @@ options:
 
 **Purpose:**
 - Sets the timeout for the initial TCP/TLS dial and handshake when connecting to NATS
+- Also bounds the PING that checks a connection which sat idle (`ping_after_idle`): a server that does not answer within it is treated as gone
 - Does **not** govern per-operation read/write timeouts (publish/ack/request keep the client's own request timeout); the batch fetch is bounded separately by `max_batch_timeout`
 - Lower values fail faster on connection issues
 - Higher values tolerate slower connection establishment
@@ -526,7 +531,21 @@ connection has been lost, the next operation dials again instead:
 - With `auto_setup`, the new connection is verified in the same call that dials it, and a dial that fails
   surfaces as the connection error itself.
 
-> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`
+A connection that was dropped while it sat idle would make the next operation the one that fails. To avoid
+that, an operation that finds the connection unused for longer than `ping_after_idle` (30 seconds by
+default) first checks it with one PING. If the server does not answer within `connection_timeout`, the
+transport closes that connection and runs the operation on a new one, so the first message after a quiet
+period goes out instead of failing. The PING costs one round trip, and only after a quiet period. A lower
+value also catches a server restart between two operations further apart than it, at the cost of that round
+trip more often; `ping_after_idle: 0` turns the check off. `keepalive()` never checks: Symfony calls it
+from a signal handler.
+
+```yaml
+options:
+  ping_after_idle: 30   # seconds; 0 turns the check off
+```
+
+> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testBuildWithInvalidPingAfterIdleThrowsException`
 
 ## Stream Configuration
 

@@ -460,6 +460,43 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/stream/topic%3E', []);
     }
 
+    public function testPingAfterIdleDefaultsToThirtySeconds(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN);
+
+        self::assertSame(30.0, $configuration->pingAfterIdleSeconds());
+    }
+
+    /**
+     * 0 turns the check off, and fractions of a second are kept, from the DSN query as from the options.
+     */
+    public function testPingAfterIdleAcceptsZeroAndFractionsFromTheQueryAndTheOptions(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        self::assertSame(0.0, $builder->build(self::VALID_DSN . '?ping_after_idle=0')->pingAfterIdleSeconds());
+        self::assertSame(2.5, $builder->build(self::VALID_DSN . '?ping_after_idle=2.5')->pingAfterIdleSeconds());
+        self::assertSame(45.0, $builder->build(self::VALID_DSN . '?ping_after_idle=2.5', ['ping_after_idle' => 45])->pingAfterIdleSeconds());
+    }
+
+    #[DataProvider('invalidPingAfterIdleValues')]
+    public function testBuildWithInvalidPingAfterIdleThrowsException(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('ping_after_idle');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['ping_after_idle' => $value]);
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function invalidPingAfterIdleValues(): iterable
+    {
+        yield 'negative' => [-1];
+        yield 'non-numeric' => ['soon'];
+    }
+
     public function testDefaultOptionsCoversAllTransportOptionCases(): void
     {
         $reflection = new \ReflectionClass(NatsTransportConfigurationBuilder::class);
@@ -903,6 +940,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'batching' => 5,
                 'max_batch_timeout' => 1.0,
                 'connection_timeout' => 1.0,
+                'ping_after_idle' => 30,
                 'stream_max_age' => 86400,
                 'stream_max_bytes' => 1073741824,
                 'stream_max_messages' => 1000000,
@@ -933,6 +971,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame('my-consumer', $configuration->consumer());
         self::assertSame(5, $configuration->batching());
         self::assertSame(1000, $configuration->maxBatchTimeoutMs());
+        self::assertSame(30.0, $configuration->pingAfterIdleSeconds());
         self::assertSame(86400, $configuration->streamMaxAgeSeconds());
         self::assertSame(1073741824, $configuration->streamMaxBytes());
         self::assertSame(1000000, $configuration->streamMaxMessages());

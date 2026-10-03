@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger;
 
+use Amp\TimeoutCancellation;
 use IDCT\NATS\Connection\Enum\ConnectionState;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
@@ -76,6 +77,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
     /** Tracks whether the one-shot {@see autoSetupIfEnabled()} provisioning has already run this instance. */
     private bool $autoSetupDone = false;
+
+    /**
+     * When an operation last used the connection, in monotonic seconds; null while the transport has none.
+     * Tells how long the connection sat idle ({@see connectionUsable()}).
+     */
+    private ?float $lastUsedAt = null;
 
     /**
      * Creates a transport instance from DSN/options and optional serializer override.
@@ -352,7 +359,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function keepalive(Envelope $envelope, ?int $seconds = null): void
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
-        $this->jetStream()->inProgress($this->buildAckMessage($id))->await();
+        // Symfony calls this from a signal handler (#48), so it adds no PING or dial of its own: it uses the
+        // connection as it is, as it did before the other operations started checking it.
+        $jetStream = $this->jetStream ?? $this->jetStream();
+        $jetStream->inProgress($this->buildAckMessage($id))->await();
     }
 
     /**
@@ -369,6 +379,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $this->client->disconnect()->await();
         $this->jetStream = null;
+        $this->lastUsedAt = null;
 
         // The next operation reconnects lazily, so let auto_setup verify provisioning once more on the
         // reopened connection. Without this the flag would stay latched for the lifetime of the object
@@ -634,17 +645,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function fetchBatchMessages(): array
     {
-        return $this->jetStream()->fetchBatch(
+        $messages = $this->jetStream()->fetchBatch(
             $this->streamName,
             $this->configuration->consumer(),
             $this->configuration->batching(),
             $this->configuration->maxBatchTimeoutMs()
         )->await();
+
+        // A pull may wait up to max_batch_timeout for messages, and the connection was in use all that time.
+        $this->lastUsedAt = $this->monotonicSeconds();
+
+        return $messages;
     }
 
     /**
-     * Connects when the transport has no connection it can use: none was opened yet, or the client has
-     * closed.
+     * Connects when the transport has no connection it can use: none was opened yet, the client has closed,
+     * or the connection sat idle and does not answer a PING ({@see connectionUsable()}).
      *
      * Called internally by {@see jetStream()} before every JetStream call. The client runs with reconnect
      * off, so a connection the server closed or one that dropped leaves it in its terminal Closed state,
@@ -657,14 +673,68 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function connectIfNeeded(): void
     {
-        if ($this->jetStream !== null && $this->client->state() === ConnectionState::Closed) {
-            $this->jetStream = null;
-            $this->autoSetupDone = false;
+        if ($this->jetStream !== null && !$this->connectionUsable()) {
+            $this->dropConnection();
         }
 
         if ($this->jetStream === null) {
             $this->connect();
         }
+    }
+
+    /**
+     * Whether the transport can keep using its connection.
+     *
+     * Not once the client has closed. Nor when the connection went unused for longer than ping_after_idle
+     * and the server does not answer a PING within connection_timeout: a server drops a client that stops
+     * answering its pings, which a PHP process does whenever it is outside a transport call, and load
+     * balancers and NAT gateways drop idle connections too, all without the client noticing until it
+     * writes. Checking first means the operation runs on a new connection instead of failing on the old one.
+     */
+    private function connectionUsable(): bool
+    {
+        if ($this->client->state() === ConnectionState::Closed) {
+            return false;
+        }
+
+        $idleLimit = $this->configuration->pingAfterIdleSeconds();
+        if ($idleLimit <= 0.0 || $this->lastUsedAt === null || $this->monotonicSeconds() - $this->lastUsedAt <= $idleLimit) {
+            return true;
+        }
+
+        $ping = $this->client->rtt();
+        // When the wait below gives up, the PING still ends later, with nobody awaiting it.
+        $ping->ignore();
+        try {
+            $ping->await(new TimeoutCancellation($this->configuration->connectionTimeoutSeconds()));
+        } catch (\Throwable) {
+            return false;
+        }
+
+        $this->lastUsedAt = $this->monotonicSeconds();
+
+        return true;
+    }
+
+    /**
+     * Gives up a connection the transport can no longer use, so that the next step dials afresh.
+     */
+    private function dropConnection(): void
+    {
+        // A client that has closed has already released its socket.
+        if ($this->client->state() !== ConnectionState::Closed) {
+            try {
+                $this->client->disconnect()->await();
+            } catch (\Throwable) {
+                // Closed or not, the connection is of no use any more.
+            }
+        }
+
+        $this->jetStream = null;
+        $this->lastUsedAt = null;
+        // As after close(): auto_setup verifies provisioning again on the new connection, where a stream
+        // removed during the outage is recreated instead of being trusted from the latched flag.
+        $this->autoSetupDone = false;
     }
 
     /**
@@ -680,7 +750,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw new LogicException('JetStream context is not available.');
         }
 
+        $this->lastUsedAt = $this->monotonicSeconds();
+
         return $this->jetStream;
+    }
+
+    /**
+     * Monotonic time in seconds, for measuring how long the connection sat idle. Exposed for testability.
+     */
+    protected function monotonicSeconds(): float
+    {
+        return hrtime(true) / 1e9;
     }
 
     /**
