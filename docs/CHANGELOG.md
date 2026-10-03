@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covers only the dial, and `max_batch_timeout` only the pull). `request_timeout` sets it, in seconds, from
   the DSN query or the transport options. It defaults to 10, so nothing changes unless it is set.
 
+### Changed
+- **Requires `idct/php-nats-jetstream-client` `^2.10` instead of `^2.4` (#52).** The older releases still
+  passed the unit tests, but later ones fixed bugs on paths this transport uses: 2.5.2 the reconnect-disabled
+  path a dropped connection takes, 2.5.3 a publish acknowledgement with neither an error nor a stream that
+  was accepted as success, 2.9.0 one timeout for the whole request, and 2.10.0 a pull after an unnoticed
+  server restart, which now fails as a lost connection and leaves the client Closed, so the re-dial added
+  in 5.2.0 sees it at once. CI ran the functional suite against the client's unreleased `dev-main`; it now
+  runs it, with the unit tests, against the lowest client release allowed (on PHP 8.2) and the latest one
+  (on PHP 8.5).
+
 ## [5.2.3] - 2026-10-03
 
 A **patch** release with a security fix: a `tls_verify_peer` value the transport does not recognize no
