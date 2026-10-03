@@ -595,6 +595,19 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'non-numeric' => ['soon'];
     }
 
+    /**
+     * Off unless asked for, from the options or from the DSN query (#53).
+     */
+    public function testDeduplicateIsOffByDefaultAndCanBeEnabled(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        self::assertFalse($builder->build(self::VALID_DSN)->isDeduplicationEnabled());
+        self::assertTrue($builder->build(self::VALID_DSN, ['deduplicate' => true])->isDeduplicationEnabled());
+        self::assertTrue($builder->build(self::VALID_DSN . '?deduplicate=true')->isDeduplicationEnabled());
+        self::assertFalse($builder->build(self::VALID_DSN . '?deduplicate=true', ['deduplicate' => false])->isDeduplicationEnabled());
+    }
+
     public function testDefaultOptionsCoversAllTransportOptionCases(): void
     {
         $reflection = new \ReflectionClass(NatsTransportConfigurationBuilder::class);
@@ -1040,6 +1053,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'connection_timeout' => 1.0,
                 'ping_after_idle' => 30,
                 'request_timeout' => 10,
+                'deduplicate' => false,
                 'stream_max_age' => 86400,
                 'stream_max_bytes' => 1073741824,
                 'stream_max_messages' => 1000000,

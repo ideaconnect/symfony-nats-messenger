@@ -29,6 +29,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Connection check (`ping_after_idle`: after idling, or after a failure)** | `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testAnsweredPingAfterAFailureKeepsTheConnectionAndEndsTheCheck`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff`, `testCloseEndsTheCheckAFailureCalledFor`, `testMessageCountFallbackRunsOnANewConnectionAfterTheLookupFailedOnTheOldOne`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testFailedCloseOfTheIdleConnectionDoesNotStopItsReplacement`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testIdleTimeCountsFromTheEndOfAPull`, `testAutoSetupVerifiesTheConnectionThatReplacedAnIdleOne`, `testAnsweredPingCountsAsUseSoOneOperationPingsOnce`, `testKeepaliveNeitherPingsNorDials` |
 | **Connection (lazy init, dialling again after the client closed)** | `testConnectInitializesJetStreamContextFromClient`, `testJetStreamThrowsWhenConnectLeavesContextUnavailable`, `testConnectIsIdempotentAcrossOperations`, `testOperationAfterTheClientClosedDialsAgain` (send, get, ack, reject, getMessageCount), `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried` |
 | **Scheduled / delayed messages** | `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders`, `testSendDelayedMessageSchedulesAtRequestedDelay`, `testSendDelayedMessageNeverSchedulesBeforeRequestedDelay`, `testSendDelayedMessageWithLargeDelaySchedulesFarInTheFuture`, `testSendWithDelayStampButScheduledMessagesDisabledPublishesNormally`, `testSendWithZeroDelayPublishesNormally`, `testSendWithNegativeDelayPublishesNormally`, `testSendWithDelayStampAndExistingHeadersMergesScheduleHeaders`, `testSetupWithScheduledMessagesAddsDelayedSubjectAndFlag`, `testSetupUpdateStreamWithScheduledMessagesIncludesDelayedSubject`, `testSetupUpdateRemovesOrphanedDelayedSubjectWhenScheduledMessagesDisabled` |
+| **Duplicate protection (`deduplicate`, `DeduplicationIdStamp`)** | `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId` |
 | **Igbinary fallback** | `testConstructorWithoutIgbinaryDoesNotCrash` |
 | **TLS DSN** | `testConstructorWithTlsDsnInitializesTransport` |
 
@@ -59,6 +60,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Option coercion edge cases** | `testBuildWithNonScalarOptionsCoerceToSafeDefaults`, `testBuildCoercesNonZeroIntegerBooleanOptionToTrue`, `testBuildCoercesUppercaseBooleanStringToTrue`, `testBuildWithPathMissingTopicThrowsException` |
 | **Scheduled messages** | `testBuildWithScheduledMessagesEnabledSetsFlag`, `testBuildWithScheduledMessagesDisabledByDefault`, `testBuildWithScheduledMessagesFromDsnQueryString` |
 | **Acknowledgement (ack_sync)** | `testBuildWithAckSyncEnabledSetsFlag`, `testBuildWithAckSyncDisabledByDefault`, `testBuildWithAckSyncFromDsnQueryString` |
+| **Deduplication (`deduplicate`)** | `testDeduplicateIsOffByDefaultAndCanBeEnabled` (default, options, DSN query, options over query), `testReadmeConfigurationOptionsAreAccepted` |
 | **Extended stream/consumer options + auto_setup** | `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testBuildLeavesNewOptionsUnsetByDefault`, `testBuildParsesNewOptionsFromDsnQuery`, `testBuildWithInvalidRetentionThrowsException`, `testBuildWithInvalidDiscardThrowsException`, `testBuildWithInvalidCompressionThrowsException`, `testBuildWithInvalidReplayPolicyThrowsException`, `testBuildWithDuplicateWindowExceedingMaxAgeThrowsException`, `testBuildAllowsDuplicateWindowWhenMaxAgeIsUnlimited`, `testBuildAllowsDuplicateWindowEqualToMaxAge`, `testBuildWithInvalidMaxAckPendingThrowsException`, `testBuildWithInvalidStreamMaxConsumersThrowsException`, `testBuildWithZeroStreamMaxMessageSizeThrowsException`, `testBuildWithStreamMaxMessageSizeExceedingInt32ThrowsException`, `testBuildAcceptsStreamMaxMessageSizeAtTheInt32Boundary`, `testBuildWithZeroDuplicateWindowThrowsException`, `testBuildWithOverlongStreamDescriptionThrowsException`, `testBuildAcceptsStreamDescriptionAtTheLengthLimit`, `testBuildWithUnrecognizedTriStateBooleanThrowsException`, `testBuildAcceptsEveryRecognizedBooleanTokenForTriStateFlags` |
 | **NATS-native retry tuning** | `testBuildRetryTuningDefaults`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildWithNegativeNakDelayThrowsException`, `testBuildWithNonPositiveAckWaitThrowsException`, `testBuildWithNonIntegerMaxDeliverThrowsException`, `testBuildWithNonListBackoffThrowsException`, `testBuildWithNonNumericBackoffElementThrowsException`, `testBuildWithMaxDeliverNotExceedingBackoffThrowsException`, `testBuildWithBackoffFromDsnQueryString` |
 | **Option completeness** | `testDefaultOptionsCoversAllTransportOptionCases` |
@@ -71,6 +73,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Scheduled messages accessor** | `testScheduledMessagesAccessorReturnsConstructorValue`, `testScheduledMessagesDefaultsToFalse` |
 | **Extended stream/consumer accessors + auto_setup** | `testNewStreamAndConsumerAccessorsReturnConfiguredValues`, `testNewStreamAndConsumerAccessorsDefaultToNull`, `testInactiveThresholdIsClampedToAtLeastOneMillisecond`, `testAutoSetupAccessorReturnsConstructorValue` |
 | **Connection timeout and idle check accessors** | `testConnectionTimeoutAndPingAfterIdleAccessors` |
+| **Deduplication accessor** | `testDeduplicationAccessorReturnsConstructorValueAndDefaultsToFalse` |
 
 ### Serializers (`tests/unit/Serializer/`)
 
@@ -89,6 +92,12 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **`boolValue()` coercion** | `testBoolValue` (data provider: bool/int/truthy-tokens/falsy-tokens/case-insensitivity/unrecognized-string/empty/null/array/object, with both default values), `testBoolValueDefaultIsFalseWhenOmitted` |
 | **`secondsToMs()` conversion** | `testSecondsToMs` (data provider: whole/fractional/numeric-string/sub-ms-rounding/zero/non-numeric/null/array), `testSecondsToMsDefaultIsZeroWhenOmitted` |
 | **Static & pure** | `testMethodsAreStaticAndPure` |
+
+### Stamps (`tests/unit/Stamp/`)
+
+| Feature | Tests |
+|---------|-------|
+| **Deduplication id** | `testKeepsTheId`, `testRejectsAnIdAHeaderCannotCarry` (data provider: empty, blank, carriage return, line feed) |
 
 ### README Examples (`tests/unit/ReadmeExamplesTest.php`)
 
@@ -203,6 +212,13 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 |---------|-----------|
 | **`messenger:consume --keepalive`** | A message handled for longer than ack_wait is not redelivered while keepalive runs (`ack_wait: 3`, a 7-second handler, `--keepalive=1`, a second consumer that would receive a redelivery; handled exactly once) |
 
+### Duplicate Protection (`tests/functional/features/nats_deduplicate.feature`)
+
+| Feature | Scenarios |
+|---------|-----------|
+| **Deduplication id** | A message dispatched again with the same deduplication id is stored once (3 messages, then the first again as a new envelope: 3 stored, 3 consumed) |
+| **`deduplicate` option** | Distinct messages are all stored with the deduplicate option (5 stored, 5 consumed) |
+
 ## Mutation Testing
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
@@ -239,6 +255,7 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 | README Example | Tests |
 |---|---|
 | Custom serializer extending `AbstractEnveloperSerializer` | `readmeCustomSerializerExample_EncodeDecode_RoundTrips`, `readmeCustomSerializerExample_DecodeInvalidBody_ThrowsException`, `testReadmePhpExampleIsSyntacticallyValid` |
+| `$bus->dispatch(new OrderPlaced($orderId), [new DeduplicationIdStamp(...)])` | `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testReadmePhpExampleIsSyntacticallyValid`, Behat scenario `A message dispatched again with the same deduplication id is stored once` |
 | Igbinary serializer configuration example | `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash` |
 | `$bus->dispatch(new MyMessage(), [new DelayStamp(30000)])` | `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders` |
 | `$transport->getMessageCount()` | `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending` |
@@ -264,6 +281,7 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 | `stream_storage: 'file' / 'memory'` | `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildWithStreamStorageAndPerSubjectLimitNormalizesValues` |
 | `stream_replicas: 1 / 3` | `testReadmeStreamRetentionExamplesAreAccepted`, `testReadmeAuditTransportOptionsAreAccepted` |
 | `retry_handler: 'symfony' / 'nats'` | `testReadmeConfigurationOptionsAreAccepted`, `testBuildUsesRetryHandlerFromQuery`, functional NAK/TERM scenarios |
+| `deduplicate: false / true` | `testReadmeConfigurationOptionsAreAccepted`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, Behat scenario `Distinct messages are all stored with the deduplicate option` |
 | `scheduled_messages: false / true` | `testReadmeConfigurationOptionsAreAccepted`, `testReadmeScheduledMessagesDsnEnablesFeature`, `testBuildWithScheduledMessagesEnabledSetsFlag` |
 | TLS options (all) | `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, functional TLS/mTLS scenarios |
 | Auth options (token, username, password, jwt, nkey) | `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions` |

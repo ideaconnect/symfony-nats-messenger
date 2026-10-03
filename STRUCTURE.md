@@ -32,6 +32,8 @@ src/
 │   ├── NatsTransportConfigurationBuilder.php  # Parses DSN + options, validates, builds the NatsClient
 │   ├── RetryHandler.php                        # Enum: SYMFONY (TERM) | NATS (NAK)
 │   └── TransportOption.php                     # Enum of every recognized option key
+├── Stamp/
+│   └── DeduplicationIdStamp.php                # The id JetStream deduplicates a message by (Nats-Msg-Id)
 └── Serializer/
     ├── AbstractEnveloperSerializer.php         # Base encode/decode envelope wrapping + validation
     └── IgbinarySerializer.php                  # Default serializer (igbinary), falls back to PhpSerializer

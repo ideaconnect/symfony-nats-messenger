@@ -27,6 +27,7 @@ use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
+use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
 use LogicException;
 use RuntimeException;
 use Symfony\Component\Messenger\Envelope;
@@ -34,6 +35,7 @@ use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
+use Symfony\Component\Messenger\Stamp\SentToFailureTransportStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\KeepaliveReceiverInterface;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
@@ -173,6 +175,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $uuid = (string) Uuid::v4();
         $envelope = $envelope->with(new TransportMessageIdStamp($uuid));
 
+        // Added before the envelope is encoded, so that the id travels with the message (#53).
+        $deduplicationStamp = $envelope->last(DeduplicationIdStamp::class);
+        if ($deduplicationStamp === null && $this->configuration->isDeduplicationEnabled()) {
+            $deduplicationStamp = new DeduplicationIdStamp($uuid);
+            $envelope = $envelope->with($deduplicationStamp);
+        }
+
         try {
             $encodedMessage = $this->serializer->encode($envelope);
         } catch (\Throwable $serializationError) {
@@ -212,9 +221,29 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // messages. JetStreamContext::publish() retries transient 503 "no responders" and parses
         // the PubAck, throwing JetStreamException on an empty/malformed reply or a reported error -
         // so the publish fails closed instead of silently accepting an invalid acknowledgement.
-        $this->awaitOnConnection($this->jetStream()->publish($topic, $payload, $normalizedHeaders));
+        $this->awaitOnConnection($this->jetStream()->publish(
+            $topic,
+            $payload,
+            $normalizedHeaders,
+            msgId: $deduplicationStamp === null ? null : $this->natsMessageId($deduplicationStamp, $envelope),
+        ));
 
         return $envelope;
+    }
+
+    /**
+     * The Nats-Msg-Id JetStream deduplicates a publish by.
+     *
+     * The envelope's deduplication id, then Symfony's retry count, so that each retry is a message of its own,
+     * and a marker on the copy for a failure transport, which Symfony sends with a retry count of 0, so that
+     * it is not taken for the original. A copy sent again, such as the retry of a message NATS redelivered
+     * because the worker stopped after a retry send that timed out, gets the same id as before and is dropped.
+     */
+    private function natsMessageId(DeduplicationIdStamp $stamp, Envelope $envelope): string
+    {
+        $id = sprintf('%s:%d', $stamp->id, RedeliveryStamp::getRetryCountFromEnvelope($envelope));
+
+        return $envelope->last(SentToFailureTransportStamp::class) === null ? $id : $id . ':failed';
     }
 
     /**

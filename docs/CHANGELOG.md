@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Duplicate protection: the `deduplicate` option and `DeduplicationIdStamp` (#53).** A `send()` that timed
+  out may still have stored the message, so dispatching it again stored it twice, and so did Symfony when a
+  worker stopped after a retry or failure-transport send that timed out and NATS redelivered the original.
+  The transport now publishes the id of a `DeduplicationIdStamp` as `Nats-Msg-Id`, followed by Symfony's
+  retry count and a marker on the failure-transport copy, so JetStream drops a copy sent again within
+  `stream_duplicate_window` while each retry stays a message of its own. With `deduplicate: true` every
+  message gets an id on its first send, which travels with it; an application adds its own stamp to cover a
+  message it dispatches again as a new envelope. Off by default, so nothing changes unless it is set or a
+  stamp is added.
+
 ### Fixed
 - **`getMessageCount()` against a server that cannot be reached tries to connect once, not twice (#54).**
   When the consumer lookup failed, the stream-level fallback dialled again, so `messenger:stats` against a
