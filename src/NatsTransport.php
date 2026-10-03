@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger;
 
+use IDCT\NATS\Connection\Enum\ConnectionState;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
@@ -532,7 +533,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function autoSetupIfEnabled(): void
     {
-        if ($this->autoSetupDone || !$this->configuration->isAutoSetupEnabled()) {
+        if (!$this->configuration->isAutoSetupEnabled()) {
+            return;
+        }
+
+        // Connect first. Dialling again after the client closed clears the done-flag, so the new
+        // connection is verified in this same call rather than the next one, and a dial that fails
+        // surfaces as the connection error it is rather than as a failed setup.
+        $this->connectIfNeeded();
+
+        if ($this->autoSetupDone) {
             return;
         }
 
@@ -633,13 +643,25 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Lazily connects to NATS only when transport operations require it.
+     * Connects when the transport has no connection it can use: none was opened yet, or the client has
+     * closed.
      *
-     * Called internally by {@see jetStream()} to ensure the connection is
-     * established before any JetStream API call.
+     * Called internally by {@see jetStream()} before every JetStream call. The client runs with reconnect
+     * off, so a connection the server closed or one that dropped leaves it in its terminal Closed state,
+     * as do refused credentials, and it then refuses every request. Dialling again is what keeps a
+     * long-lived process working after that (#49): a consumer worker exits on the failed get() and its
+     * supervisor starts a new one, but a process that sends for longer than one request - a web app in
+     * worker mode, a daemon, a handler that dispatches - used to fail every later operation until it was
+     * restarted. The client releases what it held on every terminal close, so a fresh connect() starts
+     * clean. As after {@see close()}, auto_setup verifies provisioning again on the new connection.
      */
     private function connectIfNeeded(): void
     {
+        if ($this->jetStream !== null && $this->client->state() === ConnectionState::Closed) {
+            $this->jetStream = null;
+            $this->autoSetupDone = false;
+        }
+
         if ($this->jetStream === null) {
             $this->connect();
         }

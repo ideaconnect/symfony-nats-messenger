@@ -3,9 +3,11 @@
 namespace IDCT\NatsMessenger\Tests\Unit;
 
 use Amp\Future;
+use IDCT\NATS\Connection\Enum\ConnectionState;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
+use IDCT\NATS\Exception\ConnectionException;
 use IDCT\NATS\Exception\JetStreamException;
 use IDCT\NATS\Exception\UnsupportedFeatureException;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
@@ -801,6 +803,8 @@ final class NatsTransportTest extends TestCase
         // regression that reconnected per operation would open a socket on every send/ack.
         $client->expects(self::once())->method('connect')->willReturn(Future::complete());
         $client->expects(self::once())->method('jetStream')->willReturn($jetStream);
+        // The transport asks the client whether its connection is still open before reusing it.
+        $client->method('state')->willReturn(ConnectionState::Open);
 
         $transport = new RealConnectNatsTransport(self::VALID_DSN, [], $serializer);
         $transport->setClient($client);
@@ -858,6 +862,174 @@ final class NatsTransportTest extends TestCase
         $transport->setClient($client);
 
         $transport->close();
+    }
+
+    /**
+     * Once the client has closed - the server closed the connection or it dropped (the client runs with
+     * reconnect off), or credentials were refused - every operation dials again instead of failing on the
+     * Closed client until the process restarts (#49), and runs on the new connection.
+     *
+     * @param \Closure(NatsTransport): void $operation
+     */
+    #[DataProvider('operationsAfterTheClientClosed')]
+    public function testOperationAfterTheClientClosedDialsAgain(string $method, mixed $result, \Closure $operation): void
+    {
+        $oldConnection = $this->createMock(JetStreamContext::class);
+        $oldConnection->expects(self::once())->method('ack')->willReturn(Future::complete());
+        $oldConnection->expects(self::never())->method($method === 'ack' ? 'nak' : $method);
+        $newConnection = $this->createMock(JetStreamContext::class);
+        $newConnection->expects(self::once())->method($method)->willReturn(Future::complete($result));
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->expects(self::exactly(2))->method('jetStream')->willReturnOnConsecutiveCalls($oldConnection, $newConnection);
+        // A Closed client has already released its socket: there is nothing to disconnect.
+        $client->expects(self::never())->method('disconnect');
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, [], $serializer);
+        $transport->setClient($client);
+        $transport->ack((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('first')));
+
+        $state = ConnectionState::Closed;
+        $operation($transport);
+    }
+
+    /**
+     * @return iterable<string, array{string, mixed, \Closure(NatsTransport): void}>
+     */
+    public static function operationsAfterTheClientClosed(): iterable
+    {
+        $received = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+
+        yield 'send' => ['publish', null, static fn (NatsTransport $transport) => $transport->send(new Envelope(new \stdClass()))];
+        yield 'get' => ['fetchBatch', [], static fn (NatsTransport $transport) => iterator_to_array($transport->get())];
+        yield 'ack' => ['ack', null, static fn (NatsTransport $transport) => $transport->ack($received)];
+        yield 'reject' => ['term', null, static fn (NatsTransport $transport) => $transport->reject($received)];
+        yield 'getMessageCount' => [
+            'getConsumer',
+            new ConsumerInfo(streamName: 'test-stream', name: 'client', push: false, raw: ['num_pending' => 3, 'num_ack_pending' => 0]),
+            static fn (NatsTransport $transport) => self::assertSame(3, $transport->getMessageCount()),
+        ];
+    }
+
+    /**
+     * With auto_setup the new connection is verified in the same call that dialled it, before the publish:
+     * a stream removed during the outage is recreated before the message is sent to it, not one call late.
+     */
+    public function testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes(): void
+    {
+        $calls = [];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturnCallback(static function () use (&$calls): Future {
+            $calls[] = 'addStream';
+
+            return Future::complete();
+        });
+        $jetStream->method('addConsumer')->willReturnCallback(static function () use (&$calls): Future {
+            $calls[] = 'addConsumer';
+
+            return Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            ));
+        });
+        $jetStream->method('publish')->willReturnCallback(static function () use (&$calls): Future {
+            $calls[] = 'publish';
+
+            return Future::complete();
+        });
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()], $calls);
+        $client->method('jetStream')->willReturn($jetStream);
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, ['auto_setup' => true], $serializer);
+        $transport->setClient($client);
+
+        $transport->send(new Envelope(new \stdClass()));
+        $state = ConnectionState::Closed;
+        $calls = [];
+        $transport->send(new Envelope(new \stdClass()));
+
+        self::assertSame(['connect', 'addStream', 'addConsumer', 'publish'], $calls);
+    }
+
+    /**
+     * A dial that fails after the client closed surfaces as the connection error it is - with auto_setup as
+     * well, where it used to be wrapped as "Failed to setup NATS stream" - and the next operation dials
+     * again.
+     */
+    public function testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete());
+        $jetStream->method('addConsumer')->willReturn(Future::complete(new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+        )));
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturn(Future::complete());
+
+        $refused = new ConnectionException('Connection to tcp://localhost:4222 failed');
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::error($refused), Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, ['auto_setup' => true], $serializer);
+        $transport->setClient($client);
+        $transport->send(new Envelope(new \stdClass()));
+        $state = ConnectionState::Closed;
+
+        try {
+            $transport->send(new Envelope(new \stdClass()));
+            self::fail('expected the dial to fail');
+        } catch (ConnectionException $e) {
+            self::assertSame($refused, $e);
+        }
+
+        // The failed dial left the client closed: the next operation dials again.
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * A client mock whose state() reports $state, which every successful connect() sets to Open, as the
+     * real client does; a test closes the connection by setting $state to Closed. Each connect() returns
+     * the next of $dials, and is recorded in $calls when given.
+     *
+     * @param list<Future<null>> $dials
+     * @param list<string>|null $calls
+     */
+    private function clientReportingState(ConnectionState &$state, array $dials, ?array &$calls = null): NatsClient&\PHPUnit\Framework\MockObject\MockObject
+    {
+        $client = $this->createMock(NatsClient::class);
+        $client->method('state')->willReturnCallback(static function () use (&$state): ConnectionState {
+            return $state;
+        });
+        $client->expects(self::exactly(count($dials)))->method('connect')->willReturnCallback(
+            static function () use (&$state, &$dials, &$calls): Future {
+                if ($calls !== null) {
+                    $calls[] = 'connect';
+                }
+
+                $dial = array_shift($dials);
+                self::assertNotNull($dial);
+
+                return $dial->map(static function () use (&$state): void {
+                    $state = ConnectionState::Open;
+                });
+            },
+        );
+
+        return $client;
     }
 
     public function testJetStreamThrowsWhenConnectLeavesContextUnavailable(): void
@@ -1752,6 +1924,7 @@ final class NatsTransportTest extends TestCase
         $client->expects(self::exactly(2))->method('connect')->willReturn(Future::complete());
         $client->expects(self::exactly(2))->method('jetStream')->willReturn($jetStream);
         $client->expects(self::once())->method('disconnect')->willReturn(Future::complete());
+        $client->method('state')->willReturn(ConnectionState::Open);
 
         $transport = new RealConnectNatsTransport(self::VALID_DSN, ['auto_setup' => true]);
         $transport->setClient($client);

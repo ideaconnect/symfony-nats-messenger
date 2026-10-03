@@ -81,7 +81,8 @@ The heart of the bridge. Responsibilities map almost 1:1 to `TransportInterface`
 
 Cross-cutting behavior:
 - **Lazy connection.** No socket is opened in the constructor. `jetStream()` calls `connectIfNeeded()`,
-  which connects on first use and caches the `JetStreamContext`.
+  which connects on first use and caches the `JetStreamContext`. The client runs with reconnect off, so a
+  lost connection leaves it Closed; `connectIfNeeded()` then dials again on the next operation (#49).
 - **Pull consumers, explicit ACK.** Messages are only considered processed once explicitly ACK'd;
   this is what makes `retry_handler` and shared-consumer load balancing work.
 

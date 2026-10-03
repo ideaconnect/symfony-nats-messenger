@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A lost connection is re-established by the next operation instead of failing every operation until
+  the process restarts (#49).** The client runs with reconnect off, so once a connection is lost - the
+  server restarted, the network dropped it, or the server closed it because the client stopped answering
+  its pings, which a PHP process idle for a few minutes between requests does - the client stays in its
+  terminal Closed state and refuses every request. The transport only dialled when it had never connected,
+  and nothing in Symfony calls `close()`, so a process that sends for longer than one request (a web app in
+  worker mode, a daemon, a handler that dispatches) failed every operation from then on. A Closed client is
+  now dialled again by the next operation; the operation that ran into the lost connection still fails.
+  With `auto_setup`, the new connection is verified in the same call that dials it rather than the next
+  one, and a dial that fails surfaces as the client's `ConnectionException` instead of being wrapped as
+  "Failed to setup NATS stream", the first dial included.
+
 ## [5.1.0] - 2026-08-09
 
 A **minor** release. It adds fifteen new DSN options and the `auto_setup` provisioning mode, and fixes
