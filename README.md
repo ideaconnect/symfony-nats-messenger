@@ -413,6 +413,33 @@ framework:
 
 > **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, Behat scenarios `nats_nak.feature`, `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`
 
+### Long-Running Handlers (`--keepalive`)
+
+NATS redelivers a message that is not acknowledged within the consumer's `ack_wait` (30 seconds unless set),
+possibly to another worker, even while a handler is still working on it. `messenger:consume --keepalive`
+prevents that: every few seconds (5 by default, `--keepalive=N` to change it) Symfony has the transport tell
+NATS that the message is still in progress, which restarts its `ack_wait`.
+
+```bash
+symfony console messenger:consume nats_transport --keepalive=10
+```
+
+Symfony sends the keepalive from a `SIGALRM` signal handler, which needs the `pcntl` extension and can
+interrupt the handler at any point. The NATS client is asynchronous, and PHP does not let it wait inside a
+signal handler, so the transport queues the in-progress acknowledgement there, and it goes out the next time
+the event loop runs:
+
+- **A handler that waits on asynchronous work** - any call to NATS through this library, such as dispatching
+  a message to a NATS transport, or amphp-based I/O - lets it out at once, so the keepalive works as intended.
+- **A handler that only blocks** - plain PHP work, or blocking calls such as PDO queries or curl requests -
+  lets it out only once it returns, too late to restart the timer. For such a handler, set `ack_wait` longer
+  than its longest run instead.
+
+Keep the keepalive interval well below `ack_wait`, so a keepalive that goes out a little late still arrives in
+time.
+
+> **Tested by:** `testKeepaliveSendsInProgressForReplyToken`, `testKeepaliveFromASignalHandlerQueuesTheAcknowledgementInsteadOfWaiting`, `testKeepaliveDoesNotWaitForTheAcknowledgement`, `testKeepaliveWithoutAConnectionSendsNothingAndDoesNotDial`, `testKeepaliveWhoseAcknowledgementFailsRaisesNoUnhandledError`, Behat scenario `A message handled for longer than ack_wait is not redelivered while keepalive runs`
+
 ## Important: Consumer Strategies
 
 This is critical to understand before setting up multiple transport instances:

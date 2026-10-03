@@ -1619,6 +1619,178 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Configures a transport whose consumer redelivers a message that is not acknowledged within the given
+     * number of seconds, for a slow message that takes longer than that to handle.
+     *
+     * @Given I have a messenger transport configured with an ack wait of :seconds seconds
+     */
+    public function iHaveAMessengerTransportConfiguredWithAnAckWaitOfSeconds(int $seconds): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&ack_wait=%d'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\SlowMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $seconds
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @When I send a slow message that takes :seconds seconds to handle
+     */
+    public function iSendASlowMessageThatTakesSecondsToHandle(int $seconds): void
+    {
+        $this->messagesSent = 1;
+
+        $command = [
+            'php',
+            'bin/console',
+            'app:send-slow-message',
+            (string) $seconds,
+            '--env=test'
+        ];
+
+        $sendProcess = new Process($command, __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Failed to send the slow message. Exit code: %d. Output: %s. Error: %s',
+                    $sendProcess->getExitCode(),
+                    $sendProcess->getOutput(),
+                    $sendProcess->getErrorOutput()
+                )
+            );
+        }
+    }
+
+    /**
+     * Starts `messenger:consume --keepalive`, which arms SIGALRM and, from the signal handler, has the
+     * transport tell NATS that the message being handled is still in progress. It stops after one message.
+     *
+     * @When I start a messenger consumer with a keepalive every :seconds second
+     * @When I start a messenger consumer with a keepalive every :seconds seconds
+     */
+    public function iStartAMessengerConsumerWithAKeepaliveEverySeconds(int $seconds): void
+    {
+        $command = [
+            'php',
+            'bin/console',
+            'messenger:consume',
+            'test_transport',
+            '--keepalive=' . $seconds,
+            '--limit=1',
+            '--time-limit=60',
+            '--env=test',
+            '-vv'
+        ];
+
+        $process = new Process($command, __DIR__ . '/../..');
+        $process->setTimeout(120);
+        $process->start();
+
+        $this->consumerProcesses[] = $process;
+    }
+
+    /**
+     * Waits until a consumer has started handling the slow message, so that a consumer started next cannot
+     * be the one that receives it first.
+     *
+     * @When I wait until the slow message is being handled
+     */
+    public function iWaitUntilTheSlowMessageIsBeingHandled(): void
+    {
+        $attemptFile = $this->retryStateDir . '/slow_message_1.attempt';
+        $deadline = microtime(true) + 30;
+
+        while (!file_exists($attemptFile)) {
+            foreach ($this->consumerProcesses as $index => $process) {
+                if (!$process->isRunning()) {
+                    throw new \RuntimeException(
+                        sprintf(
+                            'Consumer process %d exited before handling the slow message. Exit code: %d. Output: %s. Error: %s',
+                            $index + 1,
+                            $process->getExitCode(),
+                            $process->getOutput(),
+                            $process->getErrorOutput()
+                        )
+                    );
+                }
+            }
+
+            if (microtime(true) > $deadline) {
+                throw new \RuntimeException('No consumer started handling the slow message within 30 seconds.');
+            }
+
+            usleep(100000);
+        }
+    }
+
+    /**
+     * Starts another consumer of the same transport for a fixed time. It receives the slow message only if
+     * NATS redelivers it, which it does when the consumer handling it does not acknowledge it, or report it
+     * in progress, within the ack wait.
+     *
+     * @When I start another messenger consumer for :seconds seconds
+     */
+    public function iStartAnotherMessengerConsumerForSeconds(int $seconds): void
+    {
+        $command = [
+            'php',
+            'bin/console',
+            'messenger:consume',
+            'test_transport',
+            '--time-limit=' . $seconds,
+            '--env=test',
+            '-vv'
+        ];
+
+        $process = new Process($command, __DIR__ . '/../..');
+        $process->setTimeout($seconds + 60);
+        $process->start();
+
+        $this->consumerProcesses[] = $process;
+    }
+
+    /**
+     * Verifies how many times the slow message was delivered to a handler, and that a handler finished it.
+     *
+     * @Then the slow message should have been handled :times time
+     * @Then the slow message should have been handled :times times
+     */
+    public function theSlowMessageShouldHaveBeenHandledTimes(int $times): void
+    {
+        $attemptFile = $this->retryStateDir . '/slow_message_1.attempt';
+        $attempts = file_exists($attemptFile) ? (int) file_get_contents($attemptFile) : 0;
+
+        $consumerOutput = '';
+        foreach ($this->consumerProcesses as $index => $process) {
+            $consumerOutput .= sprintf(
+                "Consumer %d output:\n%s\nConsumer %d error output:\n%s\n",
+                $index + 1,
+                $process->getOutput(),
+                $index + 1,
+                $process->getErrorOutput()
+            );
+        }
+
+        if ($attempts !== $times) {
+            throw new \RuntimeException(
+                sprintf("Expected the slow message to be handled exactly %d time(s), but it was handled %d time(s).\n%s", $times, $attempts, $consumerOutput)
+            );
+        }
+
+        if (!file_exists($this->testFilesDir . '/slow_message_1.txt')) {
+            throw new \RuntimeException(sprintf("No handler finished the slow message.\n%s", $consumerOutput));
+        }
+    }
+
+    /**
      * Cleans up all test resources after each scenario.
      *
      * Stops consumer processes, deletes NATS streams (test + failure), clears
