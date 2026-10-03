@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.1] - 2026-10-03
+
+A **patch** release with two fixes to how a failed message is retried: the recommended `IgbinarySerializer`
+no longer stops the worker when Symfony retries a message or sends it to the failure transport (#46), and
+with `retry_handler: nats` Symfony's retry no longer multiplies the deliveries (#47). The public PHP API and
+the requirements are unchanged.
+
 ### Fixed
 - **Retrying a failed message no longer crashes the worker when the transport uses `IgbinarySerializer`
   (#46).** `AbstractEnveloperSerializer::encode()` serialized the whole envelope, including the stamps
