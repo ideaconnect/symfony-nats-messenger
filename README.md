@@ -537,15 +537,17 @@ default) first checks it with one PING. If the server does not answer within `co
 transport closes that connection and runs the operation on a new one, so the first message after a quiet
 period goes out instead of failing. The PING costs one round trip, and only after a quiet period. A lower
 value also catches a server restart between two operations further apart than it, at the cost of that round
-trip more often; `ping_after_idle: 0` turns the check off. `keepalive()` never checks: Symfony calls it
-from a signal handler.
+trip more often. The same check follows an operation that failed on the connection - a JetStream error
+reply does not count, since the server answered it - because the client can keep reporting a dead connection
+open, and a connection that silently stopped delivering only times out. `ping_after_idle: 0` turns both
+checks off. `keepalive()` never checks: Symfony calls it from a signal handler.
 
 ```yaml
 options:
   ping_after_idle: 30   # seconds; 0 turns the check off
 ```
 
-> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testBuildWithInvalidPingAfterIdleThrowsException`
+> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testBuildWithInvalidPingAfterIdleThrowsException`
 
 ## Stream Configuration
 

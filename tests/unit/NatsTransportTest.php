@@ -1264,6 +1264,203 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * The client can keep reporting a connection Open after its socket died - older clients after a failed
+     * write ("The stream is not writable"), 2.10 after the server's fatal -ERR - so an operation that failed
+     * on the connection makes the next one check it with a PING first, and move to a new connection when it
+     * goes unanswered, instead of failing the same way until the process restarts (#49).
+     */
+    public function testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst(): void
+    {
+        $oldConnection = $this->createMock(JetStreamContext::class);
+        $oldConnection->expects(self::exactly(2))->method('ack')->willReturnOnConsecutiveCalls(
+            Future::complete(),
+            Future::error(new \RuntimeException('The stream is not writable')),
+        );
+        $newConnection = $this->createMock(JetStreamContext::class);
+        $newConnection->expects(self::exactly(2))->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->expects(self::exactly(2))->method('jetStream')->willReturnOnConsecutiveCalls($oldConnection, $newConnection);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::error(new \RuntimeException('The stream is not writable')));
+        $client->expects(self::once())->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+
+        try {
+            $transport->ack($envelope);
+            self::fail('expected the write to fail');
+        } catch (\RuntimeException $e) {
+            self::assertSame('The stream is not writable', $e->getMessage());
+        }
+
+        // The client still reports Open; no time has passed. The check comes from the failure.
+        $transport->ack($envelope);
+        // The new connection owes no check.
+        $transport->ack($envelope);
+    }
+
+    /**
+     * close() ends the check a failure called for, like a replaced connection: the connection the next
+     * operation opens owes no PING.
+     */
+    public function testCloseEndsTheCheckAFailureCalledFor(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(4))->method('ack')->willReturnOnConsecutiveCalls(
+            Future::complete(),
+            Future::error(new \RuntimeException('Broken pipe')),
+            Future::complete(),
+            Future::complete(),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+        $client->expects(self::once())->method('disconnect')->willReturnCallback(static function () use (&$state): Future {
+            $state = ConnectionState::Closed;
+
+            return Future::complete();
+        });
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+        try {
+            $transport->ack($envelope);
+        } catch (\RuntimeException) {
+            // The failure that would call for the check.
+        }
+        $transport->close();
+        $transport->ack($envelope);
+        $transport->ack($envelope);
+    }
+
+    /**
+     * A connection that answers the PING after a failure - the failure was a slow reply, say - is kept, and
+     * the check is not repeated for the operations after it.
+     */
+    public function testAnsweredPingAfterAFailureKeepsTheConnectionAndEndsTheCheck(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(4))->method('ack')->willReturnOnConsecutiveCalls(
+            Future::complete(),
+            Future::error(new \RuntimeException('Request timed out')),
+            Future::complete(),
+            Future::complete(),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::complete(0.001));
+        $client->expects(self::never())->method('disconnect');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+        try {
+            $transport->ack($envelope);
+        } catch (\RuntimeException) {
+            // The failure that calls for the check.
+        }
+        $transport->ack($envelope);
+        $transport->ack($envelope);
+    }
+
+    /**
+     * A JetStream reply proves the server answered, so it calls for no check: an empty pull (408) or a
+     * rejected publish does not make the next operation PING. An idle worker pulls empty batches all day.
+     */
+    public function testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::error(new JetStreamException('Request Timeout', 408)));
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturnOnConsecutiveCalls(
+            Future::error(new JetStreamException('maximum messages exceeded', 400)),
+            Future::complete(),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30], $serializer);
+        $transport->setClient($client);
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([], iterator_to_array($transport->get()));
+        try {
+            $transport->send(new Envelope(new \stdClass()));
+        } catch (JetStreamException) {
+            // Rejected by the server, which therefore answered.
+        }
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    public function testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(3))->method('ack')->willReturnOnConsecutiveCalls(
+            Future::complete(),
+            Future::error(new \RuntimeException('The stream is not writable')),
+            Future::complete(),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+        try {
+            $transport->ack($envelope);
+        } catch (\RuntimeException) {
+            // Ignored: the check is off.
+        }
+        $transport->ack($envelope);
+    }
+
+    /**
+     * When the consumer lookup fails on the connection, getMessageCount() checks it before its stream-level
+     * fallback, so the fallback runs on a new connection and still reports the stream's messages.
+     */
+    public function testMessageCountFallbackRunsOnANewConnectionAfterTheLookupFailedOnTheOldOne(): void
+    {
+        $oldConnection = $this->createMock(JetStreamContext::class);
+        $oldConnection->expects(self::once())->method('getConsumer')->willReturn(Future::error(new \RuntimeException('Broken pipe')));
+        $oldConnection->expects(self::never())->method('getStream');
+        $newConnection = $this->createMock(JetStreamContext::class);
+        $newConnection->expects(self::once())->method('getStream')->willReturn(Future::complete(new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: ['state' => ['messages' => 7]],
+        )));
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->expects(self::exactly(2))->method('jetStream')->willReturnOnConsecutiveCalls($oldConnection, $newConnection);
+        $client->method('rtt')->willReturn(Future::error(new \RuntimeException('Broken pipe')));
+        $client->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+
+        self::assertSame(7, $transport->getMessageCount());
+    }
+
+    /**
      * Symfony calls keepalive() from a signal handler (#48), so it adds no PING or dial: it uses the
      * connection as it is, however long the handler has been running.
      */
@@ -1397,9 +1594,10 @@ final class NatsTransportTest extends TestCase
     public function testGetMessageCountFallsBackToStreamState(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
+        // The consumer does not exist yet: JetStream answers 404.
         $jetStream->expects(self::once())
             ->method('getConsumer')
-            ->willReturn(Future::error(new \RuntimeException('consumer lookup failed')));
+            ->willReturn(Future::error(new JetStreamException('consumer not found', 404)));
         $jetStream->expects(self::once())
             ->method('getStream')
             ->with('test-stream')
@@ -1423,10 +1621,10 @@ final class NatsTransportTest extends TestCase
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->expects(self::once())
             ->method('getConsumer')
-            ->willReturn(Future::error(new \RuntimeException('consumer lookup failed')));
+            ->willReturn(Future::error(new JetStreamException('consumer not found', 404)));
         $jetStream->expects(self::once())
             ->method('getStream')
-            ->willReturn(Future::error(new \RuntimeException('stream lookup failed')));
+            ->willReturn(Future::error(new JetStreamException('stream not found', 404)));
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
         $transport->setJetStreamContext($jetStream);

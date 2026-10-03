@@ -83,8 +83,9 @@ Cross-cutting behavior:
 - **Lazy connection.** No socket is opened in the constructor. `jetStream()` calls `connectIfNeeded()`,
   which connects on first use and caches the `JetStreamContext`. The client runs with reconnect off, so a
   lost connection leaves it Closed; `connectIfNeeded()` then dials again on the next operation (#49). A
-  connection unused for longer than `ping_after_idle` is checked with a PING first and replaced when the
-  server does not answer within `connection_timeout`; `keepalive()` skips the check.
+  connection unused for longer than `ping_after_idle`, or one an operation just failed on (other than with
+  a JetStream reply), is checked with a PING first and replaced when the server does not answer within
+  `connection_timeout`; `keepalive()` skips the check.
 - **Pull consumers, explicit ACK.** Messages are only considered processed once explicitly ACK'd;
   this is what makes `retry_handler` and shared-consumer load balancing work.
 
