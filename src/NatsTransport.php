@@ -392,15 +392,24 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * finishes. NATS resets the timer to the consumer's configured ack_wait, so the $seconds
      * hint from Symfony is advisory and not forwarded.
      *
+     * The acknowledgement is queued, not waited for. Symfony's `messenger:consume --keepalive` calls this
+     * from its SIGALRM handler, which interrupts the message handler wherever it is, and PHP does not allow
+     * switching fibers inside a signal handler: waiting there failed with "Cannot switch fibers in current
+     * execution context" at the first alarm, which stopped the worker or failed the message being handled
+     * (#48). Queued, it goes out the next time the event loop runs: at once when the handler waits on
+     * something asynchronous, such as a NATS call, and only after the handler returns when it does plain PHP
+     * work, in which case ack_wait has to cover the handler instead. For the same reason nothing is dialled
+     * or checked first, and a transport without a connection sends nothing.
+     *
      * @throws LogicException If the envelope lacks a TransportMessageIdStamp
      */
     public function keepalive(Envelope $envelope, ?int $seconds = null): void
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
-        // Symfony calls this from a signal handler (#48), so it adds no PING or dial of its own: it uses the
-        // connection as it is, as it did before the other operations started checking it.
-        $jetStream = $this->jetStream ?? $this->jetStream();
-        $this->awaitOnConnection($jetStream->inProgress($this->buildAckMessage($id)));
+
+        // Nobody waits for it, so a failure stays on its own fiber instead of reaching the event loop; the
+        // operation that next needs the connection finds out whether it is still there.
+        $this->jetStream?->inProgress($this->buildAckMessage($id))->ignore();
     }
 
     /**

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`messenger:consume --keepalive` no longer breaks the worker at the first alarm (#48).** Symfony calls
+  `keepalive()` from its `SIGALRM` signal handler, and `keepalive()` waited there for the in-progress
+  acknowledgement, which PHP does not allow inside a signal handler: it failed with "Cannot switch fibers in
+  current execution context". Depending on where the alarm caught the handler, the worker died, or the
+  message it was handling failed with that error and was retried. `keepalive()` now queues the
+  acknowledgement and returns without waiting. It goes out the next time the event loop runs: at once when
+  the handler waits on asynchronous work, such as a call to NATS, but only after the handler returns when it
+  only blocks, so such a handler needs an `ack_wait` longer than its longest run. Without a connection,
+  `keepalive()` now sends nothing instead of dialling, and a failed acknowledgement no longer surfaces from
+  it. The README has a new section on `--keepalive`.
+
 ## [5.2.1] - 2026-10-03
 
 A **patch** release with two fixes to how a failed message is retried: the recommended `IgbinarySerializer`

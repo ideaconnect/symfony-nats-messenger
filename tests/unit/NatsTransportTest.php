@@ -20,6 +20,7 @@ use IDCT\NatsMessenger\NatsTransport;
 use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
 use Revolt\EventLoop;
 use Symfony\Component\Messenger\Envelope;
@@ -770,6 +771,93 @@ final class NatsTransportTest extends TestCase
         $transport->setJetStreamContext($jetStream);
 
         $transport->keepalive((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('message-id')));
+    }
+
+    /**
+     * Symfony's `messenger:consume --keepalive` calls keepalive() from its SIGALRM handler, where PHP does not
+     * allow switching fibers. Waiting for the acknowledgement there failed with "Cannot switch fibers in
+     * current execution context" and stopped the worker at the first alarm (#48); it is queued instead.
+     */
+    #[RequiresPhpExtension('pcntl')]
+    #[RequiresPhpExtension('posix')]
+    public function testKeepaliveFromASignalHandlerQueuesTheAcknowledgementInsteadOfWaiting(): void
+    {
+        $acknowledged = new DeferredFuture();
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('inProgress')->willReturn($acknowledged->getFuture());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+
+        $failure = null;
+        $asyncSignals = pcntl_async_signals(false);
+        pcntl_signal(SIGALRM, static function () use ($transport, $envelope, &$failure): void {
+            try {
+                $transport->keepalive($envelope);
+            } catch (\Throwable $e) {
+                $failure = $e;
+            }
+        });
+        try {
+            posix_kill(posix_getpid(), SIGALRM);
+            pcntl_signal_dispatch();
+        } finally {
+            pcntl_signal(SIGALRM, SIG_DFL);
+            pcntl_async_signals($asyncSignals);
+        }
+
+        self::assertNull($failure, 'keepalive() failed inside the signal handler: ' . $failure?->getMessage());
+        $acknowledged->complete();
+    }
+
+    /**
+     * Outside a signal handler too, keepalive() returns without waiting for the server.
+     */
+    public function testKeepaliveDoesNotWaitForTheAcknowledgement(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('inProgress')->willReturn((new DeferredFuture())->getFuture());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->keepalive((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token')));
+    }
+
+    /**
+     * A transport without a connection sends nothing rather than dialling, which would mean waiting.
+     */
+    public function testKeepaliveWithoutAConnectionSendsNothingAndDoesNotDial(): void
+    {
+        $client = $this->createMock(NatsClient::class);
+        $client->expects(self::never())->method('connect');
+
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, []);
+        $transport->setClient($client);
+
+        $transport->keepalive((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token')));
+    }
+
+    /**
+     * An acknowledgement that fails - the connection is gone - stays on its own fiber: nothing reaches the
+     * event loop as an unhandled error, which would stop the worker.
+     */
+    public function testKeepaliveWhoseAcknowledgementFailsRaisesNoUnhandledError(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        // A new future per call, which only the transport holds: left unhandled, it would be reported as soon
+        // as the transport lets go of it, so within this test.
+        $jetStream->expects(self::once())->method('inProgress')->willReturnCallback(
+            static fn (): Future => Future::error(new ConnectionException('Connection is not open')),
+        );
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->keepalive((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token')));
+        // An unhandled failure would surface from the event loop here.
+        \Amp\delay(0);
     }
 
     public function testKeepaliveWithoutTransportStampThrowsException(): void
