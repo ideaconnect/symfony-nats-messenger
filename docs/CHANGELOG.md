@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`getMessageCount()` against a server that cannot be reached tries to connect once, not twice (#54).**
+  When the consumer lookup failed, the stream-level fallback dialled again, so `messenger:stats` against a
+  server that was down waited 12 seconds for a refused connection and 18 seconds for one that did not
+  answer, with the default `connection_timeout`. It now gives up after the first attempt; a lookup that
+  failed on an open connection still falls back. It still returns 0 in that case, as documented: the
+  README now says that an outage reads as an empty queue there.
+
 ## [5.3.0] - 2026-10-04
 
 A **minor** release. It adds the `request_timeout` option (#51), requires `idct/php-nats-jetstream-client`

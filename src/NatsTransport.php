@@ -461,6 +461,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * loose upper bound, not an exact backlog: under the default limits retention policy the stream
      * retains already-acknowledged messages, so the count can stay above 0 even when nothing is left
      * to process. The consumer-info path does not have this limitation.
+     *
+     * When NATS cannot be reached it returns 0, the same as for an empty queue, so `messenger:stats`
+     * shows 0 during an outage. It gives up after a single connection attempt.
      */
     public function getMessageCount(): int
     {
@@ -471,6 +474,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             return $ackPending + $pending;
         } catch (\Throwable) {
+            // No connection could be opened: the stream lookup would only dial again and fail the same way,
+            // which doubled the wait for a server that is down (#54). A lookup that failed on an open
+            // connection still falls back, on a new connection if that one turns out to be gone.
+            if ($this->jetStream === null) {
+                return 0;
+            }
+
             try {
                 $streamInfo = $this->awaitOnConnection($this->jetStream()->getStream($this->streamName));
                 $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];

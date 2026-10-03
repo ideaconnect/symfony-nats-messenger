@@ -992,7 +992,12 @@ if ($count > 0) {
 }
 ```
 
-> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`
+`getMessageCount()`, which `messenger:stats` shows, returns 0 when NATS cannot be reached, the same as for an
+empty queue, so during an outage the queue reads as empty there. It gives up after a single connection attempt
+(about 6 seconds for a refused connection, see [Connection Timeout](#connection-timeout)). Monitor the
+connection itself, or the stream with the `nats` CLI, rather than reading a 0 as "nothing to do".
+
+> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`
 
 ## Troubleshooting
 
