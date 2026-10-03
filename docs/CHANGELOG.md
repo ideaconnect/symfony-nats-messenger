@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.2] - 2026-10-03
+
+A **patch** release with one fix: `messenger:consume --keepalive` no longer stops the worker, or fails the
+message it is handling, at the first alarm (#48). The README has a new section on `--keepalive`. The public
+PHP API and the requirements are unchanged.
+
 ### Fixed
 - **`messenger:consume --keepalive` no longer breaks the worker at the first alarm (#48).** Symfony calls
   `keepalive()` from its `SIGALRM` signal handler, and `keepalive()` waited there for the in-progress
