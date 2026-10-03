@@ -30,6 +30,8 @@ use RuntimeException;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
+use Symfony\Component\Messenger\Stamp\ReceivedStamp;
+use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Transport\Receiver\KeepaliveReceiverInterface;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
@@ -147,6 +149,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * causing JetStream to hold it until the scheduled time before delivering it to
      * the original topic.
      *
+     * With retry_handler=nats, the copy Symfony's retry sends of a message this transport received is not
+     * published ({@see isRetryNatsRedeliversItself()}).
+     *
      * @throws RuntimeException     If serialization fails and the envelope carries an ErrorDetailsStamp.
      * @throws \Throwable           The original serializer exception when serialization fails and the
      *                              envelope carries no ErrorDetailsStamp (re-thrown unchanged).
@@ -154,6 +159,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     public function send(Envelope $envelope): Envelope
     {
+        if ($this->isRetryNatsRedeliversItself($envelope)) {
+            return $envelope;
+        }
+
         $this->autoSetupIfEnabled();
 
         $uuid = (string) Uuid::v4();
@@ -201,6 +210,28 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $this->awaitOnConnection($this->jetStream()->publish($topic, $payload, $normalizedHeaders));
 
         return $envelope;
+    }
+
+    /**
+     * Whether the envelope is the copy Symfony's retry sends of a message this transport received, while
+     * NATS handles redelivery (retry_handler=nats).
+     *
+     * Symfony's retry listener runs for every transport with a retry strategy, and FrameworkBundle gives each
+     * one a strategy by default. It re-sends the failed message with a retry count, and the worker then calls
+     * reject(), which in nats mode NAKs the original so NATS redelivers it. Publishing the copy as well
+     * retried the same failure twice, and every copy did the same again, multiplying the deliveries: one
+     * message that kept failing ran its handler 120 times with max_deliver 3 (#47). So in nats mode the copy
+     * is not published, which means Symfony's retry strategy (max_retries, delay, multiplier) is ignored and
+     * NATS redelivers alone, under nak_delay, backoff and max_deliver.
+     *
+     * A copy for the failure transport carries a retry count of 0 and is still sent, as is anything that was
+     * not received in this process.
+     */
+    private function isRetryNatsRedeliversItself(Envelope $envelope): bool
+    {
+        return $this->configuration->retryHandler() === RetryHandler::NATS
+            && $envelope->last(ReceivedStamp::class) !== null
+            && RedeliveryStamp::getRetryCountFromEnvelope($envelope) > 0;
     }
 
     /**

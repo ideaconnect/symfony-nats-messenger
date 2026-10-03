@@ -388,7 +388,30 @@ When NATS manages redelivery (`retry_handler: nats`), tune it with `nak_delay`, 
 - **`backoff`** sets an escalating per-attempt delay schedule (e.g. `[1, 5, 30]` seconds); pair it with `max_deliver` greater than the number of backoff steps.
 - **`ack_wait`** is how long JetStream waits for an ACK before considering a delivery failed and redelivering - raise it for handlers that legitimately take a while.
 
-> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, Behat scenarios `nats_nak.feature` and `nats_term.feature`
+**Symfony's retry strategy is ignored with `retry_handler: nats`.** Symfony's retry listener runs for every
+transport, and FrameworkBundle gives each one a retry strategy (`max_retries: 3` by default). In nats mode the
+transport does not publish the copy that retry sends, because NATS redelivers the original after the NAK, so
+`max_retries`, `delay` and `multiplier` have no effect and `max_deliver` bounds the attempts. Set
+`max_retries: 0` on the transport anyway: with retries left on, Symfony still logs each failure as a retry it
+never makes ("Sending for retry #1") and never treats the message as failed for good.
+
+A failure transport does not combine well with nats mode. Symfony sends a message there each time it treats a
+failure as final: with `max_retries: 0` that is every failed delivery, so a message that keeps failing lands
+there up to `max_deliver` times, and with retries left on it never lands there. For a transport in nats mode,
+rely on NATS's own handling of a message that keeps failing instead (`max_deliver`, and the JetStream
+`MAX_DELIVERIES` advisory).
+
+```yaml
+framework:
+  messenger:
+    transports:
+      nats_transport:
+        dsn: 'nats-jetstream://localhost:4222/my-stream/my-topic?retry_handler=nats&max_deliver=5&nak_delay=10'
+        retry_strategy:
+          max_retries: 0
+```
+
+> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, Behat scenarios `nats_nak.feature`, `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`
 
 ## Important: Consumer Strategies
 

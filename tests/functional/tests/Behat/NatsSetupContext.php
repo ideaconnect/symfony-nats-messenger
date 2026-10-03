@@ -830,6 +830,27 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * The NATS retry handler with a max_deliver cap, and Symfony's retry strategy left at its framework
+     * default (3 retries) instead of max_retries: 0. Uses the native PHP serializer, so a retry Symfony sends
+     * is published normally unless the transport leaves it out.
+     *
+     * @Given I have a messenger transport configured with NATS retry handler, max deliver of :maxDeliver and Symfony's default retry strategy
+     */
+    public function iHaveAMessengerTransportConfiguredWithNatsRetryHandlerMaxDeliverAndSymfonysDefaultRetryStrategy(int $maxDeliver): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats&max_deliver=%d'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $maxDeliver
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
      * Configures the NATS retry handler with a max_deliver cap, so NATS stops redelivering a
      * permanently-failing message after the given number of attempts instead of looping forever.
      *

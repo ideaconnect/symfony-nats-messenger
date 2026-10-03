@@ -14,6 +14,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Message receiving** | `testGetReturnsDecodedEnvelopeWithHeadersAndMessageId`, `testGetTermsEmptyPayloadMessagesToStopRedelivery`, `testGetSkipsMessagesWithoutReplySubject`, `testGetReturnsEmptyArrayWhenConsumerIsMissing`, `testGetReturnsEmptyArrayWhenBatchRequestTimesOut`, `testGetRethrowsUnexpectedJetStreamExceptions`, `testGetDecodeFailureUsesTermWhenReplySubjectExists`, `testGetDecodeFailureUsesNakWhenRetryHandlerIsNats`, `testGetDecodeFailureKeepsOriginalErrorWhenRejectAlsoFails`, `testGetWithMultipleValidMessagesReturnsAll`, `testGetWithBatchingConfigPassesBatchSizeToFetchBatch`, `testGetDecodesLargePayloadWithoutTruncation`, `testGetUsesConfiguredConsumerNameSoWorkersShareOneDurableConsumer` |
 | **ACK / reject** | `testFindReceivedStampReturnsTransportStamp`, `testAckWithoutTransportStampThrowsException`, `testAckAcknowledgesReceivedEnvelope`, `testAckUsesAckSyncWhenEnabled`, `testRejectWithoutTransportStampThrowsException`, `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats` |
 | **Retry handler (TERM / NAK)** | `testHandleFailedDeliveryUsesTermByDefault`, `testHandleFailedDeliveryUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesBaseTermTransportPath`, `testHandleFailedDeliveryUsesBaseNakTransportPath`, `testConstructorWithInvalidRetryHandlerThrowsException` |
+| **NATS retry handler ignores Symfony's retry strategy** | `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testSymfonyModePublishesTheCopySymfonysRetrySends`, `testNatsModeStillPublishesWhatIsNotSymfonysRetryCopy` (failure-transport copy, message not received here, plain dispatch), `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy` |
 | **NATS-native retry tuning** | `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning` |
 | **Stream setup (create)** | `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesEachTriStateStreamFlagIndependently`, `testSetupPassesNewConsumerOptions`, `testSetupCreatesNewStreamWithMaxMessages`, `testSetupCreatesNewStreamWithMaxMessagesPerSubject` |
 | **Consumer replay policy (immutable)** | `testSetupPassesNewConsumerOptions`, `testSetupPreservesTheExistingConsumerReplayPolicyOverTheConfiguredOne`, `testSetupWritesReplayPolicyWhenExistingConsumerAlreadyMatches`, `testSetupOmitsReplayPolicyWhenTheExistingConsumerReportsNone`, `testSetupRethrowsNon404JetStreamExceptionFromConsumerLookup`, `testSetupPreservesAnOriginalReplayPolicyWhenTheOptionIsRemoved` |
@@ -191,6 +192,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | Feature | Scenarios |
 |---------|-----------|
 | **max_deliver** | NATS stops redelivering a poison message after `max_deliver` attempts (no infinite loop) |
+| **Symfony's retry strategy ignored in nats mode** | Symfony's retry strategy is ignored with the NATS retry handler (default 3 retries, `max_deliver: 3`, exactly 3 attempts) |
 
 ## Mutation Testing
 

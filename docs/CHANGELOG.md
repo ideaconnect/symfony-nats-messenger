@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   redelivered it after `ack_wait`, and the next worker failed the same way, running the handler again each
   time. `encode()` now leaves those stamps out before serializing, as Symfony's own serializers do, for
   every serializer extending `AbstractEnveloperSerializer`.
+- **With `retry_handler: nats`, Symfony's retry no longer multiplies the deliveries (#47).** Symfony's retry
+  listener runs for every transport with a retry strategy, and FrameworkBundle gives each one a strategy
+  (`max_retries: 3` by default). It re-sent a failed message as a copy while the transport NAKed the original
+  for NATS to redeliver, so each failure was retried twice, and every copy did the same again: one message
+  that kept failing ran its handler 120 times with `max_deliver: 3`. In nats mode the transport no longer
+  publishes that copy, so Symfony's retry strategy (`max_retries`, `delay`, `multiplier`) is ignored and
+  NATS redelivers alone, bounded by `max_deliver`. The README now explains how nats mode and Symfony's retry
+  and failure transport combine.
 
 ## [5.2.0] - 2026-10-03
 
