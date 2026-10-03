@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs it, with the unit tests, against the lowest client release allowed (on PHP 8.2) and the latest one
   (on PHP 8.5).
 
+### Fixed
+- **Documentation corrections from the 5.1.0 review (#55).** `get()`'s docblock, a comment, `CLAUDE.md` and
+  `STRUCTURE.md` said that a missing consumer reads as an empty pull (status 404); a missing consumer
+  reports 503, which only `auto_setup` recovers from, and otherwise `get()` throws. `STRUCTURE.md` described
+  a `send()` path through `requestWithHeaders()` that no longer exists. The README said a lower
+  `connection_timeout` fails faster on any connection problem; a refused connection takes about 6 seconds
+  whatever the value, since a failing dial is tried three times. An old changelog entry said `close()` runs
+  on worker shutdown; Symfony never calls it. `send()`'s docblock now lists `ConnectionException` and
+  `TimeoutException`. Two stray fragments in the README were moved or removed.
+
 ## [5.2.3] - 2026-10-03
 
 A **patch** release with a security fix: a `tls_verify_peer` value the transport does not recognize no
@@ -297,9 +307,9 @@ rejects fractional values, and DSN/option credentials are no longer trimmed. PHP
   block in the README (and pins their count), so a snippet that stops being valid PHP fails the build.
   This complements the existing tests that exercise the README's DSN, option, and serializer examples.
 - **`CloseableTransportInterface` support** - the transport now implements `close()`, which disconnects
-  the NATS client and resets the lazy connection state so resources are released on demand (e.g. on
-  worker shutdown). It is a no-op when no connection was opened, and the transport reconnects lazily on
-  the next operation.
+  the NATS client and resets the lazy connection state so resources are released on demand (when the
+  application calls it: Symfony itself never calls `close()`, not even on worker shutdown). It is a no-op
+  when no connection was opened, and the transport reconnects lazily on the next operation.
 - **`KeepaliveReceiverInterface` support** - the transport now implements Symfony Messenger's
   `keepalive()`, sending an in-progress (`+WPI`) acknowledgement so a long-running handler resets the
   JetStream redelivery timer instead of losing its message to `ack_wait` expiry. NATS resets to the

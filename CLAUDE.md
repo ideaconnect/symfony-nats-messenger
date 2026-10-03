@@ -60,8 +60,8 @@ composer nats:stop               # stop NATS
   or dials (it runs in a signal handler).
 - **Pull consumers + explicit ACK.** A message is only "processed" once ACK'd. This underpins
   `retry_handler` and shared-consumer load balancing.
-- **`get()` swallows JetStream 404 and 408** (consumer-missing / timeout-empty) as empty results;
-  other codes propagate.
+- **`get()` reads JetStream 408 and 404 as an empty pull** (no messages); other codes propagate. A
+  missing consumer reports 503, not 404: with `auto_setup` it is re-provisioned once, otherwise `get()` throws.
 - **`setup()` create-then-update.** On a stream conflict it reads the live config, **merges** subjects,
   preserves server fields, and updates - it never blindly overwrites an existing stream.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);

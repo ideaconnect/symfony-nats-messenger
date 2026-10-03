@@ -577,14 +577,14 @@ options:
 - Sets the timeout for the initial TCP/TLS dial and handshake when connecting to NATS
 - Also bounds the PING that checks a connection which sat idle (`ping_after_idle`): a server that does not answer within it is treated as gone
 - Does **not** bound how long an operation waits for the server's reply, which is `request_timeout`; the batch fetch is bounded separately by `max_batch_timeout`
-- Lower values fail faster on connection issues
+- Bounds each dial attempt: a dial that fails is tried three times, with pauses of 2 and 4 seconds in between
+- Lower values fail faster only when an attempt hangs, as with an unreachable host (about 6 seconds plus three times the value in all); a refused connection fails after about 6 seconds whatever the value
 - Higher values tolerate slower connection establishment
 
 **When to adjust:**
 - Increase for high-latency networks or geographically distant NATS servers
 - Decrease for faster failure detection in local environments
 - Default of 1 second works well for most local/regional deployments
-- Don't wait forever for the batch to fill
 
 ### Request Timeout
 
@@ -856,6 +856,12 @@ framework:
 symfony console messenger:setup-transports nats_transport
 ```
 
+This will:
+1. Create the stream with the configured settings, or update an existing one (merging subjects and keeping
+   the server's own fields)
+2. Create the consumer with an explicit ACK policy
+3. Verify that the consumer matches the configuration
+
 **Automatic (`auto_setup`).** Set `auto_setup=true` to have the transport provision the stream and
 consumer itself, lazily, on the first `send()`/`get()`. Setup then runs once per transport instance, and
 again only if JetStream reports the stream or consumer as missing during a pull (for example after NATS
@@ -949,11 +955,6 @@ resolution**. The delay is rounded **up** to the next whole second, so a message
 schedules at the next whole second rather than firing immediately.
 
 When `scheduled_messages` is disabled (the default), any `DelayStamp` on the envelope is silently ignored and messages are published immediately. That includes the `DelayStamp` Symfony's retry adds, so retries run back to back (see [Retry Handler Behavior](#retry-handler-behavior)).
-
-This will:
-1. Create the stream with configured settings
-2. Create the consumer with explicit ACK policy
-3. Verify consumer creation
 
 ### Stream Monitoring
 
