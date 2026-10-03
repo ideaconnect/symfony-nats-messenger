@@ -12,7 +12,7 @@ namespace IDCT\NatsMessenger\Options;
  *
  * **Consumer & Batching:** CONSUMER, BATCHING, MAX_BATCH_TIMEOUT, CONNECTION_TIMEOUT,
  *                          MAX_ACK_PENDING, INACTIVE_THRESHOLD, REPLAY_POLICY
- * **Connection:** PING_AFTER_IDLE
+ * **Connection:** PING_AFTER_IDLE, REQUEST_TIMEOUT
  * **Stream Limits:** STREAM_MAX_AGE, STREAM_MAX_BYTES, STREAM_MAX_MESSAGES,
  *                    STREAM_MAX_MESSAGES_PER_SUBJECT, STREAM_MAX_MESSAGE_SIZE, STREAM_MAX_CONSUMERS,
  *                    STREAM_STORAGE, STREAM_REPLICAS
@@ -34,6 +34,7 @@ enum TransportOption: string
     case MAX_BATCH_TIMEOUT = 'max_batch_timeout';
     case CONNECTION_TIMEOUT = 'connection_timeout';
     case PING_AFTER_IDLE = 'ping_after_idle';
+    case REQUEST_TIMEOUT = 'request_timeout';
     case MAX_ACK_PENDING = 'max_ack_pending';
     case INACTIVE_THRESHOLD = 'inactive_threshold';
     case REPLAY_POLICY = 'replay_policy';

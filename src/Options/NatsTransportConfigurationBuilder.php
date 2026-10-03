@@ -47,6 +47,8 @@ final class NatsTransportConfigurationBuilder
         TransportOption::MAX_BATCH_TIMEOUT->value => 1,
         TransportOption::CONNECTION_TIMEOUT->value => 1,
         TransportOption::PING_AFTER_IDLE->value => 30,
+        // The client's own default, so a transport that does not set it behaves as before the option existed.
+        TransportOption::REQUEST_TIMEOUT->value => 10,
         TransportOption::MAX_ACK_PENDING->value => null,
         TransportOption::INACTIVE_THRESHOLD->value => null,
         TransportOption::REPLAY_POLICY->value => null,
@@ -112,6 +114,9 @@ final class NatsTransportConfigurationBuilder
         $client = new NatsClient(new NatsOptions(
             servers: [$server],
             connectTimeoutMs: max(1, TypeCoercion::secondsToMs($configuration[TransportOption::CONNECTION_TIMEOUT->value] ?? null, 1.0)),
+            // How long a request waits for the server's reply: the publish acknowledgement of send(), an
+            // ack_sync ACK, and the JetStream API calls of setup() and getMessageCount().
+            requestTimeoutMs: max(1, TypeCoercion::secondsToMs($configuration[TransportOption::REQUEST_TIMEOUT->value] ?? null, 10.0)),
             pedantic: false,
             reconnectEnabled: false,
             tlsRequired: $this->toBool($configuration[TransportOption::TLS_REQUIRED->value]),
@@ -261,6 +266,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertPositiveNumber($configuration, TransportOption::BATCHING, true);
         $this->assertPositiveNumber($configuration, TransportOption::MAX_BATCH_TIMEOUT);
         $this->assertPositiveNumber($configuration, TransportOption::CONNECTION_TIMEOUT);
+        $this->assertPositiveNumber($configuration, TransportOption::REQUEST_TIMEOUT);
         // 0 is meaningful here: it turns the check off.
         $this->assertNonNegativeNumber($configuration, TransportOption::PING_AFTER_IDLE);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_AGE, true);

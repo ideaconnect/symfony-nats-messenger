@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`request_timeout` option (#51).** How long an operation waits for the server's reply was fixed at the
+  client's default of 10 seconds, and no option changed it: the publish acknowledgement of `send()`, an ACK
+  with `ack_sync`, and the JetStream API calls of `setup()` and `getMessageCount()` (`connection_timeout`
+  covers only the dial, and `max_batch_timeout` only the pull). `request_timeout` sets it, in seconds, from
+  the DSN query or the transport options. It defaults to 10, so nothing changes unless it is set.
+
 ## [5.2.3] - 2026-10-03
 
 A **patch** release with a security fix: a `tls_verify_peer` value the transport does not recognize no
