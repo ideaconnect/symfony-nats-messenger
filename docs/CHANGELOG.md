@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`ping_after_idle` option (seconds, default `30`; `0` turns it off) (#49).** An operation that finds
+  the connection unused for longer than this first checks it with one PING, answered within
+  `connection_timeout`, and runs on a new connection if the server does not answer. A server drops a
+  client that stops answering its pings, which a PHP process does whenever it is outside a transport call,
+  and load balancers and NAT gateways drop idle connections too, none of which the client notices until it
+  writes: without the check, the first message after a quiet period was the one that failed. The same
+  check follows an operation that failed on the connection other than with a JetStream reply: the client
+  can keep reporting a dead connection Open (clients before 2.10 after a failed write, 2.10 after the
+  server's fatal `-ERR`), which a re-dial waiting for Closed would never notice, and a connection that
+  silently stopped delivering only times out. `keepalive()` is never checked, since Symfony calls it from
+  a signal handler. `NatsTransportConfiguration` gains `pingAfterIdleSeconds()` and
+  `connectionTimeoutSeconds()`.
+
+### Fixed
+- **A lost connection is re-established by the next operation instead of failing every operation until
+  the process restarts (#49).** The client runs with reconnect off, so once a connection is lost - the
+  server restarted, the network dropped it, or the server closed it because the client stopped answering
+  its pings, which a PHP process idle for a few minutes between requests does - the client stays in its
+  terminal Closed state and refuses every request. The transport only dialled when it had never connected,
+  and nothing in Symfony calls `close()`, so a process that sends for longer than one request (a web app in
+  worker mode, a daemon, a handler that dispatches) failed every operation from then on. A Closed client is
+  now dialled again by the next operation; the operation that ran into the lost connection still fails.
+  With `auto_setup`, the new connection is verified in the same call that dials it rather than the next
+  one, and a dial that fails surfaces as the client's `ConnectionException` instead of being wrapped as
+  "Failed to setup NATS stream", the first dial included.
+
 ## [5.1.0] - 2026-08-09
 
 A **minor** release. It adds fifteen new DSN options and the `auto_setup` provisioning mode, and fixes

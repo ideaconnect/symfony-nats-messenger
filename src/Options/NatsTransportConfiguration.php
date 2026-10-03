@@ -77,6 +77,33 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns the dial timeout in seconds (minimum 1ms), the same value the client gets as its
+     * connectTimeoutMs.
+     *
+     * The transport also uses it to bound the PING it sends to a connection that sat idle
+     * ({@see pingAfterIdleSeconds()}): a server that does not answer within the time a fresh dial may take
+     * is treated as gone.
+     */
+    public function connectionTimeoutSeconds(): float
+    {
+        return max(1, TypeCoercion::secondsToMs($this->options[TransportOption::CONNECTION_TIMEOUT->value] ?? null, 1.0)) / 1000;
+    }
+
+    /**
+     * Returns how long, in seconds, the connection may go unused before the next operation checks it with a
+     * PING; 0 turns the check off.
+     *
+     * A server drops a client that stops answering its pings, and a PHP process answers them only while it is
+     * inside a transport call; load balancers and NAT gateways drop idle connections too. Neither shows until
+     * the next write, which then fails. Checking first lets the transport dial again before it uses the
+     * connection, instead of losing that operation.
+     */
+    public function pingAfterIdleSeconds(): float
+    {
+        return max(0.0, TypeCoercion::floatValue($this->options[TransportOption::PING_AFTER_IDLE->value] ?? null, 30.0));
+    }
+
+    /**
      * Returns stream max age in seconds (0 means unlimited).
      *
      * Used by {@see NatsTransport::setup()} when creating/updating the stream.

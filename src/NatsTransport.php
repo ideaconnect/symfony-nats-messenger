@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger;
 
+use Amp\Future;
+use Amp\TimeoutCancellation;
+use IDCT\NATS\Connection\Enum\ConnectionState;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
@@ -75,6 +78,18 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
     /** Tracks whether the one-shot {@see autoSetupIfEnabled()} provisioning has already run this instance. */
     private bool $autoSetupDone = false;
+
+    /**
+     * When an operation last used the connection, in monotonic seconds; null while the transport has none.
+     * Tells how long the connection sat idle ({@see connectionUsable()}).
+     */
+    private ?float $lastUsedAt = null;
+
+    /**
+     * Whether an operation failed on the connection since it was last known to work, so that the next one
+     * checks it first ({@see awaitOnConnection()}).
+     */
+    private bool $checkBeforeNextUse = false;
 
     /**
      * Creates a transport instance from DSN/options and optional serializer override.
@@ -183,7 +198,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // messages. JetStreamContext::publish() retries transient 503 "no responders" and parses
         // the PubAck, throwing JetStreamException on an empty/malformed reply or a reported error -
         // so the publish fails closed instead of silently accepting an invalid acknowledgement.
-        $this->jetStream()->publish($topic, $payload, $normalizedHeaders)->await();
+        $this->awaitOnConnection($this->jetStream()->publish($topic, $payload, $normalizedHeaders));
 
         return $envelope;
     }
@@ -279,12 +294,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $nakDelayMs = $this->configuration->nakDelayMs();
 
         if ($nakDelayMs > 0) {
-            $this->jetStream()->nakWithDelay($message, $nakDelayMs)->await();
+            $this->awaitOnConnection($this->jetStream()->nakWithDelay($message, $nakDelayMs));
 
             return;
         }
 
-        $this->jetStream()->nak($message)->await();
+        $this->awaitOnConnection($this->jetStream()->nak($message));
     }
 
     /**
@@ -297,7 +312,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     protected function sendTerm(string $id): void
     {
-        $this->jetStream()->term($this->buildAckMessage($id))->await();
+        $this->awaitOnConnection($this->jetStream()->term($this->buildAckMessage($id)));
     }
 
     /**
@@ -316,12 +331,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $message = $this->buildAckMessage($id);
 
         if ($this->configuration->isAckSyncEnabled()) {
-            $this->jetStream()->ackSync($message)->await();
+            $this->awaitOnConnection($this->jetStream()->ackSync($message));
 
             return;
         }
 
-        $this->jetStream()->ack($message)->await();
+        $this->awaitOnConnection($this->jetStream()->ack($message));
     }
 
     /**
@@ -351,7 +366,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function keepalive(Envelope $envelope, ?int $seconds = null): void
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
-        $this->jetStream()->inProgress($this->buildAckMessage($id))->await();
+        // Symfony calls this from a signal handler (#48), so it adds no PING or dial of its own: it uses the
+        // connection as it is, as it did before the other operations started checking it.
+        $jetStream = $this->jetStream ?? $this->jetStream();
+        $this->awaitOnConnection($jetStream->inProgress($this->buildAckMessage($id)));
     }
 
     /**
@@ -368,6 +386,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $this->client->disconnect()->await();
         $this->jetStream = null;
+        $this->lastUsedAt = null;
+        $this->checkBeforeNextUse = false;
 
         // The next operation reconnects lazily, so let auto_setup verify provisioning once more on the
         // reopened connection. Without this the flag would stay latched for the lifetime of the object
@@ -400,14 +420,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function getMessageCount(): int
     {
         try {
-            $consumerInfo = $this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer())->await();
+            $consumerInfo = $this->awaitOnConnection($this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer()));
             $ackPending = TypeCoercion::intValue($consumerInfo->raw['num_ack_pending'] ?? 0);
             $pending = TypeCoercion::intValue($consumerInfo->raw['num_pending'] ?? 0);
 
             return $ackPending + $pending;
         } catch (\Throwable) {
             try {
-                $streamInfo = $this->jetStream()->getStream($this->streamName)->await();
+                $streamInfo = $this->awaitOnConnection($this->jetStream()->getStream($this->streamName));
                 $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];
 
                 return TypeCoercion::intValue($state['messages'] ?? 0);
@@ -434,7 +454,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $streamConfiguration = $this->buildManagedStreamConfiguration($subjects);
 
             try {
-                $this->jetStream()->addStream($streamConfiguration)->await();
+                $this->awaitOnConnection($this->jetStream()->addStream($streamConfiguration));
             } catch (UnsupportedFeatureException $unsupportedFeature) {
                 // A version-gated feature (e.g. allow_msg_schedules) was rejected by an older server.
                 // That is not a pre-existing-stream conflict, so skip the existence check and surface
@@ -457,7 +477,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 unset($managedOptions['name'], $managedOptions['subjects']);
 
                 $updatedConfiguration = $this->buildUpdatedStreamConfiguration($existingStream, $managedOptions, $subjects);
-                $this->jetStream()->updateStream($this->streamName, $updatedConfiguration)->await();
+                $this->awaitOnConnection($this->jetStream()->updateStream($this->streamName, $updatedConfiguration));
             }
 
             $consumerConfiguration = ConsumerConfiguration::create()
@@ -497,7 +517,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $consumerConfiguration->replayPolicy($replayPolicy);
             }
 
-            $consumerInfo = $this->jetStream()->addConsumer($this->streamName, $consumerConfiguration)->await();
+            $consumerInfo = $this->awaitOnConnection($this->jetStream()->addConsumer($this->streamName, $consumerConfiguration));
             $this->assertConsumerMatchesConfiguration($consumerInfo);
         } catch (UnsupportedFeatureException $unsupportedFeature) {
             throw new RuntimeException($this->describeUnsupportedFeature($unsupportedFeature), 0, $unsupportedFeature);
@@ -532,7 +552,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function autoSetupIfEnabled(): void
     {
-        if ($this->autoSetupDone || !$this->configuration->isAutoSetupEnabled()) {
+        if (!$this->configuration->isAutoSetupEnabled()) {
+            return;
+        }
+
+        // Connect first. Dialling again after the client closed clears the done-flag, so the new
+        // connection is verified in this same call rather than the next one, and a dial that fails
+        // surfaces as the connection error it is rather than as a failed setup.
+        $this->connectIfNeeded();
+
+        if ($this->autoSetupDone) {
             return;
         }
 
@@ -624,25 +653,129 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function fetchBatchMessages(): array
     {
-        return $this->jetStream()->fetchBatch(
+        $messages = $this->awaitOnConnection($this->jetStream()->fetchBatch(
             $this->streamName,
             $this->configuration->consumer(),
             $this->configuration->batching(),
             $this->configuration->maxBatchTimeoutMs()
-        )->await();
+        ));
+
+        // A pull may wait up to max_batch_timeout for messages, and the connection was in use all that time.
+        $this->lastUsedAt = $this->monotonicSeconds();
+
+        return $messages;
     }
 
     /**
-     * Lazily connects to NATS only when transport operations require it.
+     * Connects when the transport has no connection it can use: none was opened yet, the client has closed,
+     * or the connection sat idle or just failed an operation and does not answer a PING
+     * ({@see connectionUsable()}).
      *
-     * Called internally by {@see jetStream()} to ensure the connection is
-     * established before any JetStream API call.
+     * Called internally by {@see jetStream()} before every JetStream call. The client runs with reconnect
+     * off, so a connection the server closed or one that dropped leaves it in its terminal Closed state,
+     * as do refused credentials, and it then refuses every request. Dialling again is what keeps a
+     * long-lived process working after that (#49): a consumer worker exits on the failed get() and its
+     * supervisor starts a new one, but a process that sends for longer than one request - a web app in
+     * worker mode, a daemon, a handler that dispatches - used to fail every later operation until it was
+     * restarted. The client releases what it held on every terminal close, so a fresh connect() starts
+     * clean. As after {@see close()}, auto_setup verifies provisioning again on the new connection.
      */
     private function connectIfNeeded(): void
     {
+        if ($this->jetStream !== null && !$this->connectionUsable()) {
+            $this->dropConnection();
+        }
+
         if ($this->jetStream === null) {
             $this->connect();
         }
+    }
+
+    /**
+     * Whether the transport can keep using its connection.
+     *
+     * Not once the client has closed. Nor when the connection went unused for longer than ping_after_idle,
+     * or an operation failed on it, and the server does not answer a PING within connection_timeout. A
+     * server drops a client that stops answering its pings, which a PHP process does whenever it is outside
+     * a transport call, and load balancers and NAT gateways drop idle connections too, all without the
+     * client noticing until it writes. Checking first means the operation runs on a new connection instead
+     * of failing on the old one.
+     */
+    private function connectionUsable(): bool
+    {
+        if ($this->client->state() === ConnectionState::Closed) {
+            return false;
+        }
+
+        $idleLimit = $this->configuration->pingAfterIdleSeconds();
+        if ($idleLimit <= 0.0) {
+            return true;
+        }
+
+        $idle = $this->lastUsedAt !== null && $this->monotonicSeconds() - $this->lastUsedAt > $idleLimit;
+        if (!$idle && !$this->checkBeforeNextUse) {
+            return true;
+        }
+
+        $ping = $this->client->rtt();
+        // When the wait below gives up, the PING still ends later, with nobody awaiting it.
+        $ping->ignore();
+        try {
+            $ping->await(new TimeoutCancellation($this->configuration->connectionTimeoutSeconds()));
+        } catch (\Throwable) {
+            return false;
+        }
+
+        $this->lastUsedAt = $this->monotonicSeconds();
+        $this->checkBeforeNextUse = false;
+
+        return true;
+    }
+
+    /**
+     * Awaits a call on the connection. When it fails other than with a JetStream reply, which proves the
+     * server answered, the next operation checks the connection with a PING before using it. The client
+     * may still report the connection Open after its socket died - older ones after a failed write, 2.10
+     * after the server's fatal -ERR - and a connection that silently stopped delivering only times out;
+     * without the check, every operation after such a failure failed the same way (#49).
+     *
+     * @template T
+     * @param Future<T> $call
+     * @return T
+     */
+    private function awaitOnConnection(Future $call): mixed
+    {
+        try {
+            return $call->await();
+        } catch (JetStreamException $reply) {
+            throw $reply;
+        } catch (\Throwable $failure) {
+            $this->checkBeforeNextUse = true;
+
+            throw $failure;
+        }
+    }
+
+    /**
+     * Gives up a connection the transport can no longer use, so that the next step dials afresh.
+     */
+    private function dropConnection(): void
+    {
+        // A client that has closed has already released its socket.
+        if ($this->client->state() !== ConnectionState::Closed) {
+            try {
+                $this->client->disconnect()->await();
+            } catch (\Throwable) {
+                // Closed or not, the connection is of no use any more.
+            }
+        }
+
+        $this->jetStream = null;
+        $this->lastUsedAt = null;
+        $this->checkBeforeNextUse = false;
+        // As after close(): auto_setup verifies provisioning again on the new connection, where a stream
+        // removed during the outage is recreated instead of being trusted from the latched flag.
+        $this->autoSetupDone = false;
     }
 
     /**
@@ -658,7 +791,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw new LogicException('JetStream context is not available.');
         }
 
+        $this->lastUsedAt = $this->monotonicSeconds();
+
         return $this->jetStream;
+    }
+
+    /**
+     * Monotonic time in seconds, for measuring how long the connection sat idle. Exposed for testability.
+     */
+    protected function monotonicSeconds(): float
+    {
+        return hrtime(true) / 1e9;
     }
 
     /**
@@ -762,7 +905,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private function getExistingConsumer(): ?ConsumerInfo
     {
         try {
-            return $this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer())->await();
+            return $this->awaitOnConnection($this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer()));
         } catch (JetStreamException $exception) {
             if ($exception->getCode() === 404) {
                 return null;
@@ -782,7 +925,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private function getExistingStream(): ?StreamInfo
     {
         try {
-            return $this->jetStream()->getStream($this->streamName)->await();
+            return $this->awaitOnConnection($this->jetStream()->getStream($this->streamName));
         } catch (JetStreamException $exception) {
             if ($exception->getCode() === 404) {
                 return null;

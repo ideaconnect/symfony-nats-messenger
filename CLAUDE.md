@@ -53,7 +53,11 @@ composer nats:stop               # stop NATS
 
 - **Async client, sync contract.** Client calls return `Amp\Future`; resolve them with `->await()`.
   Symfony Messenger's transport API is blocking.
-- **Lazy connection.** No socket opens in the constructor - `jetStream()` connects on first use.
+- **Lazy connection.** No socket opens in the constructor - `jetStream()` connects on first use, and dials
+  again once the client has closed (it runs with reconnect off, so a lost connection leaves it Closed). A
+  connection unused for longer than `ping_after_idle`, or one an operation just failed on (not counting
+  JetStream replies), gets a PING first and is replaced if it goes unanswered; `keepalive()` never pings
+  or dials (it runs in a signal handler).
 - **Pull consumers + explicit ACK.** A message is only "processed" once ACK'd. This underpins
   `retry_handler` and shared-consumer load balancing.
 - **`get()` swallows JetStream 404 and 408** (consumer-missing / timeout-empty) as empty results;

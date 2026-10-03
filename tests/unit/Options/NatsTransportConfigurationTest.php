@@ -207,6 +207,33 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertSame(1, $configuration->inactiveThresholdMs());
     }
 
+    /**
+     * The PING to an idle connection waits connection_timeout, the same seconds the dial gets, with the same
+     * 1 ms floor; ping_after_idle never reads below 0.
+     */
+    public function testConnectionTimeoutAndPingAfterIdleAccessors(): void
+    {
+        $configuration = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: ['connection_timeout' => '2.5', 'ping_after_idle' => '-3'],
+            natsRetryHandlerEnabled: false,
+        );
+        self::assertSame(2.5, $configuration->connectionTimeoutSeconds());
+        self::assertSame(0.0, $configuration->pingAfterIdleSeconds());
+
+        $defaults = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: ['connection_timeout' => 0.0001],
+            natsRetryHandlerEnabled: false,
+        );
+        self::assertSame(0.001, $defaults->connectionTimeoutSeconds());
+        self::assertSame(30.0, $defaults->pingAfterIdleSeconds());
+    }
+
     public function testAutoSetupAccessorReturnsConstructorValue(): void
     {
         $enabled = new NatsTransportConfiguration(
