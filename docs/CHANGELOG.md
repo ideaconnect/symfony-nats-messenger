@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-10-04
+
+A **minor** release. It adds the `request_timeout` option (#51), requires `idct/php-nats-jetstream-client`
+`^2.10` (#52), and corrects several places in the documentation (#55). Existing configurations behave as
+before: `request_timeout` defaults to the 10 seconds every request has waited until now.
+
 ### Added
 - **`request_timeout` option (#51).** How long an operation waits for the server's reply was fixed at the
   client's default of 10 seconds, and no option changed it: the publish acknowledgement of `send()`, an ACK
