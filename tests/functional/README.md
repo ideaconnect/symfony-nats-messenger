@@ -126,7 +126,7 @@ scenario-to-test mapping, see [`docs/TESTS.md`](../../docs/TESTS.md) in the repo
 | `nats_batching.feature` | Batch consumption (various batch sizes) |
 | `nats_stream_limits.feature` | `max_bytes`, `max_msgs`, `max_msgs_per_subject` enforcement |
 | `nats_nak.feature` | `retry_handler: nats` (NAK redelivery) |
-| `nats_term.feature` | `retry_handler: symfony` (TERM, stop redelivery) |
+| `nats_term.feature` | `retry_handler: symfony` (TERM, stop redelivery), with the native PHP and the igbinary serializer |
 | `nats_delayed.feature` | Scheduled / delayed messages (`DelayStamp` → NATS schedule headers) |
 | `nats_tls.feature` | TLS connections |
 | `nats_mtls.feature` | mTLS with client certificates |
