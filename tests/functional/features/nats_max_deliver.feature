@@ -17,3 +17,17 @@ Feature: NATS-native redelivery cap (max_deliver)
     And I start a messenger consumer with high limit
     And I wait for the consumer to finish or timeout
     Then the always-failing message should have been attempted 3 times
+
+  # Symfony's retry strategy left at its framework default (3 retries). In nats mode the transport does not
+  # publish the copies Symfony's retry sends: NATS redelivers alone, so max_deliver still bounds the attempts.
+  # Published as well, the copies multiplied the attempts (one message ran its handler 120 times, #47).
+  @max-deliver
+  Scenario: Symfony's retry strategy is ignored with the NATS retry handler
+    Given I have a messenger transport configured with NATS retry handler, max deliver of 3 and Symfony's default retry strategy
+    And the NATS stream is set up
+    And the retry state directory is clean
+    And the test files directory is clean
+    When I send 1 always-failing message
+    And I start a messenger consumer with high limit
+    And I wait for the consumer to finish or timeout
+    Then the always-failing message should have been attempted 3 times

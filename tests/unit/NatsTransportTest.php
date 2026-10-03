@@ -23,9 +23,21 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Revolt\EventLoop;
 use Symfony\Component\Messenger\Envelope;
+use Psr\Container\ContainerInterface;
+use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\Messenger\EventListener\SendFailedMessageForRetryListener;
+use Symfony\Component\Messenger\EventListener\StopWorkerOnMessageLimitListener;
+use Symfony\Component\Messenger\Handler\HandlersLocator;
+use Symfony\Component\Messenger\MessageBus;
+use Symfony\Component\Messenger\Middleware\HandleMessageMiddleware;
+use Symfony\Component\Messenger\Retry\MultiplierRetryStrategy;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
+use Symfony\Component\Messenger\Stamp\ReceivedStamp;
+use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
+use Symfony\Component\Messenger\Stamp\SentToFailureTransportStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
+use Symfony\Component\Messenger\Worker;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\SetupableTransportInterface;
@@ -1514,6 +1526,128 @@ final class NatsTransportTest extends TestCase
         );
 
         return $client;
+    }
+
+    /**
+     * With retry_handler=nats, NATS redelivers a failed message itself once reject() NAKs it, so the copy
+     * Symfony's retry sends is not published: published as well, it retried the same failure twice, and every
+     * copy again (#47). Symfony's retry strategy is ignored in nats mode.
+     */
+    public function testNatsModeDoesNotPublishTheCopySymfonysRetrySends(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('publish');
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->expects(self::never())->method('encode');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
+        $transport->setJetStreamContext($jetStream);
+        $retry = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new DelayStamp(1000), new RedeliveryStamp(1)]);
+
+        self::assertSame($retry, $transport->send($retry));
+    }
+
+    /**
+     * Only in nats mode: with the default retry_handler=symfony, Symfony's retry copy is the retry.
+     */
+    public function testSymfonyModePublishesTheCopySymfonysRetrySends(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->send(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new DelayStamp(1000), new RedeliveryStamp(1)]));
+    }
+
+    /**
+     * In nats mode a copy for the failure transport (retry count 0) and a message that was not received in
+     * this process are still published: only Symfony's retry copy is left out.
+     *
+     * @param list<\Symfony\Component\Messenger\Stamp\StampInterface> $stamps
+     */
+    #[DataProvider('envelopesNatsModeStillPublishes')]
+    public function testNatsModeStillPublishesWhatIsNotSymfonysRetryCopy(array $stamps): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->send(new Envelope(new \stdClass(), $stamps));
+    }
+
+    /**
+     * @return iterable<string, array{list<\Symfony\Component\Messenger\Stamp\StampInterface>}>
+     */
+    public static function envelopesNatsModeStillPublishes(): iterable
+    {
+        yield 'copy for the failure transport' => [[
+            new ReceivedStamp('async'),
+            new SentToFailureTransportStamp('async'),
+            new DelayStamp(0),
+            new RedeliveryStamp(0),
+        ]];
+        yield 'message not received in this process' => [[new RedeliveryStamp(1)]];
+        yield 'plain dispatch' => [[]];
+    }
+
+    /**
+     * Through Symfony's own Worker and retry listener, with the retry strategy FrameworkBundle gives every
+     * transport (3 retries): a delivery that fails in nats mode is NAKed for NATS to redeliver, and no copy is
+     * published beside it.
+     */
+    public function testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'encoded'),
+        ]));
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
+
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('decode')->willReturn(new Envelope(new \stdClass()));
+        $serializer->expects(self::never())->method('encode');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function (): void {
+                throw new \RuntimeException('always fails');
+            }],
+        ]))]);
+        $locator = static fn (object $service): ContainerInterface => new class ($service) implements ContainerInterface {
+            public function __construct(private object $service)
+            {
+            }
+
+            public function get(string $id): object
+            {
+                return $this->service;
+            }
+
+            public function has(string $id): bool
+            {
+                return true;
+            }
+        };
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            $locator($transport),
+            $locator(new MultiplierRetryStrategy(3, 1000, 2)),
+        ));
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
     }
 
     public function testJetStreamThrowsWhenConnectLeavesContextUnavailable(): void
