@@ -76,6 +76,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::BACKOFF->value => null,
         TransportOption::SCHEDULED_MESSAGES->value => false,
         TransportOption::ACK_SYNC->value => false,
+        TransportOption::DEDUPLICATE->value => false,
         TransportOption::AUTO_SETUP->value => false,
         TransportOption::TLS_REQUIRED->value => false,
         TransportOption::TLS_HANDSHAKE_FIRST->value => false,
@@ -145,6 +146,7 @@ final class NatsTransportConfigurationBuilder
             natsRetryHandlerEnabled: $configuration[TransportOption::RETRY_HANDLER->value] === RetryHandler::NATS->value,
             scheduledMessagesEnabled: $this->toBool($configuration[TransportOption::SCHEDULED_MESSAGES->value]),
             ackSyncEnabled: $this->toBool($configuration[TransportOption::ACK_SYNC->value]),
+            deduplicationEnabled: $this->toBool($configuration[TransportOption::DEDUPLICATE->value]),
             autoSetupEnabled: $this->toBool($configuration[TransportOption::AUTO_SETUP->value]),
         );
     }

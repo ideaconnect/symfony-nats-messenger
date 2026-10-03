@@ -21,6 +21,7 @@ namespace IDCT\NatsMessenger\Options;
  *                    STREAM_ALLOW_ROLLUP_HEADERS
  * **Retry Strategy:** RETRY_HANDLER, NAK_DELAY, ACK_WAIT, MAX_DELIVER, BACKOFF
  * **Acknowledgement:** ACK_SYNC
+ * **Deduplication:** DEDUPLICATE
  * **Scheduling:** SCHEDULED_MESSAGES
  * **Provisioning:** AUTO_SETUP
  * **TLS:** TLS_REQUIRED, TLS_HANDSHAKE_FIRST, TLS_CA_FILE, TLS_CERT_FILE, TLS_KEY_FILE,
@@ -62,6 +63,7 @@ enum TransportOption: string
     case BACKOFF = 'backoff';
     case SCHEDULED_MESSAGES = 'scheduled_messages';
     case ACK_SYNC = 'ack_sync';
+    case DEDUPLICATE = 'deduplicate';
     case AUTO_SETUP = 'auto_setup';
 
     case TLS_REQUIRED = 'tls_required';

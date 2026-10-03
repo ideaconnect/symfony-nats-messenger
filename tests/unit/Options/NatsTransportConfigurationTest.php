@@ -114,6 +114,29 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertFalse($disabled->isScheduledMessagesEnabled());
     }
 
+    public function testDeduplicationAccessorReturnsConstructorValueAndDefaultsToFalse(): void
+    {
+        $enabled = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: [],
+            natsRetryHandlerEnabled: false,
+            deduplicationEnabled: true,
+        );
+
+        $default = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: [],
+            natsRetryHandlerEnabled: false,
+        );
+
+        self::assertTrue($enabled->isDeduplicationEnabled());
+        self::assertFalse($default->isDeduplicationEnabled());
+    }
+
     public function testScheduledMessagesDefaultsToFalse(): void
     {
         $configuration = new NatsTransportConfiguration(

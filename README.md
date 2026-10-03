@@ -342,6 +342,10 @@ framework:
           backoff: null                     # List of per-attempt delays in seconds, e.g. [1, 5, 30].
                                             # Pairs with max_deliver. (default: null)
 
+          # Duplicate Protection
+          deduplicate: false                # Give every message an id JetStream deduplicates it by
+                                            # within stream_duplicate_window (default: false)
+
           # Acknowledgement Mode
           ack_sync: false                   # Wait for server confirmation of each ACK (default: false)
                                             # false => fire-and-forget ACK (lower latency)
@@ -600,10 +604,41 @@ options:
 
 A reply that does not arrive in time fails the operation with the client's `TimeoutException`. For `send()`
 that does not prove the message was not stored: the server may have stored it and only its acknowledgement
-was late, so dispatching the message again can store it twice. Raise the value for a slow or distant server,
+was late, so dispatching the message again can store it twice, unless it carries a deduplication id (see
+[Duplicate Protection](#duplicate-protection)). Raise the value for a slow or distant server,
 or for a stream whose writes can take long, such as a replicated one under load; lower it to fail faster.
 The wait of a pull in `get()` is bounded by `max_batch_timeout` instead, and the dial by
 `connection_timeout`.
+
+### Duplicate Protection
+
+A `send()` that timed out may still have stored the message (see [Request Timeout](#request-timeout)), so
+dispatching it again can store it twice. JetStream drops a message whose `Nats-Msg-Id` it already stored within
+the stream's duplicate window (`stream_duplicate_window`, 2 minutes unless set), and the transport fills that
+header from a `DeduplicationIdStamp`:
+
+```php
+use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
+
+// Dispatched again with the same id after a send() that failed, the message is stored once.
+$bus->dispatch(new OrderPlaced($orderId), [new DeduplicationIdStamp('order-placed-' . $orderId)]);
+```
+
+With `deduplicate: true` the transport gives every message an id of its own on its first send. The id is sent
+with the message, so a copy sent again keeps it, which covers what Symfony sends again itself: a worker that
+stopped after a retry or failure-transport send that timed out, the server having stored the copy, gets the
+original redelivered by NATS after `ack_wait` and sends the same copy again, which JetStream drops. For that,
+`stream_duplicate_window` has to be longer than `ack_wait` plus the handler's run. Each of Symfony's retries,
+and the copy for a failure transport, gets an id of its own, so none of them is taken for the original. An id
+you add yourself, as above, is used with the option off as well, and covers a message your application
+dispatches again as a new envelope, which would otherwise get a new id.
+
+```yaml
+options:
+  deduplicate: true   # default: false
+```
+
+> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, Behat scenarios `A message dispatched again with the same deduplication id is stored once` and `Distinct messages are all stored with the deduplicate option`
 
 ### Losing the Connection
 

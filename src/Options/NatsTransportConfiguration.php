@@ -31,6 +31,7 @@ final readonly class NatsTransportConfiguration
      * @param bool                 $natsRetryHandlerEnabled True when retry handling is delegated to NATS (NAK mode)
      * @param bool                 $scheduledMessagesEnabled True when delayed/scheduled message publishing is enabled
      * @param bool                 $ackSyncEnabled          True when acknowledgements should wait for server confirmation (double-ack)
+     * @param bool                 $deduplicationEnabled    True when every published message gets an id JetStream deduplicates it by
      * @param bool                 $autoSetupEnabled        True when the transport should provision the stream/consumer on first use
      */
     public function __construct(
@@ -42,6 +43,7 @@ final readonly class NatsTransportConfiguration
         private bool $scheduledMessagesEnabled = false,
         private bool $ackSyncEnabled = false,
         private bool $autoSetupEnabled = false,
+        private bool $deduplicationEnabled = false,
     ) {
     }
 
@@ -425,6 +427,18 @@ final readonly class NatsTransportConfiguration
     public function isAutoSetupEnabled(): bool
     {
         return $this->autoSetupEnabled;
+    }
+
+    /**
+     * Returns true when every published message gets an id JetStream deduplicates it by.
+     *
+     * When enabled, {@see NatsTransport::send()} adds a {@see DeduplicationIdStamp} to an envelope that has
+     * none, and publishes the id in the Nats-Msg-Id header. Defaults to false; an id the application adds
+     * itself is used either way.
+     */
+    public function isDeduplicationEnabled(): bool
+    {
+        return $this->deduplicationEnabled;
     }
 
     /**

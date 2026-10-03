@@ -17,6 +17,7 @@ use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NatsMessenger\NatsTransport;
+use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
 use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -1602,6 +1603,37 @@ final class NatsTransportTest extends TestCase
 
         $transport->now += 600;
         $transport->keepalive($envelope);
+    }
+
+    /**
+     * A serializer that encodes every envelope to the same body.
+     */
+    private function encodingSerializer(): SerializerInterface
+    {
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+
+        return $serializer;
+    }
+
+    /**
+     * A JetStream context whose publish() records the subject, the headers and the Nats-Msg-Id of each call.
+     *
+     * @param list<array{subject: string, headers: array<string, string>, msgId: ?string}>|null $publishes
+     */
+    private function jetStreamRecordingPublishes(?array &$publishes): JetStreamContext
+    {
+        $publishes = [];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('publish')->willReturnCallback(
+            static function (string $subject, string $payload, array $headers = [], ?string $msgId = null) use (&$publishes): Future {
+                $publishes[] = ['subject' => $subject, 'headers' => $headers, 'msgId' => $msgId];
+
+                return Future::complete();
+            },
+        );
+
+        return $jetStream;
     }
 
     /**
@@ -3459,6 +3491,113 @@ final class NatsTransportTest extends TestCase
         $result = $transport->send($envelope);
 
         self::assertInstanceOf(TransportMessageIdStamp::class, $result->last(TransportMessageIdStamp::class));
+    }
+
+    /**
+     * With deduplicate, a message gets an id on its first send, its transport message id. The id is encoded
+     * with the message, so that it travels with it, and is published as its Nats-Msg-Id with the retry count
+     * (#53).
+     */
+    public function testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId(): void
+    {
+        $encoded = null;
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->method('encode')->willReturnCallback(static function (Envelope $envelope) use (&$encoded): array {
+            $encoded = $envelope;
+
+            return ['body' => 'encoded'];
+        });
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['deduplicate' => true], $serializer);
+        $transport->setJetStreamContext($this->jetStreamRecordingPublishes($publishes));
+
+        $sent = $transport->send(new Envelope(new \stdClass()));
+
+        $id = $sent->last(TransportMessageIdStamp::class)?->getId();
+        self::assertNotNull($id);
+        self::assertSame($id, $sent->last(DeduplicationIdStamp::class)?->id);
+        self::assertInstanceOf(Envelope::class, $encoded);
+        self::assertSame($id, $encoded->last(DeduplicationIdStamp::class)?->id, 'The id must be encoded with the message.');
+        self::assertSame([$id . ':0'], array_column($publishes, 'msgId'));
+    }
+
+    /**
+     * A copy sent again keeps the id it carries, such as Symfony's retry of a received message, instead of
+     * getting a new one, so that JetStream can drop it.
+     */
+    public function testSendKeepsTheDeduplicationIdTheEnvelopeCarries(): void
+    {
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['deduplicate' => true], $this->encodingSerializer());
+        $transport->setJetStreamContext($this->jetStreamRecordingPublishes($publishes));
+
+        $sent = $transport->send(new Envelope(new \stdClass(), [new DeduplicationIdStamp('order-42')]));
+
+        self::assertCount(1, $sent->all(DeduplicationIdStamp::class));
+        self::assertSame(['order-42:0'], array_column($publishes, 'msgId'));
+    }
+
+    /**
+     * Each of Symfony's retries is a message of its own, and so is the copy for a failure transport, which
+     * Symfony sends with a retry count of 0, like the original.
+     */
+    public function testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn(): void
+    {
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['deduplicate' => true], $this->encodingSerializer());
+        $transport->setJetStreamContext($this->jetStreamRecordingPublishes($publishes));
+        $original = new Envelope(new \stdClass(), [new DeduplicationIdStamp('order-42')]);
+
+        $transport->send($original);
+        $transport->send($original->with(new RedeliveryStamp(1)));
+        $transport->send($original->with(new RedeliveryStamp(2)));
+        $transport->send($original->with(new SentToFailureTransportStamp('async'), new RedeliveryStamp(0)));
+
+        self::assertSame(['order-42:0', 'order-42:1', 'order-42:2', 'order-42:0:failed'], array_column($publishes, 'msgId'));
+    }
+
+    /**
+     * Off by default: no id is added, and nothing is deduplicated.
+     */
+    public function testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp(): void
+    {
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $this->encodingSerializer());
+        $transport->setJetStreamContext($this->jetStreamRecordingPublishes($publishes));
+
+        $sent = $transport->send(new Envelope(new \stdClass()));
+
+        self::assertNull($sent->last(DeduplicationIdStamp::class));
+        self::assertSame([null], array_column($publishes, 'msgId'));
+    }
+
+    /**
+     * An id the application adds itself is used with the option off as well: it asked for it.
+     */
+    public function testSendUsesAnApplicationDeduplicationIdWithTheOptionOff(): void
+    {
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $this->encodingSerializer());
+        $transport->setJetStreamContext($this->jetStreamRecordingPublishes($publishes));
+
+        $transport->send(new Envelope(new \stdClass(), [new DeduplicationIdStamp('order-42')]));
+
+        self::assertSame(['order-42:0'], array_column($publishes, 'msgId'));
+    }
+
+    /**
+     * A delayed message keeps its id too: NATS does not pass the Nats-Msg-Id on to the message it delivers at
+     * the scheduled time, so the delivery cannot be taken for a duplicate (measured on 2.12 and 2.14).
+     */
+    public function testSendDelayedMessageWithDeduplicationPublishesItsMessageId(): void
+    {
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['deduplicate' => true, 'scheduled_messages' => true], $this->encodingSerializer());
+        $transport->setJetStreamContext($this->jetStreamRecordingPublishes($publishes));
+
+        $sent = $transport->send(new Envelope(new \stdClass(), [new DelayStamp(5000)]));
+
+        $id = $sent->last(DeduplicationIdStamp::class)?->id;
+        self::assertNotNull($id);
+        self::assertCount(1, $publishes);
+        self::assertSame('test-topic.delayed.' . $id, $publishes[0]['subject']);
+        self::assertArrayHasKey('Nats-Schedule', $publishes[0]['headers']);
+        self::assertSame($id . ':0', $publishes[0]['msgId']);
     }
 
     public function testSendWithZeroDelayPublishesNormally(): void

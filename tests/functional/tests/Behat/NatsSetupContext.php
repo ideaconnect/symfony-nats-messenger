@@ -1791,6 +1791,58 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Configures a transport whose every message gets an id JetStream deduplicates it by.
+     *
+     * @Given I have a messenger transport configured with deduplication
+     */
+    public function iHaveAMessengerTransportConfiguredWithDeduplication(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&deduplicate=true'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Sends messages 1 to :count, each with a deduplication id of its own, then message 1 again, as a new
+     * envelope, with the same id.
+     *
+     * @When I send :count messages with deduplication ids, and then the first one again
+     */
+    public function iSendMessagesWithDeduplicationIdsAndThenTheFirstOneAgain(int $count): void
+    {
+        $this->messagesSent = $count;
+
+        $command = [
+            'php',
+            'bin/console',
+            'app:send-deduplicated-messages',
+            (string) $count,
+            '--env=test'
+        ];
+
+        $sendProcess = new Process($command, __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Failed to send the deduplicated messages. Exit code: %d. Output: %s. Error: %s',
+                    $sendProcess->getExitCode(),
+                    $sendProcess->getOutput(),
+                    $sendProcess->getErrorOutput()
+                )
+            );
+        }
+    }
+
+    /**
      * Cleans up all test resources after each scenario.
      *
      * Stops consumer processes, deletes NATS streams (test + failure), clears
