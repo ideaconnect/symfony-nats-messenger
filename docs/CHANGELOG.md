@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-10-03
+
+A **minor** release. It fixes a transport instance that, once its connection was lost, failed every later
+operation until the process restarted (#49), and adds the `ping_after_idle` option that checks a connection
+which sat idle, or just failed an operation, before it is used. The public PHP API is additive only: a new
+`TransportOption::PING_AFTER_IDLE` case and the `pingAfterIdleSeconds()` and `connectionTimeoutSeconds()`
+accessors on `NatsTransportConfiguration`. Nothing released in 5.1.0 was renamed or removed, and the PHP
+(`^8.2`), Symfony (`^7.2 || ^8`) and `idct/php-nats-jetstream-client` (`^2.4`) requirements are
+unchanged; client 2.10.1, released alongside, fixes the client side of the same problem and is recommended.
+
 ### Added
 - **`ping_after_idle` option (seconds, default `30`; `0` turns it off) (#49).** An operation that finds
   the connection unused for longer than this first checks it with one PING, answered within
