@@ -381,6 +381,19 @@ framework:
 - `retry_handler: symfony` (default) sends `TERM` when a message fails during transport decoding or is rejected. Symfony's retry/failure transport then handles redelivery.
 - `retry_handler: nats` sends `NAK` when a message fails during transport decoding or is rejected, so NATS redelivers the message itself.
 
+**Symfony's retry delays need `scheduled_messages: true`.** Symfony's retry strategy waits between attempts
+(1, 2 and 4 seconds with the framework's default strategy) by re-sending the failed message with a
+`DelayStamp`. The transport applies a `DelayStamp` only when `scheduled_messages` is enabled, which needs
+NATS 2.12 or later, and otherwise publishes the message at once. So with the defaults, each retry runs right
+after the failure, all of them are used up within milliseconds, and nothing reports that the delays were
+dropped. To keep the delays:
+
+- on NATS 2.12 or later, enable `scheduled_messages` (see [Delayed / Scheduled Messages](#delayed--scheduled-messages));
+- on an older server, let NATS space out the attempts instead: `retry_handler: nats` with `nak_delay` or
+  `backoff`, bounded by `max_deliver`, and with `max_retries: 0` (see below).
+
+> **Tested by:** `testSendWithDelayStampButScheduledMessagesDisabledPublishesNormally`, `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders`
+
 When NATS manages redelivery (`retry_handler: nats`), tune it with `nak_delay`, `ack_wait`, `max_deliver`, and `backoff`:
 
 - **`nak_delay`** delays each NAK so a failing message backs off instead of redelivering immediately (a hot loop).
@@ -912,7 +925,7 @@ resolution**. The delay is rounded **up** to the next whole second, so a message
 *before* the requested delay elapses (it may arrive up to ~1 second later); a sub-second delay therefore
 schedules at the next whole second rather than firing immediately.
 
-When `scheduled_messages` is disabled (the default), any `DelayStamp` on the envelope is silently ignored and messages are published immediately.
+When `scheduled_messages` is disabled (the default), any `DelayStamp` on the envelope is silently ignored and messages are published immediately. That includes the `DelayStamp` Symfony's retry adds, so retries run back to back (see [Retry Handler Behavior](#retry-handler-behavior)).
 
 This will:
 1. Create the stream with configured settings

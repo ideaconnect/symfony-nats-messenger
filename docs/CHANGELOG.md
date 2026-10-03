@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The README now says that Symfony's retry delays need `scheduled_messages: true` (#50).** Symfony's
+  retry strategy waits between attempts by re-sending the failed message with a `DelayStamp`, which the
+  transport applies only when `scheduled_messages` is enabled (NATS 2.12 or later). With the defaults every
+  retry ran straight after the failure, and only the scheduled-messages section of the README mentioned that
+  a `DelayStamp` is ignored. The retry section now says so too, and names the alternative for older servers:
+  `retry_handler: nats` with `nak_delay` or `backoff`, `max_deliver`, and `max_retries: 0`.
+
 ## [5.2.2] - 2026-10-03
 
 A **patch** release with one fix: `messenger:consume --keepalive` no longer stops the worker, or fails the
