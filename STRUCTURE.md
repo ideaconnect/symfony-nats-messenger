@@ -72,8 +72,8 @@ The heart of the bridge. Responsibilities map almost 1:1 to `TransportInterface`
 
 | Method | What it does |
 |--------|--------------|
-| `send()` | Stamps a UUIDv4 `TransportMessageIdStamp`, serializes the envelope, publishes to the subject. With headers it uses `requestWithHeaders()` and validates the JetStream publish ack. A `DelayStamp` (when `scheduled_messages` is on) is published to `{topic}.delayed.{uuid}` with `Nats-Schedule` headers. |
-| `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. JetStream 404 (consumer missing) and 408 (timeout / no messages) are treated as empty. Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp`. |
+| `send()` | Stamps a UUIDv4 `TransportMessageIdStamp`, serializes the envelope, publishes to the subject through `JetStreamContext::publish()`, which waits for the publish acknowledgement and throws `JetStreamException` on an error or an invalid acknowledgement. A `DelayStamp` (when `scheduled_messages` is on) is published to `{topic}.delayed.{uuid}` with `Nats-Schedule` headers. |
+| `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. A pull that found no messages (408, or 404) is an empty result. A missing consumer reports 503: `auto_setup` re-provisions it once, otherwise the error propagates. Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp`. |
 | `ack()` | Sends JetStream ACK for the message's reply token. |
 | `reject()` | Delegates to `handleFailedDelivery()` → TERM (Symfony retry) or NAK (NATS retry). |
 | `getMessageCount()` | Tries consumer info (`num_ack_pending` / `num_pending`), falls back to stream `state.messages`, then 0. |
@@ -131,8 +131,8 @@ the configuration, and the builder, and covered by its own unit tests plus a fun
 **Sending `new MyMessage()`**
 1. `MessageBus::dispatch()` → Messenger routes to the NATS transport → `NatsTransport::send()`.
 2. UUIDv4 stamp added → serializer encodes to `{body, headers}`.
-3. No headers → `jetStream()->publish(topic, body)->await()`. With headers → `requestWithHeaders()` +
-   `assertJetStreamPublishSucceeded()`.
+3. `jetStream()->publish(topic, body, headers)->await()`: the client waits for the publish acknowledgement
+   and throws `JetStreamException` on an error or an invalid acknowledgement.
 
 **Consuming**
 1. `messenger:consume nats_transport` loops `NatsTransport::get()`.

@@ -10,7 +10,9 @@ use IDCT\NATS\Connection\Enum\ConnectionState;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
+use IDCT\NATS\Exception\ConnectionException;
 use IDCT\NATS\Exception\JetStreamException;
+use IDCT\NATS\Exception\TimeoutException;
 use IDCT\NATS\Exception\UnsupportedFeatureException;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
 use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
@@ -156,6 +158,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * @throws \Throwable           The original serializer exception when serialization fails and the
      *                              envelope carries no ErrorDetailsStamp (re-thrown unchanged).
      * @throws JetStreamException   If JetStream rejects the publish or returns an invalid ack.
+     * @throws ConnectionException  If the connection cannot be opened or is lost before the publish completes.
+     * @throws TimeoutException     If the publish acknowledgement does not arrive within request_timeout. The
+     *                              server may still have stored the message.
      */
     public function send(Envelope $envelope): Envelope
     {
@@ -238,16 +243,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Pulls and decodes a batch of envelopes from JetStream.
      *
      * Fetches up to {@see NatsTransportConfiguration::batching()} messages with the
-     * configured timeout. JetStream status 404 (stream or consumer lookup failed) and 408
-     * (timeout / no messages) are treated as empty results. A message without a reply (ack)
-     * subject is skipped (it can be neither acknowledged nor rejected); a message with an empty
-     * payload is TERMed so JetStream stops redelivering it, since it can never decode into an
-     * envelope. On deserialization failure the message is rejected via
-     * {@see handleFailedDelivery()} before the exception propagates.
+     * configured timeout. A pull that found no messages (JetStream status 408, or 404) is an
+     * empty result. A missing consumer or stream does not report 404 but 503, or 409 when the
+     * consumer is deleted mid-pull, and without auto_setup that JetStreamException propagates.
+     * A message without a reply (ack) subject is skipped (it can be neither acknowledged nor
+     * rejected); a message with an empty payload is TERMed so JetStream stops redelivering it,
+     * since it can never decode into an envelope. On deserialization failure the message is
+     * rejected via {@see handleFailedDelivery()} before the exception propagates.
      *
-     * With auto_setup enabled, a status that signals a missing stream or consumer (404, 409, or
-     * 503; see {@see recoverFromFetchFailure()} for why all three) additionally triggers one
-     * re-provisioning attempt before the empty result is reported.
+     * With auto_setup enabled, a 404, 409 or 503 (see {@see recoverFromFetchFailure()} for why
+     * all three) first triggers one re-provisioning attempt and a second pull.
      *
      * @return iterable<Envelope>
      */
@@ -642,9 +647,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * The status codes matter and are easy to get wrong. A deleted durable consumer does NOT produce a
      * 404: nothing is subscribed to answer the pull request, so the client reports 503. Measured
      * directly against nats-server 2.10.29 and 2.14.2 by deleting the consumer and pulling:
-     * "JetStream pull request ended with status 503". 409 is what a consumer deleted mid-pull reports,
-     * and 404 comes from the stream-level lookup. All three mean the same thing to this transport: the
-     * consumer or stream it pulls from is not there.
+     * "JetStream pull request ended with status 503". 409 is what a consumer deleted mid-pull reports.
+     * A 404 reports a pull that found no messages, but re-provisioning on it as well is harmless when
+     * the resources exist, so all three are treated as a sign that the consumer or stream it pulls from
+     * may not be there.
      *
      * @return list<NatsMessage>|null
      */
@@ -677,8 +683,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
         }
 
-        // Without auto_setup the operator owns provisioning, so the historical contract stands
-        // unchanged: a missing consumer reads as an empty queue, everything else propagates.
+        // Without auto_setup the operator owns provisioning: a 404 reads as an empty queue, as it always
+        // has, and everything else propagates, the 503 of a missing consumer included.
         if ($code === 404) {
             return null;
         }

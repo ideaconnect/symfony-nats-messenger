@@ -466,7 +466,11 @@ final class NatsTransportTest extends TestCase
         self::assertSame(['term:reply-empty'], $transport->failureActions);
     }
 
-    public function testGetReturnsEmptyArrayWhenConsumerIsMissing(): void
+    /**
+     * A 404 reports a pull that found no messages. A missing consumer does not report 404 but 503, which
+     * propagates without auto_setup ({@see testGetStillPropagates503WhenAutoSetupIsDisabled()}).
+     */
+    public function testGetReturnsEmptyArrayWhenThePullReports404(): void
     {
         $serializer = $this->createMock(SerializerInterface::class);
         $serializer->expects(self::never())->method('decode');
@@ -474,7 +478,7 @@ final class NatsTransportTest extends TestCase
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->expects(self::once())
             ->method('fetchBatch')
-            ->willReturn(Future::error(new JetStreamException('missing consumer', 404)));
+            ->willReturn(Future::error(new JetStreamException('No Messages', 404)));
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
         $transport->setJetStreamContext($jetStream);
