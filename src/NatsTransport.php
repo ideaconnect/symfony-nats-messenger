@@ -753,17 +753,21 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function fetchBatchMessages(): array
     {
-        $messages = $this->awaitOnConnection($this->jetStream()->fetchBatch(
-            $this->streamName,
-            $this->configuration->consumer(),
-            $this->configuration->batching(),
-            $this->configuration->maxBatchTimeoutMs()
-        ));
+        $jetStream = $this->jetStream();
 
-        // A pull may wait up to max_batch_timeout for messages, and the connection was in use all that time.
-        $this->lastUsedAt = $this->monotonicSeconds();
-
-        return $messages;
+        try {
+            return $this->awaitOnConnection($jetStream->fetchBatch(
+                $this->streamName,
+                $this->configuration->consumer(),
+                $this->configuration->batching(),
+                $this->configuration->maxBatchTimeoutMs()
+            ));
+        } finally {
+            // A pull may wait up to max_batch_timeout for messages, and the connection was in use all that time,
+            // whether messages came or the pull ended empty, which throws. Counted only on success, an empty pull
+            // longer than ping_after_idle made every next pull PING first.
+            $this->lastUsedAt = $this->monotonicSeconds();
+        }
     }
 
     /**

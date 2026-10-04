@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transport the message failed on (`:failed:<receiver>`). Every id changes with the upgrade, so a message
   sent once before it and again after it, within the stream's `duplicate_window`, is stored twice, and so
   is one that processes still on 5.4.0 and processes already upgraded both send, as during a rolling deploy.
+- **An empty pull counts as using the connection.** It was counted only when messages came, so with
+  `max_batch_timeout` at or above `ping_after_idle` every pull after an empty one sent a PING first, with
+  one `connection_timeout` for the answer, and one slow answer dropped a healthy connection.
 - **A pull the server did not answer makes the next operation check the connection.** The client reports a
   pull that got no answer before its own deadline, `max_batch_timeout` plus a second, as a JetStream error
   with status 408, like the server's own end of a pull that found no messages, so it read as an empty

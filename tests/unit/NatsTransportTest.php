@@ -1306,6 +1306,36 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * The same holds for a pull that ends empty, which the client reports as a 408: counted as use only when
+     * messages came, an empty pull longer than ping_after_idle made every next pull PING first, with one
+     * connection_timeout for the server to answer.
+     */
+    public function testIdleTimeCountsFromTheEndOfAnEmptyPull(): void
+    {
+        $transport = null;
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturnCallback(
+            static function () use (&$transport): Future {
+                // The pull waits 40 s for messages, and none come.
+                $transport->now += 40;
+
+                return Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408));
+            },
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30, 'max_batch_timeout' => 40]);
+        $transport->setClient($client);
+        self::assertSame([], iterator_to_array($transport->get()));
+        $transport->now += 5;
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
      * With auto_setup, the connection that replaces one that failed the PING is verified again before it is
      * used, as after close().
      */
