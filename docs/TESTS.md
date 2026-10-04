@@ -228,6 +228,15 @@ Runs the real client against an in-memory server that answers the handshake and 
 | **`deduplicate` option** | Distinct messages are all stored with the deduplicate option (5 stored, 5 consumed) |
 | **Two transports on one stream** | A message routed to two deduplicating transports on one stream is stored for each (2 messages in the stream; in 5.4.0 the second copy was dropped) |
 
+### Idle Connection Check (`tests/functional/features/nats_idle_connection.feature`)
+
+Runs against `nats-stale` (port 4225, `tests/nats/nats-stale.conf`), a test server that drops a client which leaves more than one PING unanswered, about three seconds after it went quiet.
+
+| Feature | Scenarios |
+|---------|-----------|
+| **`ping_after_idle`** | A message sent after the server dropped the idle connection goes out (one process sends, idles 5 s, sends again: both stored; on 5.1.0 the second send failed with 'Stale Connection') |
+| **Control, check off** | Without the check the message sent after the server dropped the connection fails (`ping_after_idle: 0`: the second send fails, 1 stored), which shows the server really dropped it |
+
 ## Examples (`examples/`, `composer examples`)
 
 Runnable scripts against a live server, run in CI after the functional suite, on the latest and the oldest

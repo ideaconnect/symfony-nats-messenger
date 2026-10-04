@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A unit test that runs the real client for the unanswered pull**, against an in-memory server, so a
   client version that words its own pull deadline differently fails the suite instead of turning the check
   off.
+- **Functional scenarios for the idle-connection check**, against a new test server that drops idle clients
+  within seconds (`nats-stale`, port 4225): a message sent after the server dropped the idle connection goes
+  out, and without the check it fails.
 - **A functional scenario for duplicate protection across two transports on one stream**, which fails on
   5.4.0 with one message stored instead of two.
 - **Runnable examples** in `examples/`, one per behaviour: sending and consuming, duplicate protection, the

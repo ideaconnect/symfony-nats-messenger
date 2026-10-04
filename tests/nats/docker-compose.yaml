@@ -43,3 +43,18 @@ services:
       - ./nats-mtls.conf:/etc/nats/nats.conf
       - ./certs:/etc/nats/certs:ro
       - ./data-mtls:/data
+
+  # Drops a client that stops answering its pings within seconds (see nats-stale.conf), for the scenarios
+  # of the transport's idle-connection check.
+  nats-stale:
+    image: ${NATS_IMAGE:-nats:alpine}
+    container_name: nats_test_stale
+    restart: always
+    command: -c /etc/nats/nats.conf
+    ports:
+      - "4225:4222" # client port
+      - "6226:6222" # cluster port
+      - "8226:8222" # monitoring port
+    volumes:
+      - ./nats-stale.conf:/etc/nats/nats.conf
+      - ./data-stale:/data
