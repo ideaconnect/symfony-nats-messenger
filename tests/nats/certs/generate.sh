@@ -6,7 +6,8 @@
 # repository, test ones included (#9). `composer nats:start` runs this before it starts the servers.
 #
 # Usage: generate.sh [--force]
-#   Without --force a complete set that already exists is kept, so running servers keep matching keys.
+#   Without --force a complete set that already exists, and is not about to expire, is kept, so running
+#   servers keep matching keys.
 #   With --force a new set replaces it; restart the servers (composer nats:stop, nats:start) to load it.
 
 set -euo pipefail
@@ -14,9 +15,14 @@ set -euo pipefail
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$dir"
 
+# A certificate that expires within a day counts as missing.
+valid() {
+  [ -f "$1" ] && openssl x509 -checkend 86400 -noout -in "$1" >/dev/null 2>&1
+}
+
 if [ "${1:-}" != "--force" ] \
-  && [ -f ca.pem ] && [ -f server-cert.pem ] && [ -f server-key.pem ] \
-  && [ -f client-cert.pem ] && [ -f client-key.pem ]; then
+  && valid ca.pem && valid server-cert.pem && [ -f server-key.pem ] \
+  && valid client-cert.pem && [ -f client-key.pem ]; then
   exit 0
 fi
 

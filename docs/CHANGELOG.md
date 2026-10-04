@@ -50,7 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   private keys of the test CA, server and client certificates, which security scanners report as a leaked
   secret even though they were test-only. `tests/nats/certs/generate.sh` now creates the set with `openssl`
   on each machine, `composer nats:start` (and the Behat context, when it starts NATS itself) runs it first,
-  and the files are ignored by git. The keys stay in the history, but nothing uses them any more.
+  and the files are ignored by git. The keys stay in the history, but nothing uses them any more. A set
+  that is about to expire is replaced as well, so that a long-lived checkout does not run the TLS
+  scenarios on expired certificates.
 
 ## [5.4.0] - 2026-10-04
 
