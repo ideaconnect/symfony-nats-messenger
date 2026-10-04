@@ -1358,6 +1358,44 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Two transports sharing one stream, both with deduplication, and the test message routed to both: Symfony
+     * hands the second transport the envelope the first returned, deduplication id included.
+     *
+     * @Given I have two deduplicating messenger transports sharing the same stream with subjects :firstSubject and :secondSubject, the test message routed to both
+     */
+    public function iHaveTwoDeduplicatingMessengerTransportsSharingTheSameStreamWithTheTestMessageRoutedToBoth(string $firstSubject, string $secondSubject): void
+    {
+        $this->testSubject = $firstSubject;
+        $this->secondaryTestSubject = $secondSubject;
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&deduplicate=true'\n                serializer: 'messenger.transport.native_php_serializer'\n            test_transport_two:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&deduplicate=true'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': [test_transport, test_transport_two]\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $this->testStreamName,
+            $secondSubject,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @Then the NATS stream should hold exactly :count messages
+     */
+    public function theNatsStreamShouldHoldExactlyMessages(int $count): void
+    {
+        $client = $this->createNatsClient();
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];
+        $actualCount = (int) ($state['messages'] ?? 0);
+
+        if ($actualCount !== $count) {
+            throw new \RuntimeException(sprintf('Expected the stream to hold exactly %d messages, but it holds %d', $count, $actualCount));
+        }
+    }
+
+    /**
      * @Then the stream should have max bytes of :maxBytes
      */
     public function theStreamShouldHaveMaxBytesOf(int $maxBytes): void

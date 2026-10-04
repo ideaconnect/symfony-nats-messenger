@@ -8,12 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **With `deduplicate`, a message routed to two transports on one stream is stored for each.** Symfony hands
+  each transport a message is routed to the envelope the one before returned, deduplication id included, and
+  JetStream deduplicates per stream whatever the subject, so the second transport's copy was dropped, and
+  so were the failure-transport copies of a message that failed on two transports. The `Nats-Msg-Id` now
+  holds the transport's subject too (`<id>:<topic>:<retry count>`), and on a failure-transport copy the
+  transport the message failed on (`:failed:<receiver>`). Every id changes with the upgrade, so a message
+  sent once before it and again after it, within the stream's `duplicate_window`, is stored twice, and so
+  is one that processes still on 5.4.0 and processes already upgraded both send, as during a rolling deploy.
 - **Docs:** the README said the check after a failure catches a connection that silently stopped delivering;
   for `get()` it does not, since such a pull ends empty, and the client's heartbeat notices it instead. It
   also gives the PING's real bound, `connection_timeout` or the shorter `request_timeout`, for both checks.
   `CLAUDE.md`, `AGENTS.md` and `STRUCTURE.md` describe the behaviour added since 5.2.0.
 
 ### Added
+- **A functional scenario for duplicate protection across two transports on one stream**, which fails on
+  5.4.0 with one message stored instead of two.
 - **Runnable examples** in `examples/`, one per behaviour: sending and consuming, duplicate protection, the
   request timeout, keepalive from a signal handler, and the connection checks. Each prints `OK` when what it
   shows held. `composer examples` runs them against the test server, and CI runs them after the functional

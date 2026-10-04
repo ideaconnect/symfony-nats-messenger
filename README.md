@@ -653,12 +653,17 @@ and the copy for a failure transport, gets an id of its own, so none of them is 
 you add yourself, as above, is used with the option off as well, and covers a message your application
 dispatches again as a new envelope, which would otherwise get a new id.
 
+The header holds the id together with the transport's subject and the retry count, and on a failure-transport
+copy the transport the message failed on. JetStream deduplicates per stream whatever the subject, and Symfony
+hands each transport a message is routed to the envelope the one before returned, id included, so transports
+that share a stream (see [Multi-Subject Streams](#multi-subject-streams)) each keep their copy.
+
 ```yaml
 options:
   deduplicate: true   # default: false
 ```
 
-> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, Behat scenarios `A message dispatched again with the same deduplication id is stored once` and `Distinct messages are all stored with the deduplicate option`
+> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, `testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn`, `testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn`, Behat scenarios `A message dispatched again with the same deduplication id is stored once`, `Distinct messages are all stored with the deduplicate option` and `A message routed to two deduplicating transports on one stream is stored for each`
 
 ### Losing the Connection
 

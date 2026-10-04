@@ -29,3 +29,14 @@ Feature: Duplicate protection (deduplication ids)
     When I start a messenger consumer
     And I wait for messages to be consumed
     Then all 5 messages should be consumed
+
+  # Symfony hands each transport a message is routed to the envelope the one before returned, deduplication
+  # id included. JetStream deduplicates per stream whatever the subject, so in 5.4.0, which added the
+  # option, the second transport's copy was dropped. The id now holds the transport's subject too.
+  @deduplicate
+  Scenario: A message routed to two deduplicating transports on one stream is stored for each
+    Given I have two deduplicating messenger transports sharing the same stream with subjects "orders.created" and "payments.created", the test message routed to both
+    When I run the messenger setup command for both shared transports
+    Then the setup should complete successfully
+    When I send 1 messages to the transport
+    Then the NATS stream should hold exactly 2 messages

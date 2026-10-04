@@ -71,8 +71,8 @@ composer nats:stop               # stop NATS
 - **`keepalive()` queues, never waits.** Symfony calls it from a SIGALRM handler, where fibers cannot switch,
   so it queues `inProgress()->ignore()`, which goes out the next time the event loop runs.
 - **Duplicate protection:** a `DeduplicationIdStamp`, added on the first send with `deduplicate` or by the
-  application, becomes `Nats-Msg-Id` = `<id>:<retry count>`, plus `:failed` on a failure-transport copy.
-  JetStream deduplicates per stream, whatever the subject.
+  application, becomes `Nats-Msg-Id` = `<id>:<topic>:<retry count>`, plus `:failed:<receiver>` on a
+  failure-transport copy. JetStream deduplicates per stream, whatever the subject.
 - **Serializers strip non-sendable stamps** (`NonSendableStampInterface`, such as the worker's `AckStamp`,
   which holds a closure) before encoding, as Symfony's own serializers do.
 - **Scheduled messages:** only when `scheduled_messages=true` does a `DelayStamp` route to

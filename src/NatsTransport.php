@@ -234,16 +234,21 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /**
      * The Nats-Msg-Id JetStream deduplicates a publish by.
      *
-     * The envelope's deduplication id, then Symfony's retry count, so that each retry is a message of its own,
-     * and a marker on the copy for a failure transport, which Symfony sends with a retry count of 0, so that
-     * it is not taken for the original. A copy sent again, such as the retry of a message NATS redelivered
-     * because the worker stopped after a retry send that timed out, gets the same id as before and is dropped.
+     * The envelope's deduplication id, then this transport's subject, then Symfony's retry count, and on the
+     * copy for a failure transport, which Symfony sends with a retry count of 0, a marker with the transport
+     * the message failed on. JetStream deduplicates per stream, whatever the subject, and Symfony hands each
+     * transport a message is routed to the envelope the one before returned, stamp included: the subject keeps
+     * apart the copies of transports that share a stream, the retry count keeps each retry a message of its
+     * own, and the marker keeps the failure copies apart from the original and from each other. A copy sent
+     * again, such as the retry of a message NATS redelivered because the worker stopped after a retry send
+     * that timed out, gets the same id as before and is dropped.
      */
     private function natsMessageId(DeduplicationIdStamp $stamp, Envelope $envelope): string
     {
-        $id = sprintf('%s:%d', $stamp->id, RedeliveryStamp::getRetryCountFromEnvelope($envelope));
+        $id = sprintf('%s:%s:%d', $stamp->id, $this->topic, RedeliveryStamp::getRetryCountFromEnvelope($envelope));
+        $failure = $envelope->last(SentToFailureTransportStamp::class);
 
-        return $envelope->last(SentToFailureTransportStamp::class) === null ? $id : $id . ':failed';
+        return $failure === null ? $id : sprintf('%s:failed:%s', $id, $failure->getOriginalReceiverName());
     }
 
     /**

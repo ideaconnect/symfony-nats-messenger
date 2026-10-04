@@ -3518,7 +3518,7 @@ final class NatsTransportTest extends TestCase
         self::assertSame($id, $sent->last(DeduplicationIdStamp::class)?->id);
         self::assertInstanceOf(Envelope::class, $encoded);
         self::assertSame($id, $encoded->last(DeduplicationIdStamp::class)?->id, 'The id must be encoded with the message.');
-        self::assertSame([$id . ':0'], array_column($publishes, 'msgId'));
+        self::assertSame([$id . ':test-topic:0'], array_column($publishes, 'msgId'));
     }
 
     /**
@@ -3533,7 +3533,7 @@ final class NatsTransportTest extends TestCase
         $sent = $transport->send(new Envelope(new \stdClass(), [new DeduplicationIdStamp('order-42')]));
 
         self::assertCount(1, $sent->all(DeduplicationIdStamp::class));
-        self::assertSame(['order-42:0'], array_column($publishes, 'msgId'));
+        self::assertSame(['order-42:test-topic:0'], array_column($publishes, 'msgId'));
     }
 
     /**
@@ -3551,7 +3551,7 @@ final class NatsTransportTest extends TestCase
         $transport->send($original->with(new RedeliveryStamp(2)));
         $transport->send($original->with(new SentToFailureTransportStamp('async'), new RedeliveryStamp(0)));
 
-        self::assertSame(['order-42:0', 'order-42:1', 'order-42:2', 'order-42:0:failed'], array_column($publishes, 'msgId'));
+        self::assertSame(['order-42:test-topic:0', 'order-42:test-topic:1', 'order-42:test-topic:2', 'order-42:test-topic:0:failed:async'], array_column($publishes, 'msgId'));
     }
 
     /**
@@ -3578,7 +3578,7 @@ final class NatsTransportTest extends TestCase
 
         $transport->send(new Envelope(new \stdClass(), [new DeduplicationIdStamp('order-42')]));
 
-        self::assertSame(['order-42:0'], array_column($publishes, 'msgId'));
+        self::assertSame(['order-42:test-topic:0'], array_column($publishes, 'msgId'));
     }
 
     /**
@@ -3597,7 +3597,43 @@ final class NatsTransportTest extends TestCase
         self::assertCount(1, $publishes);
         self::assertSame('test-topic.delayed.' . $id, $publishes[0]['subject']);
         self::assertArrayHasKey('Nats-Schedule', $publishes[0]['headers']);
-        self::assertSame($id . ':0', $publishes[0]['msgId']);
+        self::assertSame($id . ':test-topic:0', $publishes[0]['msgId']);
+    }
+
+    /**
+     * Symfony hands each transport a message is routed to the envelope the one before returned, deduplication
+     * id included. JetStream deduplicates per stream whatever the subject, so two transports on one stream
+     * dropped the second copy; the subject keeps their ids apart.
+     */
+    public function testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn(): void
+    {
+        $orders = new RuntimeTestableNatsTransport('nats://localhost:4222/events/events.orders', ['deduplicate' => true], $this->encodingSerializer());
+        $orders->setJetStreamContext($this->jetStreamRecordingPublishes($ordersPublishes));
+        $payments = new RuntimeTestableNatsTransport('nats://localhost:4222/events/events.payments', [], $this->encodingSerializer());
+        $payments->setJetStreamContext($this->jetStreamRecordingPublishes($paymentsPublishes));
+
+        $sent = $payments->send($orders->send(new Envelope(new \stdClass())));
+
+        $id = $sent->last(DeduplicationIdStamp::class)?->id;
+        self::assertNotNull($id);
+        self::assertSame([$id . ':events.orders:0'], array_column($ordersPublishes, 'msgId'));
+        self::assertSame([$id . ':events.payments:0'], array_column($paymentsPublishes, 'msgId'));
+    }
+
+    /**
+     * A message routed to two transports that fails on both reaches a shared failure transport twice, with
+     * the same deduplication id and retry count: the transport it failed on keeps the two copies apart.
+     */
+    public function testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn(): void
+    {
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['deduplicate' => true], $this->encodingSerializer());
+        $transport->setJetStreamContext($this->jetStreamRecordingPublishes($publishes));
+        $failed = new Envelope(new \stdClass(), [new DeduplicationIdStamp('order-42'), new RedeliveryStamp(0)]);
+
+        $transport->send($failed->with(new SentToFailureTransportStamp('orders')));
+        $transport->send($failed->with(new SentToFailureTransportStamp('payments')));
+
+        self::assertSame(['order-42:test-topic:0:failed:orders', 'order-42:test-topic:0:failed:payments'], array_column($publishes, 'msgId'));
     }
 
     public function testSendWithZeroDelayPublishesNormally(): void
