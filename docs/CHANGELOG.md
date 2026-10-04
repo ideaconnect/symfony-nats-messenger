@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.4.0] - 2026-10-04
+
+A **minor** release. It adds duplicate protection, the `deduplicate` option and `DeduplicationIdStamp`
+(#53), and makes `getMessageCount()` give up after one connection attempt when NATS cannot be reached (#54).
+Nothing changes unless the new option or the new stamp is used.
+
 ### Added
 - **Duplicate protection: the `deduplicate` option and `DeduplicationIdStamp` (#53).** A `send()` that timed
   out may still have stored the message, so dispatching it again stored it twice, and so did Symfony when a
