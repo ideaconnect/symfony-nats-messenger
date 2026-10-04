@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Runnable examples** in `examples/`, one per behaviour: sending and consuming, duplicate protection, the
+  request timeout, keepalive from a signal handler, and the connection checks. Each prints `OK` when what it
+  shows held. `composer examples` runs them against the test server, and CI runs them after the functional
+  suite on the latest and the oldest supported NATS.
+
 ### Changed
 - **The functional suite's TLS certificates are generated, not committed (#9).** The repository held the
   private keys of the test CA, server and client certificates, which security scanners report as a leaked

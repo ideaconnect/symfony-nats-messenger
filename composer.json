@@ -43,6 +43,7 @@
             "cd tests/nats && docker compose up -d"
         ],
         "nats:stop": "cd tests/nats && docker compose down -v",
+        "examples": "bash scripts/run-examples.sh",
         "test": [
             "@analyse",
             "@test:unit:fast"

@@ -116,6 +116,14 @@ jobs:
       timeout-minutes: 25  # Behat suite runs the full matrix (plain/TLS/mTLS) incl. high-volume, large-message and scheduled scenarios
       run: composer test:functional
 
+    # Every examples/*.php must run and pass against the servers started above; strict mode makes a skipped
+    # example fail the job too.
+    - name: Run examples
+      timeout-minutes: 5
+      run: composer examples
+      env:
+        EXAMPLES_STRICT: "1"
+
     - name: Run benchmark tests
       timeout-minutes: 5  # Set explicit timeout for benchmark tests
       env:
@@ -209,6 +217,12 @@ jobs:
     - name: Run functional tests without the scheduled-message scenarios
       working-directory: tests/functional
       run: ./vendor/bin/behat --no-colors --tags '~@delayed'
+
+    - name: Run examples against the oldest supported server
+      timeout-minutes: 5
+      run: composer examples
+      env:
+        EXAMPLES_STRICT: "1"
 
     # Belt and braces for the same hazard: if anything recreated the containers from the default
     # image mid-run, the suite above proved nothing about the oldest supported server.

@@ -55,6 +55,13 @@ tests/
 │   └── src/, config/, bin/, public/            # a minimal Symfony app exercising the transport end-to-end
 └── nats/                                       # Docker Compose + NATS configs + test TLS certificate generator
 
+examples/                                       # Runnable scripts, one per behaviour (composer examples)
+├── _bootstrap.php                              # shared setup: autoloader, server, stream helpers
+└── *.php                                       # send-and-consume, duplicate-protection, request-timeout, keepalive, connection-checks
+
+scripts/
+└── run-examples.sh                             # runs examples/*.php, strict mode for CI
+
 docs/
 ├── CHANGELOG.md                                # Keep a Changelog format
 ├── TESTS.md                                    # Feature → test coverage map (kept in sync with the suite)

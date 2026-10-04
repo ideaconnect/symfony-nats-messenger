@@ -210,6 +210,26 @@ symfony console messenger:consume nats_transport
 
 > **Tested by:** Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, and `Partial message consumption with multiple consumers` - the Behat context runs `messenger:consume` as a Symfony CLI process.
 
+## Examples
+
+[`examples/`](examples/) holds runnable scripts, one per behaviour, that use the transport directly against
+the test server and print `OK` when what they show held:
+
+| Example | Shows |
+|---|---|
+| `send-and-consume.php` | `setup()`, sending, the queue depth, receiving and acknowledging |
+| `duplicate-protection.php` | `DeduplicationIdStamp` and `deduplicate: true`: a message sent again is stored once |
+| `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
+| `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it |
+| `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
+
+```bash
+composer nats:start
+composer examples                   # or one at a time: php examples/keepalive.php
+```
+
+> **Tested by:** CI runs `composer examples` after the functional suite, on the latest and the oldest supported NATS.
+
 ## Configuration Guide
 
 ### DSN Format

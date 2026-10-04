@@ -27,6 +27,7 @@ composer coverage:check          # enforce ≥ 90% statement coverage from clove
 composer nats:start              # generate the test TLS certs, then start NATS in Docker (tests/nats/docker-compose.yaml)
 composer test:functional:setup   # install Behat deps (first time only)
 composer test:functional         # run Behat scenarios (needs nats:start)
+composer examples                # run examples/*.php against the test NATS (needs nats:start)
 composer nats:stop               # stop NATS
 ```
 
