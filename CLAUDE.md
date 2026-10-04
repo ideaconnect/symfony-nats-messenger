@@ -57,12 +57,15 @@ composer nats:stop               # stop NATS
 - **Lazy connection.** No socket opens in the constructor - `jetStream()` connects on first use, and dials
   again once the client has closed (it runs with reconnect off, so a lost connection leaves it Closed). A
   connection unused for longer than `ping_after_idle`, or one an operation just failed on (not counting
-  JetStream replies), gets a PING first and is replaced if it goes unanswered; `keepalive()` never pings
-  or dials (it runs in a signal handler).
+  JetStream replies, but counting a pull the server did not answer), gets a PING first and is replaced if
+  it goes unanswered; `ping_after_idle: 0` turns both checks off, and `keepalive()` never pings or dials (it
+  runs in a signal handler).
 - **Pull consumers + explicit ACK.** A message is only "processed" once ACK'd. This underpins
   `retry_handler` and shared-consumer load balancing.
 - **`get()` reads JetStream 408 and 404 as an empty pull** (no messages); other codes propagate. A
   missing consumer reports 503, not 404: with `auto_setup` it is re-provisioned once, otherwise `get()` throws.
+  The client also reports a pull that got no answer before its own deadline as 408 ("No messages received
+  within timeout"); that one makes the next operation PING first, since the server did not answer.
 - **`setup()` create-then-update.** On a stream conflict it reads the live config, **merges** subjects,
   preserves server fields, and updates - it never blindly overwrites an existing stream.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);

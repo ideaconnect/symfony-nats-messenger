@@ -64,6 +64,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /** Conversion factor for stream max_age (seconds → nanoseconds as required by JetStream API). */
     private const SECONDS_TO_NANOSECONDS = 1_000_000_000;
 
+    /**
+     * How the client's JetStreamException starts when a pull got no answer before the client's own deadline,
+     * max_batch_timeout plus a second. A server that is there ends every pull before then, with status 408 when
+     * it found no messages, so unlike other JetStream errors this one does not prove that the server answered.
+     */
+    private const UNANSWERED_PULL = 'No messages received within timeout';
+
     /** Symfony serializer used to encode/decode envelopes to/from wire payloads. */
     protected SerializerInterface $serializer;
 
@@ -278,8 +285,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *
      * Fetches up to {@see NatsTransportConfiguration::batching()} messages with the
      * configured timeout. A pull that found no messages (JetStream status 408, or 404) is an
-     * empty result. A missing consumer or stream does not report 404 but 503, or 409 when the
-     * consumer is deleted mid-pull, and without auto_setup that JetStreamException propagates.
+     * empty result, and so is one the server did not answer, though the next operation then checks
+     * the connection first, unless ping_after_idle is 0. A missing consumer or stream does not report
+     * 404 but 503, or 409 when the consumer is deleted mid-pull, and without auto_setup that
+     * JetStreamException propagates.
      * A message without a reply (ack) subject is skipped (it can be neither acknowledged nor
      * rejected); a message with an empty payload is TERMed so JetStream stops redelivering it,
      * since it can never decode into an envelope. On deserialization failure the message is
@@ -702,7 +711,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     {
         $code = $exception->getCode();
 
-        // A pull that timed out simply found no messages.
+        // A pull that timed out found no messages, or got no answer at all, after which the next operation checks
+        // the connection first, unless ping_after_idle is 0 ({@see awaitOnConnection()}).
         if ($code === 408) {
             return null;
         }
@@ -827,7 +837,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * server answered, the next operation checks the connection with a PING before using it. The client
      * may still report the connection Open after its socket died - older ones after a failed write, 2.10
      * after the server's fatal -ERR - and a connection that silently stopped delivering only times out;
-     * without the check, every operation after such a failure failed the same way (#49).
+     * without the check, every operation after such a failure failed the same way (#49). A pull that got no
+     * answer at all ({@see UNANSWERED_PULL}) counts as such a failure, though the client reports it as a
+     * JetStream error: a half-open connection takes every write and delivers nothing, so without the check
+     * each pull on it ended empty, and a consumer reported nothing to do until the heartbeat noticed.
      *
      * @template T
      * @param Future<T> $call
@@ -838,6 +851,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         try {
             return $call->await();
         } catch (JetStreamException $reply) {
+            if (str_starts_with($reply->getMessage(), self::UNANSWERED_PULL)) {
+                $this->checkBeforeNextUse = true;
+            }
+
             throw $reply;
         } catch (\Throwable $failure) {
             $this->checkBeforeNextUse = true;

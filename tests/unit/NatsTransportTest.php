@@ -1486,7 +1486,9 @@ final class NatsTransportTest extends TestCase
     public function testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::error(new JetStreamException('Request Timeout', 408)));
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(
+            Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408)),
+        );
         $jetStream->expects(self::exactly(2))->method('publish')->willReturnOnConsecutiveCalls(
             Future::error(new JetStreamException('maximum messages exceeded', 400)),
             Future::complete(),
@@ -1509,6 +1511,39 @@ final class NatsTransportTest extends TestCase
             // Rejected by the server, which therefore answered.
         }
         $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * A pull that got no answer before the client's own deadline is no reply, though the client reports it as
+     * a JetStream error: a server that is there ends every pull before then, with status 408 when it found no
+     * messages. A half-open connection takes the pull request and delivers nothing. The pull reads as an empty
+     * batch, and the next operation checks the connection first, so the pull after it runs on a new one.
+     */
+    public function testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection(): void
+    {
+        $oldConnection = $this->createMock(JetStreamContext::class);
+        $oldConnection->expects(self::once())->method('fetchBatch')->willReturn(
+            Future::error(new JetStreamException('No messages received within timeout', 408)),
+        );
+        $newConnection = $this->createMock(JetStreamContext::class);
+        $newConnection->expects(self::exactly(2))->method('fetchBatch')->willReturn(
+            Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408)),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->expects(self::exactly(2))->method('jetStream')->willReturnOnConsecutiveCalls($oldConnection, $newConnection);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::error(new ConnectionException('Connection lost')));
+        $client->expects(self::once())->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        self::assertSame([], iterator_to_array($transport->get()));
+
+        // The client still reports Open, and no time has passed: the check comes from the unanswered pull.
+        self::assertSame([], iterator_to_array($transport->get()));
+        // The server answered that pull, so the next one owes no check.
+        self::assertSame([], iterator_to_array($transport->get()));
     }
 
     public function testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff(): void

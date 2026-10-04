@@ -16,12 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transport the message failed on (`:failed:<receiver>`). Every id changes with the upgrade, so a message
   sent once before it and again after it, within the stream's `duplicate_window`, is stored twice, and so
   is one that processes still on 5.4.0 and processes already upgraded both send, as during a rolling deploy.
-- **Docs:** the README said the check after a failure catches a connection that silently stopped delivering;
-  for `get()` it does not, since such a pull ends empty, and the client's heartbeat notices it instead. It
-  also gives the PING's real bound, `connection_timeout` or the shorter `request_timeout`, for both checks.
-  `CLAUDE.md`, `AGENTS.md` and `STRUCTURE.md` describe the behaviour added since 5.2.0.
+- **A pull the server did not answer makes the next operation check the connection.** The client reports a
+  pull that got no answer before its own deadline, `max_batch_timeout` plus a second, as a JetStream error
+  with status 408, like the server's own end of a pull that found no messages, so it read as an empty
+  batch and called for no check. A half-open connection takes every write and delivers nothing: a consumer
+  on one pulled empty batches until the client's heartbeat noticed, about 90 seconds with its defaults. The
+  pull still reads as empty, and the next operation PINGs first, so the pull after it runs on a new
+  connection.
+- **Docs:** the README said the check after a failure catches a connection that silently stopped delivering,
+  which `get()` did not do until the fix above. It also gives the PING's real bound, `connection_timeout` or
+  the shorter `request_timeout`, for both checks. `CLAUDE.md`, `AGENTS.md` and `STRUCTURE.md` describe the
+  behaviour added since 5.2.0.
 
 ### Added
+- **A unit test that runs the real client for the unanswered pull**, against an in-memory server, so a
+  client version that words its own pull deadline differently fails the suite instead of turning the check
+  off.
 - **A functional scenario for duplicate protection across two transports on one stream**, which fails on
   5.4.0 with one message stored instead of two.
 - **Runnable examples** in `examples/`, one per behaviour: sending and consuming, duplicate protection, the

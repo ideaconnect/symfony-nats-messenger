@@ -627,8 +627,8 @@ that does not prove the message was not stored: the server may have stored it an
 was late, so dispatching the message again can store it twice, unless it carries a deduplication id (see
 [Duplicate Protection](#duplicate-protection)). Raise the value for a slow or distant server,
 or for a stream whose writes can take long, such as a replicated one under load; lower it to fail faster.
-The wait of a pull in `get()` is bounded by `max_batch_timeout` instead, and the dial by
-`connection_timeout`.
+The wait of a pull in `get()` is bounded by `max_batch_timeout` instead (the client gives up a second later
+on a pull the server does not answer at all), and the dial by `connection_timeout`.
 
 ### Duplicate Protection
 
@@ -692,16 +692,17 @@ further apart than it, at the cost of that round trip more often. The same check
 failed on the connection - a JetStream error reply does not count, since the server answered it - because
 the client can keep reporting a dead connection open, and a send to a connection that silently stopped
 delivering only times out. A pull from such a connection ends empty, which reads as no messages rather than
-a failure; the client's own heartbeat, which runs while a pull waits, notices the dead connection within a
-few of its ping intervals instead (about 90 seconds with its defaults). `ping_after_idle: 0` turns both
-checks off. `keepalive()` never checks: Symfony calls it from a signal handler.
+a failure, but the server never answered it: a server that is there ends every pull itself, after
+`max_batch_timeout` at the latest. So the check follows such a pull too, and the pull after it runs on a new
+connection. `ping_after_idle: 0` turns both checks off. `keepalive()` never checks: Symfony calls it from a
+signal handler.
 
 ```yaml
 options:
   ping_after_idle: 30   # seconds; 0 turns the check off
 ```
 
-> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testBuildWithInvalidPingAfterIdleThrowsException`
+> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testBuildWithInvalidPingAfterIdleThrowsException`
 
 ## Stream Configuration
 
