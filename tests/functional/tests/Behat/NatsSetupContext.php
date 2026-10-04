@@ -1941,6 +1941,13 @@ class NatsSetupContext implements Context
             return; // NATS is already running
         }
 
+        // The TLS and mTLS servers need the test certificates, which are generated rather than committed (#9).
+        $certificates = new Process(['bash', __DIR__ . '/../../../nats/certs/generate.sh']);
+        $certificates->run();
+        if (!$certificates->isSuccessful()) {
+            throw new \RuntimeException('Failed to generate the test TLS certificates: ' . $certificates->getErrorOutput());
+        }
+
         // Use docker compose to start NATS
         $command = ['docker', 'compose', 'up', '-d'];
         $process = new Process($command, __DIR__ . '/../../../nats');

@@ -772,7 +772,7 @@ Functional tests require a running NATS server with JetStream enabled:
 # Set up functional test dependencies
 composer test:functional:setup
 
-# Start NATS server in Docker
+# Start NATS server in Docker (generates the test TLS certificates first, which needs openssl)
 composer nats:start
 
 # Run functional tests
@@ -784,6 +784,9 @@ composer nats:stop
 
 **Manual approach:**
 ```bash
+# Generate the test TLS certificates the TLS and mTLS servers use (never committed)
+bash tests/nats/certs/generate.sh
+
 # Set up NATS in Docker (optional)
 cd tests/nats
 docker-compose up -d

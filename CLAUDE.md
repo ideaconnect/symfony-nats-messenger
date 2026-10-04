@@ -24,7 +24,7 @@ composer test:unit:fast          # PHPUnit only, no coverage
 composer test:unit               # PHPUnit with coverage → clover.xml + coverage/ (HTML)
 composer coverage:check          # enforce ≥ 90% statement coverage from clover.xml
 
-composer nats:start              # start NATS in Docker (tests/nats/docker-compose.yaml)
+composer nats:start              # generate the test TLS certs, then start NATS in Docker (tests/nats/docker-compose.yaml)
 composer test:functional:setup   # install Behat deps (first time only)
 composer test:functional         # run Behat scenarios (needs nats:start)
 composer nats:stop               # stop NATS
