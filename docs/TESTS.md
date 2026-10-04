@@ -219,6 +219,19 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Deduplication id** | A message dispatched again with the same deduplication id is stored once (3 messages, then the first again as a new envelope: 3 stored, 3 consumed) |
 | **`deduplicate` option** | Distinct messages are all stored with the deduplicate option (5 stored, 5 consumed) |
 
+## Examples (`examples/`, `composer examples`)
+
+Runnable scripts against a live server, run in CI after the functional suite, on the latest and the oldest
+supported NATS. Each prints `OK ...` when what it shows held, and fails otherwise.
+
+| Example | Verifies |
+|---|---|
+| `send-and-consume.php` | 3 messages sent are waiting, then received in order and acknowledged, leaving the queue empty |
+| `duplicate-protection.php` | an application id sent twice is stored once; the envelope `send()` returned, sent again, is dropped; its retry (`RedeliveryStamp` 1) is stored |
+| `request-timeout.php` | against a `no_ack` stream, a send with `request_timeout: 1` gives up after about 1 s although the message is stored, and sending it again with the same deduplication id stores nothing more |
+| `keepalive.php` | with `keepalive()` called from a SIGALRM handler every second, a message handled for 5 s on `ack_wait: 2` is not redelivered to a second worker (on 5.2.1 the first alarm broke the worker) |
+| `connection-checks.php` | sends after idling past `ping_after_idle` and after `close()` both succeed |
+
 ## Mutation Testing
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run

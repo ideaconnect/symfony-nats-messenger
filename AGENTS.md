@@ -98,6 +98,7 @@ composer coverage:check          # Verify ≥ 90% statement coverage
 composer test:functional:setup   # Install Behat dependencies (first time)
 composer nats:start              # Generate the test TLS certs, then start NATS in Docker
 composer test:functional         # Run Behat scenarios
+composer examples                # Run examples/*.php against the test NATS (needs nats:start)
 composer nats:stop               # Stop NATS
 ```
 
