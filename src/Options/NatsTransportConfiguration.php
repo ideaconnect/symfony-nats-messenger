@@ -31,8 +31,8 @@ final readonly class NatsTransportConfiguration
      * @param bool                 $natsRetryHandlerEnabled True when retry handling is delegated to NATS (NAK mode)
      * @param bool                 $scheduledMessagesEnabled True when delayed/scheduled message publishing is enabled
      * @param bool                 $ackSyncEnabled          True when acknowledgements should wait for server confirmation (double-ack)
-     * @param bool                 $deduplicationEnabled    True when every published message gets an id JetStream deduplicates it by
      * @param bool                 $autoSetupEnabled        True when the transport should provision the stream/consumer on first use
+     * @param bool                 $deduplicationEnabled    True when every published message gets an id JetStream deduplicates it by
      */
     public function __construct(
         public string $topic,

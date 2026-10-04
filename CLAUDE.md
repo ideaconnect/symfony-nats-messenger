@@ -66,7 +66,15 @@ composer nats:stop               # stop NATS
 - **`setup()` create-then-update.** On a stream conflict it reads the live config, **merges** subjects,
   preserves server fields, and updates - it never blindly overwrites an existing stream.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
-  `retry_handler=nats` → NAK (NATS redelivers).
+  `retry_handler=nats` → NAK (NATS redelivers), and `send()` skips the copy Symfony's retry sends (a received
+  envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode.
+- **`keepalive()` queues, never waits.** Symfony calls it from a SIGALRM handler, where fibers cannot switch,
+  so it queues `inProgress()->ignore()`, which goes out the next time the event loop runs.
+- **Duplicate protection:** a `DeduplicationIdStamp`, added on the first send with `deduplicate` or by the
+  application, becomes `Nats-Msg-Id` = `<id>:<retry count>`, plus `:failed` on a failure-transport copy.
+  JetStream deduplicates per stream, whatever the subject.
+- **Serializers strip non-sendable stamps** (`NonSendableStampInterface`, such as the worker's `AckStamp`,
+  which holds a closure) before encoding, as Symfony's own serializers do.
 - **Scheduled messages:** only when `scheduled_messages=true` does a `DelayStamp` route to
   `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored.
 - **Serializer security:** the default `IgbinarySerializer` `unserialize()`s payloads - unsafe on

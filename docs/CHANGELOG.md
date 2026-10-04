@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Docs:** the README said the check after a failure catches a connection that silently stopped delivering;
+  for `get()` it does not, since such a pull ends empty, and the client's heartbeat notices it instead. It
+  also gives the PING's real bound, `connection_timeout` or the shorter `request_timeout`, for both checks.
+  `CLAUDE.md`, `AGENTS.md` and `STRUCTURE.md` describe the behaviour added since 5.2.0.
+
 ### Added
 - **Runnable examples** in `examples/`, one per behaviour: sending and consuming, duplicate protection, the
   request timeout, keepalive from a signal handler, and the connection checks. Each prints `OK` when what it

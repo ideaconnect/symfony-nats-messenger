@@ -81,7 +81,7 @@ The heart of the bridge. Responsibilities map almost 1:1 to `TransportInterface`
 
 | Method | What it does |
 |--------|--------------|
-| `send()` | Stamps a UUIDv4 `TransportMessageIdStamp`, serializes the envelope, publishes to the subject through `JetStreamContext::publish()`, which waits for the publish acknowledgement and throws `JetStreamException` on an error or an invalid acknowledgement. A `DelayStamp` (when `scheduled_messages` is on) is published to `{topic}.delayed.{uuid}` with `Nats-Schedule` headers. |
+| `send()` | Stamps a UUIDv4 `TransportMessageIdStamp`, serializes the envelope, publishes to the subject through `JetStreamContext::publish()`, which waits for the publish acknowledgement and throws `JetStreamException` on an error or an invalid acknowledgement. A `DelayStamp` (when `scheduled_messages` is on) is published to `{topic}.delayed.{uuid}` with `Nats-Schedule` headers. A `DeduplicationIdStamp` (added with `deduplicate`) is sent as `Nats-Msg-Id`. With `retry_handler=nats` the copy Symfony's retry sends is not published. |
 | `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. A pull that found no messages (408, or 404) is an empty result. A missing consumer reports 503: `auto_setup` re-provisions it once, otherwise the error propagates. Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp`. |
 | `ack()` | Sends JetStream ACK for the message's reply token. |
 | `reject()` | Delegates to `handleFailedDelivery()` → TERM (Symfony retry) or NAK (NATS retry). |
@@ -94,7 +94,7 @@ Cross-cutting behavior:
   lost connection leaves it Closed; `connectIfNeeded()` then dials again on the next operation (#49). A
   connection unused for longer than `ping_after_idle`, or one an operation just failed on (other than with
   a JetStream reply), is checked with a PING first and replaced when the server does not answer within
-  `connection_timeout`; `keepalive()` skips the check.
+  `connection_timeout` (or `request_timeout`, when that is shorter); `keepalive()` skips the check.
 - **Pull consumers, explicit ACK.** Messages are only considered processed once explicitly ACK'd;
   this is what makes `retry_handler` and shared-consumer load balancing work.
 

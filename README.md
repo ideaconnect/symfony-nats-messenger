@@ -599,7 +599,7 @@ options:
 
 **Purpose:**
 - Sets the timeout for the initial TCP/TLS dial and handshake when connecting to NATS
-- Also bounds the PING that checks a connection which sat idle (`ping_after_idle`): a server that does not answer within it is treated as gone
+- Also bounds the PING that checks a connection before it is used again, after it sat idle or after an operation failed on it (`ping_after_idle`), unless `request_timeout` is shorter: a server that does not answer within it is treated as gone
 - Does **not** bound how long an operation waits for the server's reply, which is `request_timeout`; the batch fetch is bounded separately by `max_batch_timeout`
 - Bounds each dial attempt: a dial that fails is tried three times, with pauses of 2 and 4 seconds in between
 - Lower values fail faster only when an attempt hangs, as with an unreachable host (about 6 seconds plus three times the value in all); a refused connection fails after about 6 seconds whatever the value
@@ -679,13 +679,16 @@ connection has been lost, the next operation dials again instead:
 
 A connection that was dropped while it sat idle would make the next operation the one that fails. To avoid
 that, an operation that finds the connection unused for longer than `ping_after_idle` (30 seconds by
-default) first checks it with one PING. If the server does not answer within `connection_timeout`, the
-transport closes that connection and runs the operation on a new one, so the first message after a quiet
-period goes out instead of failing. The PING costs one round trip, and only after a quiet period. A lower
-value also catches a server restart between two operations further apart than it, at the cost of that round
-trip more often. The same check follows an operation that failed on the connection - a JetStream error
-reply does not count, since the server answered it - because the client can keep reporting a dead connection
-open, and a connection that silently stopped delivering only times out. `ping_after_idle: 0` turns both
+default) first checks it with one PING. If the server does not answer within `connection_timeout` (or
+`request_timeout`, when that is shorter), the transport closes that connection and runs the operation on a
+new one, so the first message after a quiet period goes out instead of failing. The PING costs one round
+trip, and only after a quiet period. A lower value also catches a server restart between two operations
+further apart than it, at the cost of that round trip more often. The same check follows an operation that
+failed on the connection - a JetStream error reply does not count, since the server answered it - because
+the client can keep reporting a dead connection open, and a send to a connection that silently stopped
+delivering only times out. A pull from such a connection ends empty, which reads as no messages rather than
+a failure; the client's own heartbeat, which runs while a pull waits, notices the dead connection within a
+few of its ping intervals instead (about 90 seconds with its defaults). `ping_after_idle: 0` turns both
 checks off. `keepalive()` never checks: Symfony calls it from a signal handler.
 
 ```yaml
