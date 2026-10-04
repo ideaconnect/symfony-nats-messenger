@@ -53,7 +53,7 @@ tests/
 │   ├── features/*.feature                      # setup, batching, consumer, nak, term, delayed, tls, mtls, stream_limits
 │   ├── tests/Behat/NatsSetupContext.php        # all step definitions
 │   └── src/, config/, bin/, public/            # a minimal Symfony app exercising the transport end-to-end
-└── nats/                                       # Docker Compose + NATS configs + test TLS certs
+└── nats/                                       # Docker Compose + NATS configs + test TLS certificate generator
 
 docs/
 ├── CHANGELOG.md                                # Keep a Changelog format

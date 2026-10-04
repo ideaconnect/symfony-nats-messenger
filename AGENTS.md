@@ -61,7 +61,7 @@ tests/
 └── nats/                                       # Docker Compose + NATS configs for testing
     ├── docker-compose.yaml
     ├── nats.conf / nats-tls.conf / nats-mtls.conf
-    └── certs/                                  # Test TLS certificates
+    └── certs/                                  # generate.sh for the test TLS certificates (generated, not committed)
 ```
 
 ## Features
@@ -96,7 +96,7 @@ composer coverage:check          # Verify ≥ 90% statement coverage
 ### Functional tests (require Docker)
 ```bash
 composer test:functional:setup   # Install Behat dependencies (first time)
-composer nats:start              # Start NATS in Docker
+composer nats:start              # Generate the test TLS certs, then start NATS in Docker
 composer test:functional         # Run Behat scenarios
 composer nats:stop               # Stop NATS
 ```
