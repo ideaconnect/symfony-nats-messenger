@@ -2,6 +2,8 @@ name: Mutation Tests
 
 # Mutation testing also runs inside the main CI on every push/PR (PHP 8.5 job). This scheduled run is a
 # safety net that re-checks the floors daily against the default branch and can be triggered on demand.
+# composer.lock is not committed, so it also picks up new releases of Infection and BypassFinals, which the
+# canary step checks.
 # Note: scheduled workflows only run from the repository's default branch.
 on:
   schedule:
@@ -32,10 +34,18 @@ jobs:
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
 
-    # Runs the unit suite under Infection (no NATS needed); enforces infection.json5's
-    # minMsi 90 / minCoveredMsi 95 floors, failing the scheduled run on a real regression.
+    # Mutants that change nothing must all escape. One that is detected shows that the mutant processes do
+    # not run the tests the way a plain run does, and the score of the next step would mean nothing.
+    - name: Check that mutant processes run the tests like a plain run
+      run: composer test:mutation:canary
+
+    # Runs the unit suite under Infection (no NATS needed); enforces the minMsi and minCoveredMsi floors in
+    # infection.json5, failing the scheduled run on a real regression.
     - name: Run mutation tests
       run: composer test:mutation
+
+    - name: Check that no mutant was killed by the test harness
+      run: composer test:mutation:check-log
 
     - name: Upload Infection log on failure
       if: failure()

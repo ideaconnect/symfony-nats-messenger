@@ -141,6 +141,13 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(42, $configuration->streamMaxMessagesPerSubject());
     }
 
+    public function testBuildAcceptsStreamStorageInAnyCase(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_storage' => 'Memory']);
+
+        self::assertSame('memory', $configuration->streamStorage()->value);
+    }
+
     public function testBuildMethodOptionsOverrideQueryForStreamStorageAndPerSubjectLimit(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
@@ -165,6 +172,23 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         $options = $this->extractNatsOptions($configuration->client);
 
         self::assertStringStartsWith('tls://', $options->servers[0]);
+    }
+
+    /**
+     * URI schemes are case-insensitive, so an upper-case +tls scheme still selects TLS.
+     */
+    public function testBuildRecognizesTheTlsSchemeInAnyCase(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build('NATS-JETSTREAM+TLS://localhost:4222/test-stream/test-topic');
+
+        self::assertSame('tls://localhost:4222', $this->extractNatsOptions($configuration->client)->servers[0]);
+    }
+
+    public function testBuildUsesThePortTheDsnGives(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build('nats://localhost:4333/test-stream/test-topic');
+
+        self::assertSame('nats://localhost:4333', $this->extractNatsOptions($configuration->client)->servers[0]);
     }
 
     public function testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions(): void
@@ -259,6 +283,47 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         self::assertSame('  user  ', $options->username);
         self::assertSame('  secret  ', $options->password);
+    }
+
+    /**
+     * A credential option given as a number or a boolean, as YAML gives `password: 1234`, reaches the client
+     * as a string.
+     */
+    #[DataProvider('scalarCredentialValues')]
+    public function testBuildPassesScalarCredentialOptionsAsStrings(int|float|bool $value, string $expected): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['username' => $value, 'password' => $value]);
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertSame($expected, $options->username);
+        self::assertSame($expected, $options->password);
+    }
+
+    /**
+     * @return iterable<string, array{int|float|bool, string}>
+     */
+    public static function scalarCredentialValues(): iterable
+    {
+        yield 'int' => [1234, '1234'];
+        yield 'float' => [12.5, '12.5'];
+        yield 'true' => [true, '1'];
+    }
+
+    /**
+     * A credential option that is not a scalar is ignored, and the credentials in the DSN are used.
+     */
+    public function testBuildFallsBackToTheDsnCredentialsForNonScalarOptions(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            self::VALID_DSN,
+            ['username' => ['someone-else'], 'password' => ['other-secret']]
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertSame('admin', $options->username);
+        self::assertSame('password', $options->password);
     }
 
     public function testBuildNormalizesStringBooleanAndNullableStringOptions(): void
@@ -468,6 +533,51 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         $options = $this->extractNatsOptions($configuration->client);
         self::assertSame(2500, $options->connectTimeoutMs);
+    }
+
+    /**
+     * A positive timeout below half a millisecond rounds to 0 ms, which the client refuses, so it is raised to
+     * 1 ms, like ack_wait and max_batch_timeout.
+     */
+    public function testBuildClampsSubMillisecondTimeoutsToOneMs(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'connection_timeout' => 0.0004,
+            'request_timeout' => 0.0004,
+        ]);
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertSame(1, $options->connectTimeoutMs);
+        self::assertSame(1, $options->requestTimeoutMs);
+    }
+
+    /**
+     * A null timeout, which YAML gives for `~`, keeps the default instead of falling to the 1 ms floor.
+     */
+    public function testBuildUsesTheDefaultTimeoutsForNullOptions(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'connection_timeout' => null,
+            'request_timeout' => null,
+        ]);
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertSame(1000, $options->connectTimeoutMs);
+        self::assertSame(10_000, $options->requestTimeoutMs);
+    }
+
+    /**
+     * The client runs with reconnect off, so that a lost connection leaves it Closed and the transport dials
+     * again itself, and without pedantic protocol checks.
+     */
+    public function testBuildTurnsClientReconnectAndPedanticModeOff(): void
+    {
+        $options = $this->extractNatsOptions((new NatsTransportConfigurationBuilder())->build(self::VALID_DSN)->client);
+
+        self::assertFalse($options->reconnectEnabled);
+        self::assertFalse($options->pedantic);
     }
 
     /**
@@ -821,6 +931,27 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         self::assertSame([1000, 5000], $configuration->backoffMs());
         self::assertSame(2000, $configuration->nakDelayMs());
+    }
+
+    /**
+     * The backoff check takes any non-negative number of seconds: 0, and fractions given as floats or strings.
+     */
+    public function testBuildAcceptsZeroAndFractionalBackoffEntries(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['backoff' => [0, 0.5, '2.5']]);
+
+        self::assertSame([0, 500, 2500], $configuration->backoffMs());
+    }
+
+    /**
+     * max_deliver on its own, with no backoff schedule to compare it with, is accepted.
+     */
+    public function testBuildAcceptsMaxDeliverWithoutBackoff(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_deliver' => 3]);
+
+        self::assertSame(3, $configuration->maxDeliver());
+        self::assertNull($configuration->backoffMs());
     }
 
     public function testBuildWithDottedTopicNameSucceeds(): void
@@ -1391,12 +1522,45 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(120, $config->streamDuplicateWindowSeconds());
     }
 
+    /**
+     * A null stream_max_age, like one left out, means no age limit, so any duplicate window is accepted.
+     */
+    public function testBuildTreatsANullMaxAgeAsUnlimitedForTheDuplicateWindow(): void
+    {
+        $config = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'stream_max_age' => null,
+            'stream_duplicate_window' => 120,
+        ]);
+
+        self::assertSame(120, $config->streamDuplicateWindowSeconds());
+        self::assertSame(0, $config->streamMaxAgeSeconds());
+    }
+
     public function testBuildWithInvalidMaxAckPendingThrowsException(): void
     {
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('The max_ack_pending option must be a positive integer value.');
 
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_ack_pending' => 0]);
+    }
+
+    #[DataProvider('invalidInactiveThresholdValues')]
+    public function testBuildWithInvalidInactiveThresholdThrowsException(mixed $value, string $message): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage($message);
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['inactive_threshold' => $value]);
+    }
+
+    /**
+     * @return iterable<string, array{mixed, string}>
+     */
+    public static function invalidInactiveThresholdValues(): iterable
+    {
+        yield 'zero' => [0, 'The inactive_threshold option must be a positive value.'];
+        yield 'negative' => [-5, 'The inactive_threshold option must be a positive value.'];
+        yield 'non-numeric' => ['soon', 'The inactive_threshold option must be numeric.'];
     }
 
     public function testBuildWithInvalidStreamMaxConsumersThrowsException(): void
@@ -1467,6 +1631,28 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         // Without validation this would coerce to false and be sent to the server as a deliberate
         // instruction to allow deletes, rather than being reported as the typo it is.
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_deny_delete' => 'maybe']);
+    }
+
+    /**
+     * Every flag is checked, including those after one that holds a boolean.
+     */
+    #[DataProvider('laterTriStateFlags')]
+    public function testBuildRejectsAnUnrecognizedValueInAnyTriStateFlag(string $flag): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("Invalid {$flag} option 'maybe'.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_deny_delete' => true, $flag => 'maybe']);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function laterTriStateFlags(): iterable
+    {
+        yield 'stream_deny_purge' => ['stream_deny_purge'];
+        yield 'stream_allow_direct' => ['stream_allow_direct'];
+        yield 'stream_allow_rollup_headers' => ['stream_allow_rollup_headers'];
     }
 
     public function testBuildAcceptsEveryRecognizedBooleanTokenForTriStateFlags(): void

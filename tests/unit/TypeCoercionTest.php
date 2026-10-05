@@ -114,6 +114,8 @@ final class TypeCoercionTest extends TestCase
         yield 'fractional seconds float' => [2.5, 0.0, 2500];
         yield 'numeric string seconds' => ['1.5', 0.0, 1500];
         yield 'sub-millisecond rounds to nearest ms' => [0.0015, 0.0, 2];
+        yield 'under half a millisecond rounds down' => [0.0004, 0.0, 0];
+        yield 'under half a millisecond above a whole second rounds down' => [1.0004, 0.0, 1000];
         yield 'zero seconds' => [0, 9.0, 0];
         yield 'non-numeric falls back to default seconds' => ['nope', 1.0, 1000];
         yield 'null falls back to default seconds' => [null, 0.5, 500];
