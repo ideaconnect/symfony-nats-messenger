@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pedantic mode staying off, the `inactive_threshold` check, each tri-state stream flag after the first,
   zero and fractional `backoff` entries, `max_deliver` without `backoff`, a `null` `stream_max_age` with a
   duplicate window, and credential options given as numbers, booleans or arrays.
+- **Unit tests for configuration defaults and floors that no test covered**, found the same way: `ack_sync`
+  off when the configuration is built without it, the 1-second connection timeout and the 0 ms NAK delay
+  when the options are missing, negative `nak_delay` and `backoff` values read as 0 and a `backoff` entry of
+  0 kept as 0, and seconds converted to milliseconds rounding a fraction under half a millisecond down.
 
 ### Changed
 - **The functional suite's TLS certificates are generated, not committed (#9).** The repository held the

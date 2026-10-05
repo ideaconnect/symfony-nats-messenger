@@ -79,8 +79,9 @@ Runs the real client against an in-memory server that answers the handshake and 
 
 | Feature | Tests |
 |---------|-------|
-| **Type coercion** | `testTypedAccessorsNormalizeScalarValues`, `testTypedAccessorsProvideDefaults`, `testTypedAccessorsTruncateFloatValues` |
+| **Type coercion** | `testTypedAccessorsNormalizeScalarValues` (including negative `nak_delay` and `backoff` values, which read as 0), `testTypedAccessorsProvideDefaults` (including the 1 s connection timeout and the 0 ms NAK delay), `testTypedAccessorsTruncateFloatValues` |
 | **Scheduled messages accessor** | `testScheduledMessagesAccessorReturnsConstructorValue`, `testScheduledMessagesDefaultsToFalse` |
+| **Ack sync accessor** | `testAckSyncAccessorReturnsConstructorValueAndDefaultsToFalse` |
 | **Extended stream/consumer accessors + auto_setup** | `testNewStreamAndConsumerAccessorsReturnConfiguredValues`, `testNewStreamAndConsumerAccessorsDefaultToNull`, `testInactiveThresholdIsClampedToAtLeastOneMillisecond`, `testAutoSetupAccessorReturnsConstructorValue` |
 | **Connection timeout and idle check accessors** | `testConnectionTimeoutAndPingAfterIdleAccessors` |
 | **Deduplication accessor** | `testDeduplicationAccessorReturnsConstructorValueAndDefaultsToFalse` |
@@ -100,7 +101,7 @@ Runs the real client against an in-memory server that answers the handshake and 
 | **`floatValue()` coercion** | `testFloatValue` (data provider: float/int-widening/numeric-string/scientific/non-numeric/null/bool/array/object), `testFloatValueDefaultIsZeroWhenOmitted` |
 | **`stringValue()` coercion** | `testStringValue` (data provider: string/empty/int/float/bool-true/bool-false/null/array/object), `testStringValueDefaultIsEmptyStringWhenOmitted` |
 | **`boolValue()` coercion** | `testBoolValue` (data provider: bool/int/truthy-tokens/falsy-tokens/case-insensitivity/unrecognized-string/empty/null/array/object, with both default values), `testBoolValueDefaultIsFalseWhenOmitted` |
-| **`secondsToMs()` conversion** | `testSecondsToMs` (data provider: whole/fractional/numeric-string/sub-ms-rounding/zero/non-numeric/null/array), `testSecondsToMsDefaultIsZeroWhenOmitted` |
+| **`secondsToMs()` conversion** | `testSecondsToMs` (data provider: whole/fractional/numeric-string/sub-ms-rounding up and down/zero/non-numeric/null/array), `testSecondsToMsDefaultIsZeroWhenOmitted` |
 | **Static & pure** | `testMethodsAreStaticAndPure` |
 
 ### Stamps (`tests/unit/Stamp/`)

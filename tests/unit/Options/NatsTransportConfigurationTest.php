@@ -29,6 +29,8 @@ final class NatsTransportConfigurationTest extends TestCase
                 'stream_max_messages_per_subject' => '25',
                 'stream_storage' => 'memory',
                 'stream_replicas' => '-1',
+                'nak_delay' => '-2',
+                'backoff' => ['-1', 0, '1.5'],
             ],
             natsRetryHandlerEnabled: true,
         );
@@ -43,6 +45,9 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertSame(StorageBackend::Memory, $configuration->streamStorage());
         self::assertSame(1, $configuration->streamReplicas());
         self::assertTrue($configuration->isNatsRetryHandlerEnabled());
+        // Delays never read below 0 ms, and a backoff entry of 0 stays 0.
+        self::assertSame(0, $configuration->nakDelayMs());
+        self::assertSame([0, 0, 1500], $configuration->backoffMs());
     }
 
     public function testTypedAccessorsProvideDefaults(): void
@@ -65,6 +70,8 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertSame(StorageBackend::File, $configuration->streamStorage());
         self::assertSame(1, $configuration->streamReplicas());
         self::assertFalse($configuration->isNatsRetryHandlerEnabled());
+        self::assertSame(1.0, $configuration->connectionTimeoutSeconds());
+        self::assertSame(0, $configuration->nakDelayMs());
     }
 
     public function testTypedAccessorsTruncateFloatValues(): void
@@ -135,6 +142,29 @@ final class NatsTransportConfigurationTest extends TestCase
 
         self::assertTrue($enabled->isDeduplicationEnabled());
         self::assertFalse($default->isDeduplicationEnabled());
+    }
+
+    public function testAckSyncAccessorReturnsConstructorValueAndDefaultsToFalse(): void
+    {
+        $enabled = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: [],
+            natsRetryHandlerEnabled: false,
+            ackSyncEnabled: true,
+        );
+
+        $default = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: [],
+            natsRetryHandlerEnabled: false,
+        );
+
+        self::assertTrue($enabled->isAckSyncEnabled());
+        self::assertFalse($default->isAckSyncEnabled());
     }
 
     public function testScheduledMessagesDefaultsToFalse(): void
