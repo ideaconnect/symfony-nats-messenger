@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.4.1] - 2026-10-05
+
+A **patch** release. It fixes duplicate protection for transports that share a stream and the connection
+check around empty and unanswered pulls, leaves integer header names out of `decode()`, makes the mutation
+gate run the tests it scores, and requires client 2.10.3. Every `Nats-Msg-Id` changes with the upgrade (see
+Fixed).
+
 ### Fixed
 - **With `deduplicate`, a message routed to two transports on one stream is stored for each.** Symfony hands
   each transport a message is routed to the envelope the one before returned, deduplication id included, and
