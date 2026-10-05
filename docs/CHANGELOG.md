@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off when the configuration is built without it, the 1-second connection timeout and the 0 ms NAK delay
   when the options are missing, negative `nak_delay` and `backoff` values read as 0 and a `backoff` entry of
   0 kept as 0, and seconds converted to milliseconds rounding a fraction under half a millisecond down.
+- **Unit tests for transport behaviour that no test covered**, found the same way: the rest of a batch after
+  a message without a reply subject, a message without a `DelayStamp` on a transport with
+  `scheduled_messages`, a configured `stream_max_bytes` on an existing stream, subjects in the server's
+  config that are not non-empty strings, a connection last used exactly `ping_after_idle` ago, `auto_setup`
+  after a pull error that does not mean a missing consumer and after a 408 from the retried pull, a stream
+  state without a message count, the message for an unsupported feature while `scheduled_messages` is on,
+  and the previous exception of the errors `send()` and `setup()` throw. The test for a delay of under a
+  second no longer depends on the clock: it missed a change to the rounding in about one run in three.
 
 ### Changed
 - **The functional suite's TLS certificates are generated, not committed (#9).** The repository held the
