@@ -1502,9 +1502,10 @@ final class NatsTransportTest extends TestCase
 
     /**
      * The client can keep reporting a connection Open after its socket died - older clients after a failed
-     * write ("The stream is not writable"), 2.10 after the server's fatal -ERR - so an operation that failed
-     * on the connection makes the next one check it with a PING first, and move to a new connection when it
-     * goes unanswered, instead of failing the same way until the process restarts (#49).
+     * write ("The stream is not writable"), 2.10.0 after the server's fatal -ERR, 2.10.3 after 'maximum
+     * subscriptions exceeded' when the server closes the connection right behind it - so an operation that
+     * failed on the connection makes the next one check it with a PING first, and move to a new connection
+     * when it goes unanswered, instead of failing the same way until the process restarts (#49).
      */
     public function testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst(): void
     {

@@ -859,9 +859,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /**
      * Awaits a call on the connection. When it fails other than with a JetStream reply, which proves the
      * server answered, the next operation checks the connection with a PING before using it. The client
-     * may still report the connection Open after its socket died - older ones after a failed write, 2.10
-     * after the server's fatal -ERR - and a connection that silently stopped delivering only times out;
-     * without the check, every operation after such a failure failed the same way (#49). A pull that got no
+     * may still report the connection Open after its socket died - releases before 2.10 after a failed
+     * write, 2.10.0 after the server's fatal -ERR, and from 2.10.3 after 'maximum subscriptions exceeded'
+     * when the server closes the connection right behind it, as it does when an account's subscription
+     * limit is lowered - and a connection that silently stopped delivering only times out; without the
+     * check, every operation after such a failure failed the same way (#49). A pull that got no
      * answer at all ({@see UNANSWERED_PULL}) counts as such a failure, though the client reports it as a
      * JetStream error: a half-open connection takes every write and delivers nothing, so without the check
      * each pull on it ended empty, and a consumer reported nothing to do until the heartbeat noticed.

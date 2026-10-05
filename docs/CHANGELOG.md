@@ -89,6 +89,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   second no longer depends on the clock: it missed a change to the rounding in about one run in three.
 
 ### Changed
+- **Requires `idct/php-nats-jetstream-client` `^2.10.3` instead of `^2.10`.** 2.10.3 declares the int keys of
+  a header name that is a decimal integer (see Fixed), and it no longer closes the connection on an `-ERR` the
+  server keeps the connection open for, such as `maximum subscriptions exceeded` for a subscription beyond an
+  account's or user's limit, as 2.10.1 and 2.10.2 did: the operation that read it fails, and the transport
+  goes on using the connection instead of dialling again. At the subscription limit, after the server has
+  rejected the reply inbox that requests share (the publish acknowledgement of `send()`, an ACK with
+  `ack_sync`, the JetStream API calls of `setup()` and `getMessageCount()`), a request fails at once without
+  being published, and once a slot is free requests work again on the same connection. 2.10.0 sent each later
+  request with a reply subject nobody held, so every one waited out `request_timeout`, even after a slot freed
+  up, and 2.10.1 and 2.10.2 dialled again for each and published it before the server rejected the new inbox,
+  so a `send()` that failed had stored its message. The first request on a new connection is still published
+  before its inbox is confirmed. Two narrow cases get worse than with 2.10.1 and 2.10.2, which closed the
+  connection at the `-ERR`. A pull whose own subscription the limit rejects still fails, but now on a
+  connection the transport keeps, so while the reply inbox holds the slot the pull needs every pull fails
+  until one frees up, where the next pull used to run on a new connection that had no reply inbox yet; a
+  `messenger:consume` worker stops at the first failed pull either way. And when the server closes the
+  connection right after `maximum subscriptions exceeded`, as it does when an account's limit is lowered, the
+  check after the failed operation still moves to a new connection, but with `ping_after_idle: 0`, or when the
+  client's heartbeat read the `-ERR`, operations go on to the closed connection until one fails, where they
+  used to run on a new one. An acknowledgement sent without waiting for a reply is lost there, and JetStream
+  redelivers the message after `ack_wait`; a `send()` or a pull fails, and a failed pull stops a
+  `messenger:consume` worker. The operation after the one that failed dials again. An `INFO` that is valid
+  JSON but not an object, which no real server sends, now fails the connect with
+  `INFO payload is not a JSON object` and is skipped once connected, where a number failed with a `TypeError`
+  and an array put default server info in place. The other fixes in 2.10.3 concern reconnects, connection and
+  error listeners, `drain()` and services, which the transport does not use: it runs the client with reconnect
+  off and closes it with `disconnect()`. One of them also covers the new `connect()` the transport makes when
+  it dials again, after a close that came while the reply inbox was being subscribed, but that went wrong only
+  when the subscription's write completed after the socket had closed, and the client's own transports fail
+  such a write.
 - **The functional suite's TLS certificates are generated, not committed (#9).** The repository held the
   private keys of the test CA, server and client certificates, which security scanners report as a leaked
   secret even though they were test-only. `tests/nats/certs/generate.sh` now creates the set with `openssl`
