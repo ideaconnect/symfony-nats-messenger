@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request timeout, keepalive from a signal handler, and the connection checks. Each prints `OK` when what it
   shows held. `composer examples` runs them against the test server, and CI runs them after the functional
   suite on the latest and the oldest supported NATS.
+- **Unit tests for configuration checks that no test covered.** A mutation run whose mutants really ran
+  the tests changed each of these without a test failing: the port in the DSN, an upper-case `+tls` scheme
+  or `stream_storage` value, timeouts below half a millisecond or set to `null`, the client's reconnect and
+  pedantic mode staying off, the `inactive_threshold` check, each tri-state stream flag after the first,
+  zero and fractional `backoff` entries, `max_deliver` without `backoff`, a `null` `stream_max_age` with a
+  duplicate window, and credential options given as numbers, booleans or arrays.
 
 ### Changed
 - **The functional suite's TLS certificates are generated, not committed (#9).** The repository held the
