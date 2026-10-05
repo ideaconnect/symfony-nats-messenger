@@ -39,10 +39,15 @@ src/
     └── IgbinarySerializer.php                  # Default serializer (igbinary), falls back to PhpSerializer
 
 tests/
-├── bootstrap.php
+├── bootstrap.php                               # autoloader + BypassFinals; takes Infection's file swap over in mutant processes
+├── Support/
+│   └── PhpProcess.php                          # runs a PHP script in a child process
 ├── unit/                                       # PHPUnit 11 - fast, no live NATS required
 │   ├── NatsTransportTest.php                   # send/get/ack/reject/setup/retry/count/scheduled
 │   ├── NatsTransportFactoryTest.php            # scheme detection, transport creation
+│   ├── MutationTestingBootstrapTest.php        # mutant processes can double final classes and load the mutant
+│   ├── MutationTestingChecksTest.php           # the mutation canary and infection.log checks fail closed
+│   ├── MutationTestingCommandsTest.php         # the Infection runs in composer.json write no GitHub annotations
 │   ├── Options/
 │   │   ├── NatsTransportConfigurationBuilderTest.php  # DSN parsing, validation, option merging
 │   │   └── NatsTransportConfigurationTest.php          # accessor coercion, defaults
@@ -60,7 +65,9 @@ examples/                                       # Runnable scripts, one per beha
 └── *.php                                       # send-and-consume, duplicate-protection, request-timeout, keepalive, connection-checks
 
 scripts/
-└── run-examples.sh                             # runs examples/*.php, strict mode for CI
+├── run-examples.sh                             # runs examples/*.php, strict mode for CI
+├── check-mutation-canary.php                   # composer test:mutation:canary: mutants that change nothing all escape
+└── check-mutation-log.php                      # composer test:mutation:check-log: no mutant killed by the harness
 
 docs/
 ├── CHANGELOG.md                                # Keep a Changelog format

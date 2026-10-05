@@ -54,7 +54,13 @@
         "test:functional:setup": "cd tests/functional && composer install --prefer-dist --no-progress",
         "test:unit": "XDEBUG_MODE=coverage ./vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-clover clover.xml --coverage-text --colors=never --coverage-html coverage",
         "test:unit:fast": "./vendor/bin/phpunit --configuration phpunit.xml.dist",
-        "test:mutation": "XDEBUG_MODE=coverage ./vendor/bin/infection --threads=max --no-interaction"
+        "test:mutation": "XDEBUG_MODE=coverage ./vendor/bin/infection --threads=max --no-interaction --log-verbosity=all --show-mutations=max --logger-github=false",
+        "test:mutation:canary": [
+            "@php -r \"@unlink('.infection/noop-summary.json');\" --",
+            "XDEBUG_MODE=coverage ./vendor/bin/infection --noop --mutators=TrueValue,FalseValue --threads=max --no-interaction --min-msi=0 --min-covered-msi=0 --show-mutations=0 --log-verbosity=all --logger-github=false --logger-summary-json=.infection/noop-summary.json",
+            "@php scripts/check-mutation-canary.php"
+        ],
+        "test:mutation:check-log": "@php scripts/check-mutation-log.php"
     },
     "suggest": {
         "ext-igbinary": "For improved serialization performance when using the default IgbinarySerializer"

@@ -26,6 +26,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on one pulled empty batches until the client's heartbeat noticed, about 90 seconds with its defaults. The
   pull still reads as empty, and the next operation PINGs first, so the pull after it runs on a new
   connection.
+- **The mutation gate counted every mutant as killed.** Infection runs each mutant in a PHPUnit process
+  whose bootstrap puts its include interceptor on `file://`. The interceptor registers itself again after
+  every file operation, which removed the wrapper BypassFinals puts on top of it, so in those processes the
+  client's final classes could not be doubled: every test that doubles one failed with
+  `ClassIsFinalException`, and Infection counted the mutant as killed whatever the tests checked. That error
+  accounted for 462 of the 857 kills, and a run whose mutants changed nothing at all scored 93%. The `minMsi`
+  90 and `minCoveredMsi` 95 floors passed whatever the tests caught, and the earlier MSI figures were not real:
+  the 100% in the README, in `docs/TESTS.md` and in older entries of this changelog, and the 5.4.0 release
+  notes' "mutation testing on the changed lines left no surviving mutant". `tests/bootstrap.php` now takes the
+  interceptor's file swap over in a mutant process, also when Infection runs from its PHAR, so mutants run
+  the tests as a plain run does. The real score is 96.3% (825 of 857): 50 mutants that had counted as killed
+  escaped, and the tests listed under Added kill them; `docs/TESTS.md` lists the 32 left, with the reason
+  for each. The floors stay at 90 and 95. Two new checks, which CI runs around the mutation run, keep it
+  honest: `composer test:mutation:canary` fails when a mutant that changes nothing is detected, and
+  `composer test:mutation:check-log` fails when `infection.log` shows a mutant killed by the harness rather
+  than by a test (`composer test:mutation` now logs every mutant's output for it). When a mutation step
+  fails, CI uploads `infection.log`.
 - **Docs:** the README said the check after a failure catches a connection that silently stopped delivering,
   which `get()` did not do until the fix above. It also gives the PING's real bound, `connection_timeout` or
   the shorter `request_timeout`, for both checks. `CLAUDE.md`, `AGENTS.md` and `STRUCTURE.md` describe the

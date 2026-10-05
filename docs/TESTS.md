@@ -116,6 +116,23 @@ Runs the real client against an in-memory server that answers the handshake and 
 |---------|-------|
 | **Every README ` ```php ` block is valid PHP** | `testReadmePhpExampleIsSyntacticallyValid` (data provider, one case per block), `testReadmeContainsThePhpExamplesWeExpect` |
 
+### Mutation Testing Harness (`tests/unit/MutationTestingBootstrapTest.php`, `tests/unit/MutationTestingChecksTest.php`, `tests/unit/MutationTestingCommandsTest.php`)
+
+`MutationTestingBootstrapTest` starts PHP the way a mutant process starts: `vendor/autoload.php`, which PHPUnit
+requires first, then Infection's include interceptor on `file://`, then `tests/bootstrap.php`.
+`MutationTestingChecksTest` runs the two scripts CI runs around the mutation run, and
+`MutationTestingCommandsTest` checks the Infection commands in `composer.json`. The first two start child
+processes through `tests/Support/PhpProcess.php`, and the bootstrap tests are skipped when
+`infection/include-interceptor` is not installed.
+
+| Feature | Tests |
+|---------|-------|
+| **Mutant processes can double final classes and load the mutated file** | `testMutantProcessCanDoubleFinalClassesAndLoadsTheMutatedFile`, `testMutantProcessOfInfectionsPharCanDoubleFinalClassesAndLoadsTheMutatedFile` (the namespace-prefixed interceptor of Infection's PHAR) |
+| **A source file loaded before Infection's bootstrap is not loaded again** | `testSourceFileLoadedBeforeInfectionsBootstrapIsNotLoadedAgain` (a Composer "files" entry is loaded unmutated before the interceptor is on; loading the mutated copy on top would end the process with a redeclaration error, which Infection counts as a kill, so the mutant escapes instead) |
+| **Canary: every mutant that changes nothing escapes** | `testCanaryPassesWhenEveryMutantEscaped`, `testCanaryFailsWhenAMutantWasDetectedOrNoneRan` (killed, errored, syntax error, timed out, no mutant, a count given as a string, a missing count), `testCanaryFailsWhenItCannotReadTheSummary` (missing, cut off, counts under another key), `testCanaryIgnoresArguments` |
+| **No mutant killed by the test harness** | `testLogCheckPassesWhenNoMutantWasKilledByTheHarness`, `testLogCheckFailsWhenAMutantWasKilledByTheHarness` (`ClassIsFinalException`, `cannot extend final class`, `Error in bootstrap script`), `testLogCheckFailsWhenTheLogIsMissingOrEmpty`, `testLogCheckIgnoresArguments` |
+| **Escaped mutants go to the job log, not to GitHub annotations** | `testInfectionRunsWriteNoGitHubAnnotations` (the canary and the real run), `testMutationRunListsEveryEscapedMutant` |
+
 ## Functional Tests (Behat)
 
 ### Stream Setup (`tests/functional/features/nats_setup.feature`)
@@ -257,7 +274,71 @@ supported NATS. Each prints `OK ...` when what it shows held, and fails otherwis
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
-on the PHP 8.5 job. The suite currently scores 100% covered MSI with 100% mutation code coverage.
+on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 96.3% MSI and covered
+MSI: 825 of 857 mutants killed, with 100% mutation code coverage.
+
+Scores reported before, 100% among them, were not real. Infection runs each mutant in a PHPUnit process
+whose bootstrap puts its include interceptor on `file://`; the interceptor dropped the wrapper BypassFinals
+puts on top of it, so the client's final classes could not be doubled there, every test that doubles one
+failed, and Infection counted the mutant as killed. `tests/bootstrap.php` now takes the interceptor's file
+swap over (`MutationTestingBootstrapTest`). In a mutant process the mutated class is therefore compiled from
+`.infection/infection/mutant.*.infection.php`, with the original line numbers, so a breakpoint set in `src/`
+is not hit there.
+
+Two checks around the run keep the score honest; CI runs both:
+
+- **Before it, `composer test:mutation:canary`** runs Infection with `--noop` and the `TrueValue` and
+  `FalseValue` mutators. Its mutants (46 today) change nothing, so every one must escape;
+  `scripts/check-mutation-canary.php` fails when one is detected, when none ran, or when the summary is
+  missing or malformed. On the old bootstrap it detected 42 of 46.
+- **After it, `composer test:mutation:check-log`** (`scripts/check-mutation-log.php`) fails when
+  `infection.log` shows a mutant that failed with `ClassIsFinalException`, `cannot extend final class` or
+  `Error in bootstrap script`, which the harness causes and no test does. `test:mutation` runs with
+  `--log-verbosity=all`, so the log holds every mutant's output.
+
+Both Infection runs pass `--logger-github=false`. On GitHub Actions Infection otherwise turns every escaped
+mutant into a warning annotation on its source line: the canary's 46, which escape by design, and the
+survivors below, on every run and in every pull request. The real run lists every escaped mutant in the job
+log instead (`--show-mutations=max`), and CI uploads `infection.log` as the `infection-log` artifact when a
+mutation step fails.
+
+### Surviving mutants
+
+Of the 32 mutants that survive:
+
+- **27 are equivalent**: no input makes them behave differently.
+- **3 make no difference with the real client**: its acknowledgement calls do not read the `sid` of the
+  message `buildAckMessage()` gives them (2 mutants), and `StreamInfo::fromArray()` takes a stream's
+  `subjects` from the same config entry the transport reads first (1 mutant). A test could kill them only by
+  asserting on the `sid` its client double receives or by building a `StreamInfo` the client never builds,
+  which would pin details rather than behaviour.
+- **2 differ about once in a million runs**: they also round a delivery time up when it falls on a whole
+  second. A test would need a clock the transport cannot be given.
+
+| Mutant | Why it survives |
+|---|---|
+| `NatsTransport::send()`: an envelope without a `DelayStamp` has a delay of -1 instead of 0 | -1 is not above 0 either, so the message is not scheduled |
+| `send()`: `'+' . $delayMs . ' milliseconds'` without the `+` | PHP reads an unsigned relative time as positive (checked for every delay from 1 ms to 300 s) |
+| `send()`: the round-up condition `(int) $deliverAt->format('u') !== 0` without the cast, or compared with -1 (2 mutants) | Both conditions are always true, which differs from the original only when the delivery time has no fraction of a second, about one run in a million; a test would need a clock the transport cannot be given |
+| `send()`: the `(string)` cast of a header name removed | PHP turns an integer-like string key into an int key either way |
+| `get()`: `rawHeaders !== null && rawHeaders !== ''` with `\|\|` | `NatsHeaders::fromWireBlock()` returns `[]` for null and for `''`, as the other branch does |
+| `connectionUsable()`: `$ping->ignore()` removed | `await()` subscribes to the PING, which marks it handled even when the wait gives up |
+| `buildAckMessage()`: `sid` 1 or -1 instead of 0 (2 mutants) | The client's ack, ackSync, nak, nakWithDelay, term and inProgress read only the reply subject, so only an assertion on the `sid` itself would see the change |
+| `buildManagedStreamConfiguration()`: `streamReplicas() >= 0` instead of `> 0` | `streamReplicas()` is never below 1 |
+| `buildUpdatedStreamConfiguration()`: `$streamInfo->subjects` before the config's `subjects` | `StreamInfo::fromArray()` takes `subjects` from the same config entry, and both go through `normalizeSubjects()`; only a `StreamInfo` built by hand with other subjects would show a difference |
+| `buildUpdatedStreamConfiguration()`: `streamMaxAgeSeconds() >= 0` instead of `> 0` | 0 seconds is 0 nanoseconds, the value of the other branch |
+| `buildUpdatedStreamConfiguration()`: a missing `duplicate_window` read as -1 or 1 instead of 0 (2 mutants) | A positive max age is at least 10^9 nanoseconds, so none of these exceeds it |
+| `buildUpdatedStreamConfiguration()`: the window clamped when it equals the max age, too | Clamping it then writes the same value |
+| `NatsTransportConfiguration`: the defaults of `batching` (0), `stream_max_age` (-1) and `stream_replicas` (0) (3 mutants) | `max()` clamps each to what the original default gives |
+| `NatsTransportConfigurationBuilder::parseStreamAndTopic()`: the empty-segment check (3 mutants) | After `trim($path, '/')`, a path that splits into exactly two segments has no empty one |
+| `assertPositiveNumber()`, `assertNonNegativeNumber()`: `ceil()` or `round()` instead of `floor()` (4 mutants) | All three return the number itself exactly when it is whole |
+| `assertStreamDescriptionLength()`: the early return for a null description removed | null reads as `''`, which passes the length check |
+| `assertBackoff()`: `$value < 0` without the `(float)` cast | PHP 8 compares a numeric string with 0 as a number |
+| `assertBackoff()`: the int, float and string checks negated together | `is_numeric()` already rejects every value that is not an int, a float or a string |
+| `assertDuplicateWindowNotExceedingMaxAge()`: the early return for a missing window removed | A missing window reads as 0, which never exceeds a positive max age |
+| `assertDuplicateWindowNotExceedingMaxAge()`: a null max age read as -1 instead of 0 | Both mean no age limit there |
+| `toNullableString()`: the early return for null removed | null fails the scalar check below and returns null as well |
+| `requiredString()`: `&&` instead of `\|\|` | `parseDsn()` already requires a host, and `parse_url()` never gives an empty one |
 
 ## README Example Coverage
 

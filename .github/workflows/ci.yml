@@ -92,9 +92,30 @@ jobs:
     - name: Check coverage threshold (90%)
       run: composer coverage:check
 
+    # Mutants that change nothing must all escape. One that is detected shows that the mutant processes do
+    # not run the tests the way a plain run does, and the score of the run below would mean nothing.
+    - name: Check that mutant processes run the tests like a plain run
+      if: matrix.php-version == '8.5'
+      run: composer test:mutation:canary
+
     - name: Run mutation tests
       if: matrix.php-version == '8.5'
       run: composer test:mutation
+
+    - name: Check that no mutant was killed by the test harness
+      if: matrix.php-version == '8.5'
+      run: composer test:mutation:check-log
+
+    # The console names no test that killed a mutant; infection.log holds the output of every mutant of the
+    # failed run, the canary's or the real one's.
+    - name: Upload Infection log on failure
+      if: failure() && matrix.php-version == '8.5'
+      uses: actions/upload-artifact@v7
+      with:
+        name: infection-log
+        path: infection.log
+        if-no-files-found: ignore
+        retention-days: 14
 
     - name: Install functional test dependencies
       run: composer test:functional:setup

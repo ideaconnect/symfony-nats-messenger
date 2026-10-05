@@ -3,7 +3,7 @@
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
 [![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.58%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
-[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-100%25-brightgreen)](https://infection.github.io/)
+[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-96%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -19,7 +19,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 303 unit tests, ~99.6% coverage, mutation-tested (100% MSI)
+- 🧪 **Thoroughly Tested** - 527 unit tests, ~99.6% coverage, mutation-tested (96% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -786,12 +786,18 @@ actually detect behavioral changes (not just execute lines):
 
 ```bash
 # Requires a coverage driver (xdebug or pcov)
+composer test:mutation:canary     # mutants that change nothing must all escape
 composer test:mutation
+composer test:mutation:check-log  # no mutant may be killed by the test harness instead of a test
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite currently scores 100% covered MSI with 100% mutation code coverage. CI runs it on the
-PHP 8.5 job.
+95%; the suite scores 96.3% (825 of 857 mutants killed, with 100% mutation code coverage).
+[docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 32 mutants that survive, with the reason for each:
+27 are equivalent, three make no difference with the real client, and two differ about once in a million
+runs. CI runs all three on the PHP 8.5 job and every day. Scores published before, 100% among them, were not
+real: in Infection's mutant processes the client's final classes could not be doubled, so every mutant their
+tests covered counted as killed.
 
 ### Functional Tests
 
