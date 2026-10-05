@@ -18,6 +18,7 @@ use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
+use IDCT\NatsMessenger\Tests\Support\StrictHeaderNameSerializer;
 use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -416,6 +417,33 @@ final class NatsTransportTest extends TestCase
         $transport->setJetStreamContext($jetStream);
 
         self::assertCount(1, array_values(iterator_to_array($transport->get())));
+    }
+
+    public function testGetLeavesOutHeadersWhoseNameIsAnInteger(): void
+    {
+        // Any publisher can send a header named "1" or "-5". The client returns such a name as an int key, as PHP
+        // stores such array keys, while decode() takes string names. This serializer reads each name as a string
+        // under strict types, as an application's own may, so an int key makes it throw a TypeError, and get()
+        // would then TERM the message. The transport leaves those headers out and the message decodes with the
+        // rest. "007" is no integer to PHP, so that header stays.
+        $serializer = new StrictHeaderNameSerializer();
+
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('fetchBatch')
+            ->willReturn(Future::complete([
+                new NatsMessage('test-topic', 1, 'reply-id', 'payload', "NATS/1.0\r\n1:x\r\nfoo:bar\r\n-5:y\r\n007:z\r\n\r\n"),
+            ]));
+        $jetStream->expects(self::never())->method('term');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        $envelopes = array_values(iterator_to_array($transport->get()));
+
+        self::assertSame([['body' => 'payload', 'headers' => ['foo' => 'bar', '007' => 'z']]], $serializer->decoded);
+        self::assertCount(1, $envelopes);
+        self::assertSame('reply-id', $envelopes[0]->last(TransportMessageIdStamp::class)?->getId());
     }
 
     public function testSendUsesPublishWithHeadersWhenHeadersArePresent(): void

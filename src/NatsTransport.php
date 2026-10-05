@@ -291,8 +291,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * JetStreamException propagates.
      * A message without a reply (ack) subject is skipped (it can be neither acknowledged nor
      * rejected); a message with an empty payload is TERMed so JetStream stops redelivering it,
-     * since it can never decode into an envelope. On deserialization failure the message is
-     * rejected via {@see handleFailedDelivery()} before the exception propagates.
+     * since it can never decode into an envelope. A header whose name is a decimal integer, such as
+     * `1`, is not passed to the serializer, whose decode() takes string names. On deserialization
+     * failure the message is rejected via {@see handleFailedDelivery()} before the exception
+     * propagates.
      *
      * With auto_setup enabled, a 404, 409 or 503 (see {@see recoverFromFetchFailure()} for why
      * all three) first triggers one re-provisioning attempt and a second pull.
@@ -334,7 +336,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             $headers = ($message->rawHeaders !== null && $message->rawHeaders !== '')
-                ? NatsHeaders::fromWireBlock($message->rawHeaders)
+                ? self::stringNamedHeaders(NatsHeaders::fromWireBlock($message->rawHeaders))
                 : [];
 
             try {
@@ -357,6 +359,24 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             yield $decoded->with(new TransportMessageIdStamp($replyTo));
         }
+    }
+
+    /**
+     * Keeps the headers of a received message whose name is a string, as the serializer's decode() takes
+     * string names.
+     *
+     * The client returns a header name that is a decimal integer, such as `1` or `-5`, as an int key, since PHP
+     * stores such array keys as integers, so no string key can hold it, and any publisher can send such a header.
+     * Symfony's serializers use only the type and stamp headers and this transport's use none, while a
+     * serializer that relies on string names fails on such a name, and get() then rejects the message.
+     *
+     * @param array<int|string, string> $headers A map from {@see NatsHeaders::fromWireBlock()}.
+     *
+     * @return array<string, string>
+     */
+    private static function stringNamedHeaders(array $headers): array
+    {
+        return array_filter($headers, static fn (int|string $name): bool => is_string($name), ARRAY_FILTER_USE_KEY);
     }
 
     /**
