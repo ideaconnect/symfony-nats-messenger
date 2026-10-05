@@ -1306,6 +1306,36 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * The same holds for a pull that ends empty, which the client reports as a 408: counted as use only when
+     * messages came, an empty pull longer than ping_after_idle made every next pull PING first, with one
+     * connection_timeout for the server to answer.
+     */
+    public function testIdleTimeCountsFromTheEndOfAnEmptyPull(): void
+    {
+        $transport = null;
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturnCallback(
+            static function () use (&$transport): Future {
+                // The pull waits 40 s for messages, and none come.
+                $transport->now += 40;
+
+                return Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408));
+            },
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30, 'max_batch_timeout' => 40]);
+        $transport->setClient($client);
+        self::assertSame([], iterator_to_array($transport->get()));
+        $transport->now += 5;
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
      * With auto_setup, the connection that replaces one that failed the PING is verified again before it is
      * used, as after close().
      */
@@ -1486,7 +1516,9 @@ final class NatsTransportTest extends TestCase
     public function testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::error(new JetStreamException('Request Timeout', 408)));
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(
+            Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408)),
+        );
         $jetStream->expects(self::exactly(2))->method('publish')->willReturnOnConsecutiveCalls(
             Future::error(new JetStreamException('maximum messages exceeded', 400)),
             Future::complete(),
@@ -1509,6 +1541,39 @@ final class NatsTransportTest extends TestCase
             // Rejected by the server, which therefore answered.
         }
         $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * A pull that got no answer before the client's own deadline is no reply, though the client reports it as
+     * a JetStream error: a server that is there ends every pull before then, with status 408 when it found no
+     * messages. A half-open connection takes the pull request and delivers nothing. The pull reads as an empty
+     * batch, and the next operation checks the connection first, so the pull after it runs on a new one.
+     */
+    public function testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection(): void
+    {
+        $oldConnection = $this->createMock(JetStreamContext::class);
+        $oldConnection->expects(self::once())->method('fetchBatch')->willReturn(
+            Future::error(new JetStreamException('No messages received within timeout', 408)),
+        );
+        $newConnection = $this->createMock(JetStreamContext::class);
+        $newConnection->expects(self::exactly(2))->method('fetchBatch')->willReturn(
+            Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408)),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->expects(self::exactly(2))->method('jetStream')->willReturnOnConsecutiveCalls($oldConnection, $newConnection);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::error(new ConnectionException('Connection lost')));
+        $client->expects(self::once())->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        self::assertSame([], iterator_to_array($transport->get()));
+
+        // The client still reports Open, and no time has passed: the check comes from the unanswered pull.
+        self::assertSame([], iterator_to_array($transport->get()));
+        // The server answered that pull, so the next one owes no check.
+        self::assertSame([], iterator_to_array($transport->get()));
     }
 
     public function testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff(): void
@@ -3518,7 +3583,7 @@ final class NatsTransportTest extends TestCase
         self::assertSame($id, $sent->last(DeduplicationIdStamp::class)?->id);
         self::assertInstanceOf(Envelope::class, $encoded);
         self::assertSame($id, $encoded->last(DeduplicationIdStamp::class)?->id, 'The id must be encoded with the message.');
-        self::assertSame([$id . ':0'], array_column($publishes, 'msgId'));
+        self::assertSame([$id . ':test-topic:0'], array_column($publishes, 'msgId'));
     }
 
     /**
@@ -3533,7 +3598,7 @@ final class NatsTransportTest extends TestCase
         $sent = $transport->send(new Envelope(new \stdClass(), [new DeduplicationIdStamp('order-42')]));
 
         self::assertCount(1, $sent->all(DeduplicationIdStamp::class));
-        self::assertSame(['order-42:0'], array_column($publishes, 'msgId'));
+        self::assertSame(['order-42:test-topic:0'], array_column($publishes, 'msgId'));
     }
 
     /**
@@ -3551,7 +3616,7 @@ final class NatsTransportTest extends TestCase
         $transport->send($original->with(new RedeliveryStamp(2)));
         $transport->send($original->with(new SentToFailureTransportStamp('async'), new RedeliveryStamp(0)));
 
-        self::assertSame(['order-42:0', 'order-42:1', 'order-42:2', 'order-42:0:failed'], array_column($publishes, 'msgId'));
+        self::assertSame(['order-42:test-topic:0', 'order-42:test-topic:1', 'order-42:test-topic:2', 'order-42:test-topic:0:failed:async'], array_column($publishes, 'msgId'));
     }
 
     /**
@@ -3578,7 +3643,7 @@ final class NatsTransportTest extends TestCase
 
         $transport->send(new Envelope(new \stdClass(), [new DeduplicationIdStamp('order-42')]));
 
-        self::assertSame(['order-42:0'], array_column($publishes, 'msgId'));
+        self::assertSame(['order-42:test-topic:0'], array_column($publishes, 'msgId'));
     }
 
     /**
@@ -3597,7 +3662,43 @@ final class NatsTransportTest extends TestCase
         self::assertCount(1, $publishes);
         self::assertSame('test-topic.delayed.' . $id, $publishes[0]['subject']);
         self::assertArrayHasKey('Nats-Schedule', $publishes[0]['headers']);
-        self::assertSame($id . ':0', $publishes[0]['msgId']);
+        self::assertSame($id . ':test-topic:0', $publishes[0]['msgId']);
+    }
+
+    /**
+     * Symfony hands each transport a message is routed to the envelope the one before returned, deduplication
+     * id included. JetStream deduplicates per stream whatever the subject, so two transports on one stream
+     * dropped the second copy; the subject keeps their ids apart.
+     */
+    public function testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn(): void
+    {
+        $orders = new RuntimeTestableNatsTransport('nats://localhost:4222/events/events.orders', ['deduplicate' => true], $this->encodingSerializer());
+        $orders->setJetStreamContext($this->jetStreamRecordingPublishes($ordersPublishes));
+        $payments = new RuntimeTestableNatsTransport('nats://localhost:4222/events/events.payments', [], $this->encodingSerializer());
+        $payments->setJetStreamContext($this->jetStreamRecordingPublishes($paymentsPublishes));
+
+        $sent = $payments->send($orders->send(new Envelope(new \stdClass())));
+
+        $id = $sent->last(DeduplicationIdStamp::class)?->id;
+        self::assertNotNull($id);
+        self::assertSame([$id . ':events.orders:0'], array_column($ordersPublishes, 'msgId'));
+        self::assertSame([$id . ':events.payments:0'], array_column($paymentsPublishes, 'msgId'));
+    }
+
+    /**
+     * A message routed to two transports that fails on both reaches a shared failure transport twice, with
+     * the same deduplication id and retry count: the transport it failed on keeps the two copies apart.
+     */
+    public function testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn(): void
+    {
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['deduplicate' => true], $this->encodingSerializer());
+        $transport->setJetStreamContext($this->jetStreamRecordingPublishes($publishes));
+        $failed = new Envelope(new \stdClass(), [new DeduplicationIdStamp('order-42'), new RedeliveryStamp(0)]);
+
+        $transport->send($failed->with(new SentToFailureTransportStamp('orders')));
+        $transport->send($failed->with(new SentToFailureTransportStamp('payments')));
+
+        self::assertSame(['order-42:test-topic:0:failed:orders', 'order-42:test-topic:0:failed:payments'], array_column($publishes, 'msgId'));
     }
 
     public function testSendWithZeroDelayPublishesNormally(): void

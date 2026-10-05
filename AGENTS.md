@@ -79,6 +79,10 @@ tests/
 - **Authentication**: username/password, token, JWT, NKey
 - **Serialization**: igbinary (default with fallback) or custom via `AbstractEnveloperSerializer`
 - **Publish validation**: JetStream publish responses are parsed and validated
+- **Connection checks**: a lost connection is dialled again; `ping_after_idle` PINGs a connection that sat idle, or that an operation failed on, before reuse
+- **Timeouts**: `connection_timeout` (the dial), `request_timeout` (replies from the server), `max_batch_timeout` (pulls)
+- **Duplicate protection**: the `deduplicate` option and `DeduplicationIdStamp`, sent as `Nats-Msg-Id`
+- **Keepalive**: `messenger:consume --keepalive`, an in-progress acknowledgement queued from the signal handler
 
 ## Testing
 

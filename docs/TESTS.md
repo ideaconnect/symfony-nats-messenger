@@ -26,12 +26,20 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Unsupported server feature** | `testSetupGivesClearErrorWhenScheduledMessagesUnsupported`, `testSetupWrapsUnsupportedFeatureGenericallyWhenNotScheduledMessages` |
 | **Consumer validation** | `testSetupRejectsUnexpectedConsumerConfiguration`, `testAssertConsumerMatchesConfigurationRejectsUnexpectedConfig`, `testAssertConsumerMatchesConfigurationRejectsWrongDeliverPolicy`, `testAssertConsumerMatchesConfigurationRejectsWrongFilterSubject`, `testAssertConsumerMatchesConfigurationRejectsWrongStreamOrConsumerName` |
 | **Message count** | `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountFallbackRunsOnANewConnectionAfterTheLookupFailedOnTheOldOne`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero` |
-| **Connection check (`ping_after_idle`: after idling, or after a failure)** | `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testAnsweredPingAfterAFailureKeepsTheConnectionAndEndsTheCheck`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff`, `testCloseEndsTheCheckAFailureCalledFor`, `testMessageCountFallbackRunsOnANewConnectionAfterTheLookupFailedOnTheOldOne`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testFailedCloseOfTheIdleConnectionDoesNotStopItsReplacement`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testIdleTimeCountsFromTheEndOfAPull`, `testAutoSetupVerifiesTheConnectionThatReplacedAnIdleOne`, `testAnsweredPingCountsAsUseSoOneOperationPingsOnce`, `testKeepaliveNeitherPingsNorDials` |
+| **Connection check (`ping_after_idle`: after idling, or after a failure)** | `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testAnsweredPingAfterAFailureKeepsTheConnectionAndEndsTheCheck`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff`, `testCloseEndsTheCheckAFailureCalledFor`, `testMessageCountFallbackRunsOnANewConnectionAfterTheLookupFailedOnTheOldOne`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testFailedCloseOfTheIdleConnectionDoesNotStopItsReplacement`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testIdleTimeCountsFromTheEndOfAPull`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testAutoSetupVerifiesTheConnectionThatReplacedAnIdleOne`, `testAnsweredPingCountsAsUseSoOneOperationPingsOnce`, `testKeepaliveNeitherPingsNorDials` |
 | **Connection (lazy init, dialling again after the client closed)** | `testConnectInitializesJetStreamContextFromClient`, `testJetStreamThrowsWhenConnectLeavesContextUnavailable`, `testConnectIsIdempotentAcrossOperations`, `testOperationAfterTheClientClosedDialsAgain` (send, get, ack, reject, getMessageCount), `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried` |
 | **Scheduled / delayed messages** | `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders`, `testSendDelayedMessageSchedulesAtRequestedDelay`, `testSendDelayedMessageNeverSchedulesBeforeRequestedDelay`, `testSendDelayedMessageWithLargeDelaySchedulesFarInTheFuture`, `testSendWithDelayStampButScheduledMessagesDisabledPublishesNormally`, `testSendWithZeroDelayPublishesNormally`, `testSendWithNegativeDelayPublishesNormally`, `testSendWithDelayStampAndExistingHeadersMergesScheduleHeaders`, `testSetupWithScheduledMessagesAddsDelayedSubjectAndFlag`, `testSetupUpdateStreamWithScheduledMessagesIncludesDelayedSubject`, `testSetupUpdateRemovesOrphanedDelayedSubjectWhenScheduledMessagesDisabled` |
-| **Duplicate protection (`deduplicate`, `DeduplicationIdStamp`)** | `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId` |
+| **Duplicate protection (`deduplicate`, `DeduplicationIdStamp`)** | `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn`, `testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn` |
 | **Igbinary fallback** | `testConstructorWithoutIgbinaryDoesNotCrash` |
 | **TLS DSN** | `testConstructorWithTlsDsnInitializesTransport` |
+
+### Unanswered Pull (`tests/unit/UnansweredPullTest.php`)
+
+Runs the real client against an in-memory server that answers the handshake and PINGs, and a pull only when told to, so a new client version that words its own pull deadline differently fails here.
+
+| Feature | Tests |
+|---------|-------|
+| **A pull the server did not answer makes the next operation check the connection; one the server ended with 408 does not** | `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection` |
 
 ### Transport Factory (`tests/unit/NatsTransportFactoryTest.php`)
 
@@ -218,6 +226,16 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 |---------|-----------|
 | **Deduplication id** | A message dispatched again with the same deduplication id is stored once (3 messages, then the first again as a new envelope: 3 stored, 3 consumed) |
 | **`deduplicate` option** | Distinct messages are all stored with the deduplicate option (5 stored, 5 consumed) |
+| **Two transports on one stream** | A message routed to two deduplicating transports on one stream is stored for each (2 messages in the stream; in 5.4.0 the second copy was dropped) |
+
+### Idle Connection Check (`tests/functional/features/nats_idle_connection.feature`)
+
+Runs against `nats-stale` (port 4225, `tests/nats/nats-stale.conf`), a test server that drops a client which leaves more than one PING unanswered, about three seconds after it went quiet.
+
+| Feature | Scenarios |
+|---------|-----------|
+| **`ping_after_idle`** | A message sent after the server dropped the idle connection goes out (one process sends, idles 5 s, sends again: both stored; on 5.1.0 the second send failed with 'Stale Connection') |
+| **Control, check off** | Without the check the message sent after the server dropped the connection fails (`ping_after_idle: 0`: the second send fails, 1 stored), which shows the server really dropped it |
 
 ## Examples (`examples/`, `composer examples`)
 

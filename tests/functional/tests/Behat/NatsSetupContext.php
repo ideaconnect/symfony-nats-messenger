@@ -54,6 +54,8 @@ class NatsSetupContext implements Context
     private bool $shouldNatsBeRunning = false;
     private bool $useTls = false;
     private bool $useMtls = false;
+    private bool $useStaleServer = false;
+    private ?Process $idleSendProcess = null;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
     private string $testFilesDir;
@@ -1358,6 +1360,44 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Two transports sharing one stream, both with deduplication, and the test message routed to both: Symfony
+     * hands the second transport the envelope the first returned, deduplication id included.
+     *
+     * @Given I have two deduplicating messenger transports sharing the same stream with subjects :firstSubject and :secondSubject, the test message routed to both
+     */
+    public function iHaveTwoDeduplicatingMessengerTransportsSharingTheSameStreamWithTheTestMessageRoutedToBoth(string $firstSubject, string $secondSubject): void
+    {
+        $this->testSubject = $firstSubject;
+        $this->secondaryTestSubject = $secondSubject;
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&deduplicate=true'\n                serializer: 'messenger.transport.native_php_serializer'\n            test_transport_two:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&deduplicate=true'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': [test_transport, test_transport_two]\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $this->testStreamName,
+            $secondSubject,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * @Then the NATS stream should hold exactly :count messages
+     */
+    public function theNatsStreamShouldHoldExactlyMessages(int $count): void
+    {
+        $client = $this->createNatsClient();
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];
+        $actualCount = (int) ($state['messages'] ?? 0);
+
+        if ($actualCount !== $count) {
+            throw new \RuntimeException(sprintf('Expected the stream to hold exactly %d messages, but it holds %d', $count, $actualCount));
+        }
+    }
+
+    /**
      * @Then the stream should have max bytes of :maxBytes
      */
     public function theStreamShouldHaveMaxBytesOf(int $maxBytes): void
@@ -1843,6 +1883,111 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * The test server that drops a client that stops answering its pings within about three seconds
+     * (tests/nats/nats-stale.conf), on port 4225.
+     *
+     * @Given the NATS server that drops idle clients is running
+     */
+    public function theNatsServerThatDropsIdleClientsIsRunning(): void
+    {
+        $this->shouldNatsBeRunning = true;
+        $this->useStaleServer = true;
+
+        $this->startNatsServer();
+        // On a stack started before this server was added, port 4222 is up, so startNatsServer() returned at
+        // once, and port 4225 is closed: start that one service.
+        $socket = @fsockopen('localhost', 4225, $errno, $errstr, 2);
+        if ($socket === false) {
+            (new Process(['docker', 'compose', 'up', '-d', 'nats-stale'], __DIR__ . '/../../../nats'))->run();
+        } else {
+            fclose($socket);
+        }
+
+        $deadline = microtime(true) + 60;
+        while (true) {
+            try {
+                $this->createNatsStaleClient()->jetStream()->accountInfo()->await();
+
+                return;
+            } catch (\Throwable $e) {
+                if (microtime(true) > $deadline) {
+                    throw new \RuntimeException('The NATS server that drops idle clients (port 4225) did not become ready: ' . $e->getMessage());
+                }
+                usleep(500000);
+            }
+        }
+    }
+
+    /**
+     * @Given I have a messenger transport on that server with ping_after_idle of :seconds second
+     * @Given I have a messenger transport on that server with ping_after_idle of :seconds seconds
+     */
+    public function iHaveAMessengerTransportOnThatServerWithPingAfterIdleOfSeconds(int $seconds): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4225/%s/%s?stream_max_age=900&ping_after_idle=%d'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $seconds
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Sends a message, idles, and sends another, all in one process and so on one connection, which a server
+     * that drops idle clients closes meanwhile.
+     *
+     * @When I send a message, idle for :seconds seconds, and send another from the same process
+     */
+    public function iSendAMessageIdleAndSendAnotherFromTheSameProcess(int $seconds): void
+    {
+        $this->idleSendProcess = new Process(
+            ['php', 'bin/console', 'app:send-after-idle', '--idle=' . $seconds, '--env=test'],
+            __DIR__ . '/../..'
+        );
+        $this->idleSendProcess->setTimeout($seconds + 60);
+        $this->idleSendProcess->run();
+    }
+
+    /**
+     * @Then the message sent after the quiet period should have gone out
+     */
+    public function theMessageSentAfterTheQuietPeriodShouldHaveGoneOut(): void
+    {
+        $process = $this->idleSendProcess ?? throw new \RuntimeException('Nothing was sent after a quiet period');
+        if (!$process->isSuccessful()) {
+            throw new \RuntimeException(sprintf("The send after the quiet period failed.\nOutput: %s\nError: %s", $process->getOutput(), $process->getErrorOutput()));
+        }
+    }
+
+    /**
+     * @Then the message sent after the quiet period should have failed
+     */
+    public function theMessageSentAfterTheQuietPeriodShouldHaveFailed(): void
+    {
+        $process = $this->idleSendProcess ?? throw new \RuntimeException('Nothing was sent after a quiet period');
+        if ($process->isSuccessful() || !str_contains($process->getOutput(), 'The send after the quiet period failed')) {
+            throw new \RuntimeException(sprintf("Expected the send after the quiet period to fail, since the server dropped the connection.\nOutput: %s", $process->getOutput()));
+        }
+    }
+
+    private function createNatsStaleClient(): NatsClient
+    {
+        $client = new NatsClient(new NatsOptions(
+            servers: ['nats://localhost:4225'],
+            username: 'admin',
+            password: 'password',
+            connectTimeoutMs: 5000,
+        ));
+        $client->connect()->await();
+
+        return $client;
+    }
+
+    /**
      * Cleans up all test resources after each scenario.
      *
      * Stops consumer processes, deletes NATS streams (test + failure), clears
@@ -1928,6 +2073,8 @@ class NatsSetupContext implements Context
         $this->consumerProcess = null;
         $this->useTls = false;
         $this->useMtls = false;
+        $this->useStaleServer = false;
+        $this->idleSendProcess = null;
         $this->testStreamName = 'stream';
         $this->testSubject = 'test.messages';
         $this->secondaryTestSubject = null;
@@ -2169,6 +2316,9 @@ class NatsSetupContext implements Context
      */
     private function createAppropriateNatsClient(): NatsClient
     {
+        if ($this->useStaleServer) {
+            return $this->createNatsStaleClient();
+        }
         if ($this->useMtls) {
             return $this->createNatsMtlsClient();
         }

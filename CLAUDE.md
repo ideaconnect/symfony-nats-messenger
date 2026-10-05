@@ -57,16 +57,27 @@ composer nats:stop               # stop NATS
 - **Lazy connection.** No socket opens in the constructor - `jetStream()` connects on first use, and dials
   again once the client has closed (it runs with reconnect off, so a lost connection leaves it Closed). A
   connection unused for longer than `ping_after_idle`, or one an operation just failed on (not counting
-  JetStream replies), gets a PING first and is replaced if it goes unanswered; `keepalive()` never pings
-  or dials (it runs in a signal handler).
+  JetStream replies, but counting a pull the server did not answer), gets a PING first and is replaced if
+  it goes unanswered; `ping_after_idle: 0` turns both checks off, and `keepalive()` never pings or dials (it
+  runs in a signal handler).
 - **Pull consumers + explicit ACK.** A message is only "processed" once ACK'd. This underpins
   `retry_handler` and shared-consumer load balancing.
 - **`get()` reads JetStream 408 and 404 as an empty pull** (no messages); other codes propagate. A
   missing consumer reports 503, not 404: with `auto_setup` it is re-provisioned once, otherwise `get()` throws.
+  The client also reports a pull that got no answer before its own deadline as 408 ("No messages received
+  within timeout"); that one makes the next operation PING first, since the server did not answer.
 - **`setup()` create-then-update.** On a stream conflict it reads the live config, **merges** subjects,
   preserves server fields, and updates - it never blindly overwrites an existing stream.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
-  `retry_handler=nats` → NAK (NATS redelivers).
+  `retry_handler=nats` → NAK (NATS redelivers), and `send()` skips the copy Symfony's retry sends (a received
+  envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode.
+- **`keepalive()` queues, never waits.** Symfony calls it from a SIGALRM handler, where fibers cannot switch,
+  so it queues `inProgress()->ignore()`, which goes out the next time the event loop runs.
+- **Duplicate protection:** a `DeduplicationIdStamp`, added on the first send with `deduplicate` or by the
+  application, becomes `Nats-Msg-Id` = `<id>:<topic>:<retry count>`, plus `:failed:<receiver>` on a
+  failure-transport copy. JetStream deduplicates per stream, whatever the subject.
+- **Serializers strip non-sendable stamps** (`NonSendableStampInterface`, such as the worker's `AckStamp`,
+  which holds a closure) before encoding, as Symfony's own serializers do.
 - **Scheduled messages:** only when `scheduled_messages=true` does a `DelayStamp` route to
   `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored.
 - **Serializer security:** the default `IgbinarySerializer` `unserialize()`s payloads - unsafe on

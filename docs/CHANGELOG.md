@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **With `deduplicate`, a message routed to two transports on one stream is stored for each.** Symfony hands
+  each transport a message is routed to the envelope the one before returned, deduplication id included, and
+  JetStream deduplicates per stream whatever the subject, so the second transport's copy was dropped, and
+  so were the failure-transport copies of a message that failed on two transports. The `Nats-Msg-Id` now
+  holds the transport's subject too (`<id>:<topic>:<retry count>`), and on a failure-transport copy the
+  transport the message failed on (`:failed:<receiver>`). Every id changes with the upgrade, so a message
+  sent once before it and again after it, within the stream's `duplicate_window`, is stored twice, and so
+  is one that processes still on 5.4.0 and processes already upgraded both send, as during a rolling deploy.
+- **An empty pull counts as using the connection.** It was counted only when messages came, so with
+  `max_batch_timeout` at or above `ping_after_idle` every pull after an empty one sent a PING first, with
+  one `connection_timeout` for the answer, and one slow answer dropped a healthy connection.
+- **A pull the server did not answer makes the next operation check the connection.** The client reports a
+  pull that got no answer before its own deadline, `max_batch_timeout` plus a second, as a JetStream error
+  with status 408, like the server's own end of a pull that found no messages, so it read as an empty
+  batch and called for no check. A half-open connection takes every write and delivers nothing: a consumer
+  on one pulled empty batches until the client's heartbeat noticed, about 90 seconds with its defaults. The
+  pull still reads as empty, and the next operation PINGs first, so the pull after it runs on a new
+  connection.
+- **Docs:** the README said the check after a failure catches a connection that silently stopped delivering,
+  which `get()` did not do until the fix above. It also gives the PING's real bound, `connection_timeout` or
+  the shorter `request_timeout`, for both checks. `CLAUDE.md`, `AGENTS.md` and `STRUCTURE.md` describe the
+  behaviour added since 5.2.0.
+
 ### Added
+- **A unit test that runs the real client for the unanswered pull**, against an in-memory server, so a
+  client version that words its own pull deadline differently fails the suite instead of turning the check
+  off.
+- **Functional scenarios for the idle-connection check**, against a new test server that drops idle clients
+  within seconds (`nats-stale`, port 4225): a message sent after the server dropped the idle connection goes
+  out, and without the check it fails.
+- **A functional scenario for duplicate protection across two transports on one stream**, which fails on
+  5.4.0 with one message stored instead of two.
 - **Runnable examples** in `examples/`, one per behaviour: sending and consuming, duplicate protection, the
   request timeout, keepalive from a signal handler, and the connection checks. Each prints `OK` when what it
   shows held. `composer examples` runs them against the test server, and CI runs them after the functional
@@ -18,7 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   private keys of the test CA, server and client certificates, which security scanners report as a leaked
   secret even though they were test-only. `tests/nats/certs/generate.sh` now creates the set with `openssl`
   on each machine, `composer nats:start` (and the Behat context, when it starts NATS itself) runs it first,
-  and the files are ignored by git. The keys stay in the history, but nothing uses them any more.
+  and the files are ignored by git. The keys stay in the history, but nothing uses them any more. A set
+  that is about to expire is replaced as well, so that a long-lived checkout does not run the TLS
+  scenarios on expired certificates.
 
 ## [5.4.0] - 2026-10-04
 

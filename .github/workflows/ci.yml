@@ -74,6 +74,8 @@ jobs:
         timeout 60 bash -c 'until nc -z localhost 4223; do sleep 2; done'
         echo "Waiting for NATS (mTLS) on port 4224..."
         timeout 60 bash -c 'until nc -z localhost 4224; do sleep 2; done'
+        echo "Waiting for NATS (drops idle clients) on port 4225..."
+        timeout 60 bash -c 'until nc -z localhost 4225; do sleep 2; done'
         echo "All NATS servers are ready"
 
         # Verify monitoring endpoints
@@ -139,10 +141,11 @@ jobs:
         docker logs nats_test || echo "Could not get NATS plain logs"
         docker logs nats_test_tls || echo "Could not get NATS TLS logs"
         docker logs nats_test_mtls || echo "Could not get NATS mTLS logs"
+        docker logs nats_test_stale || echo "Could not get the logs of the NATS that drops idle clients"
         echo "=== Docker Containers ==="
         docker ps -a
         echo "=== Network Status ==="
-        netstat -tlnp | grep -E ':422[234]' || echo "NATS ports not listening"
+        netstat -tlnp | grep -E ':422[2345]' || echo "NATS ports not listening"
 
     - name: Upload coverage reports
       uses: actions/upload-artifact@v7
@@ -209,6 +212,7 @@ jobs:
         timeout 60 bash -c 'until nc -z localhost 4222; do sleep 2; done'
         timeout 60 bash -c 'until nc -z localhost 4223; do sleep 2; done'
         timeout 60 bash -c 'until nc -z localhost 4224; do sleep 2; done'
+        timeout 60 bash -c 'until nc -z localhost 4225; do sleep 2; done'
         docker exec nats_test nats-server --version
 
     - name: Set up functional tests

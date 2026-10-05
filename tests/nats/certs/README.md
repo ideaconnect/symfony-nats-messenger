@@ -6,7 +6,7 @@ included (#9). `composer nats:start` generates them before it starts the servers
 context when it has to start NATS itself. They need `openssl`.
 
 ```bash
-bash tests/nats/certs/generate.sh          # creates the set, or keeps a complete one that exists
+bash tests/nats/certs/generate.sh          # creates the set, or keeps a complete one not about to expire
 bash tests/nats/certs/generate.sh --force  # replaces it; restart the servers to load the new set
 ```
 

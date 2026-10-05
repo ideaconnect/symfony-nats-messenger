@@ -599,7 +599,7 @@ options:
 
 **Purpose:**
 - Sets the timeout for the initial TCP/TLS dial and handshake when connecting to NATS
-- Also bounds the PING that checks a connection which sat idle (`ping_after_idle`): a server that does not answer within it is treated as gone
+- Also bounds the PING that checks a connection before it is used again, after it sat idle or after an operation failed on it (`ping_after_idle`), unless `request_timeout` is shorter: a server that does not answer within it is treated as gone
 - Does **not** bound how long an operation waits for the server's reply, which is `request_timeout`; the batch fetch is bounded separately by `max_batch_timeout`
 - Bounds each dial attempt: a dial that fails is tried three times, with pauses of 2 and 4 seconds in between
 - Lower values fail faster only when an attempt hangs, as with an unreachable host (about 6 seconds plus three times the value in all); a refused connection fails after about 6 seconds whatever the value
@@ -627,8 +627,8 @@ that does not prove the message was not stored: the server may have stored it an
 was late, so dispatching the message again can store it twice, unless it carries a deduplication id (see
 [Duplicate Protection](#duplicate-protection)). Raise the value for a slow or distant server,
 or for a stream whose writes can take long, such as a replicated one under load; lower it to fail faster.
-The wait of a pull in `get()` is bounded by `max_batch_timeout` instead, and the dial by
-`connection_timeout`.
+The wait of a pull in `get()` is bounded by `max_batch_timeout` instead (the client gives up a second later
+on a pull the server does not answer at all), and the dial by `connection_timeout`.
 
 ### Duplicate Protection
 
@@ -653,12 +653,17 @@ and the copy for a failure transport, gets an id of its own, so none of them is 
 you add yourself, as above, is used with the option off as well, and covers a message your application
 dispatches again as a new envelope, which would otherwise get a new id.
 
+The header holds the id together with the transport's subject and the retry count, and on a failure-transport
+copy the transport the message failed on. JetStream deduplicates per stream whatever the subject, and Symfony
+hands each transport a message is routed to the envelope the one before returned, id included, so transports
+that share a stream (see [Multi-Subject Streams](#multi-subject-streams)) each keep their copy.
+
 ```yaml
 options:
   deduplicate: true   # default: false
 ```
 
-> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, Behat scenarios `A message dispatched again with the same deduplication id is stored once` and `Distinct messages are all stored with the deduplicate option`
+> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, `testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn`, `testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn`, Behat scenarios `A message dispatched again with the same deduplication id is stored once`, `Distinct messages are all stored with the deduplicate option` and `A message routed to two deduplicating transports on one stream is stored for each`
 
 ### Losing the Connection
 
@@ -679,21 +684,25 @@ connection has been lost, the next operation dials again instead:
 
 A connection that was dropped while it sat idle would make the next operation the one that fails. To avoid
 that, an operation that finds the connection unused for longer than `ping_after_idle` (30 seconds by
-default) first checks it with one PING. If the server does not answer within `connection_timeout`, the
-transport closes that connection and runs the operation on a new one, so the first message after a quiet
-period goes out instead of failing. The PING costs one round trip, and only after a quiet period. A lower
-value also catches a server restart between two operations further apart than it, at the cost of that round
-trip more often. The same check follows an operation that failed on the connection - a JetStream error
-reply does not count, since the server answered it - because the client can keep reporting a dead connection
-open, and a connection that silently stopped delivering only times out. `ping_after_idle: 0` turns both
-checks off. `keepalive()` never checks: Symfony calls it from a signal handler.
+default) first checks it with one PING. If the server does not answer within `connection_timeout` (or
+`request_timeout`, when that is shorter), the transport closes that connection and runs the operation on a
+new one, so the first message after a quiet period goes out instead of failing. The PING costs one round
+trip, and only after a quiet period. A lower value also catches a server restart between two operations
+further apart than it, at the cost of that round trip more often. The same check follows an operation that
+failed on the connection - a JetStream error reply does not count, since the server answered it - because
+the client can keep reporting a dead connection open, and a send to a connection that silently stopped
+delivering only times out. A pull from such a connection ends empty, which reads as no messages rather than
+a failure, but the server never answered it: a server that is there ends every pull itself, after
+`max_batch_timeout` at the latest. So the check follows such a pull too, and the pull after it runs on a new
+connection. `ping_after_idle: 0` turns both checks off. `keepalive()` never checks: Symfony calls it from a
+signal handler.
 
 ```yaml
 options:
   ping_after_idle: 30   # seconds; 0 turns the check off
 ```
 
-> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testBuildWithInvalidPingAfterIdleThrowsException`
+> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testBuildWithInvalidPingAfterIdleThrowsException`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
 
 ## Stream Configuration
 
