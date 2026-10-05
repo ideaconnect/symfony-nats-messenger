@@ -41,7 +41,8 @@ src/
 tests/
 ├── bootstrap.php                               # autoloader + BypassFinals; takes Infection's file swap over in mutant processes
 ├── Support/
-│   └── PhpProcess.php                          # runs a PHP script in a child process
+│   ├── PhpProcess.php                          # runs a PHP script in a child process
+│   └── StrictHeaderNameSerializer.php          # a serializer that reads header names as strings under strict types
 ├── unit/                                       # PHPUnit 11 - fast, no live NATS required
 │   ├── NatsTransportTest.php                   # send/get/ack/reject/setup/retry/count/scheduled
 │   ├── NatsTransportFactoryTest.php            # scheme detection, transport creation
