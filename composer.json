@@ -29,7 +29,7 @@
         "symfony/uid": "^7.2 || ^8.0"
     },
     "require-dev": {
-        "behat/behat": "^3.29",
+        "behat/behat": "^3.29 || ^4.0",
         "phpunit/phpunit": "^11",
         "phpstan/phpstan": "^2.1",
         "dg/bypass-finals": "^1.9",
