@@ -285,9 +285,10 @@ framework:
                                             # an ack_sync ACK, setup() or a message count (default: 10)
 
           # Connection Resilience
-          reconnect: false                  # Re-dial automatically after the connection drops (default: false)
-                                            # false => the next send()/get() fails and the worker exits
-                                            # true  => the NATS client reconnects with exponential backoff
+          reconnect: false                  # Let the NATS client re-dial on its own after a drop (default: false)
+                                            # false => the operation in flight fails; the transport dials
+                                            #          again on the next one
+                                            # true  => the client reconnects with exponential backoff first
           max_reconnect_attempts: null      # Re-dial attempts per outage before giving up
                                             # (null = the client's own default of 10). Positive integer.
 
@@ -736,7 +737,10 @@ options:
 - After the connection is lost the client re-dials with exponential backoff (starting at 100 ms and capped
   at 10 s, with jitter) and re-establishes its subscriptions.
 - Operations issued while the connection is down wait for the reconnect instead of failing at once,
-  bounded by the client's request timeout. Publishes are buffered and flushed once reconnected.
+  bounded by `request_timeout`. Fire-and-forget frames (the ACK, NAK and TERM this transport sends) are
+  buffered and flushed once reconnected.
+- Messages that were delivered but not yet acknowledged when the connection dropped are redelivered by
+  JetStream after `ack_wait`, counting one delivery attempt against `max_deliver`.
 - Once `max_reconnect_attempts` is exhausted the client closes the connection for good, and from then on
   the transport behaves as it does without reconnect: the next operation dials again. Rejected credentials
   are not retried at all.
@@ -820,7 +824,21 @@ In a DSN the tags are a comma-separated list: `?stream_placement_tags=ssd,eu-wes
   matters because a JetStream update that omits `placement` clears it, so the transport echoes the live
   value back whenever the options are unset.
 - Setting either option on an existing stream updates its placement, and NATS then moves the stream's
-  replicas onto matching servers. To remove a placement entirely, change it in NATS directly.
+  replicas onto matching servers. The server accepts the new placement and `setup()` returns at once;
+  the replica migration runs in the background (`nats stream info` shows the replicas as not current
+  until it finishes). NATS refuses to change placement and `stream_replicas` in the same update, so stage
+  those two options across two `messenger:setup-transports` runs. To remove a placement entirely, change
+  it in NATS directly.
+- **Exclusion tags and the `unique_tag` bypass (NATS 2.12+).** A tag prefixed with `!` excludes the
+  servers that carry it, for example `!disk:hdd`. The server strips the `!` before it looks at the
+  cluster's `unique_tag` setting, and any placement tag that starts with that configured prefix switches
+  the uniqueness constraint **off** for the stream (nats-server's own comment: "disable uniqueness check
+  if explicitly listed in tags"). So with `unique_tag: "zone:"`, the tag `!zone:ignore` excludes nobody
+  and only lifts the requirement that replicas sit in distinct zones, which lets a 3-replica stream be
+  created on a cluster with fewer than 3 zones. A positive tag that every server carries and that starts
+  with the prefix, such as `zone:any` added to each server's `server_tags`, has the same effect on any
+  server version. On 2.11 and older the `!` is not stripped, so `!zone:ignore` is a mandatory tag nothing
+  matches and creation fails with `tags not matched`.
 - On a clustered server, tags that no server carries make stream creation fail with a JetStream error such
   as `no suitable peers for placement`. A standalone (non-clustered) server accepts and stores any
   placement without acting on it.
