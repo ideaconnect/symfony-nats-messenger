@@ -73,7 +73,7 @@
         }
     },
     "require-dev": {
-        "behat/behat": "^3.29",
+        "behat/behat": "^4.0",
         "symfony/maker-bundle": "^1.67",
         "symfony/process": "^7 || ^8.0.5"
     }
