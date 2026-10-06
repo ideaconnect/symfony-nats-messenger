@@ -49,6 +49,8 @@ final class NatsTransportConfigurationBuilder
         TransportOption::PING_AFTER_IDLE->value => 30,
         // The client's own default, so a transport that does not set it behaves as before the option existed.
         TransportOption::REQUEST_TIMEOUT->value => 10,
+        TransportOption::RECONNECT->value => false,
+        TransportOption::MAX_RECONNECT_ATTEMPTS->value => null,
         TransportOption::MAX_ACK_PENDING->value => null,
         TransportOption::INACTIVE_THRESHOLD->value => null,
         TransportOption::REPLAY_POLICY->value => null,
@@ -69,6 +71,8 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_DENY_PURGE->value => null,
         TransportOption::STREAM_ALLOW_DIRECT->value => null,
         TransportOption::STREAM_ALLOW_ROLLUP_HEADERS->value => null,
+        TransportOption::STREAM_PLACEMENT_CLUSTER->value => null,
+        TransportOption::STREAM_PLACEMENT_TAGS->value => null,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
@@ -112,14 +116,22 @@ final class NatsTransportConfigurationBuilder
         $port = TypeCoercion::intValue($components['port'] ?? self::DEFAULT_NATS_PORT, self::DEFAULT_NATS_PORT);
         $server = sprintf('%s://%s:%d', $scheme, $host, $port);
 
+        // max_reconnect_attempts is forwarded only when configured so that the client's own default
+        // applies otherwise; repeating that default here would silently diverge from the client over time.
+        $reconnectArguments = ['reconnectEnabled' => $this->toBool($configuration[TransportOption::RECONNECT->value])];
+        $maxReconnectAttempts = $configuration[TransportOption::MAX_RECONNECT_ATTEMPTS->value] ?? null;
+        if ($maxReconnectAttempts !== null) {
+            $reconnectArguments['maxReconnectAttempts'] = TypeCoercion::intValue($maxReconnectAttempts);
+        }
+
         $client = new NatsClient(new NatsOptions(
+            ...$reconnectArguments,
             servers: [$server],
             connectTimeoutMs: max(1, TypeCoercion::secondsToMs($configuration[TransportOption::CONNECTION_TIMEOUT->value] ?? null, 1.0)),
             // How long a request waits for the server's reply: the publish acknowledgement of send(), an
             // ack_sync ACK, and the JetStream API calls of setup() and getMessageCount().
             requestTimeoutMs: max(1, TypeCoercion::secondsToMs($configuration[TransportOption::REQUEST_TIMEOUT->value] ?? null, 10.0)),
             pedantic: false,
-            reconnectEnabled: false,
             tlsRequired: $this->toBool($configuration[TransportOption::TLS_REQUIRED->value]),
             tlsHandshakeFirst: $this->toBool($configuration[TransportOption::TLS_HANDSHAKE_FIRST->value]),
             tlsCaFile: $this->toNullableString($configuration[TransportOption::TLS_CA_FILE->value]),
@@ -271,6 +283,8 @@ final class NatsTransportConfigurationBuilder
         $this->assertPositiveNumber($configuration, TransportOption::REQUEST_TIMEOUT);
         // 0 is meaningful here: it turns the check off.
         $this->assertNonNegativeNumber($configuration, TransportOption::PING_AFTER_IDLE);
+        // null defers to the client's default; 0 would only spell "reconnect disabled" a second way.
+        $this->assertPositiveNumber($configuration, TransportOption::MAX_RECONNECT_ATTEMPTS, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_AGE, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_BYTES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES, true);
@@ -290,6 +304,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertNotExceedingInt32($configuration, TransportOption::STREAM_MAX_MESSAGE_SIZE);
         $this->assertStreamDescriptionLength($configuration);
         $this->assertTriStateBooleans($configuration);
+        $this->normalizeStreamPlacement($configuration);
         $this->assertNonNegativeNumber($configuration, TransportOption::NAK_DELAY);
         $this->assertPositiveNumber($configuration, TransportOption::ACK_WAIT);
         $this->assertPositiveNumber($configuration, TransportOption::MAX_DELIVER, true);
@@ -516,6 +531,53 @@ final class NatsTransportConfigurationBuilder
                 strlen($description),
             ));
         }
+    }
+
+    /**
+     * Validates and normalizes the two stream placement options.
+     *
+     * `stream_placement_cluster` must be a non-empty string when set. `stream_placement_tags` accepts a
+     * list of non-empty strings (a YAML list, or `stream_placement_tags[]=a&stream_placement_tags[]=b`
+     * in a DSN query string) or a single comma-separated string (`stream_placement_tags=a,b`); it is
+     * stored back as the normalized list so every reader of the option sees one shape. Both default to
+     * null, which leaves the stream's placement untouched.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function normalizeStreamPlacement(array &$configuration): void
+    {
+        $cluster = $configuration[TransportOption::STREAM_PLACEMENT_CLUSTER->value] ?? null;
+        if ($cluster !== null) {
+            $normalizedCluster = is_string($cluster) || is_int($cluster) ? trim((string) $cluster) : '';
+            if ($normalizedCluster === '') {
+                throw new InvalidArgumentException(sprintf(
+                    'The %s option must be a non-empty string.',
+                    TransportOption::STREAM_PLACEMENT_CLUSTER->value,
+                ));
+            }
+
+            $configuration[TransportOption::STREAM_PLACEMENT_CLUSTER->value] = $normalizedCluster;
+        }
+
+        $tags = $configuration[TransportOption::STREAM_PLACEMENT_TAGS->value] ?? null;
+        if ($tags === null) {
+            return;
+        }
+
+        // Reject loudly rather than silently dropping a malformed element: a tag that is quietly
+        // ignored would place the stream somewhere other than where the operator asked.
+        $elementsAreScalar = is_array($tags)
+            ? count(array_filter($tags, static fn (mixed $tag): bool => is_string($tag) || is_int($tag))) === count($tags)
+            : is_string($tags) || is_int($tags);
+        $normalizedTags = $elementsAreScalar ? TypeCoercion::stringListValue($tags) : [];
+        if ($normalizedTags === []) {
+            throw new InvalidArgumentException(sprintf(
+                'The %s option must be a non-empty list of non-empty strings, or a comma-separated string of them.',
+                TransportOption::STREAM_PLACEMENT_TAGS->value,
+            ));
+        }
+
+        $configuration[TransportOption::STREAM_PLACEMENT_TAGS->value] = $normalizedTags;
     }
 
     /**

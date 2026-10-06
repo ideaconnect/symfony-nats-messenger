@@ -106,6 +106,25 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns whether the NATS client re-dials on its own after the connection drops (default: false).
+     *
+     * The flag is applied to the client by {@see NatsTransportConfigurationBuilder}; this accessor
+     * only reports the configured value.
+     */
+    public function isReconnectEnabled(): bool
+    {
+        return TypeCoercion::boolValue($this->options[TransportOption::RECONNECT->value] ?? null);
+    }
+
+    /**
+     * Returns the re-dial attempts per outage, or null to keep the NATS client's own default.
+     */
+    public function maxReconnectAttempts(): ?int
+    {
+        return $this->nullableIntOption(TransportOption::MAX_RECONNECT_ATTEMPTS);
+    }
+
+    /**
      * Returns stream max age in seconds (0 means unlimited).
      *
      * Used by {@see NatsTransport::setup()} when creating/updating the stream.
@@ -283,6 +302,66 @@ final readonly class NatsTransportConfiguration
     public function streamAllowRollupHeaders(): ?bool
     {
         return $this->nullableBoolOption(TransportOption::STREAM_ALLOW_ROLLUP_HEADERS);
+    }
+
+    /**
+     * Returns the JetStream cluster the stream is pinned to, or null to leave placement untouched.
+     */
+    public function streamPlacementCluster(): ?string
+    {
+        $value = $this->options[TransportOption::STREAM_PLACEMENT_CLUSTER->value] ?? null;
+        if ($value === null) {
+            return null;
+        }
+
+        $cluster = trim(TypeCoercion::stringValue($value));
+
+        return $cluster === '' ? null : $cluster;
+    }
+
+    /**
+     * Returns the server tags the stream must be placed on, or null to leave placement untouched.
+     *
+     * Accepts the normalized list the builder stores, a raw list, or a comma-separated string.
+     *
+     * @return list<string>|null
+     */
+    public function streamPlacementTags(): ?array
+    {
+        $value = $this->options[TransportOption::STREAM_PLACEMENT_TAGS->value] ?? null;
+        if ($value === null) {
+            return null;
+        }
+
+        $tags = TypeCoercion::stringListValue($value);
+
+        return $tags === [] ? null : $tags;
+    }
+
+    /**
+     * Returns the JetStream `placement` block built from the two placement options, or null when
+     * neither is set.
+     *
+     * Used by {@see NatsTransport::setup()}: written to the stream when non-null, otherwise the
+     * stream's existing placement is left as the server reports it.
+     *
+     * @return array{cluster?: string, tags?: list<string>}|null
+     */
+    public function streamPlacement(): ?array
+    {
+        $placement = [];
+
+        $cluster = $this->streamPlacementCluster();
+        if ($cluster !== null) {
+            $placement['cluster'] = $cluster;
+        }
+
+        $tags = $this->streamPlacementTags();
+        if ($tags !== null) {
+            $placement['tags'] = $tags;
+        }
+
+        return $placement === [] ? null : $placement;
     }
 
     /**

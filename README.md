@@ -284,6 +284,14 @@ framework:
           request_timeout: 10               # Seconds to wait for the server's reply to a publish,
                                             # an ack_sync ACK, setup() or a message count (default: 10)
 
+          # Connection Resilience
+          reconnect: false                  # Let the NATS client re-dial on its own after a drop (default: false)
+                                            # false => the operation in flight fails; the transport dials
+                                            #          again on the next one
+                                            # true  => the client reconnects with exponential backoff first
+          max_reconnect_attempts: null      # Re-dial attempts per outage before giving up
+                                            # (null = the client's own default of 10). Positive integer.
+
           # Consumer Flow Control & Lifecycle
           max_ack_pending: 1000             # Max delivered-but-unacked messages outstanding
                                             # (null = server default). Primary flow-control lever.
@@ -343,6 +351,11 @@ framework:
 
           # High Availability
           stream_replicas: 1                # Number of replicas (default: 1)
+          stream_placement_cluster: null    # Pin the stream to a named JetStream cluster
+                                            # (null = leave the stream's placement untouched)
+          stream_placement_tags: null       # Only place the stream on servers carrying ALL of these
+                                            # tags, e.g. ['ssd', 'eu-west'] (or 'ssd,eu-west' in a DSN)
+                                            # (null = leave the stream's placement untouched)
 
           # Failure Handling Strategy
           retry_handler: 'symfony'          # symfony|nats (default: symfony)
@@ -402,7 +415,7 @@ framework:
           nkey: null                        # NKey public value
 ```
 
-> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`
+> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`
 
 ### Retry Handler Behavior
 
@@ -667,8 +680,9 @@ options:
 
 ### Losing the Connection
 
-The transport does not reconnect in the background, and nothing in Symfony calls `close()`. When the
-connection has been lost, the next operation dials again instead:
+Unless [`reconnect`](#automatic-reconnect) is on, the transport does not reconnect in the background, and
+nothing in Symfony calls `close()`. When the connection has been lost, the next operation dials again
+instead:
 
 - A connection is lost when the NATS server restarts, when the network drops it, or when the server closes
   it because the client stopped answering its pings. A PHP process answers them only while it is inside a
@@ -703,6 +717,40 @@ options:
 ```
 
 > **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testBuildWithInvalidPingAfterIdleThrowsException`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
+
+### Automatic Reconnect
+
+By default the NATS client does **not** reconnect on its own: the transport dials again on the next
+operation instead, and the operation that runs into the lost connection fails (see
+[Losing the Connection](#losing-the-connection)). Enable `reconnect` to have the NATS client re-dial in the
+background as soon as the connection drops:
+
+```yaml
+options:
+  reconnect: true             # re-dial after a dropped connection (default: false)
+  max_reconnect_attempts: 20  # re-dial attempts per outage (default: null = the client's default of 10)
+```
+
+> **Tested by:** `testBuildLeavesReconnectDisabledByDefault`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`
+
+**What `reconnect: true` does** (all of it inside the NATS client; the transport only switches it on):
+- After the connection is lost the client re-dials with exponential backoff (starting at 100 ms and capped
+  at 10 s, with jitter) and re-establishes its subscriptions.
+- Operations issued while the connection is down wait for the reconnect instead of failing at once,
+  bounded by `request_timeout`. Fire-and-forget frames (the ACK, NAK and TERM this transport sends) are
+  buffered and flushed once reconnected.
+- Messages that were delivered but not yet acknowledged when the connection dropped are redelivered by
+  JetStream after `ack_wait`, counting one delivery attempt against `max_deliver`.
+- Once `max_reconnect_attempts` is exhausted the client closes the connection for good, and from then on
+  the transport behaves as it does without reconnect: the next operation dials again. Rejected credentials
+  are not retried at all.
+- The same retry loop also covers a failed **initial** connect, so `messenger:setup-transports` against a
+  NATS server that is down keeps re-dialling through all attempts before it fails, instead of failing on
+  the first refused connection.
+
+**When to enable:** long-running workers against a NATS cluster whose nodes restart or fail over. Leave it
+disabled if you rely on the process supervisor to restart the worker on any connection loss, or if you
+want `messenger:setup-transports` to fail fast when NATS is unreachable.
 
 ## Stream Configuration
 
@@ -747,6 +795,53 @@ options:
 ```
 
 > **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`
+
+### Stream Placement
+
+In a JetStream cluster you can pin a stream to a named cluster and/or to the servers that carry specific
+tags (`server_tags` in the NATS server configuration). A stream is only placed on servers carrying
+**all** of the listed tags:
+
+```yaml
+options:
+  # Only on servers tagged both "ssd" and "eu-west"
+  stream_placement_tags: ['ssd', 'eu-west']
+
+  # In the "east" cluster of a super-cluster
+  stream_placement_cluster: 'east'
+
+  # Both at once
+  stream_placement_cluster: 'east'
+  stream_placement_tags: ['ssd']
+```
+
+In a DSN the tags are a comma-separated list: `?stream_placement_tags=ssd,eu-west`.
+
+> **Tested by:** `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, Behat scenarios in `nats_stream_placement.feature`
+
+- Both options default to `null`, which leaves the stream's placement untouched: a new stream gets the
+  server's default placement and an existing stream keeps whatever placement it already has. This
+  matters because a JetStream update that omits `placement` clears it, so the transport echoes the live
+  value back whenever the options are unset.
+- Setting either option on an existing stream updates its placement, and NATS then moves the stream's
+  replicas onto matching servers. The server accepts the new placement and `setup()` returns at once;
+  the replica migration runs in the background (`nats stream info` shows the replicas as not current
+  until it finishes). NATS refuses to change placement and `stream_replicas` in the same update, so stage
+  those two options across two `messenger:setup-transports` runs. To remove a placement entirely, change
+  it in NATS directly.
+- **Exclusion tags and the `unique_tag` bypass (NATS 2.12+).** A tag prefixed with `!` excludes the
+  servers that carry it, for example `!disk:hdd`. The server strips the `!` before it looks at the
+  cluster's `unique_tag` setting, and any placement tag that starts with that configured prefix switches
+  the uniqueness constraint **off** for the stream (nats-server's own comment: "disable uniqueness check
+  if explicitly listed in tags"). So with `unique_tag: "zone:"`, the tag `!zone:ignore` excludes nobody
+  and only lifts the requirement that replicas sit in distinct zones, which lets a 3-replica stream be
+  created on a cluster with fewer than 3 zones. A positive tag that every server carries and that starts
+  with the prefix, such as `zone:any` added to each server's `server_tags`, has the same effect on any
+  server version. On 2.11 and older the `!` is not stripped, so `!zone:ignore` is a mandatory tag nothing
+  matches and creation fails with `tags not matched`.
+- On a clustered server, tags that no server carries make stream creation fail with a JetStream error such
+  as `no suitable peers for placement`. A standalone (non-clustered) server accepts and stores any
+  placement without acting on it.
 
 ## Testing
 
@@ -987,7 +1082,12 @@ framework:
 > already-created stream works on NATS 2.12 and newer, and is rejected by the server on older versions -
 > recreate the stream to change it there.
 
-> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, and `Custom consumer name is registered in JetStream`
+> **Note on placement:** `stream_placement_cluster` and `stream_placement_tags` follow the same rule as
+> `stream_max_consumers`: they are written only when you set them, and unset options leave the stream's
+> existing placement in place. A JetStream update that omits `placement` would clear it, so the transport
+> echoes the live value back whenever the options are unset. See [Stream Placement](#stream-placement).
+
+> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, and `Custom consumer name is registered in JetStream`
 
 ### Delayed / Scheduled Messages
 

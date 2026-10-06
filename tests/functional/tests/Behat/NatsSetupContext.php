@@ -139,6 +139,29 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Creates the stream out-of-band with a placement, the way an operator pins a stream to tagged
+     * servers via the nats CLI or Terraform.
+     *
+     * A STREAM.UPDATE payload that omits `placement` clears it on the server, so this is the fixture
+     * that proves the transport echoes an existing placement back when the option is unset.
+     *
+     * @Given the NATS stream already exists with placement tags :tags
+     */
+    public function theNatsStreamAlreadyExistsWithPlacementTags(string $tags): void
+    {
+        if (!$this->shouldNatsBeRunning) {
+            throw new \RuntimeException('NATS must be running to create a stream');
+        }
+
+        $client = $this->createNatsClient();
+        $client->jetStream()->createStream(
+            $this->testStreamName,
+            [$this->testSubject],
+            ['placement' => ['tags' => explode(',', $tags)]],
+        )->await();
+    }
+
+    /**
      * Creates the stream out-of-band with a consumer limit, the way an operator would via the nats CLI
      * or Terraform.
      *
@@ -1230,6 +1253,25 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Configures a transport whose stream placement tags arrive through the DSN query string, in the
+     * comma-separated form an operator would use there.
+     *
+     * @Given I have a messenger transport configured with stream placement tags :tags
+     */
+    public function iHaveAMessengerTransportConfiguredWithStreamPlacementTags(string $tags): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&stream_placement_tags=%s'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $tags
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
      * Configures a transport whose numeric stream limits are all supplied via the DSN query string.
      *
      * Query-string values arrive as PHP strings (`parse_str()`), so this exercises
@@ -1434,6 +1476,29 @@ class NatsSetupContext implements Context
                     'Expected stream max messages to be %d, but got %d',
                     $maxMessages,
                     $actualMaxMessages
+                )
+            );
+        }
+    }
+
+    /**
+     * @Then the stream should have placement tags :tags
+     */
+    public function theStreamShouldHavePlacementTags(string $tags): void
+    {
+        $client = $this->createNatsClient();
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $streamConfig = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        $placement = is_array($streamConfig['placement'] ?? null) ? $streamConfig['placement'] : [];
+        $actualTags = is_array($placement['tags'] ?? null) ? array_values($placement['tags']) : [];
+        $expectedTags = explode(',', $tags);
+
+        if ($actualTags !== $expectedTags) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Expected stream placement tags [%s], but got [%s]',
+                    implode(', ', $expectedTags),
+                    implode(', ', $actualTags)
                 )
             );
         }

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`reconnect` and `max_reconnect_attempts` options** for automatic reconnection. The transport used to
+  hard-wire the client's reconnect off, so a dropped connection was replaced only by the next operation,
+  which failed unless `ping_after_idle` caught the drop first. With
+  `reconnect: true` (default `false`, preserving existing behavior) the NATS client re-dials with its own
+  exponential backoff and re-establishes its subscriptions; `max_reconnect_attempts` (positive integer,
+  default `null` = the client's own default of 10) caps the re-dial attempts per outage. With reconnect
+  enabled the same retry loop also covers a failed initial connect. Both options work from the DSN query
+  string too.
+- **`stream_placement_cluster` and `stream_placement_tags` options** exposing JetStream stream placement
+  (`placement.cluster` / `placement.tags`). Tags accept a YAML list or a comma-separated string, so they
+  work from a DSN query string as `stream_placement_tags=ssd,eu-west`. Both default to `null`, which
+  leaves the stream's placement untouched: on the update path the transport echoes the live server value
+  back, because a JetStream update that omits `placement` clears it (verified against nats-server 2.14).
+- **`TypeCoercion::stringListValue()`** centralizing the list-or-comma-separated-string coercion used by
+  `stream_placement_tags`.
+
 ## [5.4.1] - 2026-10-05
 
 A **patch** release. It fixes duplicate protection for transports that share a stream and the connection
