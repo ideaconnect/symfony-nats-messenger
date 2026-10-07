@@ -35,7 +35,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 
 ### Unanswered Pull (`tests/unit/UnansweredPullTest.php`)
 
-Runs the real client against an in-memory server that answers the handshake and PINGs, and a pull only when told to, so a new client version that words its own pull deadline differently fails here.
+Runs the real client against an in-memory server that answers the handshake and PINGs, and a pull only when told to, so a new client version that words its own pull deadline differently fails here. The server records a PING only when the client wrote it on its own: the PING client 2.19.0 writes behind each pull inbox's SUB, to learn whether the server took the subscription, is answered but not counted as a connection check.
 
 | Feature | Tests |
 |---------|-------|
