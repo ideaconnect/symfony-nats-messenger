@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The unanswered-pull unit test tells the client's inbox fence from a connection check.** Client 2.19.0 writes a
+  PING behind each pull inbox's SUB in the same write, to learn whether the server took the subscription, and its
+  scripted server (`PullAnsweringServer` in `tests/unit/UnansweredPullTest.php`) counted that PING as a check the
+  transport made, failing `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection` against that client.
+  The server still answers every PING but records only one written on its own. The test passes against client
+  2.10.3 and 2.19.0; the transport is unchanged.
+
 ## [5.4.1] - 2026-10-05
 
 A **patch** release. It fixes duplicate protection for transports that share a stream and the connection

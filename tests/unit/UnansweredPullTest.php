@@ -23,7 +23,13 @@ final class PullAnsweringServer implements TransportInterface
 {
     private const PULL_PREFIX = '$JS.API.CONSUMER.MSG.NEXT.';
 
-    /** @var list<string> What the client sent: PING for a PING, PULL for a pull request, in order. */
+    /**
+     * What the client sent: PING for a PING written on its own, PULL for a pull request, in order. A PING the client
+     * writes behind a SUB in the same write (client 2.19.0 and later do this to learn whether the server took the
+     * subscription) is answered like any other but not recorded: it is the client's, not a check of the transport's.
+     *
+     * @var list<string>
+     */
     public array $received = [];
 
     /** @var list<bool> Whether to answer each next pull, in order. A pull past the end is left unanswered. */
@@ -52,10 +58,13 @@ final class PullAnsweringServer implements TransportInterface
 
     public function write(string $bytes): Future
     {
+        $subscribing = str_starts_with($bytes, 'SUB ') || str_contains($bytes, "\r\nSUB ");
         foreach (explode("\r\n", $bytes) as $line) {
             $words = explode(' ', $line);
             if ($line === 'PING') {
-                $this->received[] = 'PING';
+                if (!$subscribing) {
+                    $this->received[] = 'PING';
+                }
                 $this->send("PONG\r\n");
             } elseif ($words[0] === 'SUB' && count($words) === 3) {
                 $this->sids[$words[1]] = $words[2];
@@ -131,7 +140,8 @@ final class UnansweredPullTest extends TestCase
     {
         $server = new PullAnsweringServer();
         $server->answerPulls = [false, true, true];
-        // The client's own heartbeat is off, so every PING the server receives is the transport's.
+        // The client's own heartbeat is off, so every PING the server receives on its own is the transport's; the
+        // PING the client writes behind each pull inbox's SUB (its fence, client 2.19.0) is left out of the record.
         $client = new NatsClient(new NatsOptions(reconnectEnabled: false, pingIntervalSeconds: 0), $server);
         // The client gives up on an unanswered pull a second after max_batch_timeout.
         $transport = new ClientInjectedNatsTransport('nats://localhost:4222/stream/topic', [
