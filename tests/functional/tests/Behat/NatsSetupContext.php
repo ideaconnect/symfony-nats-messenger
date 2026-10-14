@@ -10,6 +10,7 @@ use Symfony\Component\Process\Exception\ProcessFailedException;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NatsMessenger\NatsTransport;
+use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 
 /**
  * Behat step definitions for NATS Messenger functional/integration tests.
@@ -41,8 +42,8 @@ use IDCT\NatsMessenger\NatsTransport;
  */
 class NatsSetupContext implements Context
 {
-    /** The serializer service the igbinary steps give a transport's `serializer:` key. */
-    private const IGBINARY_SERIALIZER = 'idct_nats_messenger.serializer.igbinary';
+    /** The serializer service the igbinary steps give a transport's `serializer:` key: the README's value. */
+    private const IGBINARY_SERIALIZER = IgbinarySerializer::class;
 
     private ?Process $natsProcess = null;
     private ?Process $setupProcess = null;

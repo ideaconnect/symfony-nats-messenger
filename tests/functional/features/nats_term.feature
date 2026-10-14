@@ -21,7 +21,7 @@ Feature: Symfony failure transport via TERM
   @term
   Scenario: Failed message routed to Symfony failure transport via TERM with the igbinary serializer
     Given NATS server is running
-    And I have a messenger transport with failure transport configured using the "idct_nats_messenger.serializer.igbinary" serializer
+    And I have a messenger transport with failure transport configured using the "IDCT\NatsMessenger\Serializer\IgbinarySerializer" serializer
     And the NATS stream is set up
     And the failure stream is set up
     When I send 1 always-failing message
