@@ -42,7 +42,8 @@ composer require idct/symfony-nats-messenger
 
 The package ships `IDCTNatsMessengerBundle`, which registers the transport factory and
 the igbinary serializer for you - no per-project `services.yaml` entries are required.
-With Symfony Flex the bundle is enabled automatically on install. Without Flex, enable it manually:
+With Symfony Flex the bundle is enabled automatically when the package is installed or updated. Without
+Flex, enable it manually:
 
 ```php
 // config/bundles.php
@@ -67,11 +68,18 @@ services:
 
 ### Upgrading from 5.4 or earlier
 
+- With Symfony Flex, updating the package adds the bundle to `config/bundles.php`, as installing it does.
+  Commit that change with the update.
 - The `services.yaml` entries you added for the transport keep working next to the bundle, and you can
   delete them, with one exception: the bundle does not register the `igbinary_serializer` id earlier
   versions of this README suggested. If a transport has `serializer: 'igbinary_serializer'`, change it to
   `serializer: 'IDCT\NatsMessenger\Serializer\IgbinarySerializer'` before you delete that entry, or keep
   the entry. Otherwise the container cannot be built, because the service the transport names is gone.
+- Going back to 5.4 or earlier does not take the bundle out of `config/bundles.php`. The application then
+  stops with `Class "IDCT\NatsMessenger\IDCTNatsMessengerBundle" not found`, and so does every
+  `composer install` or `composer update` that clears the cache. Delete the line when you downgrade, and
+  add it back yourself if you update again later: Flex configures a package once, and the package's entry
+  in `symfony.lock` stays after the downgrade.
 
 > **Tested by:** `theServiceEntriesUsedBeforeTheBundleKeepWorking`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`
 

@@ -94,8 +94,8 @@ docs/
   serializer must keep that one id: Symfony 7.4+ wraps the serializer a transport names in a
   `SigningSerializer` once for each id in the transports' configuration, so a second id (an alias) would
   wrap it twice for the transport naming it, which could then never decode a message that must be signed.
-- Symfony Flex enables the bundle automatically on install; without Flex it is added to
-  `config/bundles.php` manually. Manual service registration (the pre-bundle approach) keeps
+- Symfony Flex enables the bundle automatically when the package is installed or updated (and leaves it
+  in `config/bundles.php` on a downgrade); without Flex it is added to `config/bundles.php` manually. Manual service registration (the pre-bundle approach) keeps
   working alongside it.
 
 ### NatsTransportFactory
