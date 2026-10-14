@@ -1,52 +1,139 @@
 <?php
 
+declare(strict_types=1);
+
 namespace IDCT\NatsMessenger\Tests\Unit;
 
 use IDCT\NatsMessenger\IDCTNatsMessengerBundle;
-use IDCT\NatsMessenger\NatsTransportFactory;
+use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
+use IDCT\NatsMessenger\Tests\Support\MessengerTestKernel;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
-use Symfony\Component\DependencyInjection\ContainerBuilder;
+use ReflectionObject;
+use ReflectionProperty;
+use Symfony\Component\HttpKernel\Bundle\BundleInterface;
+use Symfony\Component\Messenger\Exception\InvalidArgumentException;
+use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 
-class IDCTNatsMessengerBundleTest extends TestCase
+/**
+ * The bundle's services as Symfony compiles them into an application. Each test boots a kernel with
+ * FrameworkBundle and Messenger and takes the transports from its container, so it sees what loading the
+ * bundle's extension alone does not: the tags autoconfiguration adds, the factory Messenger picks for a DSN,
+ * and the decorators it puts around a transport's serializer.
+ */
+final class IDCTNatsMessengerBundleTest extends TestCase
 {
+    private const README = __DIR__ . '/../../README.md';
+
+    private const NATS_DSN = 'nats-jetstream://localhost:4222/stream/topic';
+
+    /** @var list<MessengerTestKernel> */
+    private array $kernels = [];
+
+    protected function tearDown(): void
+    {
+        foreach ($this->kernels as $kernel) {
+            $kernel->remove();
+        }
+        $this->kernels = [];
+    }
+
     #[Test]
     public function transportFactoryIsRegisteredAndTaggedForMessengerDiscovery(): void
     {
-        $container = self::buildContainer();
+        $kernel = $this->kernel([new IDCTNatsMessengerBundle()], ['transports' => ['nats' => self::NATS_DSN]]);
 
-        $this->assertTrue($container->hasDefinition('idct_nats_messenger.transport_factory'));
+        $this->assertInstanceOf(NatsTransport::class, $kernel->testContainer()->get('messenger.transport.nats'));
+    }
 
-        $definition = $container->getDefinition('idct_nats_messenger.transport_factory');
-        $this->assertSame(NatsTransportFactory::class, $definition->getClass());
-        $this->assertTrue($definition->hasTag('messenger.transport_factory'));
+    /**
+     * Autoconfiguration tags a transport factory only when the application defines it as a service; nothing
+     * registers one from vendor/ on its own. This is what the bundle is for.
+     */
+    #[Test]
+    public function withoutTheBundleNoTransportFactorySupportsANatsDsn(): void
+    {
+        $kernel = $this->kernel([], ['transports' => ['nats' => self::NATS_DSN]]);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('No transport supports Messenger DSN');
+
+        $kernel->testContainer()->get('messenger.transport.nats');
     }
 
     #[Test]
-    public function igbinarySerializerIsRegisteredWithClassNameAlias(): void
+    public function theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer(): void
     {
-        $container = self::buildContainer();
+        $kernel = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            [],
+            [self::readmeYamlBlockAfter('#### Using IgbinarySerializer (recommended)')],
+        );
 
-        $this->assertTrue($container->hasDefinition('idct_nats_messenger.serializer.igbinary'));
+        $chain = self::serializerChain($kernel->testContainer()->get('messenger.transport.nats_transport'));
 
-        $definition = $container->getDefinition('idct_nats_messenger.serializer.igbinary');
-        $this->assertSame(IgbinarySerializer::class, $definition->getClass());
-
-        $this->assertTrue($container->hasAlias(IgbinarySerializer::class));
-        $this->assertSame('idct_nats_messenger.serializer.igbinary', (string) $container->getAlias(IgbinarySerializer::class));
+        $this->assertSame(IgbinarySerializer::class, end($chain));
     }
 
-    private static function buildContainer(): ContainerBuilder
+    /**
+     * @param list<BundleInterface> $bundles
+     * @param array<string, mixed>  $messenger
+     * @param list<string>          $files
+     */
+    private function kernel(array $bundles, array $messenger, array $files = []): MessengerTestKernel
     {
-        $container = new ContainerBuilder();
-        $container->setParameter('kernel.environment', 'test');
-        $container->setParameter('kernel.build_dir', sys_get_temp_dir());
+        $kernel = new MessengerTestKernel($bundles, $messenger, $files);
+        $this->kernels[] = $kernel;
 
-        $extension = (new IDCTNatsMessengerBundle())->getContainerExtension();
-        self::assertNotNull($extension);
-        $extension->load([], $container);
+        return $kernel;
+    }
 
-        return $container;
+    /** The first ```yaml block in README.md after the given line. */
+    private static function readmeYamlBlockAfter(string $line): string
+    {
+        $readme = (string) file_get_contents(self::README);
+
+        $offset = strpos($readme, "\n" . $line . "\n");
+        self::assertNotFalse($offset, sprintf('README.md has no line "%s".', $line));
+        self::assertSame(1, preg_match('/```yaml\n(.*?)```/s', $readme, $block, 0, $offset));
+
+        return $block[1];
+    }
+
+    /**
+     * The serializer the transport holds, then each serializer it hands the work to, innermost last.
+     *
+     * @return list<class-string>
+     */
+    private static function serializerChain(mixed $transport): array
+    {
+        self::assertInstanceOf(NatsTransport::class, $transport);
+
+        $chain = [];
+        $serializer = (new ReflectionProperty(NatsTransport::class, 'serializer'))->getValue($transport);
+        while ($serializer instanceof SerializerInterface) {
+            $chain[] = $serializer::class;
+            $serializer = self::wrappedSerializer($serializer);
+        }
+
+        return $chain;
+    }
+
+    /** The serializer a decorator, such as Symfony's SigningSerializer, hands the work to. */
+    private static function wrappedSerializer(SerializerInterface $serializer): ?SerializerInterface
+    {
+        foreach ((new ReflectionObject($serializer))->getProperties() as $property) {
+            if ($property->isStatic() || !$property->isInitialized($serializer)) {
+                continue;
+            }
+
+            $value = $property->getValue($serializer);
+            if ($value instanceof SerializerInterface) {
+                return $value;
+            }
+        }
+
+        return null;
     }
 }

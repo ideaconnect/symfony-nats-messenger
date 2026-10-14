@@ -60,10 +60,14 @@ PINGs too, and `ping_after_idle` stays at 30. Each test but the limit-two guard 
 
 ### Bundle (`tests/unit/IDCTNatsMessengerBundleTest.php`)
 
+Each test boots a kernel with FrameworkBundle and Messenger (`tests/Support/MessengerTestKernel.php`) and takes the
+transports from its container, so it sees the tags autoconfiguration adds and the decorators Messenger puts around a
+transport's serializer. Building a NATS transport opens no connection, so no server is needed.
+
 | Feature | Tests |
 |---------|-------|
-| **Transport factory registration** | `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery` |
-| **IgbinarySerializer registration + class-name alias** | `igbinarySerializerIsRegisteredWithClassNameAlias` |
+| **Transport factory registration** | `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery` (a NATS DSN gets a `NatsTransport`), `withoutTheBundleNoTransportFactorySupportsANatsDsn` (nothing registers the factory from vendor/ on its own) |
+| **IgbinarySerializer registration** | `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer` (the README's example, with the bundle and nothing else) |
 
 The functional Behat suite also exercises the bundle end-to-end: the test app enables it in
 `config/bundles.php` and every scenario relies on its service registration.

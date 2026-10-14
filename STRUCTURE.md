@@ -43,12 +43,13 @@ tests/
 ├── bootstrap.php                               # autoloader + BypassFinals; takes Infection's file swap over in mutant processes
 ├── Support/
 │   ├── ClientInjectedNatsTransport.php         # the transport with a client the test gives it
+│   ├── MessengerTestKernel.php                 # a FrameworkBundle + Messenger kernel for tests that need a compiled container
 │   ├── PhpProcess.php                          # runs a PHP script in a child process
 │   ├── RttCountingNatsClient.php               # the real client, counting the transport's connection checks
 │   ├── StrictHeaderNameSerializer.php          # a serializer that reads header names as strings under strict types
 │   └── SubscriptionLimitNatsServer.php         # a scripted server with a stream, a pull consumer and a subscription limit
 ├── unit/                                       # PHPUnit 11 - fast, no live NATS required
-│   ├── IDCTNatsMessengerBundleTest.php         # bundle service registration (factory tag, serializer alias)
+│   ├── IDCTNatsMessengerBundleTest.php         # the bundle in a compiled kernel: factory discovery, the README serializer
 │   ├── NatsTransportTest.php                   # send/get/ack/reject/setup/retry/count/scheduled
 │   ├── NatsTransportFactoryTest.php            # scheme detection, transport creation
 │   ├── MutationTestingBootstrapTest.php        # mutant processes can double final classes and load the mutant

@@ -52,7 +52,7 @@ return [
 ];
 ```
 
-> **Tested by:** `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery`, `igbinarySerializerIsRegisteredWithClassNameAlias` - the functional Behat suite also runs entirely on the bundle's service registration.
+> **Tested by:** `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery`, `withoutTheBundleNoTransportFactorySupportsANatsDsn`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer` - the functional Behat suite also runs entirely on the bundle's service registration.
 
 ### Development Setup
 
@@ -146,7 +146,7 @@ Like Symfony's own serializers, it leaves out the stamps Symfony marks as not to
 Symfony re-sends for a retry or to the failure transport is serialized without them. Any serializer extending
 `AbstractEnveloperSerializer` does the same.
 
-> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`, `igbinarySerializerIsRegisteredWithClassNameAlias`, `encode_EnvelopeAWorkerIsHandling_EncodesWithoutItsNonSendableStamps`, `encode_WithNonSendableStamps_LeavesThemOutAndKeepsTheRest`, Behat scenario `Failed message routed to Symfony failure transport via TERM with the igbinary serializer`
+> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`, `encode_EnvelopeAWorkerIsHandling_EncodesWithoutItsNonSendableStamps`, `encode_WithNonSendableStamps_LeavesThemOutAndKeepsTheRest`, Behat scenario `Failed message routed to Symfony failure transport via TERM with the igbinary serializer`
 
 #### Creating Custom Serializers
 
