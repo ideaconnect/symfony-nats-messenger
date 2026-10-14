@@ -23,7 +23,8 @@ final class IDCTNatsMessengerBundle extends AbstractBundle
         $services->set('idct_nats_messenger.transport_factory', NatsTransportFactory::class)
             ->tag('messenger.transport_factory');
 
-        $services->set('idct_nats_messenger.serializer.igbinary', IgbinarySerializer::class);
-        $services->alias(IgbinarySerializer::class, 'idct_nats_messenger.serializer.igbinary');
+        // One id only: Symfony 7.4+ wraps a transport's serializer for signing once per id the transports
+        // name, so an alias next to this id would wrap it twice and break signed messages.
+        $services->set(IgbinarySerializer::class);
     }
 }

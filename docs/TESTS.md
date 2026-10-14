@@ -68,6 +68,7 @@ transport's serializer. Building a NATS transport opens no connection, so no ser
 |---------|-------|
 | **Transport factory registration** | `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery` (a NATS DSN gets a `NatsTransport`), `withoutTheBundleNoTransportFactorySupportsANatsDsn` (nothing registers the factory from vendor/ on its own) |
 | **IgbinarySerializer registration** | `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer` (the README's example, with the bundle and nothing else) |
+| **One id for the serializer: Messenger wraps it for signing once, so a signed message decodes** | `aSignedMessageSurvivesTheSerializerUnderEveryIdTheBundleGivesIt` (one transport per id the bundle gives the serializer; Symfony 7.4+, needs igbinary) |
 
 The functional Behat suite also exercises the bundle end-to-end: the test app enables it in
 `config/bundles.php` and every scenario relies on its service registration.
