@@ -58,6 +58,16 @@ PINGs too, and `ping_after_idle` stays at 30. Each test but the limit-two guard 
 | **At a limit of two, pulls deliver and acknowledge, and never need a third subscription** | `testAtALimitOfTwoPullsDeliverAndAcknowledge` (guard: passes on 5.4.1 too) |
 | **The closing form: the same error, then the server closes the connection** | `testALimitErrorTheServerClosesTheConnectionBehindKeepsTheCheckBeforeTheNextOperation` (before and after the pull's inbox was confirmed; the client still reports Open, and the next send checks, finds the connection gone and goes out on a new one), `testALimitErrorTheServerClosesTheConnectionBehindLeavesAClosedClientThatIsReplacedWithoutACheck` (the heartbeat read the EOF, so the next send dials without a check) |
 
+### Bundle (`tests/unit/IDCTNatsMessengerBundleTest.php`)
+
+| Feature | Tests |
+|---------|-------|
+| **Transport factory registration** | `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery` |
+| **IgbinarySerializer registration + class-name alias** | `igbinarySerializerIsRegisteredWithClassNameAlias` |
+
+The functional Behat suite also exercises the bundle end-to-end: the test app enables it in
+`config/bundles.php` and every scenario relies on its service registration.
+
 ### Transport Factory (`tests/unit/NatsTransportFactoryTest.php`)
 
 | Feature | Tests |

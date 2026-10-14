@@ -19,7 +19,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 528 unit tests, ~99.6% coverage, mutation-tested (96% MSI)
+- 🧪 **Thoroughly Tested** - 531 unit tests, ~99.6% coverage, mutation-tested (96% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -39,6 +39,20 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 ```bash
 composer require idct/symfony-nats-messenger
 ```
+
+The package ships `IDCTNatsMessengerBundle`, which registers the transport factory and
+the igbinary serializer for you - no per-project `services.yaml` entries are required.
+With Symfony Flex the bundle is enabled automatically on install. Without Flex, enable it manually:
+
+```php
+// config/bundles.php
+return [
+    // ...
+    IDCT\NatsMessenger\IDCTNatsMessengerBundle::class => ['all' => true],
+];
+```
+
+> **Tested by:** `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery`, `igbinarySerializerIsRegisteredWithClassNameAlias` - the functional Behat suite also runs entirely on the bundle's service registration.
 
 ### Development Setup
 
@@ -117,14 +131,13 @@ framework:
           consumer: 'my-consumer'
 ```
 
-Register the serializer service the `serializer:` key refers to. For example:
-```yaml
-    igbinary_serializer:
-        class: IDCT\NatsMessenger\Serializer\IgbinarySerializer
-```
+The `IDCT\NatsMessenger\Serializer\IgbinarySerializer` service the `serializer:` key refers to is
+registered by `IDCTNatsMessengerBundle` (see [Installation](#installation)), so the configuration
+above works as-is. Only when the bundle is not enabled do you need to register it yourself:
 
-or:
 ```yaml
+# config/services.yaml (only without the bundle)
+services:
     IDCT\NatsMessenger\Serializer\IgbinarySerializer: ~
 ```
 
@@ -133,7 +146,7 @@ Like Symfony's own serializers, it leaves out the stamps Symfony marks as not to
 Symfony re-sends for a retry or to the failure transport is serialized without them. Any serializer extending
 `AbstractEnveloperSerializer` does the same.
 
-> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`, `encode_EnvelopeAWorkerIsHandling_EncodesWithoutItsNonSendableStamps`, `encode_WithNonSendableStamps_LeavesThemOutAndKeepsTheRest`, Behat scenario `Failed message routed to Symfony failure transport via TERM with the igbinary serializer`
+> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`, `igbinarySerializerIsRegisteredWithClassNameAlias`, `encode_EnvelopeAWorkerIsHandling_EncodesWithoutItsNonSendableStamps`, `encode_WithNonSendableStamps_LeavesThemOutAndKeepsTheRest`, Behat scenario `Failed message routed to Symfony failure transport via TERM with the igbinary serializer`
 
 #### Creating Custom Serializers
 
@@ -1145,7 +1158,11 @@ nats consumer info my-stream my-consumer --json | jq '.state'
 
 ## Architecture
 
-The bridge consists of two main components:
+The bridge consists of two main components, wired into the framework by a thin bundle:
+
+### IDCTNatsMessengerBundle
+- Registers `NatsTransportFactory` and the `IgbinarySerializer` service in the application container
+- Auto-enabled by Symfony Flex; no semantic configuration
 
 ### NatsTransportFactory
 - Handles DSN scheme detection (`nats-jetstream://`)

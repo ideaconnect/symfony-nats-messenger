@@ -19,7 +19,7 @@ Feature: NATS Stream Setup
     Examples:
       | serializer                                |
       | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | idct_nats_messenger.serializer.igbinary   |
 
   @existing
   Scenario Outline: Setup command handles existing streams gracefully
@@ -32,7 +32,7 @@ Feature: NATS Stream Setup
     Examples:
       | serializer                                |
       | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | idct_nats_messenger.serializer.igbinary   |
 
   @storage
   Scenario: Setup NATS stream with memory storage
@@ -57,7 +57,7 @@ Feature: NATS Stream Setup
 
   Scenario: Setup command fails gracefully when NATS is unavailable
     Given NATS server is not running
-    And I have a messenger transport configured with max age of 15 minutes using "igbinary_serializer"
+    And I have a messenger transport configured with max age of 15 minutes using "idct_nats_messenger.serializer.igbinary"
     When I run the messenger setup command
     Then the setup should fail with a connection error
     And the error message should be descriptive
@@ -77,7 +77,7 @@ Feature: NATS Stream Setup
     Examples:
       | serializer                                |
       | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | idct_nats_messenger.serializer.igbinary   |
 
   @partial
   Scenario Outline: Partial message consumption with multiple consumers
@@ -94,7 +94,7 @@ Feature: NATS Stream Setup
     Examples:
       | serializer                                |
       | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | idct_nats_messenger.serializer.igbinary   |
 
   @high
   Scenario Outline: High-volume message processing with file output verification
@@ -115,4 +115,4 @@ Feature: NATS Stream Setup
     Examples:
       | serializer                                |
       | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | idct_nats_messenger.serializer.igbinary   |
