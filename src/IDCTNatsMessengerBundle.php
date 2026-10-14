@@ -20,7 +20,7 @@ final class IDCTNatsMessengerBundle extends AbstractBundle
     {
         $services = $configurator->services();
 
-        $services->set('idct_nats_messenger.transport_factory', NatsTransportFactory::class)
+        $services->set(NatsTransportFactory::class)
             ->tag('messenger.transport_factory');
 
         // One id only: Symfony 7.4+ wraps a transport's serializer for signing once per id the transports

@@ -88,11 +88,12 @@ docs/
 
 ### IDCTNatsMessengerBundle
 - A thin `AbstractBundle` (no semantic configuration) registering the library's services in the
-  application container: `idct_nats_messenger.transport_factory` (`NatsTransportFactory`) and
-  `IDCT\NatsMessenger\Serializer\IgbinarySerializer`, the README's `serializer:` value. The serializer has
-  that one id: Symfony 7.4+ wraps the serializer a transport names in a `SigningSerializer` once for each id
-  in the transports' configuration, so a second id (an alias) would wrap it twice for the transport naming
-  it, which could then never decode a message that must be signed.
+  application container, each under one id, its class name: `NatsTransportFactory`, tagged
+  `messenger.transport_factory`, and `IgbinarySerializer`, the README's `serializer:` value. An entry an
+  application defines under the same id, as it had to before the bundle, replaces the bundle's. The
+  serializer must keep that one id: Symfony 7.4+ wraps the serializer a transport names in a
+  `SigningSerializer` once for each id in the transports' configuration, so a second id (an alias) would
+  wrap it twice for the transport naming it, which could then never decode a message that must be signed.
 - Symfony Flex enables the bundle automatically on install; without Flex it is added to
   `config/bundles.php` manually. Manual service registration (the pre-bundle approach) keeps
   working alongside it.

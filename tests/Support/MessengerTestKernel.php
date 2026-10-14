@@ -6,6 +6,9 @@ namespace IDCT\NatsMessenger\Tests\Support;
 
 use Symfony\Bundle\FrameworkBundle\FrameworkBundle;
 use Symfony\Bundle\FrameworkBundle\Kernel\MicroKernelTrait;
+use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
+use Symfony\Component\DependencyInjection\Compiler\PassConfig;
+use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
 use Symfony\Component\Filesystem\Filesystem;
@@ -24,6 +27,9 @@ use Symfony\Component\Routing\Loader\Configurator\RoutingConfigurator;
 final class MessengerTestKernel extends Kernel
 {
     use MicroKernelTrait;
+
+    /** The container parameter that lists the services tagged `messenger.transport_factory`, id => class. */
+    public const TRANSPORT_FACTORIES = 'test.messenger_transport_factories';
 
     private readonly string $directory;
 
@@ -119,6 +125,22 @@ final class MessengerTestKernel extends Kernel
 
     protected function configureRoutes(RoutingConfigurator $routes): void
     {
+    }
+
+    protected function build(ContainerBuilder $container): void
+    {
+        // The tags are final once the container is about to drop the services nothing uses.
+        $container->addCompilerPass(new class () implements CompilerPassInterface {
+            public function process(ContainerBuilder $container): void
+            {
+                $factories = [];
+                foreach (array_keys($container->findTaggedServiceIds('messenger.transport_factory')) as $id) {
+                    $factories[$id] = $container->getDefinition($id)->getClass();
+                }
+
+                $container->setParameter(MessengerTestKernel::TRANSPORT_FACTORIES, $factories);
+            }
+        }, PassConfig::TYPE_BEFORE_REMOVING);
     }
 
     /** PHP 8.5 has get_error_handler(); setting a handler and putting the old one back works on 8.2 too. */

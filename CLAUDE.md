@@ -89,11 +89,12 @@ composer nats:stop               # stop NATS
   `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored.
 - **Serializer security:** the default `IgbinarySerializer` `unserialize()`s payloads - unsafe on
   untrusted subjects. Don't weaken the README security warnings.
-- **The bundle registers the serializer under one id, its class name.** Symfony 7.4+ wraps the serializer each
-  transport names in a `SigningSerializer`, one for each service id in the transports' configuration, compared
-  as strings. An alias next to the id it points to would wrap it twice for the transport that names the alias,
-  and that transport could then never decode a message that must be signed (`RunCommandMessage`, any
-  `sign: true` handler). Don't give the bundle's serializer a second id.
+- **The bundle registers each service under one id, its class name.** An application's own entry under that id
+  (the setup before the bundle) replaces the bundle's. Symfony 7.4+ wraps the serializer each transport names in
+  a `SigningSerializer`, one for each service id in the transports' configuration, compared as strings. An alias
+  next to the id it points to would wrap it twice for the transport that names the alias, and that transport
+  could then never decode a message that must be signed (`RunCommandMessage`, any `sign: true` handler). Don't
+  give the bundle's services a second id.
 
 ## Documentation maintenance (required, per AGENTS.md)
 

@@ -6,9 +6,11 @@ namespace IDCT\NatsMessenger\Tests\Unit;
 
 use IDCT\NatsMessenger\IDCTNatsMessengerBundle;
 use IDCT\NatsMessenger\NatsTransport;
+use IDCT\NatsMessenger\NatsTransportFactory;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Tests\Support\MessengerTestKernel;
 use IDCT\NatsMessenger\Tests\Support\SignedMessage;
+use IDCT\NatsMessenger\Tests\Support\TransportFactoryUser;
 use PHPUnit\Framework\Attributes\RequiresMethod;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -39,6 +41,20 @@ final class IDCTNatsMessengerBundleTest extends TestCase
             IDCT\NatsMessenger\Tests\Support\SignedMessageHandler:
                 tags:
                     - { name: messenger.message_handler, handles: IDCT\NatsMessenger\Tests\Support\SignedMessage, sign: true }
+        YAML;
+
+    /** The factory entry applications needed in services.yaml before the bundle. */
+    private const FACTORY_ENTRY_BEFORE_THE_BUNDLE = <<<'YAML'
+        services:
+            IDCT\NatsMessenger\NatsTransportFactory:
+                tags: [messenger.transport_factory]
+        YAML;
+
+    private const TRANSPORT_FACTORY_USER = <<<'YAML'
+        services:
+            IDCT\NatsMessenger\Tests\Support\TransportFactoryUser:
+                autowire: true
+                public: true
         YAML;
 
     /** @var list<MessengerTestKernel> */
@@ -87,6 +103,40 @@ final class IDCTNatsMessengerBundleTest extends TestCase
         $chain = self::serializerChain($kernel->testContainer()->get('messenger.transport.nats_transport'));
 
         $this->assertSame(IgbinarySerializer::class, end($chain));
+    }
+
+    /**
+     * Code that autowires or decorates the factory asks for it by its class, the id applications gave it before
+     * the bundle.
+     */
+    #[Test]
+    public function anApplicationServiceCanAutowireTheTransportFactory(): void
+    {
+        $container = $this->kernel([new IDCTNatsMessengerBundle()], [], [self::TRANSPORT_FACTORY_USER])->testContainer();
+
+        $user = $container->get(TransportFactoryUser::class);
+        $this->assertInstanceOf(TransportFactoryUser::class, $user);
+        $this->assertInstanceOf(NatsTransportFactory::class, $user->factory);
+    }
+
+    /**
+     * An application that keeps the factory entry it needed before the bundle replaces the bundle's factory
+     * with it, rather than giving Messenger a second NATS factory that it never uses.
+     */
+    #[Test]
+    public function anApplicationsOwnFactoryEntryReplacesTheBundlesFactory(): void
+    {
+        $container = $this
+            ->kernel([new IDCTNatsMessengerBundle()], ['transports' => ['nats' => self::NATS_DSN]], [self::FACTORY_ENTRY_BEFORE_THE_BUNDLE])
+            ->testContainer();
+
+        $factories = $container->getParameter(MessengerTestKernel::TRANSPORT_FACTORIES);
+        $this->assertIsArray($factories);
+        $this->assertSame(
+            [NatsTransportFactory::class => NatsTransportFactory::class],
+            array_filter($factories, static fn (mixed $class): bool => $class === NatsTransportFactory::class),
+        );
+        $this->assertInstanceOf(NatsTransport::class, $container->get('messenger.transport.nats'));
     }
 
     /**
