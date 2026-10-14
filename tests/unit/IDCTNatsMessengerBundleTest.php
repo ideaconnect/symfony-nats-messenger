@@ -34,6 +34,8 @@ final class IDCTNatsMessengerBundleTest extends TestCase
 {
     private const README = __DIR__ . '/../../README.md';
 
+    private const COMPOSER_JSON = __DIR__ . '/../../composer.json';
+
     private const NATS_DSN = 'nats-jetstream://localhost:4222/stream/topic';
 
     /** Makes SignedMessage a message type Messenger signs, as `sign: true` on a handler does. */
@@ -240,6 +242,35 @@ final class IDCTNatsMessengerBundleTest extends TestCase
     }
 
     /**
+     * Flex enables a bundle that has no recipe by guessing its class from the package's PSR-4 prefixes and
+     * looking in the class's file for the name of Symfony's bundle base class (symfony/flex,
+     * SymfonyBundle::getClassNames()). For `IDCT\NatsMessenger\` it tries `NatsMessengerBundle` and
+     * `IDCTNatsMessengerBundle` in `src/`. Renaming or moving the bundle class, or naming its base class
+     * another way, would make Flex install the package without enabling it, and every NATS DSN would fail
+     * with "No transport supports Messenger DSN" while the rest of this suite stays green.
+     */
+    #[Test]
+    public function flexFindsTheBundleTheWayItGuessesBundleClasses(): void
+    {
+        $composer = json_decode((string) file_get_contents(self::COMPOSER_JSON), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertIsArray($composer);
+
+        $found = [];
+        foreach ($composer['autoload']['psr-4'] as $prefix => $path) {
+            foreach (self::flexBundleClassGuesses($prefix) as $class) {
+                $file = dirname(self::COMPOSER_JSON) . '/' . trim($path, '/') . '/' . substr($class, strrpos($class, '\\') + 1) . '.php';
+                $contents = is_file($file) ? (string) file_get_contents($file) : '';
+                if (str_contains($contents, 'Symfony\Component\HttpKernel\Bundle\Bundle')
+                    || str_contains($contents, 'Symfony\Component\HttpKernel\Bundle\AbstractBundle')) {
+                    $found[] = $class;
+                }
+            }
+        }
+
+        $this->assertSame([IDCTNatsMessengerBundle::class], $found);
+    }
+
+    /**
      * @param list<BundleInterface> $bundles
      * @param array<string, mixed>  $messenger
      * @param list<string>          $files
@@ -294,6 +325,35 @@ final class IDCTNatsMessengerBundleTest extends TestCase
         self::assertNotSame([], $blocks[1], sprintf('README.md has no YAML block starting with "%s".', $firstLine));
 
         return $blocks[1];
+    }
+
+    /**
+     * The bundle classes Flex tries for a PSR-4 prefix, built the way symfony/flex's
+     * SymfonyBundle::extractClassNames() builds them.
+     *
+     * @return list<string>
+     */
+    private static function flexBundleClassGuesses(string $prefix): array
+    {
+        $namespace = trim($prefix, '\\');
+        $parts = explode('\\', $namespace);
+        $suffix = $parts[count($parts) - 1];
+        if (!str_ends_with($suffix, 'Bundle')) {
+            $suffix .= 'Bundle';
+        }
+
+        $classes = [$namespace . '\\' . $suffix];
+        $joined = '';
+        foreach (array_slice($parts, 0, -1) as $part) {
+            if ($part === 'Bundle') {
+                continue;
+            }
+            $classes[] = $namespace . '\\' . $part . $suffix;
+            $joined .= $part;
+            $classes[] = $namespace . '\\' . $joined . $suffix;
+        }
+
+        return array_values(array_unique($classes));
     }
 
     /** The first ```yaml block in README.md after the given line. */
