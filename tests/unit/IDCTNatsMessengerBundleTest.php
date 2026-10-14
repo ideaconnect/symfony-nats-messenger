@@ -120,6 +120,21 @@ final class IDCTNatsMessengerBundleTest extends TestCase
     }
 
     /**
+     * Without the bundle (no Flex, or an application that lists its bundles itself and leaves it out), the
+     * README's services.yaml snippets for that case and its igbinary example must give a working transport.
+     */
+    #[Test]
+    public function theReadmesSetupWithoutTheBundleGivesAWorkingTransport(): void
+    {
+        $files = self::readmeYamlBlocksStartingWith('# config/services.yaml (only without the bundle)');
+        $files[] = self::readmeYamlBlockAfter('#### Using IgbinarySerializer (recommended)');
+
+        $chain = self::serializerChain($this->kernel([], [], $files)->testContainer()->get('messenger.transport.nats_transport'));
+
+        $this->assertSame(IgbinarySerializer::class, end($chain));
+    }
+
+    /**
      * Code that autowires or decorates the factory asks for it by its class, the id applications gave it before
      * the bundle.
      */
@@ -266,6 +281,19 @@ final class IDCTNatsMessengerBundleTest extends TestCase
         self::assertNotSame([], $ids, 'The bundle registers the IgbinarySerializer.');
 
         return $ids;
+    }
+
+    /**
+     * Every ```yaml block in README.md whose first line is the given one.
+     *
+     * @return list<string>
+     */
+    private static function readmeYamlBlocksStartingWith(string $firstLine): array
+    {
+        preg_match_all('/```yaml\n(' . preg_quote($firstLine, '/') . '\n.*?)```/s', (string) file_get_contents(self::README), $blocks);
+        self::assertNotSame([], $blocks[1], sprintf('README.md has no YAML block starting with "%s".', $firstLine));
+
+        return $blocks[1];
     }
 
     /** The first ```yaml block in README.md after the given line. */

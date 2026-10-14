@@ -52,7 +52,18 @@ return [
 ];
 ```
 
-> **Tested by:** `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery`, `withoutTheBundleNoTransportFactorySupportsANatsDsn`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer` - the functional Behat suite also runs entirely on the bundle's service registration.
+If you leave the bundle out, register the transport factory yourself. Messenger finds it by its tag, and
+nothing else registers it, so without it every `nats-jetstream://` DSN fails with "No transport supports
+Messenger DSN":
+
+```yaml
+# config/services.yaml (only without the bundle)
+services:
+    IDCT\NatsMessenger\NatsTransportFactory:
+        tags: [messenger.transport_factory]
+```
+
+> **Tested by:** `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery`, `withoutTheBundleNoTransportFactorySupportsANatsDsn`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`, `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` - the functional Behat suite also runs entirely on the bundle's service registration.
 
 ### Development Setup
 
@@ -133,7 +144,8 @@ framework:
 
 The `IDCT\NatsMessenger\Serializer\IgbinarySerializer` service the `serializer:` key refers to is
 registered by `IDCTNatsMessengerBundle` (see [Installation](#installation)), so the configuration
-above works as-is. Only when the bundle is not enabled do you need to register it yourself:
+above works as-is. Only when the bundle is not enabled do you need to register it yourself, next to the
+transport factory:
 
 ```yaml
 # config/services.yaml (only without the bundle)
@@ -146,7 +158,7 @@ Like Symfony's own serializers, it leaves out the stamps Symfony marks as not to
 Symfony re-sends for a retry or to the failure transport is serialized without them. Any serializer extending
 `AbstractEnveloperSerializer` does the same.
 
-> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`, `aSignedMessageSurvivesTheSerializerUnderEveryIdTheBundleGivesIt`, `encode_EnvelopeAWorkerIsHandling_EncodesWithoutItsNonSendableStamps`, `encode_WithNonSendableStamps_LeavesThemOutAndKeepsTheRest`, Behat scenario `Failed message routed to Symfony failure transport via TERM with the igbinary serializer`
+> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`, `theReadmesSetupWithoutTheBundleGivesAWorkingTransport`, `aSignedMessageSurvivesTheSerializerUnderEveryIdTheBundleGivesIt`, `encode_EnvelopeAWorkerIsHandling_EncodesWithoutItsNonSendableStamps`, `encode_WithNonSendableStamps_LeavesThemOutAndKeepsTheRest`, Behat scenario `Failed message routed to Symfony failure transport via TERM with the igbinary serializer`
 
 #### Creating Custom Serializers
 
