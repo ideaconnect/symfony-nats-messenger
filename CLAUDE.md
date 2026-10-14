@@ -8,7 +8,7 @@ for Claude Code. For architecture see [STRUCTURE.md](STRUCTURE.md); for human on
 
 A Symfony Messenger **transport** for NATS JetStream. It implements `TransportInterface`,
 `MessageCountAwareInterface`, and `SetupableTransportInterface`, bridging Symfony's message bus to
-NATS via the async `idct/php-nats-jetstream-client` (`^2.10.3`, amphp-based).
+NATS via the async `idct/php-nats-jetstream-client` (`^2.27`, amphp-based).
 
 - **PHP:** `^8.2` · **Symfony:** `^7.2 || ^8` · **NATS:** `^2.9` (`^2.12` for scheduled messages)
 - Everything NATS-specific lives behind the `IDCT\NATS\…` client; this library is the synchronous adapter.
@@ -66,6 +66,11 @@ composer nats:stop               # stop NATS
   missing consumer reports 503, not 404: with `auto_setup` it is re-provisioned once, otherwise `get()` throws.
   The client also reports a pull that got no answer before its own deadline as 408 ("No messages received
   within timeout"); that one makes the next operation PING first, since the server did not answer.
+- **A pull refused at the subscription limit throws `TransportException`.** The transport holds two subscriptions
+  per connection (the request reply inbox and the pull's inbox). At a limit of one, the client's
+  `SubscriptionLimitException` (client `^2.27`) becomes Symfony's `TransportException` naming the stream, consumer
+  and limit, in `fetchBatchMessages()`. The next operation still PINGs first: the server sends the same error when
+  an account's limit is lowered and then closes the connection, so the error does not prove the connection is alive.
 - **`setup()` create-then-update.** On a stream conflict it reads the live config, **merges** subjects,
   preserves server fields, and updates - it never blindly overwrites an existing stream.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);

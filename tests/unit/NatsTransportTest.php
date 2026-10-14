@@ -10,6 +10,7 @@ use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\ConnectionException;
 use IDCT\NATS\Exception\JetStreamException;
+use IDCT\NATS\Exception\SubscriptionLimitException;
 use IDCT\NATS\Exception\UnsupportedFeatureException;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
 use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
@@ -26,6 +27,7 @@ use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
 use Revolt\EventLoop;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Exception\TransportException;
 use Psr\Container\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Messenger\EventListener\SendFailedMessageForRetryListener;
@@ -1679,6 +1681,79 @@ final class NatsTransportTest extends TestCase
         self::assertSame([], iterator_to_array($transport->get()));
     }
 
+    /**
+     * A pull the server refused at the connection's subscription limit fails get() with Symfony's TransportException,
+     * which ReceiverInterface::get() declares, naming the stream, the consumer and the limit, with the client's
+     * SubscriptionLimitException as its previous one (#76). It still counts as a failure on the connection, since the
+     * server sends the same error when it closes the connection right behind it: the next operation checks the
+     * connection first, and keeps it when the PING is answered.
+     */
+    public function testPullRefusedAtTheSubscriptionLimitFailsWithATransportExceptionAndTheNextOperationChecksTheConnection(): void
+    {
+        $limit = new SubscriptionLimitException("Server sent error frame: 'maximum subscriptions exceeded'");
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturnOnConsecutiveCalls(
+            Future::error($limit),
+            Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408)),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::complete(0.001));
+        $client->expects(self::never())->method('disconnect');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+
+        try {
+            iterator_to_array($transport->get());
+            self::fail('expected get() to fail');
+        } catch (TransportException $e) {
+            self::assertSame(
+                'Cannot pull from NATS stream "test-stream", consumer "client": the subscription limit was exceeded. '
+                . 'This transport requires capacity for at least two subscriptions per connection. Check server, account and user limits.',
+                $e->getMessage(),
+            );
+            self::assertSame(0, $e->getCode());
+            self::assertSame($limit, $e->getPrevious());
+        }
+
+        // The client still reports Open, and no time has passed: the check comes from the refused pull.
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
+     * Guard: any other client failure of a pull propagates as it is, not as a TransportException, and the next
+     * operation checks the connection, as before #76.
+     */
+    public function testPullThatFailedOnTheConnectionOtherwisePropagatesAsItIs(): void
+    {
+        $lost = new ConnectionException('Connection is not open');
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturnOnConsecutiveCalls(
+            Future::error($lost),
+            Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408)),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::complete(0.001));
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+
+        try {
+            iterator_to_array($transport->get());
+            self::fail('expected get() to fail');
+        } catch (\Throwable $e) {
+            self::assertSame($lost, $e);
+        }
+
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
     public function testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -2762,6 +2837,46 @@ final class NatsTransportTest extends TestCase
         $this->expectExceptionMessage('backend unavailable');
 
         iterator_to_array($transport->get());
+    }
+
+    /**
+     * The second pull after auto_setup provisioned the consumer again gets the same treatment as the first (#76): a
+     * refusal at the subscription limit fails get() with the TransportException naming the limit.
+     */
+    public function testAutoSetupRetriedPullRefusedAtTheSubscriptionLimitFailsWithATransportException(): void
+    {
+        $consumerInfo = new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+        );
+        $limit = new SubscriptionLimitException("Server sent error frame: 'maximum subscriptions exceeded'");
+
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))->method('addConsumer')->willReturn(Future::complete($consumerInfo));
+        $jetStream->expects(self::exactly(2))
+            ->method('fetchBatch')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new JetStreamException('consumer not found', 503)),
+                Future::error($limit),
+            );
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['auto_setup' => true]);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            iterator_to_array($transport->get());
+            self::fail('expected get() to fail');
+        } catch (TransportException $e) {
+            self::assertSame(
+                'Cannot pull from NATS stream "test-stream", consumer "client": the subscription limit was exceeded. '
+                . 'This transport requires capacity for at least two subscriptions per connection. Check server, account and user limits.',
+                $e->getMessage(),
+            );
+            self::assertSame($limit, $e->getPrevious());
+        }
     }
 
     /**

@@ -16,7 +16,7 @@ Symfony Messenger  ──dispatch──▶  NatsTransportFactory ──▶ NatsT
 - **Symfony side:** the library implements `TransportInterface`, `MessageCountAwareInterface`,
   and `SetupableTransportInterface`, so it plugs into `messenger:consume`, `messenger:setup-transports`,
   and the failure/retry machinery like any first-party transport.
-- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.10.3`,
+- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.27`,
   amphp-based). Calls return `Amp\Future`; the transport resolves them synchronously with `->await()`
   because Symfony Messenger's transport contract is blocking.
 
@@ -41,14 +41,19 @@ src/
 tests/
 ├── bootstrap.php                               # autoloader + BypassFinals; takes Infection's file swap over in mutant processes
 ├── Support/
+│   ├── ClientInjectedNatsTransport.php         # the transport with a client the test gives it
 │   ├── PhpProcess.php                          # runs a PHP script in a child process
-│   └── StrictHeaderNameSerializer.php          # a serializer that reads header names as strings under strict types
+│   ├── RttCountingNatsClient.php               # the real client, counting the transport's connection checks
+│   ├── StrictHeaderNameSerializer.php          # a serializer that reads header names as strings under strict types
+│   └── SubscriptionLimitNatsServer.php         # a scripted server with a stream, a pull consumer and a subscription limit
 ├── unit/                                       # PHPUnit 11 - fast, no live NATS required
 │   ├── NatsTransportTest.php                   # send/get/ack/reject/setup/retry/count/scheduled
 │   ├── NatsTransportFactoryTest.php            # scheme detection, transport creation
 │   ├── MutationTestingBootstrapTest.php        # mutant processes can double final classes and load the mutant
 │   ├── MutationTestingChecksTest.php           # the mutation canary and infection.log checks fail closed
 │   ├── MutationTestingCommandsTest.php         # the Infection runs in composer.json write no GitHub annotations
+│   ├── SubscriptionLimitPullTest.php           # pulls at the subscription limit, real client over a scripted server
+│   ├── UnansweredPullTest.php                  # a pull the server never answered calls for a connection check
 │   ├── Options/
 │   │   ├── NatsTransportConfigurationBuilderTest.php  # DSN parsing, validation, option merging
 │   │   └── NatsTransportConfigurationTest.php          # accessor coercion, defaults
@@ -90,7 +95,7 @@ The heart of the bridge. Responsibilities map almost 1:1 to `TransportInterface`
 | Method | What it does |
 |--------|--------------|
 | `send()` | Stamps a UUIDv4 `TransportMessageIdStamp`, serializes the envelope, publishes to the subject through `JetStreamContext::publish()`, which waits for the publish acknowledgement and throws `JetStreamException` on an error or an invalid acknowledgement. A `DelayStamp` (when `scheduled_messages` is on) is published to `{topic}.delayed.{uuid}` with `Nats-Schedule` headers. A `DeduplicationIdStamp` (added with `deduplicate`) is sent as `Nats-Msg-Id`. With `retry_handler=nats` the copy Symfony's retry sends is not published. |
-| `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. A pull that found no messages (408, or 404) is an empty result. A missing consumer reports 503: `auto_setup` re-provisions it once, otherwise the error propagates. Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp`. |
+| `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. A pull that found no messages (408, or 404) is an empty result. A missing consumer reports 503: `auto_setup` re-provisions it once, otherwise the error propagates. A pull refused at the connection's subscription limit (the client's `SubscriptionLimitException`) fails with Symfony's `TransportException` naming the stream, the consumer and the limit, since the transport needs two subscriptions per connection (#76). Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp`. |
 | `ack()` | Sends JetStream ACK for the message's reply token. |
 | `reject()` | Delegates to `handleFailedDelivery()` → TERM (Symfony retry) or NAK (NATS retry). |
 | `getMessageCount()` | Tries consumer info (`num_ack_pending` / `num_pending`), falls back to stream `state.messages`, then 0. |
@@ -101,9 +106,10 @@ Cross-cutting behavior:
   which connects on first use and caches the `JetStreamContext`. The client runs with reconnect off, so a
   lost connection leaves it Closed; `connectIfNeeded()` then dials again on the next operation (#49). A
   connection unused for longer than `ping_after_idle`, or one an operation just failed on (other than with
-  a JetStream reply; a pull the server did not answer counts as a failure), is checked with a PING first and
-  replaced when the server does not answer within `connection_timeout` (or `request_timeout`, when that is
-  shorter); `keepalive()` skips the check.
+  a JetStream reply; a pull the server did not answer counts as a failure, and so does one refused at the
+  subscription limit, since the server may close the connection right behind that error), is checked with
+  a PING first and replaced when the server does not answer within `connection_timeout` (or
+  `request_timeout`, when that is shorter); `keepalive()` skips the check.
 - **Pull consumers, explicit ACK.** Messages are only considered processed once explicitly ACK'd;
   this is what makes `retry_handler` and shared-consumer load balancing work.
 
