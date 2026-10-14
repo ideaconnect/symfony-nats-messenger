@@ -11,6 +11,7 @@ use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Tests\Support\MessengerTestKernel;
 use IDCT\NatsMessenger\Tests\Support\SignedMessage;
 use IDCT\NatsMessenger\Tests\Support\TransportFactoryUser;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresMethod;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -48,6 +49,19 @@ final class IDCTNatsMessengerBundleTest extends TestCase
         services:
             IDCT\NatsMessenger\NatsTransportFactory:
                 tags: [messenger.transport_factory]
+        YAML;
+
+    /**
+     * Everything applications put in services.yaml before the bundle: the factory with its tag, and the
+     * serializer under its class name and under the `igbinary_serializer` id earlier READMEs suggested.
+     */
+    private const SERVICE_ENTRIES_BEFORE_THE_BUNDLE = <<<'YAML'
+        services:
+            IDCT\NatsMessenger\NatsTransportFactory:
+                tags: [messenger.transport_factory]
+            IDCT\NatsMessenger\Serializer\IgbinarySerializer: ~
+            igbinary_serializer:
+                class: IDCT\NatsMessenger\Serializer\IgbinarySerializer
         YAML;
 
     private const TRANSPORT_FACTORY_USER = <<<'YAML'
@@ -137,6 +151,39 @@ final class IDCTNatsMessengerBundleTest extends TestCase
             array_filter($factories, static fn (mixed $class): bool => $class === NatsTransportFactory::class),
         );
         $this->assertInstanceOf(NatsTransport::class, $container->get('messenger.transport.nats'));
+    }
+
+    /**
+     * An application keeps its services.yaml entries when it upgrades, and Flex adds the bundle next to them, so
+     * they must keep working there, and without the bundle too: each transport gets a NatsTransport with the
+     * igbinary serializer, wrapped for signing no more than once.
+     *
+     * @param list<BundleInterface> $bundles
+     */
+    #[Test]
+    #[DataProvider('withAndWithoutTheBundle')]
+    public function theServiceEntriesUsedBeforeTheBundleKeepWorking(array $bundles): void
+    {
+        $transports = [
+            'by_class_name' => ['dsn' => self::NATS_DSN . '_by_class_name', 'serializer' => IgbinarySerializer::class],
+            'by_old_id' => ['dsn' => self::NATS_DSN . '_by_old_id', 'serializer' => 'igbinary_serializer'],
+        ];
+        $container = $this
+            ->kernel($bundles, ['transports' => $transports], [self::SERVICE_ENTRIES_BEFORE_THE_BUNDLE])
+            ->testContainer();
+
+        foreach (array_keys($transports) as $name) {
+            $chain = self::serializerChain($container->get('messenger.transport.' . $name));
+            $this->assertSame(IgbinarySerializer::class, end($chain), $name);
+            $this->assertLessThanOrEqual(1, count(array_keys($chain, SigningSerializer::class, true)), $name);
+        }
+    }
+
+    /** @return iterable<string, array{list<BundleInterface>}> */
+    public static function withAndWithoutTheBundle(): iterable
+    {
+        yield 'next to the bundle' => [[new IDCTNatsMessengerBundle()]];
+        yield 'without the bundle' => [[]];
     }
 
     /**

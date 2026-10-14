@@ -68,6 +68,7 @@ transport's serializer. Building a NATS transport opens no connection, so no ser
 |---------|-------|
 | **Transport factory registration** | `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery` (a NATS DSN gets a `NatsTransport`), `withoutTheBundleNoTransportFactorySupportsANatsDsn` (nothing registers the factory from vendor/ on its own) |
 | **The factory under its class name: autowirable, and an application's own entry replaces it** | `anApplicationServiceCanAutowireTheTransportFactory`, `anApplicationsOwnFactoryEntryReplacesTheBundlesFactory` (one NATS factory, not two) |
+| **The services.yaml entries used before the bundle keep working, next to it and without it** | `theServiceEntriesUsedBeforeTheBundleKeepWorking` (data provider; the factory with its tag, the serializer under its class name and under `igbinary_serializer`) |
 | **IgbinarySerializer registration** | `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer` (the README's example, with the bundle and nothing else) |
 | **One id for the serializer: Messenger wraps it for signing once, so a signed message decodes** | `aSignedMessageSurvivesTheSerializerUnderEveryIdTheBundleGivesIt` (one transport per id the bundle gives the serializer; Symfony 7.4+, needs igbinary) |
 
