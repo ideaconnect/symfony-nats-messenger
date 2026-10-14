@@ -65,6 +65,16 @@ services:
 
 > **Tested by:** `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery`, `withoutTheBundleNoTransportFactorySupportsANatsDsn`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`, `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` - the functional Behat suite also runs entirely on the bundle's service registration.
 
+### Upgrading from 5.4 or earlier
+
+- The `services.yaml` entries you added for the transport keep working next to the bundle, and you can
+  delete them, with one exception: the bundle does not register the `igbinary_serializer` id earlier
+  versions of this README suggested. If a transport has `serializer: 'igbinary_serializer'`, change it to
+  `serializer: 'IDCT\NatsMessenger\Serializer\IgbinarySerializer'` before you delete that entry, or keep
+  the entry. Otherwise the container cannot be built, because the service the transport names is gone.
+
+> **Tested by:** `theServiceEntriesUsedBeforeTheBundleKeepWorking`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`
+
 ### Development Setup
 
 For contributors and development:
