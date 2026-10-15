@@ -15,7 +15,7 @@ echo -e "${GREEN}NATS Messenger Transport - Functional Tests${NC}"
 echo "============================================="
 
 # Check if we're in the right directory
-if [ ! -f "behat.yml" ]; then
+if [ ! -f "behat.php" ]; then
     echo -e "${RED}Error: Please run this script from tests/functional directory${NC}"
     exit 1
 fi

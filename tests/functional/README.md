@@ -150,8 +150,8 @@ scenario-to-test mapping, see [`docs/TESTS.md`](../../docs/TESTS.md) in the repo
 
 ## Configuration Files
 
-### `behat.yml`
-Main Behat configuration file defining test contexts and formatters.
+### `behat.php`
+Main Behat configuration file defining test contexts and formatters. Behat 4 reads only PHP configuration.
 
 ### `features/nats_setup.feature`
 Gherkin feature file describing test scenarios in human-readable format.

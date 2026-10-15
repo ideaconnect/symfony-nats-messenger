@@ -37,7 +37,7 @@ src/
 ```
 tests/
 ├── bootstrap.php
-├── unit/                                       # PHPUnit 11 - fast, no NATS required
+├── unit/                                       # PHPUnit 11 to 13 - fast, no NATS required
 │   ├── NatsTransportTest.php                   # Transport core: setup, send, get, ack, reject, retry
 │   ├── NatsTransportFactoryTest.php            # Factory: DSN scheme detection, transport creation
 │   ├── Options/
