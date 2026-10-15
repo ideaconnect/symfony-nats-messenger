@@ -7,7 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A pull refused at the connection's subscription limit fails `get()` with a `TransportException` that names the
+  limit (#76).** The transport holds up to two subscriptions on a connection: the reply inbox of its requests, which
+  the first `send()`, `ack_sync` acknowledgement, `setup()` or `getMessageCount()` subscribes, and the reply inbox of
+  the pull in progress. With a per-connection limit of one (the server's `max_subscriptions`, or an account's or
+  user's `subs`), the server refuses the pull's inbox with `maximum subscriptions exceeded`, and every pull after the
+  first request on that connection fails. The client's `ConnectionException` left `get()` as it was, though Symfony's
+  `ReceiverInterface::get()` declares a `TransportException`, and when the client's heartbeat met the error first its
+  message ended "A retry subscribes a new one", which is wrong advice here. `get()` now throws a `TransportException`
+  naming the stream, the consumer and the limit, and saying the transport needs at least two subscriptions per
+  connection, with the client's `SubscriptionLimitException` as its previous exception. The second pull after
+  `auto_setup` provisioned the consumer again is covered too. Like any exception from `get()`, it ends a worker's
+  run; nothing is lost, and nothing hangs. The next operation still checks the connection first: the server sends the
+  same error when an account's limit is lowered below what the connection holds, and closes the connection about
+  20 ms later, so the error cannot prove the connection is still there. Other failures of a pull are unchanged.
+
 ### Changed
+- **Requires `idct/php-nats-jetstream-client` `^2.27` instead of `^2.10.3`.** 2.27.0 reports the subscription limit
+  as `SubscriptionLimitException`, a `ConnectionException`, wherever it used to build a plain one for it, so the
+  transport recognises the limit by its type rather than by the error's wording (see Fixed). The functional test app
+  requires the same release.
+- **Tests for a pull at the subscription limit** (`tests/unit/SubscriptionLimitPullTest.php`), running the real client
+  over a scripted server (`tests/Support/SubscriptionLimitNatsServer.php`) that refuses a SUB beyond its limit, keeping
+  the connection open, and can send the limit error and close the connection 20 ms later, as nats-server does when an
+  account's limit is lowered. They cover a refusal the pull's own read meets and one the heartbeat's read meets,
+  delivery and acknowledgement at a limit of two, and the closing error before and after the pull's inbox was
+  confirmed, with the client still reporting the connection Open and with the client Closed. The transport's checks
+  are counted through `rtt()` (`tests/Support/RttCountingNatsClient.php`). `ClientInjectedNatsTransport` moved from
+  `tests/unit/UnansweredPullTest.php` to `tests/Support/`, so both files can use it.
 - **The unanswered-pull unit test tells the client's inbox fence from a connection check.** Client 2.19.0 writes a
   PING behind each pull inbox's SUB in the same write, to learn whether the server took the subscription, and its
   scripted server (`PullAnsweringServer` in `tests/unit/UnansweredPullTest.php`) counted that PING as a check the

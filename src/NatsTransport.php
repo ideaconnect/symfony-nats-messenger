@@ -12,6 +12,7 @@ use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\ConnectionException;
 use IDCT\NATS\Exception\JetStreamException;
+use IDCT\NATS\Exception\SubscriptionLimitException;
 use IDCT\NATS\Exception\TimeoutException;
 use IDCT\NATS\Exception\UnsupportedFeatureException;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
@@ -31,6 +32,7 @@ use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
 use LogicException;
 use RuntimeException;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
@@ -299,7 +301,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * With auto_setup enabled, a 404, 409 or 503 (see {@see recoverFromFetchFailure()} for why
      * all three) first triggers one re-provisioning attempt and a second pull.
      *
+     * A pull the server refuses because the connection is at its subscription limit fails with a
+     * TransportException that names the stream, the consumer and the limit ({@see fetchBatchMessages()}).
+     *
      * @return iterable<Envelope>
+     *
+     * @throws TransportException If the pull fails because the connection is at its subscription limit.
      */
     public function get(): iterable
     {
@@ -769,6 +776,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /**
      * Pulls one raw batch from the configured durable consumer.
      *
+     * A pull needs a second subscription on the connection, its reply inbox, next to the reply inbox of the
+     * transport's requests (a send, an ack_sync acknowledgement, setup() or getMessageCount() subscribes that
+     * one). With a subscription limit of one, the server refuses the pull's inbox with "maximum subscriptions
+     * exceeded". The client's SubscriptionLimitException becomes Symfony's TransportException, which
+     * ReceiverInterface::get() declares, naming the stream, the consumer and the limit, with the client's
+     * exception as its previous one (#76). Here rather than in get(), so the second pull after re-provisioning
+     * gets the same treatment. The pull still counts as an operation that failed on the connection
+     * ({@see awaitOnConnection()}): the server sends the same error when an account's limit is lowered below what
+     * the connection holds, and then closes the connection right behind it.
+     *
      * @return list<NatsMessage>
      */
     private function fetchBatchMessages(): array
@@ -782,6 +799,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $this->configuration->batching(),
                 $this->configuration->maxBatchTimeoutMs()
             ));
+        } catch (SubscriptionLimitException $limit) {
+            throw new TransportException(sprintf(
+                'Cannot pull from NATS stream "%s", consumer "%s": the subscription limit was exceeded. '
+                . 'This transport requires capacity for at least two subscriptions per connection. '
+                . 'Check server, account and user limits.',
+                $this->streamName,
+                $this->configuration->consumer(),
+            ), previous: $limit);
         } finally {
             // A pull may wait up to max_batch_timeout for messages, and the connection was in use all that time,
             // whether messages came or the pull ended empty, which throws. Counted only on success, an empty pull
@@ -867,6 +892,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * answer at all ({@see UNANSWERED_PULL}) counts as such a failure, though the client reports it as a
      * JetStream error: a half-open connection takes every write and delivers nothing, so without the check
      * each pull on it ended empty, and a consumer reported nothing to do until the heartbeat noticed.
+     *
+     * A pull refused at the subscription limit counts as a failure too (#76). The server refuses a SUB beyond the
+     * limit and keeps the connection open, but it sends the same error when an account's limit is lowered below
+     * what the connection holds, and then closes the connection about 20 ms later. The error cannot tell the two
+     * apart, so the check stays: an open connection answers the PING and is kept, a closed one is replaced.
      *
      * @template T
      * @param Future<T> $call

@@ -9,6 +9,7 @@ use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Transport\TransportInterface;
 use IDCT\NatsMessenger\NatsTransport;
+use IDCT\NatsMessenger\Tests\Support\ClientInjectedNatsTransport;
 use PHPUnit\Framework\TestCase;
 use Revolt\EventLoop;
 
@@ -110,17 +111,6 @@ final class PullAnsweringServer implements TransportInterface
         $arrived = $this->chunkArrived;
         $this->chunkArrived = null;
         $arrived?->complete();
-    }
-}
-
-/**
- * The transport with the client the test gives it.
- */
-final class ClientInjectedNatsTransport extends NatsTransport
-{
-    public function setClient(NatsClient $client): void
-    {
-        $this->client = $client;
     }
 }
 

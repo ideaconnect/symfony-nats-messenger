@@ -704,6 +704,26 @@ options:
 
 > **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testBuildWithInvalidPingAfterIdleThrowsException`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
 
+### Subscription Limits
+
+The transport holds up to two subscriptions on its connection: the reply inbox of its requests, which the first
+`send()`, `ack_sync` acknowledgement, `setup()` or `getMessageCount()` on a connection subscribes, and the reply inbox
+of the pull in progress. NATS caps the subscriptions a connection may hold at the smallest of the server's
+`max_subscriptions`, the account's limit and the user's. With a cap of one, the server refuses the pull's inbox with
+`maximum subscriptions exceeded`, and every pull after the first request on that connection fails. `get()` then
+throws Symfony's `TransportException`, with the client's `SubscriptionLimitException` as its previous exception:
+
+```text
+Cannot pull from NATS stream "orders", consumer "worker": the subscription limit was exceeded. This transport requires capacity for at least two subscriptions per connection. Check server, account and user limits.
+```
+
+Like any exception from `get()`, it ends a worker's run. Raise the limit to at least two. The operation after the
+failure checks the connection first, as after any other failure on it (see
+[Losing the Connection](#losing-the-connection)): the server sends the same error when an account's limit is lowered
+below what the connection holds, and closes the connection right behind it.
+
+> **Tested by:** `testAtALimitOfOneThePullFailsWithATransportExceptionNamingTheLimit`, `testAtALimitOfOneAPullWhoseRefusalTheHeartbeatReadsFailsTheSameWay`, `testAtALimitOfTwoPullsDeliverAndAcknowledge`, `testALimitErrorTheServerClosesTheConnectionBehindKeepsTheCheckBeforeTheNextOperation`, `testALimitErrorTheServerClosesTheConnectionBehindLeavesAClosedClientThatIsReplacedWithoutACheck`, `testPullRefusedAtTheSubscriptionLimitFailsWithATransportExceptionAndTheNextOperationChecksTheConnection`, `testAutoSetupRetriedPullRefusedAtTheSubscriptionLimitFailsWithATransportException`, `testPullThatFailedOnTheConnectionOtherwisePropagatesAsItIs`
+
 ## Stream Configuration
 
 ### Retention Policies
@@ -792,7 +812,7 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 96.3% (826 of 858 mutants killed, with 100% mutation code coverage).
+95%; the suite scores 96.3% (833 of 865 mutants killed, with 100% mutation code coverage).
 [docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 32 mutants that survive, with the reason for each:
 27 are equivalent, three make no difference with the real client, and two differ about once in a million
 runs. CI runs all three on the PHP 8.5 job and every day. Scores published before, 100% among them, were not
@@ -1094,6 +1114,13 @@ symfony console messenger:setup-transports nats_transport
 ```
 
 > **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupUpdatesStreamWhenItAlreadyExists`, Behat scenarios `Setup NATS stream with max age configuration` and `Setup command handles existing streams gracefully`
+
+**Error: "Cannot pull from NATS stream ...: the subscription limit was exceeded"**
+
+The connection may hold only one subscription, and the transport needs two. Raise the server's `max_subscriptions`,
+or the account's or user's subscription limit, to at least two (see [Subscription Limits](#subscription-limits)).
+
+> **Tested by:** `testAtALimitOfOneThePullFailsWithATransportExceptionNamingTheLimit`, `testAtALimitOfTwoPullsDeliverAndAcknowledge`
 
 ### Message Processing Issues
 
