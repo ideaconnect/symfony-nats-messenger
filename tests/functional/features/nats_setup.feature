@@ -17,9 +17,9 @@ Feature: NATS Stream Setup
     And the stream should be configured with the correct subject
 
     Examples:
-      | serializer                                |
-      | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | serializer                                       |
+      | messenger.transport.native_php_serializer        |
+      | IDCT\NatsMessenger\Serializer\IgbinarySerializer |
 
   @existing
   Scenario Outline: Setup command handles existing streams gracefully
@@ -30,9 +30,9 @@ Feature: NATS Stream Setup
     And the existing stream configuration should be preserved
 
     Examples:
-      | serializer                                |
-      | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | serializer                                       |
+      | messenger.transport.native_php_serializer        |
+      | IDCT\NatsMessenger\Serializer\IgbinarySerializer |
 
   @storage
   Scenario: Setup NATS stream with memory storage
@@ -57,7 +57,7 @@ Feature: NATS Stream Setup
 
   Scenario: Setup command fails gracefully when NATS is unavailable
     Given NATS server is not running
-    And I have a messenger transport configured with max age of 15 minutes using "igbinary_serializer"
+    And I have a messenger transport configured with max age of 15 minutes using "IDCT\NatsMessenger\Serializer\IgbinarySerializer"
     When I run the messenger setup command
     Then the setup should fail with a connection error
     And the error message should be descriptive
@@ -75,9 +75,9 @@ Feature: NATS Stream Setup
     And the messenger stats should show 0 messages waiting
 
     Examples:
-      | serializer                                |
-      | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | serializer                                       |
+      | messenger.transport.native_php_serializer        |
+      | IDCT\NatsMessenger\Serializer\IgbinarySerializer |
 
   @partial
   Scenario Outline: Partial message consumption with multiple consumers
@@ -92,9 +92,9 @@ Feature: NATS Stream Setup
     Then 6 messages should have been processed by the consumers
 
     Examples:
-      | serializer                                |
-      | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | serializer                                       |
+      | messenger.transport.native_php_serializer        |
+      | IDCT\NatsMessenger\Serializer\IgbinarySerializer |
 
   @high
   Scenario Outline: High-volume message processing with file output verification
@@ -113,6 +113,6 @@ Feature: NATS Stream Setup
     And the test files directory should contain exactly 1000 files
 
     Examples:
-      | serializer                                |
-      | messenger.transport.native_php_serializer |
-      | igbinary_serializer                       |
+      | serializer                                       |
+      | messenger.transport.native_php_serializer        |
+      | IDCT\NatsMessenger\Serializer\IgbinarySerializer |

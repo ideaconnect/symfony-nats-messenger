@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`IDCTNatsMessengerBundle`** - a Symfony bundle that registers the transport factory and the
+  igbinary serializer automatically, each under its class name (for the serializer, the README's
+  `serializer:` value), so projects no longer need manual `services.yaml` entries to use the transport.
+  Flex enables it when the package is installed or updated, and going back to an earlier version leaves
+  it in `config/bundles.php`, to be deleted by hand (and added back by hand on a later update, since Flex
+  configures a package once). Existing entries keep working next to it. It does
+  not register the `igbinary_serializer` id earlier READMEs suggested, so a transport that names that id
+  needs the class name before its entry is deleted (README, "Upgrading from 5.4 or earlier").
+
 ### Fixed
 - **A pull refused at the connection's subscription limit fails `get()` with a `TransportException` that names the
   limit (#76).** The transport holds up to two subscriptions on a connection: the reply inbox of its requests, which

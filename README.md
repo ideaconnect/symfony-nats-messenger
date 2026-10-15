@@ -19,7 +19,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 528 unit tests, ~99.6% coverage, mutation-tested (96% MSI)
+- 🧪 **Thoroughly Tested** - 548 unit tests, ~99.7% coverage, mutation-tested (96% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -39,6 +39,49 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 ```bash
 composer require idct/symfony-nats-messenger
 ```
+
+The package ships `IDCTNatsMessengerBundle`, which registers the transport factory and
+the igbinary serializer for you - no per-project `services.yaml` entries are required.
+With Symfony Flex the bundle is enabled automatically when the package is installed or updated. Without
+Flex, enable it manually:
+
+```php
+// config/bundles.php
+return [
+    // ...
+    IDCT\NatsMessenger\IDCTNatsMessengerBundle::class => ['all' => true],
+];
+```
+
+If you leave the bundle out, register the transport factory yourself. Messenger finds it by its tag, and
+nothing else registers it, so without it every `nats-jetstream://` DSN fails with "No transport supports
+Messenger DSN":
+
+```yaml
+# config/services.yaml (only without the bundle)
+services:
+    IDCT\NatsMessenger\NatsTransportFactory:
+        tags: [messenger.transport_factory]
+```
+
+> **Tested by:** `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery`, `withoutTheBundleNoTransportFactorySupportsANatsDsn`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`, `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` - the functional Behat suite also runs entirely on the bundle's service registration.
+
+### Upgrading from 5.4 or earlier
+
+- With Symfony Flex, updating the package adds the bundle to `config/bundles.php`, as installing it does.
+  Commit that change with the update.
+- The `services.yaml` entries you added for the transport keep working next to the bundle, and you can
+  delete them, with one exception: the bundle does not register the `igbinary_serializer` id earlier
+  versions of this README suggested. If a transport has `serializer: 'igbinary_serializer'`, change it to
+  `serializer: 'IDCT\NatsMessenger\Serializer\IgbinarySerializer'` before you delete that entry, or keep
+  the entry. Otherwise the container cannot be built, because the service the transport names is gone.
+- Going back to 5.4 or earlier does not take the bundle out of `config/bundles.php`. The application then
+  stops with `Class "IDCT\NatsMessenger\IDCTNatsMessengerBundle" not found`, and so does every
+  `composer install` or `composer update` that clears the cache. Delete the line when you downgrade, and
+  add it back yourself if you update again later: Flex configures a package once, and the package's entry
+  in `symfony.lock` stays after the downgrade.
+
+> **Tested by:** `theServiceEntriesUsedBeforeTheBundleKeepWorking`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`
 
 ### Development Setup
 
@@ -117,14 +160,14 @@ framework:
           consumer: 'my-consumer'
 ```
 
-Register the serializer service the `serializer:` key refers to. For example:
-```yaml
-    igbinary_serializer:
-        class: IDCT\NatsMessenger\Serializer\IgbinarySerializer
-```
+The `IDCT\NatsMessenger\Serializer\IgbinarySerializer` service the `serializer:` key refers to is
+registered by `IDCTNatsMessengerBundle` (see [Installation](#installation)), so the configuration
+above works as-is. Only when the bundle is not enabled do you need to register it yourself, next to the
+transport factory:
 
-or:
 ```yaml
+# config/services.yaml (only without the bundle)
+services:
     IDCT\NatsMessenger\Serializer\IgbinarySerializer: ~
 ```
 
@@ -133,7 +176,7 @@ Like Symfony's own serializers, it leaves out the stamps Symfony marks as not to
 Symfony re-sends for a retry or to the failure transport is serialized without them. Any serializer extending
 `AbstractEnveloperSerializer` does the same.
 
-> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`, `encode_EnvelopeAWorkerIsHandling_EncodesWithoutItsNonSendableStamps`, `encode_WithNonSendableStamps_LeavesThemOutAndKeepsTheRest`, Behat scenario `Failed message routed to Symfony failure transport via TERM with the igbinary serializer`
+> **Tested by:** `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`, `theReadmesSetupWithoutTheBundleGivesAWorkingTransport`, `aSignedMessageSurvivesTheSerializerUnderEveryIdTheBundleGivesIt`, `encode_EnvelopeAWorkerIsHandling_EncodesWithoutItsNonSendableStamps`, `encode_WithNonSendableStamps_LeavesThemOutAndKeepsTheRest`, Behat scenario `Failed message routed to Symfony failure transport via TERM with the igbinary serializer`
 
 #### Creating Custom Serializers
 
@@ -812,7 +855,7 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 96.3% (833 of 865 mutants killed, with 100% mutation code coverage).
+95%; the suite scores 96.3% (835 of 867 mutants killed, with 100% mutation code coverage).
 [docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 32 mutants that survive, with the reason for each:
 27 are equivalent, three make no difference with the real client, and two differ about once in a million
 runs. CI runs all three on the PHP 8.5 job and every day. Scores published before, 100% among them, were not
@@ -1145,7 +1188,11 @@ nats consumer info my-stream my-consumer --json | jq '.state'
 
 ## Architecture
 
-The bridge consists of two main components:
+The bridge consists of two main components, wired into the framework by a thin bundle:
+
+### IDCTNatsMessengerBundle
+- Registers `NatsTransportFactory` and the `IgbinarySerializer` service in the application container
+- Auto-enabled by Symfony Flex; no semantic configuration
 
 ### NatsTransportFactory
 - Handles DSN scheme detection (`nats-jetstream://`)

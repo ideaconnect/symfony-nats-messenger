@@ -58,6 +58,25 @@ PINGs too, and `ping_after_idle` stays at 30. Each test but the limit-two guard 
 | **At a limit of two, pulls deliver and acknowledge, and never need a third subscription** | `testAtALimitOfTwoPullsDeliverAndAcknowledge` (guard: passes on 5.4.1 too) |
 | **The closing form: the same error, then the server closes the connection** | `testALimitErrorTheServerClosesTheConnectionBehindKeepsTheCheckBeforeTheNextOperation` (before and after the pull's inbox was confirmed; the client still reports Open, and the next send checks, finds the connection gone and goes out on a new one), `testALimitErrorTheServerClosesTheConnectionBehindLeavesAClosedClientThatIsReplacedWithoutACheck` (the heartbeat read the EOF, so the next send dials without a check) |
 
+### Bundle (`tests/unit/IDCTNatsMessengerBundleTest.php`)
+
+Each test boots a kernel with FrameworkBundle and Messenger (`tests/Support/MessengerTestKernel.php`) and takes the
+transports from its container, so it sees the tags autoconfiguration adds and the decorators Messenger puts around a
+transport's serializer. Building a NATS transport opens no connection, so no server is needed.
+
+| Feature | Tests |
+|---------|-------|
+| **Transport factory registration** | `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery` (a NATS DSN gets a `NatsTransport`), `withoutTheBundleNoTransportFactorySupportsANatsDsn` (nothing registers the factory from vendor/ on its own) |
+| **The factory under its class name: autowirable, and an application's own entry replaces it** | `anApplicationServiceCanAutowireTheTransportFactory`, `anApplicationsOwnFactoryEntryReplacesTheBundlesFactory` (one NATS factory, not two) |
+| **The services.yaml entries used before the bundle keep working, next to it and without it** | `theServiceEntriesUsedBeforeTheBundleKeepWorking` (data provider; the factory with its tag, the serializer under its class name and under `igbinary_serializer`) |
+| **Flex can still find the bundle class** | `flexFindsTheBundleTheWayItGuessesBundleClasses` (mirrors symfony/flex's guess from the PSR-4 prefix and its look for the bundle base class in the file) |
+| **IgbinarySerializer registration** | `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer` (the README's example, with the bundle and nothing else) |
+| **The README's setup without the bundle** | `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` (its two "only without the bundle" services.yaml snippets and its igbinary example, in an application without the bundle) |
+| **One id for the serializer: Messenger wraps it for signing once, so a signed message decodes** | `aSignedMessageSurvivesTheSerializerUnderEveryIdTheBundleGivesIt` (one transport per id the bundle gives the serializer; Symfony 7.4+, needs igbinary) |
+
+The functional Behat suite also exercises the bundle end-to-end: the test app enables it in
+`config/bundles.php` and every scenario relies on its service registration.
+
 ### Transport Factory (`tests/unit/NatsTransportFactoryTest.php`)
 
 | Feature | Tests |
@@ -292,7 +311,7 @@ supported NATS. Each prints `OK ...` when what it shows held, and fails otherwis
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
 on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 96.3% MSI and covered
-MSI: 833 of 865 mutants killed, with 100% mutation code coverage.
+MSI: 835 of 867 mutants killed, with 100% mutation code coverage.
 
 Scores reported before, 100% among them, were not real. Infection runs each mutant in a PHPUnit process
 whose bootstrap puts its include interceptor on `file://`; the interceptor dropped the wrapper BypassFinals
@@ -386,9 +405,10 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 
 | README Example | Tests |
 |---|---|
+| `config/bundles.php` entry enabling `IDCTNatsMessengerBundle` without Flex | `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery` (the bundle enabled in a kernel), `flexFindsTheBundleTheWayItGuessesBundleClasses`, `testReadmePhpExampleIsSyntacticallyValid` |
 | Custom serializer extending `AbstractEnveloperSerializer` | `readmeCustomSerializerExample_EncodeDecode_RoundTrips`, `readmeCustomSerializerExample_DecodeInvalidBody_ThrowsException`, `testReadmePhpExampleIsSyntacticallyValid` |
 | `$bus->dispatch(new OrderPlaced($orderId), [new DeduplicationIdStamp(...)])` | `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testReadmePhpExampleIsSyntacticallyValid`, Behat scenario `A message dispatched again with the same deduplication id is stored once` |
-| Igbinary serializer configuration example | `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash` |
+| Igbinary serializer configuration example | `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`, `theReadmesSetupWithoutTheBundleGivesAWorkingTransport`, `aSignedMessageSurvivesTheSerializerUnderEveryIdTheBundleGivesIt`, `createTransport_UsesProvidedSerializer`, `serialize_WithValidEnvelope_ReturnsSerializedString`, `decode_WithValidEncodedEnvelope_ReturnsEnvelope`, `testConstructorWithoutIgbinaryDoesNotCrash`, Behat scenario `Failed message routed to Symfony failure transport via TERM with the igbinary serializer` |
 | `$bus->dispatch(new MyMessage(), [new DelayStamp(30000)])` | `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders` |
 | `$transport->getMessageCount()` | `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending` |
 | Controller dispatching message (`MessageBus`) | `testReadmePhpExampleIsSyntacticallyValid`, `testSendPublishesEncodedBodyWithoutHeaders`, `testSendUsesPublishWithHeadersWhenHeadersArePresent`, Behat scenario `Complete message flow - send, check stats, consume, verify` |
@@ -396,6 +416,14 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 | `symfony console messenger:consume nats_transport` | Behat scenarios `Complete message flow - send, check stats, consume, verify`, `Send and consume messages with a custom consumer name`, `Partial message consumption with multiple consumers` |
 | `symfony console messenger:consume nats_transport --keepalive=10` | Behat scenario `A message handled for longer than ack_wait is not redelivered while keepalive runs` (with `--keepalive=1`), `testKeepaliveFromASignalHandlerQueuesTheAcknowledgementInsteadOfWaiting` |
 | `symfony console messenger:setup-transports nats_transport` | `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, `Custom consumer name is registered in JetStream` |
+
+### Service Registration Examples (YAML)
+
+| README Example | Tests |
+|---|---|
+| `config/services.yaml` factory entry (only without the bundle) | `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` (compiles the README's snippet) |
+| `config/services.yaml` serializer entry (only without the bundle) | `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` (compiles the README's snippet) |
+| Upgrading from 5.4 or earlier: the earlier `services.yaml` entries next to the bundle, and `igbinary_serializer` | `theServiceEntriesUsedBeforeTheBundleKeepWorking`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer` |
 
 ### Configuration Option Examples (YAML)
 
@@ -442,5 +470,6 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 | README Example | Reason |
 |---|---|
 | `framework.messenger.transports` YAML structure | Symfony config parsing |
+| Flex adding the bundle on install and update, and leaving it in `config/bundles.php` on a downgrade (Upgrading from 5.4 or earlier) | Composer and Flex behaviour, checked by hand with Flex 2.11 and Symfony 8.1; `flexFindsTheBundleTheWayItGuessesBundleClasses` guards the class name and file Flex relies on |
 | Exact Symfony Console formatting for `messenger:consume` / `messenger:setup-transports` | Symfony CLI output is framework-owned even though the transport behavior is exercised functionally |
 | Exact NATS CLI output for `nats-server`, `nats stream ...`, `nats consumer ...` | NATS server and CLI output is external to this package |

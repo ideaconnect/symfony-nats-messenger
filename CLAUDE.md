@@ -8,7 +8,9 @@ for Claude Code. For architecture see [STRUCTURE.md](STRUCTURE.md); for human on
 
 A Symfony Messenger **transport** for NATS JetStream. It implements `TransportInterface`,
 `MessageCountAwareInterface`, and `SetupableTransportInterface`, bridging Symfony's message bus to
-NATS via the async `idct/php-nats-jetstream-client` (`^2.27`, amphp-based).
+NATS via the async `idct/php-nats-jetstream-client` (`^2.27`, amphp-based). It ships
+`IDCTNatsMessengerBundle` (auto-enabled by Flex), which registers the transport factory
+and the igbinary serializer so projects need no manual wiring.
 
 - **PHP:** `^8.2` · **Symfony:** `^7.2 || ^8` · **NATS:** `^2.9` (`^2.12` for scheduled messages)
 - Everything NATS-specific lives behind the `IDCT\NATS\…` client; this library is the synchronous adapter.
@@ -87,6 +89,12 @@ composer nats:stop               # stop NATS
   `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored.
 - **Serializer security:** the default `IgbinarySerializer` `unserialize()`s payloads - unsafe on
   untrusted subjects. Don't weaken the README security warnings.
+- **The bundle registers each service under one id, its class name.** An application's own entry under that id
+  (the setup before the bundle) replaces the bundle's. Symfony 7.4+ wraps the serializer each transport names in
+  a `SigningSerializer`, one for each service id in the transports' configuration, compared as strings. An alias
+  next to the id it points to would wrap it twice for the transport that names the alias, and that transport
+  could then never decode a message that must be signed (`RunCommandMessage`, any `sign: true` handler). Don't
+  give the bundle's services a second id.
 
 ## Documentation maintenance (required, per AGENTS.md)
 
