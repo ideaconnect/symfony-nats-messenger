@@ -200,11 +200,36 @@ final class TypeCoercionTest extends TestCase
         yield 'object yields an empty list' => [new \stdClass(), []];
     }
 
+    #[DataProvider('nonBlankStringValueProvider')]
+    public function testNonBlankStringValue(mixed $value, ?string $expected): void
+    {
+        self::assertSame($expected, TypeCoercion::nonBlankStringValue($value));
+    }
+
+    /**
+     * @return iterable<string, array{mixed, string|null}>
+     */
+    public static function nonBlankStringValueProvider(): iterable
+    {
+        yield 'string passes through' => ['east', 'east'];
+        yield 'surrounding whitespace is trimmed' => [" east\t", 'east'];
+        yield 'integer is stringified' => [7, '7'];
+        yield 'inner whitespace is kept' => ['eu west', 'eu west'];
+        yield 'empty string is null' => ['', null];
+        yield 'whitespace only is null' => ['   ', null];
+        yield 'null is null' => [null, null];
+        yield 'bool is null' => [true, null];
+        yield 'float is null' => [1.5, null];
+        yield 'array is null' => [['east'], null];
+        yield 'object is null' => [new \stdClass(), null];
+    }
+
     public function testMethodsAreStaticAndPure(): void
     {
         // Calling repeatedly with the same input yields the same output (no state).
         self::assertSame(TypeCoercion::intValue('7'), TypeCoercion::intValue('7'));
         self::assertSame(TypeCoercion::stringListValue('a,b'), TypeCoercion::stringListValue('a,b'));
+        self::assertSame(TypeCoercion::nonBlankStringValue(' a '), TypeCoercion::nonBlankStringValue(' a '));
         self::assertSame(TypeCoercion::floatValue('7.5'), TypeCoercion::floatValue('7.5'));
         self::assertSame(TypeCoercion::stringValue(7), TypeCoercion::stringValue(7));
         self::assertSame(TypeCoercion::boolValue('yes'), TypeCoercion::boolValue('yes'));

@@ -287,17 +287,14 @@ final readonly class NatsTransportConfiguration
 
     /**
      * Returns the JetStream cluster the stream is pinned to, or null to leave placement untouched.
+     *
+     * Normalized with the same {@see TypeCoercion::nonBlankStringValue()} the builder validates with,
+     * so a value handed to the constructor directly is read the way the builder would have stored it:
+     * trimmed, and null when blank or not a string or integer.
      */
     public function streamPlacementCluster(): ?string
     {
-        $value = $this->options[TransportOption::STREAM_PLACEMENT_CLUSTER->value] ?? null;
-        if ($value === null) {
-            return null;
-        }
-
-        $cluster = trim(TypeCoercion::stringValue($value));
-
-        return $cluster === '' ? null : $cluster;
+        return TypeCoercion::nonBlankStringValue($this->options[TransportOption::STREAM_PLACEMENT_CLUSTER->value] ?? null);
     }
 
     /**

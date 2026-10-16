@@ -122,7 +122,7 @@ The functional Behat suite also exercises the bundle end-to-end: the test app en
 | **Extended stream/consumer accessors + auto_setup** | `testNewStreamAndConsumerAccessorsReturnConfiguredValues`, `testNewStreamAndConsumerAccessorsDefaultToNull`, `testInactiveThresholdIsClampedToAtLeastOneMillisecond`, `testAutoSetupAccessorReturnsConstructorValue` |
 | **Connection timeout and idle check accessors** | `testConnectionTimeoutAndPingAfterIdleAccessors` |
 | **Deduplication accessor** | `testDeduplicationAccessorReturnsConstructorValueAndDefaultsToFalse` |
-| **Stream placement accessors** | `testStreamPlacementAccessorsBuildThePlacementBlock`, `testStreamPlacementAccessorsTreatBlankAndMissingValuesAsUnset` |
+| **Stream placement accessors** | `testStreamPlacementAccessorsBuildThePlacementBlock`, `testStreamPlacementAccessorsTreatBlankAndMissingValuesAsUnset` (blank, missing, and a cluster of a type the builder rejects) |
 
 ### Serializers (`tests/unit/Serializer/`)
 
@@ -141,6 +141,7 @@ The functional Behat suite also exercises the bundle end-to-end: the test app en
 | **`boolValue()` coercion** | `testBoolValue` (data provider: bool/int/truthy-tokens/falsy-tokens/case-insensitivity/unrecognized-string/empty/null/array/object, with both default values), `testBoolValueDefaultIsFalseWhenOmitted` |
 | **`secondsToMs()` conversion** | `testSecondsToMs` (data provider: whole/fractional/numeric-string/sub-ms-rounding up and down/zero/non-numeric/null/array), `testSecondsToMsDefaultIsZeroWhenOmitted` |
 | **`stringListValue()` coercion** | `testStringListValue` (data provider: list/trimming/blank-drop/de-duplication/int-elements/non-scalar-drop/associative/comma-separated/single/int/empty/null/bool/float/object) |
+| **`nonBlankStringValue()` coercion** | `testNonBlankStringValue` (data provider: string/trimming/int/inner-whitespace/empty/blank/null/bool/float/array/object) |
 | **Static & pure** | `testMethodsAreStaticAndPure` |
 
 ### Stamps (`tests/unit/Stamp/`)

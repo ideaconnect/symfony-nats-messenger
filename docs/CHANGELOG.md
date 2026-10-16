@@ -22,8 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stores it: nats-server reads any difference in the block, the order of the tags included, as a request
   to move the stream's replicas, and refuses a move combined with a replica change. The tags are compared
   exactly, since the server's `unique_tag` bypass is case-sensitive (#80).
-- **`TypeCoercion::stringListValue()`** centralizing the list-or-comma-separated-string coercion used by
-  `stream_placement_tags`.
+- **`TypeCoercion::stringListValue()` and `TypeCoercion::nonBlankStringValue()`** centralizing the
+  list-or-comma-separated-string coercion used by `stream_placement_tags` and the trimmed-name coercion used
+  by `stream_placement_cluster`. The builder validates with them and the configuration accessors read with
+  them, so a configuration constructed directly with raw values is read the way the builder would have
+  stored it.
 
 ## [5.5.0] - 2026-10-16
 

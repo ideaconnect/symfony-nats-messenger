@@ -357,6 +357,14 @@ final class NatsTransportConfigurationTest extends TestCase
             options: [],
             natsRetryHandlerEnabled: false,
         );
+        // Types the builder rejects read as unset here too, instead of becoming the cluster "1".
+        $wrongType = new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: ['stream_placement_cluster' => true],
+            natsRetryHandlerEnabled: false,
+        );
 
         self::assertNull($blank->streamPlacementCluster());
         self::assertNull($blank->streamPlacementTags());
@@ -364,5 +372,7 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertNull($missing->streamPlacementCluster());
         self::assertNull($missing->streamPlacementTags());
         self::assertNull($missing->streamPlacement());
+        self::assertNull($wrongType->streamPlacementCluster());
+        self::assertNull($wrongType->streamPlacement());
     }
 }

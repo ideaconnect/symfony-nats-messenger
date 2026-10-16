@@ -530,14 +530,19 @@ final class NatsTransportConfigurationBuilder
      * stored back as the normalized list so every reader of the option sees one shape. Both default to
      * null, which leaves the stream's placement untouched.
      *
+     * The normalization is {@see TypeCoercion::nonBlankStringValue()} and
+     * {@see TypeCoercion::stringListValue()}, which the {@see NatsTransportConfiguration} accessors
+     * apply as well: the configuration can be constructed directly with raw values, so the two sides
+     * share the rules instead of each spelling out their own.
+     *
      * @param array<string, mixed> $configuration Merged configuration array
      */
     private function normalizeStreamPlacement(array &$configuration): void
     {
         $cluster = $configuration[TransportOption::STREAM_PLACEMENT_CLUSTER->value] ?? null;
         if ($cluster !== null) {
-            $normalizedCluster = is_string($cluster) || is_int($cluster) ? trim((string) $cluster) : '';
-            if ($normalizedCluster === '') {
+            $normalizedCluster = TypeCoercion::nonBlankStringValue($cluster);
+            if ($normalizedCluster === null) {
                 throw new InvalidArgumentException(sprintf(
                     'The %s option must be a non-empty string.',
                     TransportOption::STREAM_PLACEMENT_CLUSTER->value,
