@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.5.0] - 2026-10-16
+
+A **minor** release. It adds `IDCTNatsMessengerBundle`, which Symfony Flex enables and which registers the
+transport factory and the igbinary serializer, so `composer require` and a DSN are all an application needs. A
+pull refused at the connection's subscription limit now fails `get()` with a `TransportException` naming the
+limit, and the transport requires client 2.27. The development dependencies move to Behat 4 and PHPUnit 11 to 13.
+Applications that name the `igbinary_serializer` id should read "Upgrading from 5.4 or earlier" in the README.
+
 ### Added
 - **`IDCTNatsMessengerBundle`** - a Symfony bundle that registers the transport factory and the
   igbinary serializer automatically, each under its class name (for the serializer, the README's
