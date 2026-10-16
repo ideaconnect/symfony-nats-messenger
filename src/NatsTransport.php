@@ -1288,6 +1288,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             'subjects' => $mergedSubjects,
         ]);
 
+        // Placement is merged field by field instead of being taken from $managedOptions as a block,
+        // see resolveUpdatedStreamPlacement(). The array_merge above replaced the live block whenever an
+        // option is configured, so the merge starts again from the live value.
+        $placement = $this->resolveUpdatedStreamPlacement($serverConfiguration['placement'] ?? null);
+        if ($placement === null) {
+            unset($updatedConfiguration['placement']);
+        } else {
+            $updatedConfiguration['placement'] = $placement;
+        }
+
         // The transport authoritatively manages these retention limits. On update we always write
         // the value - including JetStream's "unlimited" sentinels (max_age 0, others -1) when the
         // option is unset - so a previously-configured limit is actually relaxed/cleared instead of
@@ -1324,13 +1334,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         //    setup() run, with nothing in the output to say so.
         //  - placement (stream_placement_cluster / stream_placement_tags): pinned by operators in
         //    clustered deployments; dropping it would let the server migrate the stream's replicas
-        //    onto arbitrary peers. Written only when configured, echoed otherwise.
+        //    onto arbitrary peers. Each option replaces only its own field of the live block, see
+        //    resolveUpdatedStreamPlacement() above.
         //
         // Preservation works by echo, not by omission: a field left out of a STREAM.UPDATE payload is
         // read as the Go zero value and reset (verified against nats-server), so the values survive
         // only because getStream() returns them in $serverConfiguration and the array_merge above
-        // carries them through. When either option IS configured it arrives via $managedOptions and
-        // wins, which is what makes the options usable on an existing stream.
+        // carries them through.
         if (array_key_exists('storage', $serverConfiguration)) {
             $updatedConfiguration['storage'] = $serverConfiguration['storage'];
         }
@@ -1377,6 +1387,84 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         /** @var array<string, mixed> $updatedConfiguration */
         return $updatedConfiguration;
+    }
+
+    /**
+     * Resolves the `placement` block a STREAM.UPDATE carries for an existing stream, or null to leave
+     * the field out.
+     *
+     * The live block is the starting point: the server reads a missing field as the Go zero value and
+     * clears it, and the two options describe at most two of its fields. Each configured option
+     * replaces its own field and nothing else:
+     *
+     *  - `stream_placement_cluster` replaces `placement.cluster`; the live tags stay.
+     *  - `stream_placement_tags` replaces `placement.tags` as a whole list; the live cluster stays.
+     *  - an unset option leaves its field as the server reports it. So neither option can clear the
+     *    other half of a placement an operator set in NATS; clearing a field is done in NATS directly.
+     *
+     * nats-server compares the stored block with the new one by structure and treats any difference as
+     * a request to move the stream's replicas, a reordered tag list that names the same servers
+     * included, and it refuses a move together with a replica change (err_code 10123). So when the
+     * configured tags name the same set as the live tags, the live array is kept as the server stores
+     * it: same order, same repeated entries, same case. The comparison is case-sensitive on purpose.
+     * The server matches tags case-insensitively, but it switches its `unique_tag` check off through a
+     * case-sensitive prefix test on the placement tag, so folding case here could silently keep a
+     * bypass the operator just removed. A tag that differs only in case is a real change; once the
+     * server stores the new spelling, the next setup() sees no difference.
+     *
+     * The block never gains an empty `tags` list or an empty `cluster`: the accessors return null for
+     * those, and Go decodes `"tags": []` as an empty non-nil slice, which the server tells apart from
+     * the absent field and reads as a move as well.
+     *
+     * @param mixed $livePlacement The `placement` entry of the live stream config, as getStream() reports it
+     * @return array<string, mixed>|null
+     */
+    private function resolveUpdatedStreamPlacement(mixed $livePlacement): ?array
+    {
+        /** @var array<string, mixed> $placement */
+        $placement = is_array($livePlacement) ? $livePlacement : [];
+
+        $cluster = $this->configuration->streamPlacementCluster();
+        if ($cluster !== null) {
+            $placement['cluster'] = $cluster;
+        }
+
+        $tags = $this->configuration->streamPlacementTags();
+        if ($tags !== null) {
+            $liveTags = $placement['tags'] ?? null;
+            if (!is_array($liveTags) || !$this->sameTagSet($liveTags, $tags)) {
+                $placement['tags'] = $tags;
+            }
+        }
+
+        return $placement === [] ? null : $placement;
+    }
+
+    /**
+     * Whether a live tag list and a configured one name the same set of tags: order and repeated
+     * entries aside, each tag compared exactly. See {@see resolveUpdatedStreamPlacement()} for why case
+     * is not folded. A live list holding anything but strings never matches, so it gets replaced.
+     *
+     * @param array<mixed> $liveTags
+     * @param list<string> $configuredTags
+     */
+    private function sameTagSet(array $liveTags, array $configuredTags): bool
+    {
+        $live = [];
+        foreach ($liveTags as $tag) {
+            if (!is_string($tag)) {
+                return false;
+            }
+
+            $live[] = $tag;
+        }
+
+        $live = array_values(array_unique($live));
+        $configured = array_values(array_unique($configuredTags));
+        sort($live, SORT_STRING);
+        sort($configured, SORT_STRING);
+
+        return $live === $configured;
     }
 
     /**

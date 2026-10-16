@@ -323,8 +323,9 @@ final readonly class NatsTransportConfiguration
      * Returns the JetStream `placement` block built from the two placement options, or null when
      * neither is set.
      *
-     * Used by {@see NatsTransport::setup()}: written to the stream when non-null, otherwise the
-     * stream's existing placement is left as the server reports it.
+     * Used by {@see NatsTransport::setup()} when it creates the stream. On an existing stream the
+     * transport merges each option into the live placement field by field instead, see
+     * {@see NatsTransport::buildUpdatedStreamConfiguration()}.
      *
      * @return array{cluster?: string, tags?: list<string>}|null
      */

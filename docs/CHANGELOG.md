@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   work from a DSN query string as `stream_placement_tags=ssd,eu-west`. Both default to `null`, which
   leaves the stream's placement untouched: on the update path the transport echoes the live server value
   back, because a JetStream update that omits `placement` clears it (verified against nats-server 2.14).
+  On an existing stream each option replaces only its own field of the live block, so `stream_placement_tags`
+  alone keeps a cluster pin an operator set in NATS and `stream_placement_cluster` alone keeps the live
+  tags, and configured tags that name the live set in another order keep the live list as the server
+  stores it: nats-server reads any difference in the block, the order of the tags included, as a request
+  to move the stream's replicas, and refuses a move combined with a replica change. The tags are compared
+  exactly, since the server's `unique_tag` bypass is case-sensitive (#80).
 - **`TypeCoercion::stringListValue()`** centralizing the list-or-comma-separated-string coercion used by
   `stream_placement_tags`.
 

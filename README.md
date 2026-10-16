@@ -837,18 +837,26 @@ options:
 
 In a DSN the tags are a comma-separated list: `?stream_placement_tags=ssd,eu-west`.
 
-> **Tested by:** `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, Behat scenarios in `nats_stream_placement.feature`
+> **Tested by:** `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testSetupUpdateMergesConfiguredPlacementIntoTheLivePlacement`, Behat scenarios in `nats_stream_placement.feature`
 
 - Both options default to `null`, which leaves the stream's placement untouched: a new stream gets the
   server's default placement and an existing stream keeps whatever placement it already has. This
   matters because a JetStream update that omits `placement` clears it, so the transport echoes the live
   value back whenever the options are unset.
-- Setting either option on an existing stream updates its placement, and NATS then moves the stream's
-  replicas onto matching servers. The server accepts the new placement and `setup()` returns at once;
-  the replica migration runs in the background (`nats stream info` shows the replicas as not current
-  until it finishes). NATS refuses to change placement and `stream_replicas` in the same update, so stage
-  those two options across two `messenger:setup-transports` runs. To remove a placement entirely, change
-  it in NATS directly.
+- On an existing stream each option replaces its own field of the live placement and nothing else:
+  `stream_placement_tags` replaces the tag list and keeps a cluster pin set in NATS, and
+  `stream_placement_cluster` replaces the cluster and keeps the live tags. Neither option can clear the
+  other field, so to remove a placement, or one half of it, change it in NATS directly.
+- nats-server compares the stored placement with the new one field by field and treats any difference as
+  a request to place the replicas again, even when the servers they are on already satisfy the new
+  constraints, and even when only the order of the tags changed. The transport therefore keeps the live
+  tag list as the server stores it whenever the configured tags name the same set, and compares the tags
+  exactly: `SSD` and `ssd` match the same servers, but the server's `unique_tag` bypass (below) is
+  case-sensitive, so a tag that differs only in case is sent as a change. The server accepts a new
+  placement at once and `setup()` returns; the replica migration runs in the background (`nats stream
+  info` shows the replicas as not current until it finishes). NATS refuses to change the placement and
+  `stream_replicas` in the same update, so stage those two options across two
+  `messenger:setup-transports` runs.
 - **Exclusion tags and the `unique_tag` bypass (NATS 2.12+).** A tag prefixed with `!` excludes the
   servers that carry it, for example `!disk:hdd`. The server strips the `!` before it looks at the
   cluster's `unique_tag` setting, and any placement tag that starts with that configured prefix switches

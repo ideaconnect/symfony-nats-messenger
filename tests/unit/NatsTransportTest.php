@@ -5433,4 +5433,164 @@ final class NatsTransportTest extends TestCase
 
         $transport->setup();
     }
+
+    /**
+     * The update path merges the configured placement fields into the live block instead of replacing
+     * it: one option never wipes the field the other half of an operator's placement holds, and tags
+     * that name the live set in another order keep the live array as the server stores it, because
+     * nats-server reads any difference in the block, even a reordered list, as a request to move the
+     * stream. The comparison is case-sensitive on purpose (see the transport's doc-comment), so a tag
+     * that differs only in case is a change.
+     *
+     * @param array<string, mixed>|null $livePlacement     `placement` of the live stream config, null for none
+     * @param array<string, mixed>      $options           Transport options
+     * @param array<string, mixed>|null $expectedPlacement `placement` the update must carry, null for none
+     * @param array<string, mixed>      $expectedFields    Other fields the update must carry, by key
+     */
+    #[DataProvider('mergedPlacementProvider')]
+    public function testSetupUpdateMergesConfiguredPlacementIntoTheLivePlacement(
+        ?array $livePlacement,
+        array $options,
+        ?array $expectedPlacement,
+        array $expectedFields = [],
+    ): void {
+        $liveConfiguration = [
+            'name' => 'test-stream',
+            'subjects' => ['test-topic'],
+            'storage' => 'file',
+            'num_replicas' => 1,
+        ];
+        if ($livePlacement !== null) {
+            $liveConfiguration['placement'] = $livePlacement;
+        }
+
+        $payload = $this->captureStreamUpdatePayload($liveConfiguration, $options);
+
+        if ($expectedPlacement === null) {
+            self::assertArrayNotHasKey('placement', $payload);
+        } else {
+            self::assertSame($expectedPlacement, $payload['placement'] ?? null);
+        }
+        foreach ($expectedFields as $field => $value) {
+            self::assertSame($value, $payload[$field] ?? null, $field);
+        }
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>|null, array<string, mixed>, array<string, mixed>|null, 3?: array<string, mixed>}>
+     */
+    public static function mergedPlacementProvider(): iterable
+    {
+        $pinned = ['cluster' => 'east', 'tags' => ['hdd']];
+
+        yield 'tags only keep the live cluster' => [
+            $pinned, ['stream_placement_tags' => 'ssd'], ['cluster' => 'east', 'tags' => ['ssd']],
+        ];
+        yield 'cluster only keeps the live tags' => [
+            $pinned, ['stream_placement_cluster' => 'west'], ['cluster' => 'west', 'tags' => ['hdd']],
+        ];
+        yield 'a cluster equal to the live one keeps the live tags' => [
+            $pinned, ['stream_placement_cluster' => 'east'], $pinned,
+        ];
+        yield 'both options replace both fields' => [
+            $pinned,
+            ['stream_placement_cluster' => 'west', 'stream_placement_tags' => ['ssd']],
+            ['cluster' => 'west', 'tags' => ['ssd']],
+        ];
+        yield 'both options equal to the live block leave it as it is' => [
+            ['cluster' => 'west', 'tags' => ['ssd']],
+            ['stream_placement_cluster' => 'west', 'stream_placement_tags' => ['ssd']],
+            ['cluster' => 'west', 'tags' => ['ssd']],
+        ];
+        yield 'no option echoes the live block, fields the transport does not know included' => [
+            ['cluster' => 'east', 'tags' => ['hdd'], 'preferred' => 'n1'],
+            [],
+            ['cluster' => 'east', 'tags' => ['hdd'], 'preferred' => 'n1'],
+        ];
+        yield 'tags only on a stream without placement' => [
+            null, ['stream_placement_tags' => 'ssd'], ['tags' => ['ssd']],
+        ];
+        yield 'cluster only on a stream without placement' => [
+            null, ['stream_placement_cluster' => 'west'], ['cluster' => 'west'],
+        ];
+        yield 'no option on a stream without placement sends none' => [
+            null, [], null,
+        ];
+        yield 'a changed tag set replaces the whole list' => [
+            ['tags' => ['ssd', 'eu']], ['stream_placement_tags' => 'ssd,nvme'], ['tags' => ['ssd', 'nvme']],
+        ];
+        yield 'the same tags in another order keep the live array' => [
+            ['tags' => ['ssd', 'eu']], ['stream_placement_tags' => 'eu,ssd'], ['tags' => ['ssd', 'eu']],
+        ];
+        yield 'a repeated live tag is kept as the server stores it' => [
+            ['tags' => ['ssd', 'ssd', 'eu']], ['stream_placement_tags' => 'eu,ssd'], ['tags' => ['ssd', 'ssd', 'eu']],
+        ];
+        yield 'a changed cluster with the same tags in another order' => [
+            ['cluster' => 'east', 'tags' => ['ssd', 'eu']],
+            ['stream_placement_cluster' => 'west', 'stream_placement_tags' => 'eu,ssd'],
+            ['cluster' => 'west', 'tags' => ['ssd', 'eu']],
+        ];
+        yield 'a tag that differs only in case is a change' => [
+            ['tags' => ['!zone:unused']], ['stream_placement_tags' => '!ZONE:unused'], ['tags' => ['!ZONE:unused']],
+        ];
+        yield 'live tags that are not strings are replaced' => [
+            ['tags' => ['ssd', 7]], ['stream_placement_tags' => 'ssd,7'], ['tags' => ['ssd', '7']],
+        ];
+        yield 'the same tags in another order with a replica change, and no cluster pin made up' => [
+            ['tags' => ['ssd', 'eu']],
+            ['stream_placement_tags' => 'eu,ssd', 'stream_replicas' => 3],
+            ['tags' => ['ssd', 'eu']],
+            ['num_replicas' => 3],
+        ];
+    }
+
+    /**
+     * Runs setup() against a stream that already exists with the given live configuration and returns
+     * the STREAM.UPDATE payload the transport sent for it.
+     *
+     * @param array<string, mixed> $liveConfiguration
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function captureStreamUpdatePayload(array $liveConfiguration, array $options): array
+    {
+        $payload = null;
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete(new StreamInfo(
+                name: 'test-stream',
+                subjects: ['test-topic'],
+                raw: ['config' => $liveConfiguration],
+            )));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(static function (array $options) use (&$payload): bool {
+                $payload = $options;
+
+                return true;
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertIsArray($payload);
+
+        return $payload;
+    }
 }
