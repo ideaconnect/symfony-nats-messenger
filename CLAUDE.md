@@ -51,7 +51,8 @@ composer nats:stop               # stop NATS
   `createMock()`: PHPUnit 12 and later report a notice for a mock without expectations, and CI's PHP 8.5 job
   fails on it.
 - Behat step definitions and hooks are **attributes** (`#[Given]`, `#[When]`, `#[Then]`, `#[AfterScenario]`), and the
-  Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML.
+  Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
+  configuration is strict, so a scenario with an undefined step fails the run instead of being skipped.
 - `TransportOption` is the single source of truth for option keys; every case needs a `DEFAULT_OPTIONS`
   entry in `NatsTransportConfigurationBuilder` (guarded by `testDefaultOptionsCoversAllTransportOptionCases`).
 - Mark DSN/credential parameters with `#[\SensitiveParameter]`.
