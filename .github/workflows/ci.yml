@@ -8,6 +8,9 @@ on:
 
 jobs:
   test:
+    # Named after the PHP version and client only, so a matrix value such as phpunit-args does not change the
+    # name of the check.
+    name: test (${{ matrix.php-version }}, ${{ matrix.client }})
     runs-on: ubuntu-latest
     timeout-minutes: 40  # Whole-job cap: install + analysis + unit/coverage + mutation (8.5) + functional + benchmark
 
