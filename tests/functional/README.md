@@ -176,8 +176,8 @@ NATS server configuration with authentication and JetStream enabled.
 # Run with maximum verbosity
 vendor/bin/behat -vvv
 
-# Show step definitions
-vendor/bin/behat --definitions
+# List the step definitions (use "i" instead of "l" to also see the method behind each)
+vendor/bin/behat --definitions l
 ```
 
 ### Manual Testing

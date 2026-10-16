@@ -68,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `composer test:functional`, exited 0. A dry run now always exits 1, since it skips every step, so `run_tests.sh`
   leaves its exit code aside and the functional README says to read its summary. Guarded by
   `FunctionalSuiteConfigTest`.
+- **`run_tests.sh` option 6 and the functional README list the step definitions with `--definitions l`.** Behat 4
+  requires a value for `--definitions`, so both printed "The "--definitions" option requires a value." and exited 1.
 
 ## [5.4.1] - 2026-10-05
 

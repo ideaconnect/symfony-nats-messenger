@@ -76,7 +76,7 @@ case $choice in
         ;;
     6)
         echo -e "${GREEN}Showing test step definitions...${NC}"
-        vendor/bin/behat --definitions
+        vendor/bin/behat --definitions l
         ;;
     *)
         echo -e "${RED}Invalid option. Please choose 1-6.${NC}"
