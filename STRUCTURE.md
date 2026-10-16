@@ -24,6 +24,7 @@ Symfony Messenger  ──dispatch──▶  NatsTransportFactory ──▶ NatsT
 
 ```
 src/
+├── IDCTNatsMessengerBundle.php                # Symfony bundle: auto-registers the factory + serializer services
 ├── NatsTransport.php                          # Core transport: send/get/ack/reject/setup/getMessageCount
 ├── NatsTransportFactory.php                   # TransportFactoryInterface - DSN scheme detection + instantiation
 ├── TypeCoercion.php                           # Safe mixed → int/float/string coercion (final, static)
@@ -42,11 +43,13 @@ tests/
 ├── bootstrap.php                               # autoloader + BypassFinals; takes Infection's file swap over in mutant processes
 ├── Support/
 │   ├── ClientInjectedNatsTransport.php         # the transport with a client the test gives it
+│   ├── MessengerTestKernel.php                 # a FrameworkBundle + Messenger kernel for tests that need a compiled container
 │   ├── PhpProcess.php                          # runs a PHP script in a child process
 │   ├── RttCountingNatsClient.php               # the real client, counting the transport's connection checks
 │   ├── StrictHeaderNameSerializer.php          # a serializer that reads header names as strings under strict types
 │   └── SubscriptionLimitNatsServer.php         # a scripted server with a stream, a pull consumer and a subscription limit
 ├── unit/                                       # PHPUnit 11 to 13 - fast, no live NATS required
+│   ├── IDCTNatsMessengerBundleTest.php         # the bundle in a compiled kernel: factory discovery, the README serializer
 │   ├── NatsTransportTest.php                   # send/get/ack/reject/setup/retry/count/scheduled
 │   ├── NatsTransportFactoryTest.php            # scheme detection, transport creation
 │   ├── MutationTestingBootstrapTest.php        # mutant processes can double final classes and load the mutant
@@ -82,6 +85,18 @@ docs/
 ```
 
 ## Components
+
+### IDCTNatsMessengerBundle
+- A thin `AbstractBundle` (no semantic configuration) registering the library's services in the
+  application container, each under one id, its class name: `NatsTransportFactory`, tagged
+  `messenger.transport_factory`, and `IgbinarySerializer`, the README's `serializer:` value. An entry an
+  application defines under the same id, as it had to before the bundle, replaces the bundle's. The
+  serializer must keep that one id: Symfony 7.4+ wraps the serializer a transport names in a
+  `SigningSerializer` once for each id in the transports' configuration, so a second id (an alias) would
+  wrap it twice for the transport naming it, which could then never decode a message that must be signed.
+- Symfony Flex enables the bundle automatically when the package is installed or updated (and leaves it
+  in `config/bundles.php` on a downgrade); without Flex it is added to `config/bundles.php` manually. Manual service registration (the pre-bundle approach) keeps
+  working alongside it.
 
 ### NatsTransportFactory
 - Recognizes two DSN schemes: `nats-jetstream://` and `nats-jetstream+tls://` (see `supports()`).
