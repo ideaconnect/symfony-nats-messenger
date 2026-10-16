@@ -3651,7 +3651,8 @@ final class NatsTransportTest extends TestCase
             ->willThrowException(new \RuntimeException('serialize-boom'));
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
-        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('publish');
         $transport->setJetStreamContext($jetStream);
 
         $envelope = new Envelope(new \stdClass());

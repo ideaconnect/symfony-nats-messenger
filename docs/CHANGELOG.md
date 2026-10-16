@@ -75,6 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the notice PHPUnit 12 and later give a test double that sets no expectations. Both used to be reported while the
   run passed. PHPUnit 11, which PHP 8.2 installs, does not know `failOnPhpunitNotice` and rejects the whole file
   when it sees it, so the notice option stays on the command line. Guarded by `UnitSuiteConfigTest`.
+- **The serialization-failure send test checks that nothing is published.** Its JetStream double became a stub
+  for PHPUnit 13, which silenced the notice but left the test unable to see a `send()` that publishes before
+  rethrowing the serializer's exception; it is a mock again, expecting `publish()` never to be called.
 
 ## [5.4.1] - 2026-10-05
 
