@@ -329,7 +329,9 @@ supported NATS. Each prints `OK ...` when what it shows held, and fails otherwis
 |---------|-----------|
 | **Placement tags (create)** | Setup stream with placement tags supplied via the DSN |
 | **Placement tags (update)** | Update of an existing stream applies the configured placement tags |
-| **Placement preserved when unset** | Update of an existing stream keeps its placement when the option is unset (a JetStream update that omits `placement` clears it; the transport echoes the live value) |
+| **Placement preserved when unset** | Update of an existing stream keeps its placement when the option is unset (a JetStream update that omits `placement` clears it; the transport echoes the live value; the max age assertion proves the update ran) |
+| **Placement merged field by field (update)** | Configured tags keep the cluster pin of an existing placement, A configured cluster keeps the tags of an existing placement (the stream is created out of band with both halves; a standalone server stores the cluster name without acting on it) |
+| **Equal tag set keeps the stored list (update)** | The same tags in another order keep the stored tag list |
 
 ## Mutation Testing
 

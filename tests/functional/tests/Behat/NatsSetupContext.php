@@ -162,6 +162,26 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Creates the stream out-of-band with both halves of a placement, the fixture for the merge on the
+     * update path: setup() with one option set must keep the other half. A standalone server stores a
+     * cluster name the way it stores tags, without acting on it.
+     */
+    #[Given('the NATS stream already exists with placement cluster :cluster and tags :tags')]
+    public function theNatsStreamAlreadyExistsWithPlacementClusterAndTags(string $cluster, string $tags): void
+    {
+        if (!$this->shouldNatsBeRunning) {
+            throw new \RuntimeException('NATS must be running to create a stream');
+        }
+
+        $client = $this->createNatsClient();
+        $client->jetStream()->createStream(
+            $this->testStreamName,
+            [$this->testSubject],
+            ['placement' => ['cluster' => $cluster, 'tags' => explode(',', $tags)]],
+        )->await();
+    }
+
+    /**
      * Creates the stream out-of-band with a consumer limit, the way an operator would via the nats CLI
      * or Terraform.
      *
@@ -1201,6 +1221,23 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Configures a transport whose stream placement cluster arrives through the DSN query string.
+     */
+    #[Given('I have a messenger transport configured with stream placement cluster :cluster')]
+    public function iHaveAMessengerTransportConfiguredWithStreamPlacementCluster(string $cluster): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&stream_placement_cluster=%s'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $cluster
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
      * Configures a transport whose numeric stream limits are all supplied via the DSN query string.
      *
      * Query-string values arrive as PHP strings (`parse_str()`), so this exercises
@@ -1406,6 +1443,24 @@ class NatsSetupContext implements Context
                     implode(', ', $actualTags)
                 )
             );
+        }
+    }
+
+    #[Then('the stream should have placement cluster :cluster')]
+    public function theStreamShouldHavePlacementCluster(string $cluster): void
+    {
+        $client = $this->createNatsClient();
+        $streamInfo = $client->jetStream()->getStream($this->testStreamName)->await();
+        $streamConfig = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        $placement = is_array($streamConfig['placement'] ?? null) ? $streamConfig['placement'] : [];
+        $actualCluster = $placement['cluster'] ?? null;
+
+        if ($actualCluster !== $cluster) {
+            throw new \RuntimeException(sprintf(
+                'Expected stream placement cluster "%s", but got %s',
+                $cluster,
+                is_string($actualCluster) ? sprintf('"%s"', $actualCluster) : 'none',
+            ));
         }
     }
 
