@@ -59,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/functional/behat.yml` became `behat.php` (converted with `behat --convert-config`) and the context's step
   definitions and hook became attributes (converted with Rector's Behat attribute set). Under PHPUnit 13 a test
   double that sets no expectations is made with `createStub()` instead of `createMock()`, and `phpunit.xml.dist`
-  resolves test dependencies with `resolveDependencies` instead of the deprecated `depends` execution order. The
+  drops the deprecated `depends` execution order (PHPUnit resolves test dependencies by default). The
   commented-out cache step in CI names `actions/cache@v6`; the other actions were already on their newest major
   versions. The library's runtime requirements are unchanged.
 - **The functional suite fails on undefined and pending steps.** `tests/functional/behat.php` turns on strict result
