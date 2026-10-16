@@ -62,6 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolves test dependencies with `resolveDependencies` instead of the deprecated `depends` execution order. The
   commented-out cache step in CI names `actions/cache@v6`; the other actions were already on their newest major
   versions. The library's runtime requirements are unchanged.
+- **The functional suite fails on undefined and pending steps.** `tests/functional/behat.php` turns on strict result
+  interpretation. Behat 4 registers step definitions from attributes only, so a step left as a doc-comment annotation
+  is undefined, and a scenario using it was reported as undefined while the run, in CI and through
+  `composer test:functional`, exited 0. A dry run now always exits 1, since it skips every step, so `run_tests.sh`
+  leaves its exit code aside and the functional README says to read its summary. Guarded by
+  `FunctionalSuiteConfigTest`.
 
 ## [5.4.1] - 2026-10-05
 

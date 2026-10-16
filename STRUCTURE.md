@@ -50,6 +50,7 @@ tests/
 │   └── SubscriptionLimitNatsServer.php         # a scripted server with a stream, a pull consumer and a subscription limit
 ├── unit/                                       # PHPUnit 11 to 13 - fast, no live NATS required
 │   ├── IDCTNatsMessengerBundleTest.php         # the bundle in a compiled kernel: factory discovery, the README serializer
+│   ├── FunctionalSuiteConfigTest.php           # the Behat config fails the functional suite on undefined steps
 │   ├── NatsTransportTest.php                   # send/get/ack/reject/setup/retry/count/scheduled
 │   ├── NatsTransportFactoryTest.php            # scheme detection, transport creation
 │   ├── MutationTestingBootstrapTest.php        # mutant processes can double final classes and load the mutant

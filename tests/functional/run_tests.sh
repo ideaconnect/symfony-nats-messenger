@@ -70,7 +70,9 @@ case $choice in
         ;;
     5)
         echo -e "${GREEN}Running dry run (syntax check)...${NC}"
-        vendor/bin/behat --dry-run
+        # behat.php is strict, and a dry run skips every step, so it always exits 1. Read the summary
+        # instead: a step without a definition shows as "undefined", not "skipped".
+        vendor/bin/behat --dry-run || true
         ;;
     6)
         echo -e "${GREEN}Showing test step definitions...${NC}"

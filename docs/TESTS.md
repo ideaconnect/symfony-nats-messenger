@@ -169,6 +169,12 @@ processes through `tests/Support/PhpProcess.php`, and the bootstrap tests are sk
 | **No mutant killed by the test harness** | `testLogCheckPassesWhenNoMutantWasKilledByTheHarness`, `testLogCheckFailsWhenAMutantWasKilledByTheHarness` (`ClassIsFinalException`, `cannot extend final class`, `Error in bootstrap script`), `testLogCheckFailsWhenTheLogIsMissingOrEmpty`, `testLogCheckIgnoresArguments` |
 | **Escaped mutants go to the job log, not to GitHub annotations** | `testInfectionRunsWriteNoGitHubAnnotations` (the canary and the real run), `testMutationRunListsEveryEscapedMutant` |
 
+### Functional Suite Configuration (`tests/unit/FunctionalSuiteConfigTest.php`)
+
+| Feature | Tests |
+|---------|-------|
+| **An undefined or pending step fails the functional suite** | `testUndefinedAndPendingStepsFailTheFunctionalSuite` (`tests/functional/behat.php` turns on strict result interpretation: Behat 4 registers steps from attributes only, so a step left as a doc-comment annotation is undefined, and without strict interpretation the run still exits 0) |
+
 ## Functional Tests (Behat)
 
 ### Stream Setup (`tests/functional/features/nats_setup.feature`)
