@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Persistent project memory** in `docs/PROJECT_MEMORY.md`, linked from `AGENTS.md`, covering the
+- **Persistent project memory** in `docs/PROJECT_MEMORY.md`, linked from `AGENTS.md` and `CLAUDE.md`, covering the
   maintainer's local client-library workflow, transport behavior, verification requirements, and
   a dated GitHub issue and development-environment snapshot.
 

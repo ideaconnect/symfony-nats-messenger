@@ -15,6 +15,13 @@ and the igbinary serializer so projects need no manual wiring.
 - **PHP:** `^8.2` · **Symfony:** `^7.2 || ^8` · **NATS:** `^2.9` (`^2.12` for scheduled messages)
 - Everything NATS-specific lives behind the `IDCT\NATS\…` client; this library is the synchronous adapter.
 
+## Project memory
+
+Read [docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md) when starting work for maintainer preferences,
+the local client-library relationship, behavioral pitfalls, and a dated issue/environment snapshot.
+Refresh changeable facts from source and GitHub before relying on them; update the memory when new
+findings affect future work. This file remains the project instruction source, with AGENTS.md.
+
 ## Commands (prefer composer scripts over ad-hoc invocations)
 
 ```bash
