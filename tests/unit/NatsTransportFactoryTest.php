@@ -16,7 +16,7 @@ class NatsTransportFactoryTest extends TestCase
     protected function setUp(): void
     {
         $this->factory = new NatsTransportFactory();
-        $this->mockSerializer = $this->createMock(SerializerInterface::class);
+        $this->mockSerializer = $this->createStub(SerializerInterface::class);
     }
 
     #[Test]

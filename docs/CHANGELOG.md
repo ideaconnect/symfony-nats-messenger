@@ -52,6 +52,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transport made, failing `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection` against that client.
   The server still answers every PING but records only one written on its own. The test passes against client
   2.10.3 and 2.19.0; the transport is unchanged.
+- **Development dependencies upgraded (#73, #74).** Behat 4.0 in the root and in the functional test app, PHPUnit
+  `^11.5 || ^12.5 || ^13.4` (PHP 8.2 installs 11, PHP 8.5 installs 13), Infection up to 0.35 (which needs PHP 8.3, so
+  PHP 8.2 keeps 0.32), PHPStan 2.3 and BypassFinals 1.11. The functional test app requires the newest Symfony 7.4 and
+  8.1 releases, Flex 2.11 and MakerBundle 1.68. Behat 4 reads neither YAML nor doc-comment annotations, so
+  `tests/functional/behat.yml` became `behat.php` (converted with `behat --convert-config`) and the context's step
+  definitions and hook became attributes (converted with Rector's Behat attribute set). Under PHPUnit 13 a test
+  double that sets no expectations is made with `createStub()` instead of `createMock()`, and `phpunit.xml.dist`
+  drops the deprecated `depends` execution order (PHPUnit resolves test dependencies by default). The
+  commented-out cache step in CI names `actions/cache@v6`; the other actions were already on their newest major
+  versions. The library's runtime requirements are unchanged.
+- **The functional suite fails on undefined and pending steps.** `tests/functional/behat.php` turns on strict result
+  interpretation. Behat 4 registers step definitions from attributes only, so a step left as a doc-comment annotation
+  is undefined, and a scenario using it was reported as undefined while the run, in CI and through
+  `composer test:functional`, exited 0. A dry run now always exits 1, since it skips every step, so `run_tests.sh`
+  leaves its exit code aside and the functional README says to read its summary. Guarded by
+  `FunctionalSuiteConfigTest`.
+- **`run_tests.sh` option 6 and the functional README list the step definitions with `--definitions l`.** Behat 4
+  requires a value for `--definitions`, so both printed "The "--definitions" option requires a value." and exited 1.
+- **PHPUnit deprecations, and on PHPUnit 13 PHPUnit notices, fail the unit suite.** `phpunit.xml.dist` sets
+  `failOnPhpunitDeprecation`, and CI's PHP 8.5 job runs the suite with `--fail-on-phpunit-notice`, the option for
+  the notice PHPUnit 12 and later give a test double that sets no expectations. Both used to be reported while the
+  run passed. PHPUnit 11, which PHP 8.2 installs, does not know `failOnPhpunitNotice` and rejects the whole file
+  when it sees it, so the notice option stays on the command line. Guarded by `UnitSuiteConfigTest`.
+- **The serialization-failure send test checks that nothing is published.** Its JetStream double became a stub
+  for PHPUnit 13, which silenced the notice but left the test unable to see a `send()` that publishes before
+  rethrowing the serializer's exception; it is a mock again, expecting `publish()` never to be called.
 
 ## [5.4.1] - 2026-10-05
 

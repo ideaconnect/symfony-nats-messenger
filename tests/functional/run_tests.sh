@@ -15,7 +15,7 @@ echo -e "${GREEN}NATS Messenger Transport - Functional Tests${NC}"
 echo "============================================="
 
 # Check if we're in the right directory
-if [ ! -f "behat.yml" ]; then
+if [ ! -f "behat.php" ]; then
     echo -e "${RED}Error: Please run this script from tests/functional directory${NC}"
     exit 1
 fi
@@ -70,11 +70,13 @@ case $choice in
         ;;
     5)
         echo -e "${GREEN}Running dry run (syntax check)...${NC}"
-        vendor/bin/behat --dry-run
+        # behat.php is strict, and a dry run skips every step, so it always exits 1. Read the summary
+        # instead: a step without a definition shows as "undefined", not "skipped".
+        vendor/bin/behat --dry-run || true
         ;;
     6)
         echo -e "${GREEN}Showing test step definitions...${NC}"
-        vendor/bin/behat --definitions
+        vendor/bin/behat --definitions l
         ;;
     *)
         echo -e "${RED}Invalid option. Please choose 1-6.${NC}"

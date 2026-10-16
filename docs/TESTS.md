@@ -9,7 +9,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | Feature | Tests |
 |---------|-------|
 | **DSN parsing & validation** | `testConstructorWithValidDsnInitializesTransport`, `testConstructorWithDottedTopicInitializesTransport`, `testConstructorWithInvalidDsnThrowsException`, `testConstructorWithoutPathThrowsException`, `testConstructorWithoutTopicThrowsException`, `testConstructorWithWildcardTopicThrowsException` |
-| **Message sending** | `testSendPublishesEncodedBodyWithoutHeaders`, `testSendUsesPublishWithHeadersWhenHeadersArePresent`, `testSendSerializationFailureUsesErrorDetailsStampMessage`, `testSendSerializationFailureRethrowsOriginalExceptionWithoutErrorDetailsStamp`, `testSendPublishesLargePayloadWithoutTruncation`, `testSendSerializationFailureKeepsTheSerializerErrorAsThePreviousException` |
+| **Message sending** | `testSendPublishesEncodedBodyWithoutHeaders`, `testSendUsesPublishWithHeadersWhenHeadersArePresent`, `testSendSerializationFailureUsesErrorDetailsStampMessage`, `testSendSerializationFailureRethrowsOriginalExceptionWithoutErrorDetailsStamp` (and publishes nothing), `testSendPublishesLargePayloadWithoutTruncation`, `testSendSerializationFailureKeepsTheSerializerErrorAsThePreviousException` |
 | **Publish error handling** | `testSendThrowsWhenJetStreamHeaderPublishReturnsError` (publish ack parsing/validation is delegated to the client's `JetStreamContext::publish()`, surfaced as a `JetStreamException`) |
 | **Message receiving** | `testGetReturnsDecodedEnvelopeWithHeadersAndMessageId`, `testGetLeavesOutHeadersWhoseNameIsAnInteger` (a header named `1` or `-5` arrives as an int key and is not passed to `decode()`, which takes string names, so a serializer that reads the names as strings under strict types decodes the message), `testGetTermsEmptyPayloadMessagesToStopRedelivery`, `testGetSkipsMessagesWithoutReplySubject`, `testGetReturnsEmptyArrayWhenThePullReports404`, `testGetReturnsEmptyArrayWhenBatchRequestTimesOut`, `testGetRethrowsUnexpectedJetStreamExceptions`, `testGetDecodeFailureUsesTermWhenReplySubjectExists`, `testGetDecodeFailureUsesNakWhenRetryHandlerIsNats`, `testGetDecodeFailureKeepsOriginalErrorWhenRejectAlsoFails`, `testGetWithMultipleValidMessagesReturnsAll`, `testGetWithBatchingConfigPassesBatchSizeToFetchBatch`, `testGetDecodesLargePayloadWithoutTruncation`, `testGetUsesConfiguredConsumerNameSoWorkersShareOneDurableConsumer`, `testGetDeliversTheRestOfTheBatchAfterAMessageWithoutAReplySubject` |
 | **ACK / reject** | `testFindReceivedStampReturnsTransportStamp`, `testAckWithoutTransportStampThrowsException`, `testAckAcknowledgesReceivedEnvelope`, `testAckUsesAckSyncWhenEnabled`, `testRejectWithoutTransportStampThrowsException`, `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats` |
@@ -168,6 +168,19 @@ processes through `tests/Support/PhpProcess.php`, and the bootstrap tests are sk
 | **Canary: every mutant that changes nothing escapes** | `testCanaryPassesWhenEveryMutantEscaped`, `testCanaryFailsWhenAMutantWasDetectedOrNoneRan` (killed, errored, syntax error, timed out, no mutant, a count given as a string, a missing count), `testCanaryFailsWhenItCannotReadTheSummary` (missing, cut off, counts under another key), `testCanaryIgnoresArguments` |
 | **No mutant killed by the test harness** | `testLogCheckPassesWhenNoMutantWasKilledByTheHarness`, `testLogCheckFailsWhenAMutantWasKilledByTheHarness` (`ClassIsFinalException`, `cannot extend final class`, `Error in bootstrap script`), `testLogCheckFailsWhenTheLogIsMissingOrEmpty`, `testLogCheckIgnoresArguments` |
 | **Escaped mutants go to the job log, not to GitHub annotations** | `testInfectionRunsWriteNoGitHubAnnotations` (the canary and the real run), `testMutationRunListsEveryEscapedMutant` |
+
+### Unit Suite Configuration (`tests/unit/UnitSuiteConfigTest.php`)
+
+| Feature | Tests |
+|---------|-------|
+| **A PHPUnit deprecation fails the unit suite** | `testAPhpunitDeprecationFailsTheUnitSuite` (`failOnPhpunitDeprecation` in `phpunit.xml.dist`, known to PHPUnit 11.5 to 13) |
+| **On PHPUnit 13, a PHPUnit notice fails the unit suite** | `testAPhpunitNoticeFailsTheUnitSuiteOnTheJobThatRunsPhpunit13` (CI's PHP 8.5 job passes `--fail-on-phpunit-notice`, which catches a test double that sets no expectations; PHPUnit 11 rejects `failOnPhpunitNotice` in the XML file) |
+
+### Functional Suite Configuration (`tests/unit/FunctionalSuiteConfigTest.php`)
+
+| Feature | Tests |
+|---------|-------|
+| **An undefined or pending step fails the functional suite** | `testUndefinedAndPendingStepsFailTheFunctionalSuite` (`tests/functional/behat.php` turns on strict result interpretation: Behat 4 registers steps from attributes only, so a step left as a doc-comment annotation is undefined, and without strict interpretation the run still exits 0) |
 
 ## Functional Tests (Behat)
 

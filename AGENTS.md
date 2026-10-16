@@ -41,7 +41,7 @@ src/
 ```
 tests/
 ├── bootstrap.php
-├── unit/                                       # PHPUnit 11 - fast, no NATS required
+├── unit/                                       # PHPUnit 11 to 13 - fast, no NATS required
 │   ├── NatsTransportTest.php                   # Transport core: setup, send, get, ack, reject, retry
 │   ├── NatsTransportFactoryTest.php            # Factory: DSN scheme detection, transport creation
 │   ├── Options/
@@ -112,7 +112,14 @@ composer nats:stop               # Stop NATS
 
 ### Key testing patterns
 - Unit tests use `TestableNatsTransport` (overrides `connect()` to skip live NATS)
-- `RuntimeTestableNatsTransport` allows injecting mock `JetStreamContext` and `NatsClient` via setters
+- `RuntimeTestableNatsTransport` allows injecting `JetStreamContext` and `NatsClient` test doubles via setters
+- The unit suite runs on PHPUnit 11 to 13: PHP 8.2 installs 11, PHP 8.3 installs 12 and PHP 8.4 or later
+  installs 13 (CI runs 11 and 13). Make a test double that sets no expectations with `createStub()`, not
+  `createMock()`: PHPUnit 12 and later report a notice for a mock without expectations, and CI's PHP 8.5 job
+  fails on it. Keep `createMock()` where the test checks calls, for example `expects(self::never())`.
+- Behat step definitions and hooks are **attributes** (`#[Given]`, `#[When]`, `#[Then]`, `#[AfterScenario]`), and the
+  Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
+  configuration is strict, so a scenario with an undefined step fails the run instead of being skipped.
 - Mock `Future::complete()` / `Future::error()` for async return values
 - `self::callback()` for complex assertion on method arguments (e.g., stream options arrays)
 

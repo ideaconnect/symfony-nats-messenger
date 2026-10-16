@@ -1088,7 +1088,7 @@ final class NatsTransportTest extends TestCase
         // A Closed client has already released its socket: there is nothing to disconnect.
         $client->expects(self::never())->method('disconnect');
 
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
         $transport = new RealConnectNatsTransport(self::VALID_DSN, [], $serializer);
         $transport->setClient($client);
@@ -1123,7 +1123,7 @@ final class NatsTransportTest extends TestCase
     public function testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes(): void
     {
         $calls = [];
-        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream = $this->createStub(JetStreamContext::class);
         $jetStream->method('addStream')->willReturnCallback(static function () use (&$calls): Future {
             $calls[] = 'addStream';
 
@@ -1149,7 +1149,7 @@ final class NatsTransportTest extends TestCase
         $client = $this->clientReportingState($state, [Future::complete(), Future::complete()], $calls);
         $client->method('jetStream')->willReturn($jetStream);
 
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
         $transport = new RealConnectNatsTransport(self::VALID_DSN, ['auto_setup' => true], $serializer);
         $transport->setClient($client);
@@ -1184,7 +1184,7 @@ final class NatsTransportTest extends TestCase
         $client = $this->clientReportingState($state, [Future::complete(), Future::error($refused), Future::complete()]);
         $client->method('jetStream')->willReturn($jetStream);
 
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
         $transport = new RealConnectNatsTransport(self::VALID_DSN, ['auto_setup' => true], $serializer);
         $transport->setClient($client);
@@ -1461,7 +1461,7 @@ final class NatsTransportTest extends TestCase
         $client->expects(self::once())->method('rtt')->willReturn(Future::error(new ConnectionException('Connection lost')));
         $client->method('disconnect')->willReturn(Future::complete());
 
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
         $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30, 'auto_setup' => true], $serializer);
         $transport->setClient($client);
@@ -1492,7 +1492,7 @@ final class NatsTransportTest extends TestCase
         $client->method('jetStream')->willReturn($jetStream);
         $client->expects(self::once())->method('rtt')->willReturn(Future::complete(0.001));
 
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
         $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30, 'auto_setup' => true], $serializer);
         $transport->setClient($client);
@@ -1634,7 +1634,7 @@ final class NatsTransportTest extends TestCase
         $client->method('jetStream')->willReturn($jetStream);
         $client->expects(self::never())->method('rtt');
 
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
         $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30], $serializer);
         $transport->setClient($client);
@@ -1853,7 +1853,7 @@ final class NatsTransportTest extends TestCase
      */
     private function encodingSerializer(): SerializerInterface
     {
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
 
         return $serializer;
@@ -1867,7 +1867,7 @@ final class NatsTransportTest extends TestCase
     private function jetStreamRecordingPublishes(?array &$publishes): JetStreamContext
     {
         $publishes = [];
-        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream = $this->createStub(JetStreamContext::class);
         $jetStream->method('publish')->willReturnCallback(
             static function (string $subject, string $payload, array $headers = [], ?string $msgId = null) use (&$publishes): Future {
                 $publishes[] = ['subject' => $subject, 'headers' => $headers, 'msgId' => $msgId];
@@ -1937,7 +1937,7 @@ final class NatsTransportTest extends TestCase
     {
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
@@ -1957,7 +1957,7 @@ final class NatsTransportTest extends TestCase
     {
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
@@ -2558,7 +2558,7 @@ final class NatsTransportTest extends TestCase
 
     public function testAutoSetupProvisionsOnFirstSendOnce(): void
     {
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
 
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -2611,7 +2611,7 @@ final class NatsTransportTest extends TestCase
 
     public function testAutoSetupDisabledByDefaultDoesNotProvisionOnSend(): void
     {
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
 
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -2629,13 +2629,13 @@ final class NatsTransportTest extends TestCase
 
     public function testAutoSetupProvisionsBeforeTheFirstPublish(): void
     {
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
 
         // Recording the order matters: provisioning that runs *after* the publish would still satisfy
         // simple call-count expectations while defeating the entire point of auto_setup.
         $calls = [];
-        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream = $this->createStub(JetStreamContext::class);
         $jetStream->method('addStream')->willReturnCallback(static function () use (&$calls) {
             $calls[] = 'addStream';
 
@@ -2668,7 +2668,7 @@ final class NatsTransportTest extends TestCase
     public function testAutoSetupProvisionsBeforeTheFirstFetch(): void
     {
         $calls = [];
-        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream = $this->createStub(JetStreamContext::class);
         $jetStream->method('addStream')->willReturnCallback(static function () use (&$calls) {
             $calls[] = 'addStream';
 
@@ -2700,7 +2700,7 @@ final class NatsTransportTest extends TestCase
 
     public function testAutoSetupRetriesProvisioningAfterAFailedAttempt(): void
     {
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturn(['body' => 'encoded']);
 
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -3652,6 +3652,7 @@ final class NatsTransportTest extends TestCase
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
         $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('publish');
         $transport->setJetStreamContext($jetStream);
 
         $envelope = new Envelope(new \stdClass());
@@ -3892,7 +3893,7 @@ final class NatsTransportTest extends TestCase
     public function testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId(): void
     {
         $encoded = null;
-        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('encode')->willReturnCallback(static function (Envelope $envelope) use (&$encoded): array {
             $encoded = $envelope;
 

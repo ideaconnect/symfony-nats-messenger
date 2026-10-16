@@ -46,6 +46,13 @@ composer nats:stop               # stop NATS
 - PHPStan **level max** must stay clean - no new baseline entries; fix the types instead.
 - Keep PHPUnit metadata as **attributes** (`#[DataProvider]`, `#[Test]`), not doc-comment annotations
   (doc-comment metadata is deprecated in PHPUnit 11, removed in 12).
+- The unit suite runs on PHPUnit 11 to 13: PHP 8.2 installs 11, PHP 8.3 installs 12 and PHP 8.4 or later
+  installs 13 (CI runs 11 and 13). Make a test double that sets no expectations with `createStub()`, not
+  `createMock()`: PHPUnit 12 and later report a notice for a mock without expectations, and CI's PHP 8.5 job
+  fails on it.
+- Behat step definitions and hooks are **attributes** (`#[Given]`, `#[When]`, `#[Then]`, `#[AfterScenario]`), and the
+  Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
+  configuration is strict, so a scenario with an undefined step fails the run instead of being skipped.
 - `TransportOption` is the single source of truth for option keys; every case needs a `DEFAULT_OPTIONS`
   entry in `NatsTransportConfigurationBuilder` (guarded by `testDefaultOptionsCoversAllTransportOptionCases`).
 - Mark DSN/credential parameters with `#[\SensitiveParameter]`.

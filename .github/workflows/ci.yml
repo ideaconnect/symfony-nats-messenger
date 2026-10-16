@@ -8,6 +8,9 @@ on:
 
 jobs:
   test:
+    # Named after the PHP version and client only, so a matrix value such as phpunit-args does not change the
+    # name of the check.
+    name: test (${{ matrix.php-version }}, ${{ matrix.client }})
     runs-on: ubuntu-latest
     timeout-minutes: 40  # Whole-job cap: install + analysis + unit/coverage + mutation (8.5) + functional + benchmark
 
@@ -20,6 +23,9 @@ jobs:
             client: lowest
           - php-version: '8.5'
             client: latest
+            # PHPUnit 12 and later report a test double that sets no expectations as a PHPUnit notice, and a
+            # notice alone does not fail the run. PHPUnit 11, which PHP 8.2 installs, has no such option.
+            phpunit-args: --fail-on-phpunit-notice
 
     steps:
     - name: Checkout code
@@ -43,7 +49,7 @@ jobs:
     #   run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
 
     # - name: Cache dependencies
-    #   uses: actions/cache@v3
+    #   uses: actions/cache@v6
     #   with:
     #     path: ${{ steps.composer-cache.outputs.dir }}
     #     key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
@@ -87,7 +93,7 @@ jobs:
         docker ps --filter "name=nats"
 
     - name: Run unit tests with coverage
-      run: composer test:unit
+      run: composer test:unit -- ${{ matrix.phpunit-args }}
 
     - name: Check coverage threshold (90%)
       run: composer coverage:check
