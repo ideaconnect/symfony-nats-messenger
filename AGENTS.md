@@ -8,6 +8,13 @@ Ships `IDCTNatsMessengerBundle` (Flex auto-enables it), which registers the tran
 and the igbinary serializer - no manual wiring needed. Each service has one id, its class name:
 Symfony wraps a transport's serializer for signing once per id, so a second id would wrap it twice.
 
+## Project Memory
+
+Read [docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md) when starting work for maintainer preferences,
+the local client-library relationship, behavioral pitfalls, and a dated issue/environment snapshot.
+Refresh changeable facts from source and GitHub before relying on them; update the memory when new
+findings affect future work. This guide remains the project instruction source.
+
 ## Installation
 
 ```bash

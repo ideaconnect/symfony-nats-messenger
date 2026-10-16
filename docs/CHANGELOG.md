@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Persistent project memory** in `docs/PROJECT_MEMORY.md`, linked from `AGENTS.md`, covering the
+  maintainer's local client-library workflow, transport behavior, verification requirements, and
+  a dated GitHub issue and development-environment snapshot.
+
 ## [5.5.0] - 2026-10-16
 
 A **minor** release. It adds `IDCTNatsMessengerBundle`, which Symfony Flex enables and which registers the

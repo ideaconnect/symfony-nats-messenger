@@ -82,6 +82,7 @@ scripts/
 
 docs/
 ├── CHANGELOG.md                                # Keep a Changelog format
+├── PROJECT_MEMORY.md                           # maintainer context, pitfalls and a dated snapshot for agents
 ├── TESTS.md                                    # Feature → test coverage map (kept in sync with the suite)
 └── PRs/                                         # One file per merged/adapted PR (PR-NNN-*.md)
 ```
