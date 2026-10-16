@@ -837,7 +837,7 @@ options:
 
 In a DSN the tags are a comma-separated list: `?stream_placement_tags=ssd,eu-west`.
 
-> **Tested by:** `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testSetupUpdateMergesConfiguredPlacementIntoTheLivePlacement`, Behat scenarios in `nats_stream_placement.feature`
+> **Tested by:** `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testSetupUpdateMergesConfiguredPlacementIntoTheLivePlacement`, `testSetupExplainsHowToStageAMoveAndScaleRejection`, `testAutoSetupRepeatsARejectedMoveAndScaleUpdateOnEverySend`, Behat scenarios in `nats_stream_placement.feature`
 
 - Both options default to `null`, which leaves the stream's placement untouched: a new stream gets the
   server's default placement and an existing stream keeps whatever placement it already has. This
@@ -854,9 +854,16 @@ In a DSN the tags are a comma-separated list: `?stream_placement_tags=ssd,eu-wes
   exactly: `SSD` and `ssd` match the same servers, but the server's `unique_tag` bypass (below) is
   case-sensitive, so a tag that differs only in case is sent as a change. The server accepts a new
   placement at once and `setup()` returns; the replica migration runs in the background (`nats stream
-  info` shows the replicas as not current until it finishes). NATS refuses to change the placement and
-  `stream_replicas` in the same update, so stage those two options across two
-  `messenger:setup-transports` runs.
+  info` shows the replicas as not current until it finishes).
+- NATS refuses to change the placement and `stream_replicas` in the same update (err_code 10123), and
+  `setup()` fails with the server's message and the staging steps. Stage the two changes: run
+  `messenger:setup-transports` with only one of them (for example the placement options as they were and
+  the new `stream_replicas`), wait until `nats stream info` shows every replica as current, then run it
+  again with the other change. Running the same combined configuration twice is not staging. With
+  `auto_setup: true` the transport runs `setup()` before the first `send()` or `get()` of a process, so
+  every one of them repeats the rejected update and fails until the configuration is staged; nothing is
+  published or consumed meanwhile. The transport does not split the update itself, because a `setup()`
+  that applied one half and returned would count as done and the other half would never be applied.
 - **Exclusion tags and the `unique_tag` bypass (NATS 2.12+).** A tag prefixed with `!` excludes the
   servers that carry it, for example `!disk:hdd`. The server strips the `!` before it looks at the
   cluster's `unique_tag` setting, and any placement tag that starts with that configured prefix switches

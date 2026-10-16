@@ -5593,4 +5593,197 @@ final class NatsTransportTest extends TestCase
 
         return $payload;
     }
+
+    /**
+     * nats-server rejects one STREAM.UPDATE that changes the placement and the replica count with
+     * err_code 10123. The transport cannot stage the two changes itself (see the transport's
+     * describeSetupRejection()), so the exception says how: it keeps the setup command's RuntimeException
+     * type and the server's wording, and carries the client exception as its direct previous, so the
+     * err_code stays readable to whoever catches it.
+     */
+    public function testSetupExplainsHowToStageAMoveAndScaleRejection(): void
+    {
+        $rejection = new JetStreamException('can not move and scale a stream in a single update', 400, null, 10123);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'stream_placement_tags' => 'ssd',
+            'stream_replicas' => 3,
+        ]);
+        $transport->setJetStreamContext($this->jetStreamRejectingTheUpdate($rejection));
+
+        try {
+            $transport->setup();
+            self::fail('setup() was expected to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertStringStartsWith(
+                "Failed to setup NATS stream 'test-stream': can not move and scale a stream in a single update. NATS refuses to change the placement and the replica count of a stream in one update. Stage the two changes:",
+                $exception->getMessage(),
+            );
+            self::assertStringContainsString('stream_replicas', $exception->getMessage());
+            self::assertStringContainsString('"nats stream info"', $exception->getMessage());
+            self::assertStringContainsString('With auto_setup every send() and get() repeats this update', $exception->getMessage());
+            self::assertSame(0, $exception->getCode());
+            self::assertSame($rejection, $exception->getPrevious());
+        }
+    }
+
+    /**
+     * The staging advice is keyed on the err_code alone, so every other rejection of the update keeps the
+     * plain wording with the server's message, a placement no server can satisfy included.
+     */
+    public function testSetupKeepsThePlainWordingForOtherUpdateRejections(): void
+    {
+        $rejection = new JetStreamException('no suitable peers for placement, tags not matched [nvme]', 400, null, 10005);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['stream_placement_tags' => 'nvme']);
+        $transport->setJetStreamContext($this->jetStreamRejectingTheUpdate($rejection));
+
+        try {
+            $transport->setup();
+            self::fail('setup() was expected to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame(
+                "Failed to setup NATS stream 'test-stream': no suitable peers for placement, tags not matched [nvme]",
+                $exception->getMessage(),
+            );
+            self::assertSame($rejection, $exception->getPrevious());
+        }
+    }
+
+    /**
+     * With auto_setup the done flag latches only after setup() succeeds, so a rejected move-and-scale
+     * update is repeated by every send() until the operator stages the configuration, and nothing is
+     * published meanwhile. Once the update goes through, the flag latches and the next send() skips
+     * setup() as usual.
+     */
+    public function testAutoSetupRepeatsARejectedMoveAndScaleUpdateOnEverySend(): void
+    {
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+
+        $jetStream = $this->jetStreamRejectingTheUpdateTwice();
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturn(Future::complete());
+        $jetStream->expects(self::never())->method('fetchBatch');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'auto_setup' => true,
+            'stream_placement_tags' => 'ssd',
+            'stream_replicas' => 3,
+        ], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        foreach ([1, 2] as $attempt) {
+            try {
+                $transport->send(new Envelope(new \stdClass()));
+                self::fail("send() number {$attempt} was expected to fail while provisioning.");
+            } catch (\RuntimeException $exception) {
+                self::assertStringContainsString('Stage the two changes', $exception->getMessage());
+            }
+        }
+
+        // The operator staged the configuration, so the update goes through: this send() provisions and
+        // publishes, and the one after it publishes without provisioning again.
+        $transport->send(new Envelope(new \stdClass()));
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * The get() side of the previous test: a worker on a rejected configuration fails every pull without
+     * fetching, then recovers once the update is accepted.
+     */
+    public function testAutoSetupRepeatsARejectedMoveAndScaleUpdateOnEveryGet(): void
+    {
+        $jetStream = $this->jetStreamRejectingTheUpdateTwice();
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::complete([]));
+        $jetStream->expects(self::never())->method('publish');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'auto_setup' => true,
+            'stream_placement_tags' => 'ssd',
+            'stream_replicas' => 3,
+        ]);
+        $transport->setJetStreamContext($jetStream);
+
+        foreach ([1, 2] as $attempt) {
+            try {
+                iterator_to_array($transport->get());
+                self::fail("get() number {$attempt} was expected to fail while provisioning.");
+            } catch (\RuntimeException $exception) {
+                self::assertStringContainsString('Stage the two changes', $exception->getMessage());
+            }
+        }
+
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
+     * A JetStream double for a stream that exists with an R1 placement on `hdd` and whose update is
+     * rejected with the given exception; the consumer is never created.
+     */
+    private function jetStreamRejectingTheUpdate(JetStreamException $rejection): JetStreamContext
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->willReturn(Future::complete($this->pinnedR1StreamInfo()));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->willReturn(Future::error($rejection));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        return $jetStream;
+    }
+
+    /**
+     * A JetStream double whose update is rejected with err_code 10123 twice and accepted the third time,
+     * for three provisioning attempts in all; the consumer is created once, after the accepted update.
+     */
+    private function jetStreamRejectingTheUpdateTwice(): JetStreamContext&\PHPUnit\Framework\MockObject\MockObject
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(3))
+            ->method('addStream')
+            ->willReturnCallback(static fn (): Future => Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::exactly(3))
+            ->method('getStream')
+            ->willReturnCallback(fn (): Future => Future::complete($this->pinnedR1StreamInfo()));
+        $jetStream->expects(self::exactly(3))
+            ->method('updateStream')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new JetStreamException('can not move and scale a stream in a single update', 400, null, 10123)),
+                Future::error(new JetStreamException('can not move and scale a stream in a single update', 400, null, 10123)),
+                Future::complete(),
+            );
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        return $jetStream;
+    }
+
+    private function pinnedR1StreamInfo(): StreamInfo
+    {
+        return new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                    'num_replicas' => 1,
+                    'placement' => ['tags' => ['hdd']],
+                ],
+            ],
+        );
+    }
 }

@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stores it: nats-server reads any difference in the block, the order of the tags included, as a request
   to move the stream's replicas, and refuses a move combined with a replica change. The tags are compared
   exactly, since the server's `unique_tag` bypass is case-sensitive (#80).
+- **A placement change combined with a `stream_replicas` change on an existing stream fails with staging
+  advice.** nats-server refuses to move and scale a stream in one update (err_code 10123). `setup()` keeps
+  its `RuntimeException`, the server's wording and the client's `JetStreamException` as the previous
+  exception, and adds how to stage the two changes: apply one, wait until `nats stream info` shows every
+  replica as current, then apply the other. The update is not split by the transport, because with
+  `auto_setup` a `setup()` that applied one half would latch the done flag and never apply the other;
+  instead every `send()` and `get()` repeats the rejected update and fails until the configuration is
+  staged, and nothing is published or consumed meanwhile (#80).
 - **`TypeCoercion::stringListValue()` and `TypeCoercion::nonBlankStringValue()`** centralizing the
   list-or-comma-separated-string coercion used by `stream_placement_tags` and the trimmed-name coercion used
   by `stream_placement_cluster`. The builder validates with them and the configuration accessors read with
