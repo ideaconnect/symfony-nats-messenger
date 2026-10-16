@@ -70,6 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FunctionalSuiteConfigTest`.
 - **`run_tests.sh` option 6 and the functional README list the step definitions with `--definitions l`.** Behat 4
   requires a value for `--definitions`, so both printed "The "--definitions" option requires a value." and exited 1.
+- **PHPUnit deprecations, and on PHPUnit 13 PHPUnit notices, fail the unit suite.** `phpunit.xml.dist` sets
+  `failOnPhpunitDeprecation`, and CI's PHP 8.5 job runs the suite with `--fail-on-phpunit-notice`, the option for
+  the notice PHPUnit 12 and later give a test double that sets no expectations. Both used to be reported while the
+  run passed. PHPUnit 11, which PHP 8.2 installs, does not know `failOnPhpunitNotice` and rejects the whole file
+  when it sees it, so the notice option stays on the command line. Guarded by `UnitSuiteConfigTest`.
 
 ## [5.4.1] - 2026-10-05
 

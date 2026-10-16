@@ -169,6 +169,13 @@ processes through `tests/Support/PhpProcess.php`, and the bootstrap tests are sk
 | **No mutant killed by the test harness** | `testLogCheckPassesWhenNoMutantWasKilledByTheHarness`, `testLogCheckFailsWhenAMutantWasKilledByTheHarness` (`ClassIsFinalException`, `cannot extend final class`, `Error in bootstrap script`), `testLogCheckFailsWhenTheLogIsMissingOrEmpty`, `testLogCheckIgnoresArguments` |
 | **Escaped mutants go to the job log, not to GitHub annotations** | `testInfectionRunsWriteNoGitHubAnnotations` (the canary and the real run), `testMutationRunListsEveryEscapedMutant` |
 
+### Unit Suite Configuration (`tests/unit/UnitSuiteConfigTest.php`)
+
+| Feature | Tests |
+|---------|-------|
+| **A PHPUnit deprecation fails the unit suite** | `testAPhpunitDeprecationFailsTheUnitSuite` (`failOnPhpunitDeprecation` in `phpunit.xml.dist`, known to PHPUnit 11.5 to 13) |
+| **On PHPUnit 13, a PHPUnit notice fails the unit suite** | `testAPhpunitNoticeFailsTheUnitSuiteOnTheJobThatRunsPhpunit13` (CI's PHP 8.5 job passes `--fail-on-phpunit-notice`, which catches a test double that sets no expectations; PHPUnit 11 rejects `failOnPhpunitNotice` in the XML file) |
+
 ### Functional Suite Configuration (`tests/unit/FunctionalSuiteConfigTest.php`)
 
 | Feature | Tests |
