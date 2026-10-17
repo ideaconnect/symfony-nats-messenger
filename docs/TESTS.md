@@ -374,8 +374,8 @@ does not survive it.
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
-on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 96.7% MSI and covered
-MSI: 934 of 966 mutants killed, with 100% mutation code coverage.
+on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 96.9% MSI and covered
+MSI: 1008 of 1040 mutants killed, with 100% mutation code coverage.
 
 Scores reported before, 100% among them, were not real. Infection runs each mutant in a PHPUnit process
 whose bootstrap puts its include interceptor on `file://`; the interceptor dropped the wrapper BypassFinals
@@ -388,7 +388,7 @@ is not hit there.
 Two checks around the run keep the score honest; CI runs both:
 
 - **Before it, `composer test:mutation:canary`** runs Infection with `--noop` and the `TrueValue` and
-  `FalseValue` mutators. Its mutants (47 today) change nothing, so every one must escape;
+  `FalseValue` mutators. Its mutants (56 today) change nothing, so every one must escape;
   `scripts/check-mutation-canary.php` fails when one is detected, when none ran, or when the summary is
   missing or malformed. On the old bootstrap it detected 42 of 46.
 - **After it, `composer test:mutation:check-log`** (`scripts/check-mutation-log.php`) fails when

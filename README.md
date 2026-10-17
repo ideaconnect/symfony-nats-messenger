@@ -2,8 +2,8 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.77%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
-[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-96.7%25-brightgreen)](https://infection.github.io/)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.78%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-96.9%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -23,7 +23,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   changes only its own half of an existing placement (see [Stream Placement](#stream-placement))
 - 🔁 **Automatic Reconnect** - Optional mode in which the NATS client recovers a lost connection and a worker
   polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
-- 🧪 **Thoroughly Tested** - 623 unit tests, ~99.8% coverage, mutation-tested (96.7% MSI)
+- 🧪 **Thoroughly Tested** - 669 unit tests, ~99.8% coverage, mutation-tested (96.9% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -1054,7 +1054,7 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 96.7% (934 of 966 mutants killed, with 100% mutation code coverage).
+95%; the suite scores 96.9% (1008 of 1040 mutants killed, with 100% mutation code coverage).
 [docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 32 mutants that survive, with the reason for each:
 27 are equivalent, three make no difference with the real client, and two differ about once in a million
 runs. CI runs all three on the PHP 8.5 job and every day. Scores published before, 100% among them, were not
