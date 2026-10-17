@@ -12,6 +12,7 @@ use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NATS\JetStream\Enum\StorageBackend;
 use IDCT\NatsMessenger\TypeCoercion;
 use InvalidArgumentException;
+use Psr\Log\LoggerInterface;
 
 /**
  * Parses a NATS JetStream DSN and merges transport options to produce an immutable
@@ -102,9 +103,13 @@ final class NatsTransportConfigurationBuilder
      *
      * Option precedence is: method options > DSN query params > defaults.
      *
+     * The logger, when given, is the client's: it writes the connection's lifecycle at info level and its errors at
+     * error level, among them the report of acknowledgements buffered during an outage that a reconnect which gave
+     * up discarded. Without one those go nowhere.
+     *
      * @param array<string, mixed> $options
      */
-    public function build(#[\SensitiveParameter] string $dsn, array $options = []): NatsTransportConfiguration
+    public function build(#[\SensitiveParameter] string $dsn, array $options = [], ?LoggerInterface $logger = null): NatsTransportConfiguration
     {
         $components = $this->parseDsn($dsn);
         $configuration = $this->buildConfiguration($components, $options);
@@ -148,6 +153,7 @@ final class NatsTransportConfigurationBuilder
             password: $this->resolveCredential($components, $configuration, TransportOption::PASSWORD, 'pass'),
             jwt: $this->toNullableString($configuration[TransportOption::JWT->value]),
             nkey: $this->toNullableString($configuration[TransportOption::NKEY->value]),
+            logger: $logger,
         ));
 
         return new NatsTransportConfiguration(

@@ -9,6 +9,8 @@ use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
 use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
 
+use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
+
 /**
  * Symfony bundle for the NATS JetStream transport
  *
@@ -16,7 +18,8 @@ use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
  * services.yaml entries: {@see NatsTransportFactory}, tagged `messenger.transport_factory`, the tag Messenger
  * finds transport factories by (nothing registers a factory from vendor/ on its own), and
  * {@see IgbinarySerializer}, which a transport uses only when its `serializer:` key names it. Registering the
- * serializer does not select it.
+ * serializer does not select it. The factory gets the application's `logger` service when there is one, so the
+ * NATS client's lifecycle and errors reach the application's log under Messenger's channel.
  *
  * Each service has one id, its class name. Applications write that id in their configuration, and an entry an
  * application defines under it, as it had to before this bundle, replaces the bundle's. The serializer must not
@@ -37,8 +40,12 @@ final class IDCTNatsMessengerBundle extends AbstractBundle
     {
         $services = $configurator->services();
 
+        // The application's logger, when it has one, goes to the NATS client of every transport, under Messenger's
+        // channel: the connection's lifecycle at info level, its errors at error level.
         $services->set(NatsTransportFactory::class)
-            ->tag('messenger.transport_factory');
+            ->args([service('logger')->nullOnInvalid()])
+            ->tag('messenger.transport_factory')
+            ->tag('monolog.logger', ['channel' => 'messenger']);
 
         // Under this one id only, see the class comment.
         $services->set(IgbinarySerializer::class);

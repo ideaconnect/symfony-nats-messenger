@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   payload, headers and `Nats-Msg-Id`, then a second failure propagates. Nothing answered the first publish, so
   the second cannot duplicate it.
 
+- **The NATS client logs through the application's logger (#81).** `NatsTransportFactory` takes an optional PSR-3
+  logger and hands it to every transport it creates, `NatsTransport` takes it as a fourth constructor argument,
+  and the bundle passes the application's `logger` service when there is one, under Messenger's Monolog
+  channel. The client writes its connection lifecycle at info level and its errors at error level; among them
+  `Reconnect exhausted: N bytes of buffered publishes were discarded`, the only trace of acknowledgements
+  written during an outage that a reconnect which gave up discarded (the messages come back after `ack_wait`).
+  Those went to a null logger before. `psr/log` `^3.0` is a direct requirement now; it was installed already,
+  through the client.
+
 ### Fixed
 - **A pull the server ended for its shutdown or for a leadership change is an empty batch, not a missing
   consumer (#81).** A server that is shutting down ends every pull in flight with `409 Server Shutdown`, and a

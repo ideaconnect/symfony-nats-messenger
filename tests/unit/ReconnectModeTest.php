@@ -8,6 +8,7 @@ use IDCT\NATS\Connection\Enum\ConnectionState;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NatsMessenger\Tests\Support\ClientInjectedNatsTransport;
 use IDCT\NatsMessenger\Tests\Support\FaultInjectingNatsServer;
+use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Tests\Support\RttCountingNatsClient;
 use IDCT\NatsMessenger\Tests\Support\SubscriptionLimitNatsServer;
 use PHPUnit\Framework\TestCase;
@@ -223,6 +224,51 @@ final class ReconnectModeTest extends TestCase
         self::assertSame(1, $client->statistics()->reconnects);
     }
 
+    /**
+     * A recovery that gives up: the dials are refused, the acknowledgement written while the client was recovering
+     * was buffered, and the client discards the buffer when it gives up. Nothing waits for an acknowledgement, so the
+     * only trace is the client's report, which goes to the logger the transport was given, at error level, and to the
+     * error listener. The message comes back after ack_wait, which is the right outcome; the operator is told why.
+     * The next operation finds the client Closed, dials again, which runs the client's attempt loop once more, and
+     * fails with the client's exception: exhaustion propagates rather than being flattened into an empty result.
+     */
+    public function testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails(): void
+    {
+        $server = self::server();
+        $faults = new FaultInjectingNatsServer($server);
+        $logger = new RecordingLogger();
+        [$transport, $client] = self::transportOver($faults, pingAfterIdle: 0.05, logger: $logger);
+
+        try {
+            $transport->send(new Envelope(self::message('m-1')));
+            [$received] = iterator_to_array($transport->get(), false);
+            delay(0.06);
+            $faults->holdNextDial(100);
+            $faults->refuseDials = true;
+            $faults->failNextWriteContaining('PING');
+
+            $transport->ack($received);
+            $acknowledgedAtOnce = $client->state();
+            delay(0.3);
+            $stateAfterTheRecoveryGaveUp = $client->state();
+            $dialsAfterTheRecoveryGaveUp = $faults->dialAttempts;
+
+            $failure = self::failureOf(static fn () => $transport->send(new Envelope(self::message('m-2'))));
+        } finally {
+            $transport->close();
+        }
+
+        self::assertSame(ConnectionState::Connecting, $acknowledgedAtOnce, 'ack() returned while the client was recovering: the frame was buffered');
+        self::assertSame(ConnectionState::Closed, $stateAfterTheRecoveryGaveUp);
+        self::assertSame(4, $dialsAfterTheRecoveryGaveUp, 'the first dial and the three attempts of the recovery');
+        self::assertSame([], $server->acks(), 'the buffered acknowledgement never reached the server');
+        $discards = array_values(array_filter($logger->messagesAt('error'), static fn (string $message): bool => str_contains($message, 'buffered publishes were discarded')));
+        self::assertCount(1, $discards, 'the discard was reported at error level: ' . implode(' | ', $logger->messagesAt('error')));
+        self::assertStringContainsString('Reconnect exhausted', $discards[0]);
+        self::assertSame(8, $faults->dialAttempts, 'the next operation dialled again: one dial and the three attempts of its recovery, as the client runs a failed first dial through its loop');
+        self::assertStringContainsString('exhausted', strtolower($failure->getMessage()), $failure::class . ': ' . $failure->getMessage());
+    }
+
     private static function server(): SubscriptionLimitNatsServer
     {
         return new SubscriptionLimitNatsServer('orders', 'orders.created', 'worker');
@@ -231,7 +277,7 @@ final class ReconnectModeTest extends TestCase
     /**
      * @return array{ClientInjectedNatsTransport, RttCountingNatsClient}
      */
-    private static function transportOver(FaultInjectingNatsServer $connection, float $pingAfterIdle = 30): array
+    private static function transportOver(FaultInjectingNatsServer $connection, float $pingAfterIdle = 30, ?RecordingLogger $logger = null): array
     {
         $client = new RttCountingNatsClient(new NatsOptions(
             connectTimeoutMs: 100,
@@ -242,6 +288,7 @@ final class ReconnectModeTest extends TestCase
             reconnectMaxDelayMs: 2,
             reconnectJitterMs: 0,
             pingIntervalSeconds: 0,
+            logger: $logger,
         ), $connection);
         $transport = new ClientInjectedNatsTransport(self::DSN, [
             'consumer' => 'worker',

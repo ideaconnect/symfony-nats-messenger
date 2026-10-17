@@ -9,6 +9,7 @@ use IDCT\NATS\JetStream\Enum\ReplayPolicy;
 use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Options\StreamCompression;
 use IDCT\NatsMessenger\Options\TransportOption;
@@ -1850,5 +1851,20 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'negative' => [-1];
         yield 'fractional' => [1.5];
         yield 'non-numeric' => ['many'];
+    }
+
+    /**
+     * The logger given to build() is the client's, and the client gets none by default: the transport constructed on
+     * its own, outside the bundle, logs nothing, as before the logger existed.
+     */
+    public function testBuildPassesTheLoggerToTheClientAndNoneByDefault(): void
+    {
+        $logger = new RecordingLogger();
+
+        $withLogger = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [], $logger);
+        $withoutLogger = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);
+
+        self::assertSame($logger, $this->extractNatsOptions($withLogger->client)->logger);
+        self::assertNull($this->extractNatsOptions($withoutLogger->client)->logger);
     }
 }

@@ -30,6 +30,7 @@ use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
 use LogicException;
+use Psr\Log\LoggerInterface;
 use RuntimeException;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\TransportException;
@@ -128,8 +129,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * @param string                 $dsn        NATS JetStream DSN (e.g. nats-jetstream://host:4222/stream/topic)
      * @param array<string, mixed>   $options    Transport option overrides (take precedence over DSN query params)
      * @param SerializerInterface|null $serializer Custom serializer; when null, defaults to igbinary
+     * @param LoggerInterface|null   $logger     The NATS client's logger: the connection's lifecycle at info level,
+     *                                           its errors at error level, among them a reconnect that gave up and
+     *                                           discarded the acknowledgements buffered meanwhile. The bundle hands
+     *                                           the application's logger to {@see NatsTransportFactory}.
      */
-    public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null)
+    public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null, ?LoggerInterface $logger = null)
     {
         if ($serializer !== null) {
             $this->serializer = $serializer;
@@ -146,7 +151,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $this->serializer = new PhpSerializer();
         }
 
-        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options, $logger);
         $this->configuration = $configuration;
         $this->topic = $configuration->topic;
         $this->streamName = $configuration->streamName;

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger;
 
+use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\TransportFactoryInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
@@ -14,7 +15,8 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
  * Implements TransportFactoryInterface so Symfony Messenger's transport registry discovers and
  * instantiates {@see NatsTransport} for the recognized DSN schemes (see supports()).
  *
- * The factory always passes Symfony's resolved serializer into the transport (the
+ * The factory hands its logger, when it has one, to every transport it creates, for the NATS client (see
+ * the constructor). The factory always passes Symfony's resolved serializer into the transport (the
  * interface signature is non-nullable). When a transport configures no serializer,
  * Symfony injects its default serializer service - the native PhpSerializer unless
  * reconfigured - never null, so the transport's built-in igbinary auto-default only
@@ -26,6 +28,16 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
  */
 class NatsTransportFactory implements TransportFactoryInterface
 {
+    /**
+     * @param LoggerInterface|null $logger Handed to every transport this factory creates, for the NATS client: the
+     *                                     connection's lifecycle at info level, its errors at error level, among them a
+     *                                     reconnect that gave up and discarded the acknowledgements buffered meanwhile.
+     *                                     The bundle passes the application's `logger` service when there is one.
+     */
+    public function __construct(private readonly ?LoggerInterface $logger = null)
+    {
+    }
+
     /**
      * DSN scheme prefix for NATS JetStream transports.
      * Used to identify which transports this factory should handle.
@@ -48,7 +60,7 @@ class NatsTransportFactory implements TransportFactoryInterface
      */
     public function createTransport(#[\SensitiveParameter] string $dsn, array $options, SerializerInterface $serializer): TransportInterface
     {
-        return new NatsTransport($dsn, $options, $serializer);
+        return new NatsTransport($dsn, $options, $serializer, $this->logger);
     }
 
     /**
