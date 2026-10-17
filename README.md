@@ -2,8 +2,8 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.58%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
-[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-96%25-brightgreen)](https://infection.github.io/)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.77%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-96.7%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -19,6 +19,8 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
+- 📍 **Stream Placement** - Pin a stream to a JetStream cluster and to tagged servers; an option you set
+  changes only its own half of an existing placement (see [Stream Placement](#stream-placement))
 - 🧪 **Thoroughly Tested** - 623 unit tests, ~99.8% coverage, mutation-tested (96.7% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
@@ -32,7 +34,8 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 ### System Requirements
 - **PHP**: ^8.2
 - **Symfony**: ^7.2 || ^8
-- **NATS Server**: ^2.9 with JetStream enabled, ^2.12 for scheduled messages support.
+- **NATS Server**: ^2.9 with JetStream enabled, ^2.12 for scheduled messages support and for `!` exclusion
+  tags in `stream_placement_tags`.
 
 ## Installation
 
