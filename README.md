@@ -19,7 +19,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 551 unit tests, ~99.7% coverage, mutation-tested (96% MSI)
+- 🧪 **Thoroughly Tested** - 623 unit tests, ~99.8% coverage, mutation-tested (96.7% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -945,7 +945,7 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 96.3% (835 of 867 mutants killed, with 100% mutation code coverage).
+95%; the suite scores 96.7% (934 of 966 mutants killed, with 100% mutation code coverage).
 [docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 32 mutants that survive, with the reason for each:
 27 are equivalent, three make no difference with the real client, and two differ about once in a million
 runs. CI runs all three on the PHP 8.5 job and every day. Scores published before, 100% among them, were not

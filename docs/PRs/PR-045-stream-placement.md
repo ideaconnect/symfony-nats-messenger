@@ -61,6 +61,7 @@ One commit per item, on top of the PR's placement commit cherry-picked onto `mai
 | `test: prove the placement merge and the update on a real server` | The max-age assertion in the preservation scenario; three scenarios for the merge against the standalone server, which stores a cluster name without acting on it |
 | `test: cover what the placement changes left to the mutation run` | A test for the generic wrap of `setup()`, which JetStream rejections no longer reach; two more merge cases; three equivalent branches removed (`array_values()` and a redundant `array_unique()` in the tag comparison, a null check before `stringListValue()`, a scalar check the coercion makes itself) |
 | `docs: say how a tags-only placement resolves in a super-cluster and show the two stages` | README: the super-cluster rule, the two-stage example, the note next to `auto_setup`; this document |
+| `docs: update the test and mutation counts` | The unit test count in the README, the mutation totals in the README, TESTS.md and `infection.json5`, the canary's mutant count |
 
 ## Behavioural Contract
 
@@ -95,7 +96,8 @@ One commit per item, on top of the PR's placement commit cherry-picked onto `mai
   with the functional app on client 2.27.0 and Behat 4.0.0.
 - `composer test:mutation:canary` passed (47 no-op mutants, all escaped as they must). Infection on the four changed
   source files: 938 mutants, 906 killed, 100 % mutation coverage, covered MSI 96 %; the 32 that escape are the
-  survivors `docs/TESTS.md` documents for these files. The whole-suite run is CI's PHP 8.5 job.
+  survivors `docs/TESTS.md` documents for these files. The whole suite (`composer test:mutation`): 966 mutants,
+  934 killed, 96.7 % MSI and covered MSI, the same 32 survivors; `composer test:mutation:check-log` clean.
 - Not run for the finished code: a NATS cluster. The cluster measurements behind the findings (the dropped half,
   the reordered-tags move, err_code 10123 with a replica change, the case-sensitive `unique_tag` bypass) were made
   during the review on three-node 2.14 and 2.14.7 clusters and are recorded in #80; the server behaviour the merge

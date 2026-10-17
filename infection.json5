@@ -17,9 +17,9 @@
     // Generous per-mutant timeout so only genuine infinite loops time out — fast mutants never
     // straddle the boundary and get classified non-deterministically on a loaded CI runner.
     "timeout": 60,
-    // Regression floors. The suite scores 96.3% MSI and covered MSI (835 of 867 mutants killed, 100%
+    // Regression floors. The suite scores 96.7% MSI and covered MSI (934 of 966 mutants killed, 100%
     // mutation code coverage); docs/TESTS.md lists the 32 mutants that survive, with the reason for each.
-    // minCoveredMsi 95 leaves eleven mutants of headroom, so the gate fails on real regressions, not on
+    // minCoveredMsi 95 leaves sixteen mutants of headroom, so the gate fails on real regressions, not on
     // run-to-run variance. Scores of 100% reported before were not real: in the mutant processes the
     // client's final classes could not be doubled, so every mutant their tests covered counted as killed
     // (see tests/bootstrap.php). Run `composer test:mutation:canary` first, as CI does.
