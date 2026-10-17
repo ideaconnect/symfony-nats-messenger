@@ -88,6 +88,45 @@ services:
 
 > **Tested by:** `theServiceEntriesUsedBeforeTheBundleKeepWorking`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`
 
+### Upgrading from 5.6
+
+Nothing to change. The [`reconnect`](#automatic-reconnect) option is off by default, and with it off the
+transport recovers a lost connection as before. Two differences apply in either mode:
+
+- A pull the server ended for its own shutdown (`409 Server Shutdown`) or for a leadership change
+  (`409 Leadership Change`) is an empty batch now, not a missing consumer. With `auto_setup` the transport no
+  longer runs `setup()` against a server that is going away, which failed every graceful stop of the server
+  with "Failed to setup NATS stream" and ended the worker. Every other 409 keeps its meaning.
+- If the application has a `logger` service, the bundle hands it to the NATS client, which writes its
+  connection lifecycle at info level and its errors at error level, under Monolog's `messenger` channel (see
+  [Logging](#logging)). Those lines went nowhere before.
+
+> **Tested by:** `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`
+
+### Logging
+
+The NATS client reports what it does with the connection through a PSR-3 logger: the connection's lifecycle
+(connected, reconnected, closed) at info level, a reconnect attempt that failed at warning level, and its
+errors at error level. Among the errors is the only trace of acknowledgements lost to an outage with
+[`reconnect: true`](#automatic-reconnect): `Reconnect exhausted: N bytes of buffered publishes were discarded`.
+There is no debug-level chatter, so a wired logger costs a few lines per connection.
+
+With the bundle, the application's `logger` service is handed to the factory, tagged for Monolog's
+`messenger` channel, so the client's lines land next to the worker's. Without that service, or without the
+bundle, the client gets no logger, as before 5.7.0. To wire one yourself, give it to the factory, which hands
+it to every transport it creates, or to a transport constructed directly, as the fourth constructor
+argument: `new NatsTransport($dsn, $options, $serializer, $logger)`.
+
+```yaml
+# config/services.yaml (without the bundle, with a logger)
+services:
+    IDCT\NatsMessenger\NatsTransportFactory:
+        arguments: ['@?logger']
+        tags: [messenger.transport_factory]
+```
+
+> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`
+
 ### Development Setup
 
 For contributors and development:
@@ -1229,6 +1268,13 @@ framework:
 > deleting the stream deletes its consumers with it, so the pull fails with status 503 (nothing is left
 > to answer it), which is one of the statuses that trigger re-provisioning.
 
+> **Note on a server that stops:** a pull the server ended for its own shutdown (`409 Server Shutdown`) or
+> for a leadership change (`409 Leadership Change`) is an empty batch, in either mode, and not one of the
+> statuses that trigger re-provisioning: with `auto_setup` the transport does not run `setup()` against a
+> server that is going away. After a shutdown the next operation checks the connection first. Every other
+> 409, `Consumer Deleted` among them, still triggers one re-provisioning attempt, and the 409s that report
+> configuration (`Consumer is push based`, `Exceeded MaxRequestBatch`) still propagate.
+
 > **Note on `replay_policy`:** the replay policy of a durable consumer is fixed when the consumer is
 > created. NATS rejects an update that changes it, in both directions: once a consumer exists as
 > `original`, removing the option again does not restore `instant` either, because the server reads the
@@ -1372,6 +1418,17 @@ or the account's or user's subscription limit, to at least two (see [Subscriptio
 
 > **Tested by:** `testAtALimitOfOneThePullFailsWithATransportExceptionNamingTheLimit`, `testAtALimitOfTwoPullsDeliverAndAcknowledge`
 
+**Error: "Reconnect attempts exhausted"**
+
+With [`reconnect: true`](#automatic-reconnect) the client's recovery of a lost connection gave up after
+`max_reconnect_attempts`, and the operation that reports it ran the client's attempt loop inside the call. The
+outage outlasted one recovery cycle: raise `max_reconnect_attempts` for longer outages (the client's default of
+10 covers about 109 s against a server that refuses connections), or leave the option off to fail fast and let
+the process supervisor restart the worker. The logger shows the attempts at warning level and, when
+acknowledgements were buffered during the outage, the discard at error level (see [Logging](#logging)).
+
+> **Tested by:** `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`
+
 ### Message Processing Issues
 
 **Messages not being consumed**
@@ -1399,16 +1456,18 @@ The bridge consists of two main components, wired into the framework by a thin b
 
 ### IDCTNatsMessengerBundle
 - Registers `NatsTransportFactory` and the `IgbinarySerializer` service in the application container
+- Hands the application's `logger` service to the factory, under Monolog's `messenger` channel
 - Auto-enabled by Symfony Flex; no semantic configuration
 
 ### NatsTransportFactory
 - Handles DSN scheme detection (`nats-jetstream://`)
-- Creates `NatsTransport` instances
+- Creates `NatsTransport` instances, handing them its optional PSR-3 logger for the NATS client
 - Validates configuration
 
 ### NatsTransport
 - Implements Symfony's `TransportInterface`, `MessageCountAwareInterface`, `SetupableTransportInterface`, `KeepaliveReceiverInterface`, and `CloseableTransportInterface`
-- Manages stream and consumer connections
+- Manages stream and consumer connections: dials again itself after a lost connection, or leaves the recovery to
+  the NATS client with `reconnect: true`
 - Handles message serialization via a pluggable `SerializerInterface` (igbinary when constructed directly without one)
 - Supports batching and explicit acknowledgment
 

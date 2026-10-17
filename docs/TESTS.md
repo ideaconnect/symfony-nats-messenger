@@ -487,6 +487,7 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 |---|---|
 | `config/services.yaml` factory entry (only without the bundle) | `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` (compiles the README's snippet) |
 | `config/services.yaml` serializer entry (only without the bundle) | `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` (compiles the README's snippet) |
+| `config/services.yaml` factory entry with a logger (without the bundle, Logging section) | `createTransport_HandsTheFactorysLoggerToTheClient` (the constructor argument the snippet passes); the snippet itself is not compiled, its first line keeps it out of the "only without the bundle" set the test above loads |
 | Upgrading from 5.4 or earlier: the earlier `services.yaml` entries next to the bundle, and `igbinary_serializer` | `theServiceEntriesUsedBeforeTheBundleKeepWorking`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer` |
 
 ### Configuration Option Examples (YAML)

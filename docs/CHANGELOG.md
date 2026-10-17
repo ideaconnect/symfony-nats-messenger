@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **README:** an "Upgrading from 5.6" note (nothing to change; the two differences that apply in either mode), a
+  Logging section (what the NATS client logs at which level, how the bundle wires the application's `logger`, how to
+  wire one without the bundle), a note on a server that stops in the provisioning section, a troubleshooting entry
+  for "Reconnect attempts exhausted", and the logger and the two recovery modes in the architecture overview.
+
 ## [5.7.0] - 2026-10-17
 
 A **minor** release. It adds a reconnect mode: with `reconnect: true` the NATS client recovers a lost connection
