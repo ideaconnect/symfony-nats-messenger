@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   payload, headers and `Nats-Msg-Id`, then a second failure propagates. Nothing answered the first publish, so
   the second cannot duplicate it.
 
+### Fixed
+- **A pull the server ended for its shutdown or for a leadership change is an empty batch, not a missing
+  consumer (#81).** A server that is shutting down ends every pull in flight with `409 Server Shutdown`, and a
+  consumer whose leader moved ends them with `409 Leadership Change`. Every 409 used to read as a missing
+  consumer: with `auto_setup`, `setup()` ran against the server that was going away and failed, so a worker
+  exited with "Failed to setup NATS stream" on every graceful stop of its server, and without `auto_setup` the
+  409 propagated and ended the worker as well. Both read as an empty batch now, on the first pull and on the
+  one retried after re-provisioning, and after a shutdown the next operation checks the connection first, since
+  the server closes it right after. Only those two descriptions: `Consumer Deleted` is still a missing consumer,
+  and the 409s that report configuration (`Consumer is push based`, `Exceeded MaxRequestBatch`) still propagate.
+
 ## [5.6.0] - 2026-10-17
 
 A **minor** release. It adds the `stream_placement_cluster` and `stream_placement_tags` options, which pin a

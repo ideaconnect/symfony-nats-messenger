@@ -6181,4 +6181,134 @@ final class NatsTransportTest extends TestCase
             raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
         );
     }
+
+    /**
+     * A server that is shutting down ends every pull in flight with "409 Server Shutdown". The consumer is not
+     * missing, so the pull is an empty batch, with and without auto_setup: with it, setup() no longer runs against
+     * the server that is going away. The server closes the connection right after, so the next operation checks it
+     * first, as after any failure on it, and runs on a new one when the PING goes unanswered.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('autoSetupOnAndOff')]
+    public function testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection(array $options): void
+    {
+        $autoSetup = $options['auto_setup'] ?? false;
+        $oldConnection = $this->createMock(JetStreamContext::class);
+        $oldConnection->expects($autoSetup ? self::once() : self::never())->method('addStream')->willReturn(Future::complete());
+        $oldConnection->expects($autoSetup ? self::once() : self::never())->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $oldConnection->expects(self::once())->method('fetchBatch')->willReturn(
+            Future::error(new JetStreamException('JetStream pull request ended with status 409: Server Shutdown', 409)),
+        );
+        $newConnection = $this->createMock(JetStreamContext::class);
+        $newConnection->expects($autoSetup ? self::once() : self::never())->method('addStream')->willReturn(Future::complete());
+        $newConnection->expects($autoSetup ? self::once() : self::never())->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $newConnection->expects(self::once())->method('fetchBatch')->willReturn(Future::complete([]));
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->expects(self::exactly(2))->method('jetStream')->willReturnOnConsecutiveCalls($oldConnection, $newConnection);
+        $client->expects(self::once())->method('rtt')->willReturn(Future::error(new ConnectionException('Connection lost')));
+        $client->expects(self::once())->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, $options);
+        $transport->setClient($client);
+
+        self::assertSame([], iterator_to_array($transport->get()), 'the pull the server ended is an empty batch');
+        self::assertSame([], iterator_to_array($transport->get()), 'the next pull checked the connection and ran on a new one');
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function autoSetupOnAndOff(): iterable
+    {
+        yield 'auto_setup on' => [['auto_setup' => true]];
+        yield 'auto_setup off' => [[]];
+    }
+
+    /**
+     * A consumer whose leader moved ends the pull with "409 Leadership Change": an empty batch, and the connection
+     * is fine, so the next pull owes no check.
+     */
+    public function testAPullEndedByALeadershipChangeIsEmptyAndTheNextOneDoesNotCheckTheConnection(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturnOnConsecutiveCalls(
+            Future::error(new JetStreamException('JetStream pull request ended with status 409: Leadership Change', 409)),
+            Future::complete([]),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+        $client->expects(self::never())->method('disconnect');
+
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, ['auto_setup' => true]);
+        $transport->setClient($client);
+
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
+     * A shutdown can end the retried pull after re-provisioning as well: it is as empty there as on the first try,
+     * rather than a repeated 409 that propagates.
+     */
+    public function testAShutdownEndingTheRetriedPullAfterReprovisioningIsEmptyToo(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturnOnConsecutiveCalls(
+            Future::error(new JetStreamException('JetStream pull request ended with status 409: Consumer Deleted', 409)),
+            Future::error(new JetStreamException('JetStream pull request ended with status 409: Server Shutdown', 409)),
+        );
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['auto_setup' => true]);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
+     * The 409s that report a configuration error keep their meaning. Without auto_setup they propagate; with it the
+     * consumer is provisioned once and the repeated 409 propagates, since no amount of polling heals a pull from a
+     * push consumer or a batch above the consumer's maximum, and an empty batch would hide the misconfiguration.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('configurationErrorPullStatuses')]
+    public function testA409ReportingAConfigurationErrorStaysVisible(array $options, string $description): void
+    {
+        $autoSetup = $options['auto_setup'] ?? false;
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly($autoSetup ? 2 : 0))->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly($autoSetup ? 2 : 0))->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->expects(self::exactly($autoSetup ? 2 : 1))->method('fetchBatch')->willReturnCallback(
+            static fn (): Future => Future::error(new JetStreamException('JetStream pull request ended with status 409: ' . $description, 409)),
+        );
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options);
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(JetStreamException::class);
+        $this->expectExceptionMessage($description);
+
+        iterator_to_array($transport->get());
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function configurationErrorPullStatuses(): iterable
+    {
+        foreach (['Consumer is push based', 'Exceeded MaxRequestBatch of 1'] as $description) {
+            yield $description . ', auto_setup off' => [[], $description];
+            yield $description . ', auto_setup on' => [['auto_setup' => true], $description];
+        }
+    }
 }

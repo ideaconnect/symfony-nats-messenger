@@ -808,6 +808,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return null;
         }
 
+        if ($this->pullEndedByTheServer($exception)) {
+            return null;
+        }
+
         $missingResource = $code === 404 || $code === 409 || $code === 503;
 
         if ($missingResource && $this->reprovisionForAutoSetup()) {
@@ -819,8 +823,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 // point a 408 is a normal empty pull and a 404 keeps the historical empty-queue read,
                 // but a repeated 503 or 409 no longer means "missing" - it means pulls are failing on a
                 // consumer that verifiably exists, and flattening that into an empty batch would hide
-                // a real outage behind a worker that forever reports nothing to do.
-                if ($retryException->getCode() === 404 || $retryException->getCode() === 408) {
+                // a real outage behind a worker that forever reports nothing to do. A pull the server
+                // ended itself is as empty here as on the first try.
+                if ($retryException->getCode() === 404 || $retryException->getCode() === 408 || $this->pullEndedByTheServer($retryException)) {
                     return null;
                 }
 
@@ -835,6 +840,38 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         throw $exception;
+    }
+
+    /**
+     * Whether a 409 ends the pull for a reason of the server's, with the consumer unharmed, and arms the connection
+     * check when that reason is the server's shutdown.
+     *
+     * A server that is shutting down ends every pull in flight with "409 Server Shutdown", and a consumer whose
+     * leader moved to another server ends them with "409 Leadership Change". Neither means the consumer is missing,
+     * which is what every other 409 used to be read as: with auto_setup, setup() then ran against the server that
+     * was going away and failed, so a worker exited with "Failed to setup NATS stream" on every graceful stop of its
+     * server, and without auto_setup the 409 propagated and ended the worker as well (#81). Both read as an empty
+     * batch now. The shutting-down server closes the connection right after, so the operation after a shutdown
+     * checks the connection first, as after any failure on it; after a leadership change the connection is fine.
+     *
+     * Only these two descriptions. "Consumer Deleted" keeps its reading as a missing consumer, which auto_setup
+     * recreates, and the 409s that report configuration ("Consumer is push based", "Exceeded MaxRequestBatch") stay
+     * visible: no amount of polling heals them, and an empty batch would hide a misconfigured worker behind "nothing
+     * to do". The client classifies the same statuses for its own iterator, in a helper it marks internal.
+     */
+    private function pullEndedByTheServer(JetStreamException $exception): bool
+    {
+        if ($exception->getCode() !== 409) {
+            return false;
+        }
+
+        if (stripos($exception->getMessage(), 'Server Shutdown') !== false) {
+            $this->checkBeforeNextUse = true;
+
+            return true;
+        }
+
+        return stripos($exception->getMessage(), 'Leadership Change') !== false;
     }
 
     /**
