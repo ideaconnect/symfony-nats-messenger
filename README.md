@@ -819,7 +819,11 @@ options:
   still reports the same connection open is replaced, as without the option: nothing in the client recovers
   a connection it does not know to be lost before its heartbeat has gone unanswered three times, about 90 s at
   the client's defaults, and the heartbeat only runs while an operation holds the event loop. A client that
-  gave up is Closed and dialled again.
+  gave up is Closed and dialled again. A PHP process runs the event loop only inside a transport call, so the
+  client notices a lost connection when an operation writes to it or when this check runs: a `ping_after_idle`
+  shorter than the quiet periods between operations makes the first operation after one check first and go out
+  on the recovered connection, where without the check it writes into the dead socket, waits `request_timeout`
+  and fails, and only the next operation goes out.
 - With `auto_setup`, provisioning is verified again once the client reconnected, because the stream may have
   gone with the server (a memory stream over a restart, a failover to a server without it). A send begun while
   the client was recovering can still land on a server without the stream; when its publish fails with the

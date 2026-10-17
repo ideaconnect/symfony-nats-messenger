@@ -349,6 +349,17 @@ supported NATS. Each prints `OK ...` when what it shows held, and fails otherwis
 | `keepalive.php` | with `keepalive()` called from a SIGALRM handler every second, a message handled for 5 s on `ack_wait: 2` is not redelivered to a second worker (on 5.2.1 the first alarm broke the worker) |
 | `connection-checks.php` | sends after idling past `ping_after_idle` and after `close()` both succeed |
 
+### Automatic Reconnect (`tests/functional/features/nats_reconnect.feature`)
+
+The main test server is restarted with `docker restart` while a process holds a connection to it, with `reconnect: true`
+(#81). A graceful stop ends every pull in flight with `409 Server Shutdown` and closes every connection; a memory stream
+does not survive it.
+
+| Feature | Scenarios |
+|---------|-----------|
+| **A worker polls through a server restart without exiting** | A worker keeps consuming across a server restart (the consumer is started before the restart and consumes the five messages sent after it) |
+| **The client's own reconnect is used by the next send, and auto_setup recreates the memory stream the restart lost** | A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated (`ping_after_idle` 2 s, so the send after the quiet period checks the connection first and finds the client recovering it; the stats show the one message the recreated stream holds) |
+
 ### Stream Placement (`tests/functional/features/nats_stream_placement.feature`)
 
 | Feature | Scenarios |

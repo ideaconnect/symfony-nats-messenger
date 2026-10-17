@@ -28,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the recovery gave up dialled inline for 18 s. Before this, the option as proposed in #45 ran the whole
   attempt loop inside every operation during an outage, 109 s each at the defaults. The README's Automatic
   Reconnect section has the table, the per-operation bounds and the two places the loop still runs inline.
-  Both options work from the DSN query string too.
+  Both options work from the DSN query string too. Two Behat scenarios restart the test server with docker
+  under a running worker and under a process that sends again after a quiet period.
 - **The NATS client logs through the application's logger (#81).** `NatsTransportFactory` takes an optional PSR-3
   logger and hands it to every transport it creates, `NatsTransport` takes it as a fourth constructor argument,
   and the bundle passes the application's `logger` service when there is one, under Messenger's Monolog
