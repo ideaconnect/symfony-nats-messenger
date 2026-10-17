@@ -286,6 +286,59 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns the JetStream cluster the stream is pinned to, or null to leave placement untouched.
+     *
+     * Normalized with the same {@see TypeCoercion::nonBlankStringValue()} the builder validates with,
+     * so a value handed to the constructor directly is read the way the builder would have stored it:
+     * trimmed, and null when blank or not a string or integer.
+     */
+    public function streamPlacementCluster(): ?string
+    {
+        return TypeCoercion::nonBlankStringValue($this->options[TransportOption::STREAM_PLACEMENT_CLUSTER->value] ?? null);
+    }
+
+    /**
+     * Returns the server tags the stream must be placed on, or null to leave placement untouched.
+     *
+     * Accepts the normalized list the builder stores, a raw list, or a comma-separated string.
+     *
+     * @return list<string>|null
+     */
+    public function streamPlacementTags(): ?array
+    {
+        $tags = TypeCoercion::stringListValue($this->options[TransportOption::STREAM_PLACEMENT_TAGS->value] ?? null);
+
+        return $tags === [] ? null : $tags;
+    }
+
+    /**
+     * Returns the JetStream `placement` block built from the two placement options, or null when
+     * neither is set.
+     *
+     * Used by {@see NatsTransport::setup()} when it creates the stream. On an existing stream the
+     * transport merges each option into the live placement field by field instead, see
+     * {@see NatsTransport::buildUpdatedStreamConfiguration()}.
+     *
+     * @return array{cluster?: string, tags?: list<string>}|null
+     */
+    public function streamPlacement(): ?array
+    {
+        $placement = [];
+
+        $cluster = $this->streamPlacementCluster();
+        if ($cluster !== null) {
+            $placement['cluster'] = $cluster;
+        }
+
+        $tags = $this->streamPlacementTags();
+        if ($tags !== null) {
+            $placement['tags'] = $tags;
+        }
+
+        return $placement === [] ? null : $placement;
+    }
+
+    /**
      * Returns the consumer max-ack-pending limit, or null to use the JetStream default.
      *
      * Caps how many delivered-but-unacknowledged messages a consumer may have outstanding; the

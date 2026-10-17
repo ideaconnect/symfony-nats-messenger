@@ -5285,4 +5285,538 @@ final class NatsTransportTest extends TestCase
 
         self::assertInstanceOf(TransportMessageIdStamp::class, $result->last(TransportMessageIdStamp::class));
     }
+
+    /**
+     * @param array<string, mixed> $options
+     * @param array<string, mixed> $expectedPlacement
+     */
+    #[DataProvider('streamPlacementProvider')]
+    public function testSetupPassesStreamPlacementOnCreate(array $options, array $expectedPlacement): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->with(self::streamConfigEquals([
+                'storage' => 'file',
+                'num_replicas' => 1,
+                'placement' => $expectedPlacement,
+                'name' => 'test-stream',
+                'subjects' => ['test-topic'],
+            ]))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, array<string, mixed>}>
+     */
+    public static function streamPlacementProvider(): iterable
+    {
+        yield 'cluster and tags' => [
+            ['stream_placement_cluster' => 'east', 'stream_placement_tags' => ['ssd', 'fast']],
+            ['cluster' => 'east', 'tags' => ['ssd', 'fast']],
+        ];
+        yield 'tags only, comma-separated' => [
+            ['stream_placement_tags' => 'ssd,fast'],
+            ['tags' => ['ssd', 'fast']],
+        ];
+        yield 'cluster only' => [
+            ['stream_placement_cluster' => 'east'],
+            ['cluster' => 'east'],
+        ];
+    }
+
+    public function testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                    'placement' => ['cluster' => 'west'],
+                ],
+            ],
+        );
+
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(static function (array $options): bool {
+                return ($options['placement'] ?? null) === ['cluster' => 'east', 'tags' => ['ssd']];
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'stream_placement_cluster' => 'east',
+            'stream_placement_tags' => ['ssd'],
+        ]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    /**
+     * A STREAM.UPDATE payload that omits `placement` clears it on the server (verified against
+     * nats-server 2.14), so an operator-pinned placement survives only because the transport echoes
+     * the live value back whenever the placement options are unset.
+     */
+    public function testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $streamInfo = new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                    'placement' => ['tags' => ['hdd']],
+                ],
+            ],
+        );
+
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete($streamInfo));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(static function (array $options): bool {
+                return ($options['placement'] ?? null) === ['tags' => ['hdd']];
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    /**
+     * The update path merges the configured placement fields into the live block instead of replacing
+     * it: one option never wipes the field the other half of an operator's placement holds, and tags
+     * that name the live set in another order keep the live array as the server stores it, because
+     * nats-server reads any difference in the block, even a reordered list, as a request to move the
+     * stream. The comparison is case-sensitive on purpose (see the transport's doc-comment), so a tag
+     * that differs only in case is a change.
+     *
+     * @param array<string, mixed>|null $livePlacement     `placement` of the live stream config, null for none
+     * @param array<string, mixed>      $options           Transport options
+     * @param array<string, mixed>|null $expectedPlacement `placement` the update must carry, null for none
+     * @param array<string, mixed>      $expectedFields    Other fields the update must carry, by key
+     */
+    #[DataProvider('mergedPlacementProvider')]
+    public function testSetupUpdateMergesConfiguredPlacementIntoTheLivePlacement(
+        ?array $livePlacement,
+        array $options,
+        ?array $expectedPlacement,
+        array $expectedFields = [],
+    ): void {
+        $liveConfiguration = [
+            'name' => 'test-stream',
+            'subjects' => ['test-topic'],
+            'storage' => 'file',
+            'num_replicas' => 1,
+        ];
+        if ($livePlacement !== null) {
+            $liveConfiguration['placement'] = $livePlacement;
+        }
+
+        $payload = $this->captureStreamUpdatePayload($liveConfiguration, $options);
+
+        if ($expectedPlacement === null) {
+            self::assertArrayNotHasKey('placement', $payload);
+        } else {
+            self::assertSame($expectedPlacement, $payload['placement'] ?? null);
+        }
+        foreach ($expectedFields as $field => $value) {
+            self::assertSame($value, $payload[$field] ?? null, $field);
+        }
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>|null, array<string, mixed>, array<string, mixed>|null, 3?: array<string, mixed>}>
+     */
+    public static function mergedPlacementProvider(): iterable
+    {
+        $pinned = ['cluster' => 'east', 'tags' => ['hdd']];
+
+        yield 'tags only keep the live cluster' => [
+            $pinned, ['stream_placement_tags' => 'ssd'], ['cluster' => 'east', 'tags' => ['ssd']],
+        ];
+        yield 'cluster only keeps the live tags' => [
+            $pinned, ['stream_placement_cluster' => 'west'], ['cluster' => 'west', 'tags' => ['hdd']],
+        ];
+        yield 'a cluster equal to the live one keeps the live tags' => [
+            $pinned, ['stream_placement_cluster' => 'east'], $pinned,
+        ];
+        yield 'both options replace both fields' => [
+            $pinned,
+            ['stream_placement_cluster' => 'west', 'stream_placement_tags' => ['ssd']],
+            ['cluster' => 'west', 'tags' => ['ssd']],
+        ];
+        yield 'both options equal to the live block leave it as it is' => [
+            ['cluster' => 'west', 'tags' => ['ssd']],
+            ['stream_placement_cluster' => 'west', 'stream_placement_tags' => ['ssd']],
+            ['cluster' => 'west', 'tags' => ['ssd']],
+        ];
+        yield 'no option echoes the live block, fields the transport does not know included' => [
+            ['cluster' => 'east', 'tags' => ['hdd'], 'preferred' => 'n1'],
+            [],
+            ['cluster' => 'east', 'tags' => ['hdd'], 'preferred' => 'n1'],
+        ];
+        yield 'tags only on a stream without placement' => [
+            null, ['stream_placement_tags' => 'ssd'], ['tags' => ['ssd']],
+        ];
+        yield 'cluster only on a stream without placement' => [
+            null, ['stream_placement_cluster' => 'west'], ['cluster' => 'west'],
+        ];
+        yield 'no option on a stream without placement sends none' => [
+            null, [], null,
+        ];
+        yield 'a changed tag set replaces the whole list' => [
+            ['tags' => ['ssd', 'eu']], ['stream_placement_tags' => 'ssd,nvme'], ['tags' => ['ssd', 'nvme']],
+        ];
+        yield 'the same tags in another order keep the live array' => [
+            ['tags' => ['ssd', 'eu']], ['stream_placement_tags' => 'eu,ssd'], ['tags' => ['ssd', 'eu']],
+        ];
+        yield 'a repeated live tag is kept as the server stores it' => [
+            ['tags' => ['ssd', 'ssd', 'eu']], ['stream_placement_tags' => 'eu,ssd'], ['tags' => ['ssd', 'ssd', 'eu']],
+        ];
+        yield 'a changed cluster with the same tags in another order' => [
+            ['cluster' => 'east', 'tags' => ['ssd', 'eu']],
+            ['stream_placement_cluster' => 'west', 'stream_placement_tags' => 'eu,ssd'],
+            ['cluster' => 'west', 'tags' => ['ssd', 'eu']],
+        ];
+        yield 'a tag that differs only in case is a change' => [
+            ['tags' => ['!zone:unused']], ['stream_placement_tags' => '!ZONE:unused'], ['tags' => ['!ZONE:unused']],
+        ];
+        yield 'live tags that are not strings are replaced' => [
+            ['tags' => ['ssd', 7]], ['stream_placement_tags' => 'ssd,7'], ['tags' => ['ssd', '7']],
+        ];
+        yield 'a live tag that is not a string never matches, not even next to its string form' => [
+            ['tags' => ['7', 7]], ['stream_placement_tags' => '7'], ['tags' => ['7']],
+        ];
+        yield 'the same tags in another order keep the live array when the live side is the sorted one' => [
+            ['tags' => ['eu', 'ssd']], ['stream_placement_tags' => 'ssd,eu'], ['tags' => ['eu', 'ssd']],
+        ];
+        yield 'the same tags in another order with a replica change, and no cluster pin made up' => [
+            ['tags' => ['ssd', 'eu']],
+            ['stream_placement_tags' => 'eu,ssd', 'stream_replicas' => 3],
+            ['tags' => ['ssd', 'eu']],
+            ['num_replicas' => 3],
+        ];
+    }
+
+    /**
+     * Runs setup() against a stream that already exists with the given live configuration and returns
+     * the STREAM.UPDATE payload the transport sent for it.
+     *
+     * @param array<string, mixed> $liveConfiguration
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function captureStreamUpdatePayload(array $liveConfiguration, array $options): array
+    {
+        $payload = null;
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->with('test-stream')
+            ->willReturn(Future::complete(new StreamInfo(
+                name: 'test-stream',
+                subjects: ['test-topic'],
+                raw: ['config' => $liveConfiguration],
+            )));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->with('test-stream', self::callback(static function (array $options) use (&$payload): bool {
+                $payload = $options;
+
+                return true;
+            }))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertIsArray($payload);
+
+        return $payload;
+    }
+
+    /**
+     * nats-server rejects one STREAM.UPDATE that changes the placement and the replica count with
+     * err_code 10123. The transport cannot stage the two changes itself (see the transport's
+     * describeSetupRejection()), so the exception says how: it keeps the setup command's RuntimeException
+     * type and the server's wording, and carries the client exception as its direct previous, so the
+     * err_code stays readable to whoever catches it.
+     */
+    public function testSetupExplainsHowToStageAMoveAndScaleRejection(): void
+    {
+        $rejection = new JetStreamException('can not move and scale a stream in a single update', 400, null, 10123);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'stream_placement_tags' => 'ssd',
+            'stream_replicas' => 3,
+        ]);
+        $transport->setJetStreamContext($this->jetStreamRejectingTheUpdate($rejection));
+
+        try {
+            $transport->setup();
+            self::fail('setup() was expected to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertStringStartsWith(
+                "Failed to setup NATS stream 'test-stream': can not move and scale a stream in a single update. NATS refuses to change the placement and the replica count of a stream in one update. Stage the two changes:",
+                $exception->getMessage(),
+            );
+            self::assertStringContainsString('stream_replicas', $exception->getMessage());
+            self::assertStringContainsString('"nats stream info"', $exception->getMessage());
+            self::assertStringContainsString('With auto_setup every send() and get() repeats this update', $exception->getMessage());
+            self::assertSame(0, $exception->getCode());
+            self::assertSame($rejection, $exception->getPrevious());
+        }
+    }
+
+    /**
+     * The staging advice is keyed on the err_code alone, so every other rejection of the update keeps the
+     * plain wording with the server's message, a placement no server can satisfy included.
+     */
+    public function testSetupKeepsThePlainWordingForOtherUpdateRejections(): void
+    {
+        $rejection = new JetStreamException('no suitable peers for placement, tags not matched [nvme]', 400, null, 10005);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['stream_placement_tags' => 'nvme']);
+        $transport->setJetStreamContext($this->jetStreamRejectingTheUpdate($rejection));
+
+        try {
+            $transport->setup();
+            self::fail('setup() was expected to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame(
+                "Failed to setup NATS stream 'test-stream': no suitable peers for placement, tags not matched [nvme]",
+                $exception->getMessage(),
+            );
+            self::assertSame($rejection, $exception->getPrevious());
+        }
+    }
+
+    /**
+     * With auto_setup the done flag latches only after setup() succeeds, so a rejected move-and-scale
+     * update is repeated by every send() until the operator stages the configuration, and nothing is
+     * published meanwhile. Once the update goes through, the flag latches and the next send() skips
+     * setup() as usual.
+     */
+    public function testAutoSetupRepeatsARejectedMoveAndScaleUpdateOnEverySend(): void
+    {
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+
+        $jetStream = $this->jetStreamRejectingTheUpdateTwice();
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturn(Future::complete());
+        $jetStream->expects(self::never())->method('fetchBatch');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'auto_setup' => true,
+            'stream_placement_tags' => 'ssd',
+            'stream_replicas' => 3,
+        ], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        foreach ([1, 2] as $attempt) {
+            try {
+                $transport->send(new Envelope(new \stdClass()));
+                self::fail("send() number {$attempt} was expected to fail while provisioning.");
+            } catch (\RuntimeException $exception) {
+                self::assertStringContainsString('Stage the two changes', $exception->getMessage());
+            }
+        }
+
+        // The operator staged the configuration, so the update goes through: this send() provisions and
+        // publishes, and the one after it publishes without provisioning again.
+        $transport->send(new Envelope(new \stdClass()));
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * The get() side of the previous test: a worker on a rejected configuration fails every pull without
+     * fetching, then recovers once the update is accepted.
+     */
+    public function testAutoSetupRepeatsARejectedMoveAndScaleUpdateOnEveryGet(): void
+    {
+        $jetStream = $this->jetStreamRejectingTheUpdateTwice();
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::complete([]));
+        $jetStream->expects(self::never())->method('publish');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [
+            'auto_setup' => true,
+            'stream_placement_tags' => 'ssd',
+            'stream_replicas' => 3,
+        ]);
+        $transport->setJetStreamContext($jetStream);
+
+        foreach ([1, 2] as $attempt) {
+            try {
+                iterator_to_array($transport->get());
+                self::fail("get() number {$attempt} was expected to fail while provisioning.");
+            } catch (\RuntimeException $exception) {
+                self::assertStringContainsString('Stage the two changes', $exception->getMessage());
+            }
+        }
+
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
+     * A JetStream double for a stream that exists with an R1 placement on `hdd` and whose update is
+     * rejected with the given exception; the consumer is never created.
+     */
+    private function jetStreamRejectingTheUpdate(JetStreamException $rejection): JetStreamContext
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('addStream')
+            ->willReturn(Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::once())
+            ->method('getStream')
+            ->willReturn(Future::complete($this->pinnedR1StreamInfo()));
+        $jetStream->expects(self::once())
+            ->method('updateStream')
+            ->willReturn(Future::error($rejection));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        return $jetStream;
+    }
+
+    /**
+     * A JetStream double whose update is rejected with err_code 10123 twice and accepted the third time,
+     * for three provisioning attempts in all; the consumer is created once, after the accepted update.
+     */
+    private function jetStreamRejectingTheUpdateTwice(): JetStreamContext&\PHPUnit\Framework\MockObject\MockObject
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(3))
+            ->method('addStream')
+            ->willReturnCallback(static fn (): Future => Future::error(new JetStreamException('already exists', 0)));
+        $jetStream->expects(self::exactly(3))
+            ->method('getStream')
+            ->willReturnCallback(fn (): Future => Future::complete($this->pinnedR1StreamInfo()));
+        $jetStream->expects(self::exactly(3))
+            ->method('updateStream')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new JetStreamException('can not move and scale a stream in a single update', 400, null, 10123)),
+                Future::error(new JetStreamException('can not move and scale a stream in a single update', 400, null, 10123)),
+                Future::complete(),
+            );
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete(new ConsumerInfo(
+                streamName: 'test-stream',
+                name: 'client',
+                push: false,
+                raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+            )));
+
+        return $jetStream;
+    }
+
+    private function pinnedR1StreamInfo(): StreamInfo
+    {
+        return new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: [
+                'config' => [
+                    'name' => 'test-stream',
+                    'subjects' => ['test-topic'],
+                    'storage' => 'file',
+                    'num_replicas' => 1,
+                    'placement' => ['tags' => ['hdd']],
+                ],
+            ],
+        );
+    }
+
+    /**
+     * A failure that is not a JetStream API rejection, here a lost connection while provisioning, keeps
+     * the plain wrap: the setup command's RuntimeException naming the stream, the cause's message, code 0
+     * and the cause as the previous exception. JetStream rejections take their own arm, see
+     * testSetupKeepsThePlainWordingForOtherUpdateRejections.
+     */
+    public function testSetupWrapsAFailureThatIsNotAJetStreamRejectionWithThePlainWording(): void
+    {
+        $cause = new ConnectionException('connection refused');
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::error($cause));
+        $jetStream->expects(self::never())->method('getStream');
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->setup();
+            self::fail('setup() was expected to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': connection refused", $exception->getMessage());
+            self::assertSame(0, $exception->getCode());
+            self::assertSame($cause, $exception->getPrevious());
+        }
+    }
 }

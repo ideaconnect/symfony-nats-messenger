@@ -125,4 +125,61 @@ final class TypeCoercion
     {
         return (int) round(self::floatValue($seconds, $default) * 1000);
     }
+
+    /**
+     * Coerces a name-like option value to a trimmed, non-empty string, or null.
+     *
+     * Accepts a string or an integer, the forms a DSN query string or a YAML value delivers a name such
+     * as a JetStream cluster in, and trims it. Any other type, and a value that is empty once trimmed,
+     * yields null, so one check tells "unset or blank" from a usable name. The builder rejects the null,
+     * the configuration accessor reads it as "leave the field alone", and both agree on what counts as
+     * a name because they share this method.
+     */
+    public static function nonBlankStringValue(mixed $value): ?string
+    {
+        if (!is_string($value) && !is_int($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+
+        return $normalized === '' ? null : $normalized;
+    }
+
+    /**
+     * Coerces a list-like option value to a de-duplicated list of trimmed, non-empty strings.
+     *
+     * Accepts a PHP array (a YAML list, or `option[]=a&option[]=b` from a DSN query string) whose
+     * elements are strings or integers, or a single comma-separated string (`option=a,b` from a DSN
+     * query string). Elements of any other type, and elements that are empty once trimmed, are
+     * dropped. A value that is neither an array nor a string/integer yields an empty list.
+     *
+     * @return list<string>
+     */
+    public static function stringListValue(mixed $value): array
+    {
+        if (is_string($value) || is_int($value)) {
+            $value = explode(',', (string) $value);
+        }
+
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $list = [];
+        foreach ($value as $element) {
+            if (!is_string($element) && !is_int($element)) {
+                continue;
+            }
+
+            $normalized = trim((string) $element);
+            if ($normalized === '' || in_array($normalized, $list, true)) {
+                continue;
+            }
+
+            $list[] = $normalized;
+        }
+
+        return $list;
+    }
 }

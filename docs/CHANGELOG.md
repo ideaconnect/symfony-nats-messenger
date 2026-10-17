@@ -7,10 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.0] - 2026-10-17
+
+A **minor** release. It adds the `stream_placement_cluster` and `stream_placement_tags` options, which pin a
+stream to a JetStream cluster and to tagged servers. On an existing stream each option replaces only its own
+field of the live placement, and a tag list that names the live set in another order is left as the server
+stores it. A placement change combined with a `stream_replicas` change, which NATS refuses in one update, fails
+`setup()` with the steps to stage it. Nothing changes for a configuration that sets neither option.
+
 ### Added
 - **Persistent project memory** in `docs/PROJECT_MEMORY.md`, linked from `AGENTS.md` and `CLAUDE.md`, covering the
   maintainer's local client-library workflow, transport behavior, verification requirements, and
   a dated GitHub issue and development-environment snapshot.
+- **`stream_placement_cluster` and `stream_placement_tags` options** exposing JetStream stream placement
+  (`placement.cluster` / `placement.tags`). Tags accept a YAML list or a comma-separated string, so they
+  work from a DSN query string as `stream_placement_tags=ssd,eu-west`. Both default to `null`, which
+  leaves the stream's placement untouched: on the update path the transport echoes the live server value
+  back, because a JetStream update that omits `placement` clears it (verified against nats-server 2.14).
+  On an existing stream each option replaces only its own field of the live block, so `stream_placement_tags`
+  alone keeps a cluster pin an operator set in NATS and `stream_placement_cluster` alone keeps the live
+  tags, and configured tags that name the live set in another order keep the live list as the server
+  stores it: nats-server reads any difference in the block, the order of the tags included, as a request
+  to move the stream's replicas, and refuses a move combined with a replica change. The tags are compared
+  exactly, since the server's `unique_tag` bypass is case-sensitive (#80).
+- **A placement change combined with a `stream_replicas` change on an existing stream fails with staging
+  advice.** nats-server refuses to move and scale a stream in one update (err_code 10123). `setup()` keeps
+  its `RuntimeException`, the server's wording and the client's `JetStreamException` as the previous
+  exception, and adds how to stage the two changes: apply one, wait until `nats stream info` shows every
+  replica as current, then apply the other. The update is not split by the transport, because with
+  `auto_setup` a `setup()` that applied one half would latch the done flag and never apply the other;
+  instead every `send()` and `get()` repeats the rejected update and fails until the configuration is
+  staged, and nothing is published or consumed meanwhile (#80).
+- **`TypeCoercion::stringListValue()` and `TypeCoercion::nonBlankStringValue()`** centralizing the
+  list-or-comma-separated-string coercion used by `stream_placement_tags` and the trimmed-name coercion used
+  by `stream_placement_cluster`. The builder validates with them and the configuration accessors read with
+  them, so a configuration constructed directly with raw values is read the way the builder would have
+  stored it.
 
 ## [5.5.0] - 2026-10-16
 

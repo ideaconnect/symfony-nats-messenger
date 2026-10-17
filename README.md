@@ -2,8 +2,8 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.58%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
-[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-96%25-brightgreen)](https://infection.github.io/)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.77%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-96.7%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -19,7 +19,9 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
 - 🔐 **Authentication Support** - Built-in support for NATS authentication
 - 📊 **Stream Configuration** - Configurable retention policies and replication
-- 🧪 **Thoroughly Tested** - 551 unit tests, ~99.7% coverage, mutation-tested (96% MSI)
+- 📍 **Stream Placement** - Pin a stream to a JetStream cluster and to tagged servers; an option you set
+  changes only its own half of an existing placement (see [Stream Placement](#stream-placement))
+- 🧪 **Thoroughly Tested** - 623 unit tests, ~99.8% coverage, mutation-tested (96.7% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -32,7 +34,8 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 ### System Requirements
 - **PHP**: ^8.2
 - **Symfony**: ^7.2 || ^8
-- **NATS Server**: ^2.9 with JetStream enabled, ^2.12 for scheduled messages support.
+- **NATS Server**: ^2.9 with JetStream enabled, ^2.12 for scheduled messages support and for `!` exclusion
+  tags in `stream_placement_tags`.
 
 ## Installation
 
@@ -386,6 +389,11 @@ framework:
 
           # High Availability
           stream_replicas: 1                # Number of replicas (default: 1)
+          stream_placement_cluster: null    # Pin the stream to a named JetStream cluster
+                                            # (null = leave the stream's placement untouched)
+          stream_placement_tags: null       # Only place the stream on servers carrying ALL of these
+                                            # tags, e.g. ['ssd', 'eu-west'] (or 'ssd,eu-west' in a DSN)
+                                            # (null = leave the stream's placement untouched)
 
           # Failure Handling Strategy
           retry_handler: 'symfony'          # symfony|nats (default: symfony)
@@ -445,7 +453,7 @@ framework:
           nkey: null                        # NKey public value
 ```
 
-> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`
+> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`
 
 ### Retry Handler Behavior
 
@@ -811,6 +819,91 @@ options:
 
 > **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`
 
+### Stream Placement
+
+In a JetStream cluster you can pin a stream to a named cluster and/or to the servers that carry specific
+tags (`server_tags` in the NATS server configuration). A stream is only placed on servers carrying
+**all** of the listed tags:
+
+```yaml
+options:
+  # Only on servers tagged both "ssd" and "eu-west"
+  stream_placement_tags: ['ssd', 'eu-west']
+
+  # In the "east" cluster of a super-cluster
+  stream_placement_cluster: 'east'
+
+  # Both at once
+  stream_placement_cluster: 'east'
+  stream_placement_tags: ['ssd']
+```
+
+In a DSN the tags are a comma-separated list: `?stream_placement_tags=ssd,eu-west`.
+
+> **Tested by:** `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testSetupUpdateMergesConfiguredPlacementIntoTheLivePlacement`, `testSetupExplainsHowToStageAMoveAndScaleRejection`, `testAutoSetupRepeatsARejectedMoveAndScaleUpdateOnEverySend`, Behat scenarios in `nats_stream_placement.feature`
+
+- Both options default to `null`, which leaves the stream's placement untouched: a new stream gets the
+  server's default placement and an existing stream keeps whatever placement it already has. This
+  matters because a JetStream update that omits `placement` clears it, so the transport echoes the live
+  value back whenever the options are unset.
+- On an existing stream each option replaces its own field of the live placement and nothing else:
+  `stream_placement_tags` replaces the tag list and keeps a cluster pin set in NATS, and
+  `stream_placement_cluster` replaces the cluster and keeps the live tags. Neither option can clear the
+  other field, so to remove a placement, or one half of it, change it in NATS directly.
+- nats-server compares the stored placement with the new one field by field and treats any difference as
+  a request to place the replicas again, even when the servers they are on already satisfy the new
+  constraints, and even when only the order of the tags changed. The transport therefore keeps the live
+  tag list as the server stores it whenever the configured tags name the same set, and compares the tags
+  exactly: `SSD` and `ssd` match the same servers, but the server's `unique_tag` bypass (below) is
+  case-sensitive, so a tag that differs only in case is sent as a change. The server accepts a new
+  placement at once and `setup()` returns; the replica migration runs in the background (`nats stream
+  info` shows the replicas as not current until it finishes).
+- In a super-cluster a placement that names tags but no cluster is resolved in the cluster the client
+  running `setup()` is connected to, then in the clusters that one lists as alternates, on create and on
+  a move alike. A tags-only change can therefore relocate the stream to another cluster. Set
+  `stream_placement_cluster` to keep the stream where it is: the transport does not fill the cluster in
+  from the live stream, because a pin it made up would show in `nats stream info` as configuration nobody
+  asked for, and the options could never clear it again.
+- NATS refuses to change the placement and `stream_replicas` in the same update (err_code 10123), and
+  `setup()` fails with the server's message and the staging steps. Stage the two changes: run
+  `messenger:setup-transports` with only one of them (for example the placement options as they were and
+  the new `stream_replicas`), wait until `nats stream info` shows every replica as current, then run it
+  again with the other change. Running the same combined configuration twice is not staging. With
+  `auto_setup: true` the transport runs `setup()` before the first `send()` or `get()` of a process, so
+  every one of them repeats the rejected update and fails until the configuration is staged; nothing is
+  published or consumed meanwhile. The transport does not split the update itself, because a `setup()`
+  that applied one half and returned would count as done and the other half would never be applied.
+- **Exclusion tags and the `unique_tag` bypass (NATS 2.12+).** A tag prefixed with `!` excludes the
+  servers that carry it, for example `!disk:hdd`. The server strips the `!` before it looks at the
+  cluster's `unique_tag` setting, and any placement tag that starts with that configured prefix switches
+  the uniqueness constraint **off** for the stream (nats-server's own comment: "disable uniqueness check
+  if explicitly listed in tags"). So with `unique_tag: "zone:"`, the tag `!zone:ignore` excludes nobody
+  and only lifts the requirement that replicas sit in distinct zones, which lets a 3-replica stream be
+  created on a cluster with fewer than 3 zones. A positive tag that every server carries and that starts
+  with the prefix, such as `zone:any` added to each server's `server_tags`, has the same effect on any
+  server version. On 2.11 and older the `!` is not stripped, so `!zone:ignore` is a mandatory tag nothing
+  matches and creation fails with `tags not matched`.
+- On a clustered server, tags that no server carries make stream creation fail with a JetStream error such
+  as `no suitable peers for placement`. A standalone (non-clustered) server accepts and stores any
+  placement without acting on it.
+
+Taking an existing single-replica stream to three replicas on `ssd` servers, in two stages:
+
+```yaml
+# Stage 1: the replica count alone. The placement options stay as they were (here unset, so the live
+# placement is echoed back). Run messenger:setup-transports, then wait until `nats stream info` shows
+# every replica as current.
+options:
+  stream_replicas: 3
+```
+
+```yaml
+# Stage 2: the placement. Run messenger:setup-transports again.
+options:
+  stream_replicas: 3
+  stream_placement_tags: ['ssd']
+```
+
 ## Testing
 
 ### Unit Tests
@@ -855,7 +948,7 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 96.3% (835 of 867 mutants killed, with 100% mutation code coverage).
+95%; the suite scores 96.7% (934 of 966 mutants killed, with 100% mutation code coverage).
 [docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 32 mutants that survive, with the reason for each:
 27 are equivalent, three make no difference with the real client, and two differ about once in a million
 runs. CI runs all three on the PHP 8.5 job and every day. Scores published before, 100% among them, were not
@@ -1050,7 +1143,15 @@ framework:
 > already-created stream works on NATS 2.12 and newer, and is rejected by the server on older versions -
 > recreate the stream to change it there.
 
-> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, and `Custom consumer name is registered in JetStream`
+> **Note on placement:** `stream_placement_cluster` and `stream_placement_tags` follow the same rule as
+> `stream_max_consumers`: they are written only when you set them, and unset options leave the stream's
+> existing placement in place. A JetStream update that omits `placement` would clear it, so the transport
+> echoes the live value back whenever the options are unset, and a set option replaces only its own field
+> of the live placement. NATS rejects a placement change combined with a `stream_replicas` change on an
+> existing stream, and with `auto_setup` every `send()` and `get()` repeats that rejected update until the
+> two are staged. See [Stream Placement](#stream-placement) for the steps.
+
+> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, and `Custom consumer name is registered in JetStream`
 
 ### Delayed / Scheduled Messages
 

@@ -19,6 +19,7 @@ namespace IDCT\NatsMessenger\Options;
  * **Stream Policy:** STREAM_RETENTION, STREAM_DISCARD, STREAM_DUPLICATE_WINDOW, STREAM_COMPRESSION,
  *                    STREAM_DESCRIPTION, STREAM_DENY_DELETE, STREAM_DENY_PURGE, STREAM_ALLOW_DIRECT,
  *                    STREAM_ALLOW_ROLLUP_HEADERS
+ * **Stream Placement:** STREAM_PLACEMENT_CLUSTER, STREAM_PLACEMENT_TAGS
  * **Retry Strategy:** RETRY_HANDLER, NAK_DELAY, ACK_WAIT, MAX_DELIVER, BACKOFF
  * **Acknowledgement:** ACK_SYNC
  * **Deduplication:** DEDUPLICATE
@@ -56,6 +57,8 @@ enum TransportOption: string
     case STREAM_DENY_PURGE = 'stream_deny_purge';
     case STREAM_ALLOW_DIRECT = 'stream_allow_direct';
     case STREAM_ALLOW_ROLLUP_HEADERS = 'stream_allow_rollup_headers';
+    case STREAM_PLACEMENT_CLUSTER = 'stream_placement_cluster';
+    case STREAM_PLACEMENT_TAGS = 'stream_placement_tags';
     case RETRY_HANDLER = 'retry_handler';
     case NAK_DELAY = 'nak_delay';
     case ACK_WAIT = 'ack_wait';
