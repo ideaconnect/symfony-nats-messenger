@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.7.0] - 2026-10-17
+
+A **minor** release. It adds a reconnect mode: with `reconnect: true` the NATS client recovers a lost connection
+on its own and the transport leaves it to that, so a worker polls through an outage instead of exiting, and
+provisioning is verified again once the client reconnected. The NATS client logs through the application's
+logger, and a pull the server ended for its own shutdown or a leadership change is an empty batch rather than a
+missing consumer. With the option off, which is the default, the transport behaves as before.
+
 ### Added
 - **`reconnect` and `max_reconnect_attempts` options: a mode in which the NATS client owns the recovery of a
   lost connection (#45, #81).** Off by default, which is what the transport did before: the client runs with
