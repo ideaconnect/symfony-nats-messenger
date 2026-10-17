@@ -855,6 +855,12 @@ In a DSN the tags are a comma-separated list: `?stream_placement_tags=ssd,eu-wes
   case-sensitive, so a tag that differs only in case is sent as a change. The server accepts a new
   placement at once and `setup()` returns; the replica migration runs in the background (`nats stream
   info` shows the replicas as not current until it finishes).
+- In a super-cluster a placement that names tags but no cluster is resolved in the cluster the client
+  running `setup()` is connected to, then in the clusters that one lists as alternates, on create and on
+  a move alike. A tags-only change can therefore relocate the stream to another cluster. Set
+  `stream_placement_cluster` to keep the stream where it is: the transport does not fill the cluster in
+  from the live stream, because a pin it made up would show in `nats stream info` as configuration nobody
+  asked for, and the options could never clear it again.
 - NATS refuses to change the placement and `stream_replicas` in the same update (err_code 10123), and
   `setup()` fails with the server's message and the staging steps. Stage the two changes: run
   `messenger:setup-transports` with only one of them (for example the placement options as they were and
@@ -877,6 +883,23 @@ In a DSN the tags are a comma-separated list: `?stream_placement_tags=ssd,eu-wes
 - On a clustered server, tags that no server carries make stream creation fail with a JetStream error such
   as `no suitable peers for placement`. A standalone (non-clustered) server accepts and stores any
   placement without acting on it.
+
+Taking an existing single-replica stream to three replicas on `ssd` servers, in two stages:
+
+```yaml
+# Stage 1: the replica count alone. The placement options stay as they were (here unset, so the live
+# placement is echoed back). Run messenger:setup-transports, then wait until `nats stream info` shows
+# every replica as current.
+options:
+  stream_replicas: 3
+```
+
+```yaml
+# Stage 2: the placement. Run messenger:setup-transports again.
+options:
+  stream_replicas: 3
+  stream_placement_tags: ['ssd']
+```
 
 ## Testing
 
@@ -1120,7 +1143,10 @@ framework:
 > **Note on placement:** `stream_placement_cluster` and `stream_placement_tags` follow the same rule as
 > `stream_max_consumers`: they are written only when you set them, and unset options leave the stream's
 > existing placement in place. A JetStream update that omits `placement` would clear it, so the transport
-> echoes the live value back whenever the options are unset. See [Stream Placement](#stream-placement).
+> echoes the live value back whenever the options are unset, and a set option replaces only its own field
+> of the live placement. NATS rejects a placement change combined with a `stream_replicas` change on an
+> existing stream, and with `auto_setup` every `send()` and `get()` repeats that rejected update until the
+> two are staged. See [Stream Placement](#stream-placement) for the steps.
 
 > **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, and `Custom consumer name is registered in JetStream`
 
