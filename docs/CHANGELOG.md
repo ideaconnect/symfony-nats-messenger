@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.0] - 2026-10-17
+
+A **minor** release. It adds the `stream_placement_cluster` and `stream_placement_tags` options, which pin a
+stream to a JetStream cluster and to tagged servers. On an existing stream each option replaces only its own
+field of the live placement, and a tag list that names the live set in another order is left as the server
+stores it. A placement change combined with a `stream_replicas` change, which NATS refuses in one update, fails
+`setup()` with the steps to stage it. Nothing changes for a configuration that sets neither option.
+
 ### Added
 - **Persistent project memory** in `docs/PROJECT_MEMORY.md`, linked from `AGENTS.md` and `CLAUDE.md`, covering the
   maintainer's local client-library workflow, transport behavior, verification requirements, and
