@@ -311,6 +311,23 @@ final class IDCTNatsMessengerBundleTest extends TestCase
     }
 
     /**
+     * The factory is tagged for Monolog's `messenger` channel, as Messenger's own services are, so the client's lines
+     * land next to the worker's in an application that uses MonologBundle.
+     */
+    #[Test]
+    public function theFactoryIsTaggedForMonologsMessengerChannel(): void
+    {
+        $container = new ContainerBuilder();
+        $container->setParameter('kernel.environment', 'test');
+        $container->setParameter('kernel.build_dir', sys_get_temp_dir());
+        $extension = (new IDCTNatsMessengerBundle())->getContainerExtension();
+        self::assertNotNull($extension);
+        $extension->load([], $container);
+
+        $this->assertSame([['channel' => 'messenger']], $container->getDefinition(NatsTransportFactory::class)->getTag('monolog.logger'));
+    }
+
+    /**
      * @param list<BundleInterface> $bundles
      * @param array<string, mixed>  $messenger
      * @param list<string>          $files

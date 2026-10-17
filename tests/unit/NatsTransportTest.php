@@ -6311,4 +6311,24 @@ final class NatsTransportTest extends TestCase
             yield $description . ', auto_setup on' => [['auto_setup' => true], $description];
         }
     }
+
+    /**
+     * The two readings belong to a 409: another status whose description happens to name a shutdown is what it was,
+     * here a 503 that propagates without auto_setup.
+     */
+    public function testOnlyA409CarriesTheServerEndedReadings(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('fetchBatch')->willReturn(
+            Future::error(new JetStreamException('JetStream pull request ended with status 503: Server Shutdown', 503)),
+        );
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(JetStreamException::class);
+        $this->expectExceptionMessage('status 503: Server Shutdown');
+
+        iterator_to_array($transport->get());
+    }
 }

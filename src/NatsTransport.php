@@ -283,7 +283,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return false;
         }
 
-        $this->autoSetupDone = false;
+        // autoSetupIfEnabled() provisions again on its own here: the count moved since the last setup().
         $this->autoSetupIfEnabled();
 
         return true;
