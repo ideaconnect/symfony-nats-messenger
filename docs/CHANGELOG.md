@@ -8,28 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **`reconnect` and `max_reconnect_attempts` options** for automatic reconnection. The transport used to
-  hard-wire the client's reconnect off, so a dropped connection was replaced only by the next operation,
-  which failed unless `ping_after_idle` caught the drop first. With
-  `reconnect: true` (default `false`, preserving existing behavior) the NATS client re-dials with its own
-  exponential backoff and re-establishes its subscriptions; `max_reconnect_attempts` (positive integer,
-  default `null` = the client's own default of 10) caps the re-dial attempts per outage. With reconnect
-  enabled the same retry loop also covers a failed initial connect. Both options work from the DSN query
-  string too. With the option on the transport steps back from recovering the connection itself (#81): a
-  client in the middle of its own recovery is left alone, with no PING and no dial of the transport's own,
-  and the operation waits for the recovery within its own budget; after a PING that failed, a client that is
-  recovering or has already recovered keeps its connection, while a connection the client still reports Open
-  with no reconnect behind it, and so does not know to be lost, is replaced as without the option. Measured
-  with the real client over a scripted connection (`tests/unit/ReconnectModeTest.php`). With `auto_setup`,
-  provisioning is verified again once the client's reconnect count moved since the last `setup()`, since the
-  client replaced the connection behind the transport's back and the stream may have gone with the server (a
-  memory stream over a restart): the done flag used to stay latched and every `send()` after the reconnect
-  failed with 503 "No JetStream responder" for the rest of the process. A send begun while the client was
-  recovering passes that check with the old count and can still land on a server without the stream; when its
-  publish fails with that 503, `setup()` runs once and the same frame is published once more, same subject,
-  payload, headers and `Nats-Msg-Id`, then a second failure propagates. Nothing answered the first publish, so
-  the second cannot duplicate it.
-
+- **`reconnect` and `max_reconnect_attempts` options: a mode in which the NATS client owns the recovery of a
+  lost connection (#45, #81).** Off by default, which is what the transport did before: the client runs with
+  reconnect off, the operation that runs into the lost connection fails, the next one dials again, a worker
+  exits and its supervisor restarts it. With `reconnect: true` the client re-dials in the background with its
+  backoff, up to `max_reconnect_attempts` times per recovery (default `null`, the client's own 10), replays
+  its subscriptions and flushes the frames it buffered, and the transport steps back. A client in the middle
+  of its recovery is left alone, with no PING and no dial of the transport's own, and the operation waits for
+  the recovery within its own budget: `request_timeout` for a request, `max_batch_timeout` plus a second for
+  a pull, which then ends empty. After a PING that failed, a client that is recovering or has already
+  recovered keeps its connection, a connection the client still reports open with no reconnect behind it is
+  replaced as without the option, and a client that gave up is Closed and dialled again, which runs the
+  client's attempt loop inside the operation and propagates its exception. With `auto_setup`, provisioning is
+  verified again once the client's reconnect count moved, since the client replaced the connection behind the
+  transport's back and the stream may have gone with the server; a send begun during the recovery that lands
+  on a server without the stream gets one `setup()` and one more publish of the same frame on the client's 503
+  "No JetStream responder". Measured with nats-server 2.14.2 over a 53 s `docker stop`: with the client's 10
+  attempts every operation waited within its budget and none dialled, with 2 attempts every operation after
+  the recovery gave up dialled inline for 18 s. Before this, the option as proposed in #45 ran the whole
+  attempt loop inside every operation during an outage, 109 s each at the defaults. The README's Automatic
+  Reconnect section has the table, the per-operation bounds and the two places the loop still runs inline.
+  Both options work from the DSN query string too.
 - **The NATS client logs through the application's logger (#81).** `NatsTransportFactory` takes an optional PSR-3
   logger and hands it to every transport it creates, `NatsTransport` takes it as a fourth constructor argument,
   and the bundle passes the application's `logger` service when there is one, under Messenger's Monolog

@@ -570,14 +570,19 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
-     * The client runs with reconnect off, so that a lost connection leaves it Closed and the transport dials
-     * again itself, and without pedantic protocol checks.
+     * Unless `reconnect` is on, the client runs with reconnect off, so that a lost connection leaves it Closed and
+     * the transport dials again itself; the attempt count stays the client's own default for when it is on, and
+     * pedantic protocol checks are off either way.
      */
     public function testBuildTurnsClientReconnectAndPedanticModeOff(): void
     {
-        $options = $this->extractNatsOptions((new NatsTransportConfigurationBuilder())->build(self::VALID_DSN)->client);
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN);
+        $options = $this->extractNatsOptions($configuration->client);
 
+        self::assertFalse($configuration->isReconnectEnabled());
+        self::assertNull($configuration->maxReconnectAttempts());
         self::assertFalse($options->reconnectEnabled);
+        self::assertSame((new NatsOptions())->maxReconnectAttempts, $options->maxReconnectAttempts);
         self::assertFalse($options->pedantic);
     }
 
@@ -1781,17 +1786,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'list with a nested array' => [['ssd', ['nested']]];
         yield 'list with a boolean' => [['ssd', true]];
         yield 'boolean' => [false];
-    }
-
-    public function testBuildLeavesReconnectDisabledByDefault(): void
-    {
-        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);
-        $options = $this->extractNatsOptions($configuration->client);
-
-        self::assertFalse($configuration->isReconnectEnabled());
-        self::assertNull($configuration->maxReconnectAttempts());
-        self::assertFalse($options->reconnectEnabled);
-        self::assertSame((new NatsOptions())->maxReconnectAttempts, $options->maxReconnectAttempts);
     }
 
     public function testBuildWithReconnectOptionsPropagatesToNatsOptions(): void

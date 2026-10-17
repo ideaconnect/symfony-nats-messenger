@@ -71,11 +71,21 @@ composer nats:stop               # stop NATS
 - **Async client, sync contract.** Client calls return `Amp\Future`; resolve them with `->await()`.
   Symfony Messenger's transport API is blocking.
 - **Lazy connection.** No socket opens in the constructor - `jetStream()` connects on first use, and dials
-  again once the client has closed (it runs with reconnect off, so a lost connection leaves it Closed). A
+  again once the client has closed (unless `reconnect: true`, it runs with reconnect off, so a lost connection
+  leaves it Closed). A
   connection unused for longer than `ping_after_idle`, or one an operation just failed on (not counting
   JetStream replies, but counting a pull the server did not answer), gets a PING first and is replaced if
   it goes unanswered; `ping_after_idle: 0` turns both checks off, and `keepalive()` never pings or dials (it
   runs in a signal handler).
+- **Reconnect mode (`reconnect: true`): the client owns recovery.** The transport leaves a Connecting client
+  alone (no PING, no dial; the operation waits within its own budget), reads a failed PING by the client's state
+  and reconnect count (recovering or already recovered: kept; the same connection silent: replaced; Closed:
+  dialled again, which runs the client's attempt loop inline), verifies `auto_setup` provisioning again once the
+  count moved and re-provisions once when the first publish after a reconnect gets 503 "No JetStream responder".
+  The count is read only with the option on; mocked clients in the default-mode tests have no stats stub. The
+  factory's optional logger reaches the client (the bundle passes `logger`); a reconnect that gives up logs the
+  discarded buffer at error level. `409 Server Shutdown` and `409 Leadership Change` end a pull as an empty batch
+  in both modes.
 - **Pull consumers + explicit ACK.** A message is only "processed" once ACK'd. This underpins
   `retry_handler` and shared-consumer load balancing.
 - **`get()` reads JetStream 408 and 404 as an empty pull** (no messages); other codes propagate. A

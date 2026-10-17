@@ -21,6 +21,8 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 📊 **Stream Configuration** - Configurable retention policies and replication
 - 📍 **Stream Placement** - Pin a stream to a JetStream cluster and to tagged servers; an option you set
   changes only its own half of an existing placement (see [Stream Placement](#stream-placement))
+- 🔁 **Automatic Reconnect** - Optional mode in which the NATS client recovers a lost connection and a worker
+  polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
 - 🧪 **Thoroughly Tested** - 623 unit tests, ~99.8% coverage, mutation-tested (96.7% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
@@ -331,11 +333,12 @@ framework:
                                             # an ack_sync ACK, setup() or a message count (default: 10)
 
           # Connection Resilience
-          reconnect: false                  # Let the NATS client re-dial on its own after a drop (default: false)
-                                            # false => the operation in flight fails; the transport dials
-                                            #          again on the next one
-                                            # true  => the client reconnects with exponential backoff first
-          max_reconnect_attempts: null      # Re-dial attempts per outage before giving up
+          reconnect: false                  # Who recovers a lost connection (default: false)
+                                            # false => the operation in flight fails and the transport dials
+                                            #          again on the next one; a worker exits and is restarted
+                                            # true  => the NATS client re-dials in the background and the
+                                            #          operations wait for it (see Automatic Reconnect)
+          max_reconnect_attempts: null      # Attempts per recovery before the client gives up
                                             # (null = the client's own default of 10). Positive integer.
 
           # Consumer Flow Control & Lifecycle
@@ -786,37 +789,93 @@ below what the connection holds, and closes the connection right behind it.
 
 ### Automatic Reconnect
 
-By default the NATS client does **not** reconnect on its own: the transport dials again on the next
-operation instead, and the operation that runs into the lost connection fails (see
-[Losing the Connection](#losing-the-connection)). Enable `reconnect` to have the NATS client re-dial in the
-background as soon as the connection drops:
+Who recovers a lost connection is a choice between two modes.
+
+**`reconnect: false` (the default): Symfony owns recovery.** The NATS client runs with reconnect off. The
+operation that runs into the lost connection fails at once, the next one dials again, a consumer worker exits
+on the failed `get()` and its supervisor starts a new one, and Symfony's retries and failure transport take
+care of the message. See [Losing the Connection](#losing-the-connection); nothing below applies.
+
+**`reconnect: true`: the client owns recovery.** The NATS client re-dials in the background as soon as it
+notices the loss, with exponential backoff (100 ms doubling up to 10 s, with jitter) and up to
+`max_reconnect_attempts` times per recovery (the client's default is 10), replays its subscriptions and flushes
+the frames it buffered meanwhile. The transport steps back from recovering the connection itself:
 
 ```yaml
 options:
-  reconnect: true             # re-dial after a dropped connection (default: false)
-  max_reconnect_attempts: 20  # re-dial attempts per outage (default: null = the client's default of 10)
+  reconnect: true             # the client recovers a lost connection (default: false)
+  max_reconnect_attempts: 20  # attempts per recovery (default: null = the client's default of 10)
 ```
 
-> **Tested by:** `testBuildLeavesReconnectDisabledByDefault`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`
+- A client in the middle of its recovery is left alone: no PING, no dial of the transport's own. The
+  operation waits for the recovery within its own budget: a request (`send()`, an `ack_sync` ACK, `setup()`,
+  `getMessageCount()`) within `request_timeout`, a pull within `max_batch_timeout` plus one second, after
+  which it ends empty. The budget is per request, not per method: `setup()` makes three or more requests, a
+  publish retries a missing responder three times on its own, and the first dial of a process is not bounded
+  by it at all.
+- The PING check of [Losing the Connection](#losing-the-connection) still runs, and when the PING fails, what
+  the client made of the connection decides. A client that is recovering, or that already recovered (its
+  reconnect count moved, so the PONG belonged to the lost connection), keeps its connection. A client that
+  still reports the same connection open is replaced, as without the option: nothing in the client recovers
+  a connection it does not know to be lost before its heartbeat has gone unanswered three times, about 90 s at
+  the client's defaults, and the heartbeat only runs while an operation holds the event loop. A client that
+  gave up is Closed and dialled again.
+- With `auto_setup`, provisioning is verified again once the client reconnected, because the stream may have
+  gone with the server (a memory stream over a restart, a failover to a server without it). A send begun while
+  the client was recovering can still land on a server without the stream; when its publish fails with the
+  client's 503 "No JetStream responder", `setup()` runs once and the same frame is published once more, then a
+  second failure propagates. Nothing answered the first publish, so the second cannot duplicate it.
+- When the recovery gives up, the client is Closed and the acknowledgements it buffered during the outage are
+  discarded; the messages come back after `ack_wait`, counting one delivery against `max_deliver`. The client
+  reports the discard at error level through the logger the bundle gives it (`Reconnect exhausted: N bytes of
+  buffered publishes were discarded`, under Monolog's `messenger` channel). The next operation dials again,
+  and with the option on that dial runs the client's attempt loop inside the operation. Exhaustion propagates
+  as the client's `ConnectionException` ("Reconnect attempts exhausted") rather than being flattened into an
+  empty queue, so a worker ends and its supervisor restarts it. The same loop runs for a failed first dial, so
+  `messenger:setup-transports` against a server that is down fails only after it.
+- What a worker gets: it polls through an outage shorter than one recovery cycle without exiting, every pull
+  ending empty after `max_batch_timeout` plus a second. `max_reconnect_attempts` sizes the cycle in attempts,
+  not in seconds: the client's default of 10 gives about 109 s against a server that refuses connections,
+  where a refused dial costs about 6 s. An `ack_sync` acknowledgement that runs into the outage still fails
+  after `request_timeout`, which ends the worker's run as any exception from `ack()` does: synchronous
+  acknowledgement keeps its meaning.
+- An ACK, NAK or TERM whose write fails while the client still reports the connection open is retried by the
+  client after an inline recovery without a budget, so that one `ack()` or `reject()` can wait for a whole
+  attempt loop ([client issue #244](https://github.com/ideaconnect/php-nats-jetstream-client/issues/244)). A
+  frame written while the client is already recovering is buffered and returns at once. `keepalive()` only
+  queues its frame, as it must inside a signal handler, and never waits, PINGs or dials.
+- A server that stops gracefully ends every pull in flight with `409 Server Shutdown`, and a consumer whose
+  leader moved ends them with `409 Leadership Change`. Both are empty batches, in either mode, and no longer
+  read as a missing consumer; after a shutdown the next operation checks the connection first.
 
-**What `reconnect: true` does** (all of it inside the NATS client; the transport only switches it on):
-- After the connection is lost the client re-dials with exponential backoff (starting at 100 ms and capped
-  at 10 s, with jitter) and re-establishes its subscriptions.
-- Operations issued while the connection is down wait for the reconnect instead of failing at once,
-  bounded by `request_timeout`. Fire-and-forget frames (the ACK, NAK and TERM this transport sends) are
-  buffered and flushed once reconnected.
-- Messages that were delivered but not yet acknowledged when the connection dropped are redelivered by
-  JetStream after `ack_wait`, counting one delivery attempt against `max_deliver`.
-- Once `max_reconnect_attempts` is exhausted the client closes the connection for good, and from then on
-  the transport behaves as it does without reconnect: the next operation dials again. Rejected credentials
-  are not retried at all.
-- The same retry loop also covers a failed **initial** connect, so `messenger:setup-transports` against a
-  NATS server that is down keeps re-dialling through all attempts before it fails, instead of failing on
-  the first refused connection.
+Measured on nats-server 2.14.2 with client 2.27.0 and PHP 8.5, `request_timeout` 10, `connection_timeout` 1,
+`max_batch_timeout` 1, `auto_setup` with a memory stream, the server stopped with `docker stop` for about 53 s
+and the same transport object throughout. A refused dial on localhost costs about 6 s:
 
-**When to enable:** long-running workers against a NATS cluster whose nodes restart or fail over. Leave it
-disabled if you rely on the process supervisor to restart the worker on any connection loss, or if you
-want `messenger:setup-transports` to fail fast when NATS is unreachable.
+| Operation while the server is down | `max_reconnect_attempts` 10 (the client's default) | `max_reconnect_attempts` 2 |
+|---|---|---|
+| `send()` in flight at the stop | 10.0 s, `TimeoutException` | 10.0 s, `TimeoutException` |
+| next `send()` | 10.0 s, `TimeoutException` (the client is still recovering) | 2.4 s, `Reconnect attempts exhausted` (the recovery gave up inside the wait) |
+| `get()` | 2.0 s, empty | 18.4 s, `Reconnect attempts exhausted` |
+| plain `ack()` | 0.00 s, buffered | 18.4 s, `Reconnect attempts exhausted` |
+| `getMessageCount()` | 20.0 s (two requests), 0 | 18.4 s, 0 |
+| `send()` after those | 10.0 s, `TimeoutException` | 18.4 s, `Reconnect attempts exhausted` |
+| first `send()` once the server is back | 2.8 s, stored; the memory stream recreated | 0.13 s, stored; the memory stream recreated |
+
+With 10 attempts the recovery cycle outlasted the outage, so every operation waited within its own budget
+and none dialled; once the server was back, the first send waited for the client's next attempt, at the 10 s
+cap of the backoff by then. With 2 attempts the client gave up about 12 s into the outage, and from then on
+every operation dialled inline, one dial and two attempts, and failed with the client's exception. Before
+this mode existed in the transport, the option as first proposed ran the whole attempt loop inside every
+operation during an outage, 109 s each at the defaults. The figures are measurements, not bounds: the option
+bounds attempts per recovery, not time, and a process can run any number of recovery cycles over its life.
+
+**When to enable:** long-running workers where a restart is expensive, against a NATS cluster whose nodes
+restart or fail over. Not for web requests that dispatch: a request handler stalls for a whole attempt loop
+when it runs into an outage once the client gave up. Leave it off to rely on the process supervisor and
+Symfony's retries, and to have `messenger:setup-transports` fail fast when NATS is unreachable.
+
+> **Tested by:** `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `testReconnectModeLeavesAClientInTheMiddleOfItsRecoveryAlone`, `testReconnectModeReadsAFailedPingAgainstTheClientsRecovery`, `testReconnectModeTakesARecoveredConnectionAsChecked`, `testWithoutReconnectAFailedPingReplacesTheConnectionAndTheReconnectCountIsNeverRead`, `testReconnectModeVerifiesProvisioningAgainAfterTheClientReconnected`, `testReconnectModeReprovisionsOnceWhenTheFirstPublishAfterTheReconnectFindsNoResponder`, `testReconnectModeDoesNotRetryAPublishOutsideTheNoResponderCase`, `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testAPullEndedByALeadershipChangeIsEmptyAndTheNextOneDoesNotCheckTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`, the real-client tests in `tests/unit/ReconnectModeTest.php`, and the Behat scenarios `A worker keeps consuming across a server restart` and `A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated`
 
 ## Stream Configuration
 

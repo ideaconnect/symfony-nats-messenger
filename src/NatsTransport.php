@@ -348,7 +348,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * propagates.
      *
      * With auto_setup enabled, a 404, 409 or 503 (see {@see recoverFromFetchFailure()} for why
-     * all three) first triggers one re-provisioning attempt and a second pull.
+     * all three) first triggers one re-provisioning attempt and a second pull. A 409 with which the
+     * server ended the pull itself, "Server Shutdown" or "Leadership Change", is an empty batch
+     * instead, in either mode ({@see pullEndedByTheServer()}).
      *
      * A pull the server refuses because the connection is at its subscription limit fails with a
      * TransportException that names the stream, the consumer and the limit ({@see fetchBatchMessages()}).
