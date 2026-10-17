@@ -306,12 +306,7 @@ final readonly class NatsTransportConfiguration
      */
     public function streamPlacementTags(): ?array
     {
-        $value = $this->options[TransportOption::STREAM_PLACEMENT_TAGS->value] ?? null;
-        if ($value === null) {
-            return null;
-        }
-
-        $tags = TypeCoercion::stringListValue($value);
+        $tags = TypeCoercion::stringListValue($this->options[TransportOption::STREAM_PLACEMENT_TAGS->value] ?? null);
 
         return $tags === [] ? null : $tags;
     }

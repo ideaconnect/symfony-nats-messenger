@@ -1503,12 +1503,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $live[] = $tag;
         }
 
-        $live = array_values(array_unique($live));
-        $configured = array_values(array_unique($configuredTags));
+        // The configured list has no repeats, TypeCoercion::stringListValue() drops them; the live one may
+        // carry any. sort() reindexes, so neither side needs array_values().
+        $live = array_unique($live);
         sort($live, SORT_STRING);
-        sort($configured, SORT_STRING);
+        sort($configuredTags, SORT_STRING);
 
-        return $live === $configured;
+        return $live === $configuredTags;
     }
 
     /**

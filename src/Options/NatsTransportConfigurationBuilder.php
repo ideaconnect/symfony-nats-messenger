@@ -558,10 +558,10 @@ final class NatsTransportConfigurationBuilder
         }
 
         // Reject loudly rather than silently dropping a malformed element: a tag that is quietly
-        // ignored would place the stream somewhere other than where the operator asked.
-        $elementsAreScalar = is_array($tags)
-            ? count(array_filter($tags, static fn (mixed $tag): bool => is_string($tag) || is_int($tag))) === count($tags)
-            : is_string($tags) || is_int($tags);
+        // ignored would place the stream somewhere other than where the operator asked. A value that is
+        // neither a list nor a string or integer needs no check here: stringListValue() yields [] for it.
+        $elementsAreScalar = !is_array($tags)
+            || count(array_filter($tags, static fn (mixed $tag): bool => is_string($tag) || is_int($tag))) === count($tags);
         $normalizedTags = $elementsAreScalar ? TypeCoercion::stringListValue($tags) : [];
         if ($normalizedTags === []) {
             throw new InvalidArgumentException(sprintf(

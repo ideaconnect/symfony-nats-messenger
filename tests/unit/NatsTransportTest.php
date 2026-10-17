@@ -5536,6 +5536,12 @@ final class NatsTransportTest extends TestCase
         yield 'live tags that are not strings are replaced' => [
             ['tags' => ['ssd', 7]], ['stream_placement_tags' => 'ssd,7'], ['tags' => ['ssd', '7']],
         ];
+        yield 'a live tag that is not a string never matches, not even next to its string form' => [
+            ['tags' => ['7', 7]], ['stream_placement_tags' => '7'], ['tags' => ['7']],
+        ];
+        yield 'the same tags in another order keep the live array when the live side is the sorted one' => [
+            ['tags' => ['eu', 'ssd']], ['stream_placement_tags' => 'ssd,eu'], ['tags' => ['eu', 'ssd']],
+        ];
         yield 'the same tags in another order with a replica change, and no cluster pin made up' => [
             ['tags' => ['ssd', 'eu']],
             ['stream_placement_tags' => 'eu,ssd', 'stream_replicas' => 3],
@@ -5785,5 +5791,32 @@ final class NatsTransportTest extends TestCase
                 ],
             ],
         );
+    }
+
+    /**
+     * A failure that is not a JetStream API rejection, here a lost connection while provisioning, keeps
+     * the plain wrap: the setup command's RuntimeException naming the stream, the cause's message, code 0
+     * and the cause as the previous exception. JetStream rejections take their own arm, see
+     * testSetupKeepsThePlainWordingForOtherUpdateRejections.
+     */
+    public function testSetupWrapsAFailureThatIsNotAJetStreamRejectionWithThePlainWording(): void
+    {
+        $cause = new ConnectionException('connection refused');
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::error($cause));
+        $jetStream->expects(self::never())->method('getStream');
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->setup();
+            self::fail('setup() was expected to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': connection refused", $exception->getMessage());
+            self::assertSame(0, $exception->getCode());
+            self::assertSame($cause, $exception->getPrevious());
+        }
     }
 }
