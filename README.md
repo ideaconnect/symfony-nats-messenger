@@ -331,9 +331,10 @@ framework:
                                             # an ack_sync ACK, setup() or a message count (default: 10)
 
           # Connection Resilience
-          reconnect: false                  # Re-dial automatically after the connection drops (default: false)
-                                            # false => the next send()/get() fails and the worker exits
-                                            # true  => the NATS client reconnects with exponential backoff
+          reconnect: false                  # Let the NATS client re-dial on its own after a drop (default: false)
+                                            # false => the operation in flight fails; the transport dials
+                                            #          again on the next one
+                                            # true  => the client reconnects with exponential backoff first
           max_reconnect_attempts: null      # Re-dial attempts per outage before giving up
                                             # (null = the client's own default of 10). Positive integer.
 
@@ -802,7 +803,10 @@ options:
 - After the connection is lost the client re-dials with exponential backoff (starting at 100 ms and capped
   at 10 s, with jitter) and re-establishes its subscriptions.
 - Operations issued while the connection is down wait for the reconnect instead of failing at once,
-  bounded by the client's request timeout. Publishes are buffered and flushed once reconnected.
+  bounded by `request_timeout`. Fire-and-forget frames (the ACK, NAK and TERM this transport sends) are
+  buffered and flushed once reconnected.
+- Messages that were delivered but not yet acknowledged when the connection dropped are redelivered by
+  JetStream after `ack_wait`, counting one delivery attempt against `max_deliver`.
 - Once `max_reconnect_attempts` is exhausted the client closes the connection for good, and from then on
   the transport behaves as it does without reconnect: the next operation dials again. Rejected credentials
   are not retried at all.
