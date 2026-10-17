@@ -15,7 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exponential backoff and re-establishes its subscriptions; `max_reconnect_attempts` (positive integer,
   default `null` = the client's own default of 10) caps the re-dial attempts per outage. With reconnect
   enabled the same retry loop also covers a failed initial connect. Both options work from the DSN query
-  string too.
+  string too. With the option on the transport steps back from recovering the connection itself (#81): a
+  client in the middle of its own recovery is left alone, with no PING and no dial of the transport's own,
+  and the operation waits for the recovery within its own budget; after a PING that failed, a client that is
+  recovering or has already recovered keeps its connection, while a connection the client still reports Open
+  with no reconnect behind it, and so does not know to be lost, is replaced as without the option. Measured
+  with the real client over a scripted connection (`tests/unit/ReconnectModeTest.php`).
 
 ## [5.6.0] - 2026-10-17
 

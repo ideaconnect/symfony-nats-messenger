@@ -830,14 +830,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * or the connection sat idle or just failed an operation and does not answer a PING
      * ({@see connectionUsable()}).
      *
-     * Called internally by {@see jetStream()} before every JetStream call. The client runs with reconnect
-     * off, so a connection the server closed or one that dropped leaves it in its terminal Closed state,
-     * as do refused credentials, and it then refuses every request. Dialling again is what keeps a
-     * long-lived process working after that (#49): a consumer worker exits on the failed get() and its
+     * Called internally by {@see jetStream()} before every JetStream call. Unless `reconnect` is on, the client
+     * runs with reconnect off, so a connection the server closed or one that dropped leaves it in its terminal
+     * Closed state, as do refused credentials, and it then refuses every request. Dialling again is what keeps
+     * a long-lived process working after that (#49): a consumer worker exits on the failed get() and its
      * supervisor starts a new one, but a process that sends for longer than one request - a web app in
      * worker mode, a daemon, a handler that dispatches - used to fail every later operation until it was
      * restarted. The client releases what it held on every terminal close, so a fresh connect() starts
-     * clean. As after {@see close()}, auto_setup verifies provisioning again on the new connection.
+     * clean. As after {@see close()}, auto_setup verifies provisioning again on the new connection. With
+     * `reconnect` on the client recovers a lost connection itself and the transport leaves it to that
+     * ({@see clientOwnsRecovery()}); a client that gave up is Closed and dialled again the same way, which in
+     * that mode runs the client's attempt loop.
      */
     private function connectIfNeeded(): void
     {
@@ -862,8 +865,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function connectionUsable(): bool
     {
-        if ($this->client->state() === ConnectionState::Closed) {
+        $state = $this->client->state();
+        if ($state === ConnectionState::Closed) {
             return false;
+        }
+
+        // A client in the middle of its own recovery is left to it ({@see clientOwnsRecovery()}). A PING now would
+        // go unanswered, and the dial that followed would stop the recovery and run the client's whole attempt loop
+        // inside this operation. The operation waits for the recovery within its own budget instead: a request
+        // within request_timeout, a pull within max_batch_timeout and a second.
+        if ($state === ConnectionState::Connecting && $this->clientOwnsRecovery()) {
+            return true;
         }
 
         $idleLimit = $this->configuration->pingAfterIdleSeconds();
@@ -876,19 +888,76 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return true;
         }
 
+        // What a failed PING is read against when the client owns recovery, see keptAfterFailedPing(). Read only
+        // then: the count is the client's, and nothing else here needs it.
+        $reconnectsBeforePing = $this->clientOwnsRecovery() ? $this->client->statistics()->reconnects : null;
+
         $ping = $this->client->rtt();
         // When the wait below gives up, the PING still ends later, with nobody awaiting it.
         $ping->ignore();
         try {
             $ping->await(new TimeoutCancellation($this->configuration->connectionTimeoutSeconds()));
         } catch (\Throwable) {
-            return false;
+            return $reconnectsBeforePing !== null && $this->keptAfterFailedPing($reconnectsBeforePing);
         }
 
         $this->lastUsedAt = $this->monotonicSeconds();
         $this->checkBeforeNextUse = false;
 
         return true;
+    }
+
+    /**
+     * Whether the client owns the recovery of a lost connection, as it does with `reconnect: true`.
+     *
+     * Without the option the client runs with reconnect off: a lost connection leaves it Closed, the operation that
+     * ran into it fails, and the transport dials again on the next one ({@see connectIfNeeded()}). With it, the
+     * client re-dials on its own, with its backoff and up to max_reconnect_attempts times, replays its subscriptions
+     * and flushes the frames it buffered meanwhile, and the transport steps back: it never ends a recovery in
+     * flight, keeps a connection the client has already recovered, verifies provisioning again after a reconnect
+     * ({@see autoSetupIfEnabled()}), and only replaces a connection the client does not know to be lost
+     * ({@see keptAfterFailedPing()}). A client that gave up is Closed, and the next operation dials again as without
+     * the option; in this mode that dial runs the client's attempt loop, which is the wait the option asks for.
+     */
+    private function clientOwnsRecovery(): bool
+    {
+        return $this->configuration->isReconnectEnabled();
+    }
+
+    /**
+     * After a PING that failed or went unanswered, with the client owning recovery: whether the connection stays.
+     *
+     * The failure alone does not say what the client made of it. Four cases, told apart by the client's state and
+     * by its reconnect count from before the PING:
+     *
+     *  - Connecting: the PING's write failed and the client is recovering. Kept. The operation waits for the
+     *    recovery within its own budget, and the check stays armed for the operation after it.
+     *  - Open, with a higher reconnect count: the client already recovered, and the PONG that never came belonged
+     *    to the lost connection. Kept, and as good as checked. Provisioning is verified again when auto_setup is on,
+     *    since the stream may have gone with the server ({@see autoSetupIfEnabled()}).
+     *  - Open, with the same count: the same connection, and it delivers nothing. Nothing in the client recovers
+     *    it before its heartbeat has gone unanswered (maxPingsOut + 1) times, about 90 s at the client's defaults,
+     *    and the heartbeat only runs while an operation holds the event loop. Replaced, as without the option.
+     *  - Closed: the recovery gave up. Replaced; the dial runs the client's attempt loop.
+     *
+     * Measured with the real client over a scripted connection in ReconnectModeTest: keeping the connection in the
+     * third case left every later send timing out, and replacing it in the second ended a connection that worked.
+     */
+    private function keptAfterFailedPing(int $reconnectsBeforePing): bool
+    {
+        $state = $this->client->state();
+        if ($state === ConnectionState::Connecting) {
+            return true;
+        }
+
+        if ($state === ConnectionState::Open && $this->client->statistics()->reconnects > $reconnectsBeforePing) {
+            $this->lastUsedAt = $this->monotonicSeconds();
+            $this->checkBeforeNextUse = false;
+
+            return true;
+        }
+
+        return false;
     }
 
     /**

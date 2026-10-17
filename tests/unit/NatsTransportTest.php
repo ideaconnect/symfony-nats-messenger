@@ -4,6 +4,7 @@ namespace IDCT\NatsMessenger\Tests\Unit;
 
 use Amp\DeferredFuture;
 use Amp\Future;
+use IDCT\NATS\Connection\ConnectionStats;
 use IDCT\NATS\Connection\Enum\ConnectionState;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
@@ -5818,5 +5819,157 @@ final class NatsTransportTest extends TestCase
             self::assertSame(0, $exception->getCode());
             self::assertSame($cause, $exception->getPrevious());
         }
+    }
+
+    /**
+     * With `reconnect: true` the client owns the recovery of a lost connection, and a client in the middle of it
+     * is left alone: the operation neither PINGs nor dials, though the connection sat idle past ping_after_idle,
+     * and goes out on the connection the client is making. Without the option a Connecting client would be
+     * checked like any other, which stops its recovery with a dial of the transport's own.
+     */
+    public function testReconnectModeLeavesAClientInTheMiddleOfItsRecoveryAlone(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+        $client->expects(self::never())->method('disconnect');
+        $client->expects(self::never())->method('statistics');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['reconnect' => true, 'ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+
+        $state = ConnectionState::Connecting;
+        $transport->now += 31;
+        $transport->ack($envelope);
+    }
+
+    /**
+     * With `reconnect: true` a failed PING is read against what the client made of the connection, by its state and
+     * its reconnect count from before the PING: a client that is recovering, or that already recovered (the PONG
+     * belonged to the lost connection), keeps the connection; a client that still reports the same connection Open
+     * is replaced, as without the option, since nothing in it recovers a connection it does not know to be lost;
+     * a client that gave up is Closed and dialled again.
+     */
+    #[DataProvider('failedPingOutcomes')]
+    public function testReconnectModeReadsAFailedPingAgainstTheClientsRecovery(ConnectionState $stateAfterPing, int $reconnectsAfterPing, string $outcome): void
+    {
+        $kept = $outcome === 'kept';
+        $oldConnection = $this->createMock(JetStreamContext::class);
+        $oldConnection->expects(self::exactly($kept ? 2 : 1))->method('ack')->willReturn(Future::complete());
+        $newConnection = $this->createMock(JetStreamContext::class);
+        $newConnection->expects(self::exactly($kept ? 0 : 1))->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $reconnects = 0;
+        $client = $this->clientReportingState($state, $kept ? [Future::complete()] : [Future::complete(), Future::complete()]);
+        $client->method('jetStream')->willReturnOnConsecutiveCalls($oldConnection, $newConnection);
+        $client->method('statistics')->willReturnCallback(static function () use (&$reconnects): ConnectionStats {
+            return new ConnectionStats(0, 0, 0, 0, $reconnects);
+        });
+        $client->expects(self::once())->method('rtt')->willReturnCallback(
+            static function () use (&$state, &$reconnects, $stateAfterPing, $reconnectsAfterPing): Future {
+                $state = $stateAfterPing;
+                $reconnects = $reconnectsAfterPing;
+
+                return Future::error(new ConnectionException('Broken pipe'));
+            },
+        );
+        $client->expects($outcome === 'replaced' ? self::once() : self::never())->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['reconnect' => true, 'ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+
+        $transport->now += 31;
+        $transport->ack($envelope);
+    }
+
+    /**
+     * @return iterable<string, array{ConnectionState, int, string}>
+     */
+    public static function failedPingOutcomes(): iterable
+    {
+        yield 'the client is recovering: kept, the operation waits for the recovery' => [ConnectionState::Connecting, 0, 'kept'];
+        yield 'the client already recovered: kept, the PONG belonged to the lost connection' => [ConnectionState::Open, 1, 'kept'];
+        yield 'the same connection, silent: replaced, as without the option' => [ConnectionState::Open, 0, 'replaced'];
+        yield 'the recovery gave up: dialled again, nothing to disconnect' => [ConnectionState::Closed, 0, 'redialled'];
+    }
+
+    /**
+     * A connection the client recovered behind the failed PING counts as checked: the operation after it does not
+     * PING again, though the check was armed by a failure.
+     */
+    public function testReconnectModeTakesARecoveredConnectionAsChecked(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(3))->method('ack')->willReturnOnConsecutiveCalls(
+            Future::error(new ConnectionException('Connection lost')),
+            Future::complete(),
+            Future::complete(),
+        );
+
+        $state = ConnectionState::Idle;
+        $reconnects = 0;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->method('statistics')->willReturnCallback(static function () use (&$reconnects): ConnectionStats {
+            return new ConnectionStats(0, 0, 0, 0, $reconnects);
+        });
+        $client->expects(self::once())->method('rtt')->willReturnCallback(static function () use (&$reconnects): Future {
+            $reconnects = 1;
+
+            return Future::error(new ConnectionException('Broken pipe'));
+        });
+        $client->expects(self::never())->method('disconnect');
+
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, ['reconnect' => true]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        try {
+            $transport->ack($envelope);
+            self::fail('The first ack was expected to fail on the connection.');
+        } catch (ConnectionException) {
+        }
+
+        $transport->ack($envelope);
+        $transport->ack($envelope);
+    }
+
+    /**
+     * Without the option nothing changes: a failed PING replaces the connection, and the client's reconnect count
+     * is never read. The count belongs to the client's recovery, which the default mode does not use.
+     */
+    public function testWithoutReconnectAFailedPingReplacesTheConnectionAndTheReconnectCountIsNeverRead(): void
+    {
+        $oldConnection = $this->createMock(JetStreamContext::class);
+        $oldConnection->expects(self::once())->method('ack')->willReturn(Future::complete());
+        $newConnection = $this->createMock(JetStreamContext::class);
+        $newConnection->expects(self::once())->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::complete()]);
+        $client->method('jetStream')->willReturnOnConsecutiveCalls($oldConnection, $newConnection);
+        $client->expects(self::never())->method('statistics');
+        $client->expects(self::once())->method('rtt')->willReturnCallback(static function () use (&$state): Future {
+            $state = ConnectionState::Connecting;
+
+            return Future::error(new ConnectionException('Broken pipe'));
+        });
+        $client->expects(self::once())->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+
+        $transport->now += 31;
+        $transport->ack($envelope);
     }
 }
