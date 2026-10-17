@@ -20,7 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the operation waits for the recovery within its own budget; after a PING that failed, a client that is
   recovering or has already recovered keeps its connection, while a connection the client still reports Open
   with no reconnect behind it, and so does not know to be lost, is replaced as without the option. Measured
-  with the real client over a scripted connection (`tests/unit/ReconnectModeTest.php`).
+  with the real client over a scripted connection (`tests/unit/ReconnectModeTest.php`). With `auto_setup`,
+  provisioning is verified again once the client's reconnect count moved since the last `setup()`, since the
+  client replaced the connection behind the transport's back and the stream may have gone with the server (a
+  memory stream over a restart): the done flag used to stay latched and every `send()` after the reconnect
+  failed with 503 "No JetStream responder" for the rest of the process. A send begun while the client was
+  recovering passes that check with the old count and can still land on a server without the stream; when its
+  publish fails with that 503, `setup()` runs once and the same frame is published once more, same subject,
+  payload, headers and `Nats-Msg-Id`, then a second failure propagates. Nothing answered the first publish, so
+  the second cannot duplicate it.
 
 ## [5.6.0] - 2026-10-17
 

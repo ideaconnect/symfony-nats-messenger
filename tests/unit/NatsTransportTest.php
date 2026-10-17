@@ -42,6 +42,7 @@ use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Stamp\SentToFailureTransportStamp;
+use Symfony\Component\Messenger\Stamp\StampInterface;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 use Symfony\Component\Messenger\Worker;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
@@ -5971,5 +5972,213 @@ final class NatsTransportTest extends TestCase
 
         $transport->now += 31;
         $transport->ack($envelope);
+    }
+
+    /**
+     * With `reconnect: true` and auto_setup, provisioning is verified again once the client reconnected on its own:
+     * the done flag alone is not trusted, since the client replaced the connection behind the transport's back and
+     * the stream may have gone with the server. Verified before the operation, for a send and for a pull; an
+     * operation with the count unchanged does not provision again.
+     *
+     * @param \Closure(NatsTransport): void $operation
+     */
+    #[DataProvider('operationsAfterAReconnect')]
+    public function testReconnectModeVerifiesProvisioningAgainAfterTheClientReconnected(string $method, mixed $result, \Closure $operation): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->expects(self::exactly(3))->method($method)->willReturn(Future::complete($result));
+
+        $reconnects = 0;
+        $transport = $this->reconnectModeTransport($jetStream, $reconnects, ['auto_setup' => true]);
+
+        $operation($transport);
+        $reconnects = 1;
+        $operation($transport);
+        $operation($transport);
+    }
+
+    /**
+     * @return iterable<string, array{string, mixed, \Closure(NatsTransport): void}>
+     */
+    public static function operationsAfterAReconnect(): iterable
+    {
+        yield 'send' => ['publish', null, static fn (NatsTransport $transport) => $transport->send(new Envelope(new \stdClass()))];
+        yield 'get' => ['fetchBatch', [], static fn (NatsTransport $transport) => iterator_to_array($transport->get())];
+    }
+
+    /**
+     * A send begun while the client recovers passes the provisioning check with the old count, waits for the
+     * recovery inside the publish, and lands on a server without the stream: the client's 503 "No JetStream
+     * responder". With auto_setup on and the count moved, setup() runs once and the same frame is published once
+     * more, with the same subject, payload, headers and Nats-Msg-Id, so a delayed message keeps its schedule and a
+     * deduplicated one its id. Nothing answered the first publish, so the second cannot duplicate it.
+     *
+     * @param array<string, mixed> $options
+     * @param list<StampInterface> $stamps
+     */
+    #[DataProvider('publishesAfterAReconnect')]
+    public function testReconnectModeReprovisionsOnceWhenTheFirstPublishAfterTheReconnectFindsNoResponder(array $options, array $stamps, ?string $expectedSubjectPrefix, bool $expectsMessageId): void
+    {
+        $publishes = [];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $reconnects = 0;
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturnCallback(
+            static function (string $subject, string $payload, array $headers, ?string $msgId) use (&$publishes, &$reconnects): Future {
+                $publishes[] = [$subject, $payload, $headers, $msgId];
+                if (count($publishes) === 1) {
+                    // The recovery completed inside this publish's wait, on a server without the stream.
+                    $reconnects = 1;
+
+                    return Future::error(new JetStreamException('No JetStream responder for subject ' . $subject, 503));
+                }
+
+                return Future::complete();
+            },
+        );
+
+        $transport = $this->reconnectModeTransport($jetStream, $reconnects, ['auto_setup' => true] + $options);
+        $transport->send(new Envelope(new \stdClass(), $stamps));
+
+        self::assertCount(2, $publishes);
+        self::assertSame($publishes[0], $publishes[1], 'the second publish is the first frame again');
+        if ($expectedSubjectPrefix !== null) {
+            self::assertStringStartsWith($expectedSubjectPrefix, $publishes[0][0]);
+        }
+        self::assertSame($expectsMessageId, $publishes[0][3] !== null, 'Nats-Msg-Id present as the options and stamps say');
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, list<StampInterface>, ?string, bool}>
+     */
+    public static function publishesAfterAReconnect(): iterable
+    {
+        yield 'plain, no deduplication' => [[], [], 'test-topic', false];
+        yield 'deduplicate on' => [['deduplicate' => true], [], 'test-topic', true];
+        yield 'application-supplied deduplication id' => [[], [new DeduplicationIdStamp('order-7')], 'test-topic', true];
+        yield 'delayed message keeps its scheduled subject' => [['scheduled_messages' => true], [new DelayStamp(5000)], 'test-topic.delayed.', false];
+    }
+
+    /**
+     * The retry is one setup() and one publish: a second 503 propagates, as the client's exception.
+     */
+    public function testReconnectModeReprovisionsOnlyOnceForAPublishWithoutAResponder(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $reconnects = 0;
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturnCallback(static function () use (&$reconnects): Future {
+            $reconnects = 1;
+
+            return Future::error(new JetStreamException('No JetStream responder for subject test-topic', 503));
+        });
+
+        $transport = $this->reconnectModeTransport($jetStream, $reconnects, ['auto_setup' => true]);
+
+        $this->expectException(JetStreamException::class);
+        $this->expectExceptionMessage('No JetStream responder for subject test-topic');
+
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * The retry needs all three: the no-responder reply, auto_setup, and a reconnect since the last setup(). A 503
+     * with the count unchanged, a 503 without auto_setup, and another JetStream reply after a reconnect all
+     * propagate at once, with no second setup() and no second publish.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('publishFailuresNotRetried')]
+    public function testReconnectModeDoesNotRetryAPublishOutsideTheNoResponderCase(array $options, int $reconnectsDuringPublish, JetStreamException $reply): void
+    {
+        $autoSetup = $options['auto_setup'] ?? false;
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects($autoSetup ? self::once() : self::never())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects($autoSetup ? self::once() : self::never())->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $reconnects = 0;
+        $jetStream->expects(self::once())->method('publish')->willReturnCallback(static function () use (&$reconnects, $reconnectsDuringPublish, $reply): Future {
+            $reconnects = $reconnectsDuringPublish;
+
+            return Future::error($reply);
+        });
+
+        $transport = $this->reconnectModeTransport($jetStream, $reconnects, $options);
+
+        $this->expectException(JetStreamException::class);
+        $this->expectExceptionMessage($reply->getMessage());
+
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, int, JetStreamException}>
+     */
+    public static function publishFailuresNotRetried(): iterable
+    {
+        yield 'no responder, but the client did not reconnect' => [['auto_setup' => true], 0, new JetStreamException('No JetStream responder for subject test-topic', 503)];
+        yield 'no responder after a reconnect, without auto_setup' => [[], 1, new JetStreamException('No JetStream responder for subject test-topic', 503)];
+        yield 'another reply after a reconnect' => [['auto_setup' => true], 1, new JetStreamException('maximum messages exceeded', 400, null, 10077)];
+    }
+
+    /**
+     * Without the option, a 503 from the publish propagates as it always did and the reconnect count is never read:
+     * the transport replaces connections itself there, and clears the done flag when it does.
+     */
+    public function testWithoutReconnectAPublishWithoutAResponderPropagatesAndTheReconnectCountIsNeverRead(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::error(new JetStreamException('No JetStream responder for subject test-topic', 503)));
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('statistics');
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, ['auto_setup' => true], $serializer);
+        $transport->setClient($client);
+
+        $this->expectException(JetStreamException::class);
+        $this->expectExceptionMessage('No JetStream responder for subject test-topic');
+
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * A transport with `reconnect: true` over a mocked Open client whose reconnect count the test moves, with the
+     * given JetStream double and an encoder that returns a fixed body.
+     *
+     * @param array<string, mixed> $options
+     */
+    private function reconnectModeTransport(JetStreamContext $jetStream, int &$reconnects, array $options): RealConnectNatsTransport
+    {
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->method('statistics')->willReturnCallback(static function () use (&$reconnects): ConnectionStats {
+            return new ConnectionStats(0, 0, 0, 0, $reconnects);
+        });
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, ['reconnect' => true] + $options, $serializer);
+        $transport->setClient($client);
+
+        return $transport;
+    }
+
+    private function consumerInfo(): ConsumerInfo
+    {
+        return new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+        );
     }
 }

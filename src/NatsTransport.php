@@ -95,6 +95,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private bool $autoSetupDone = false;
 
     /**
+     * The client's reconnect count when {@see autoSetupIfEnabled()} last verified provisioning, with the client
+     * owning recovery; null otherwise, and the flag above is then trusted on its own ({@see clientReconnectedSinceSetup()}).
+     */
+    private ?int $reconnectsAtSetup = null;
+
+    /**
      * JetStream err_code of "can not move and scale a stream in a single update" (JSStreamMoveAndScaleErr),
      * see {@see describeSetupRejection()}.
      */
@@ -236,14 +242,46 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // messages. JetStreamContext::publish() retries transient 503 "no responders" and parses
         // the PubAck, throwing JetStreamException on an empty/malformed reply or a reported error -
         // so the publish fails closed instead of silently accepting an invalid acknowledgement.
-        $this->awaitOnConnection($this->jetStream()->publish(
-            $topic,
-            $payload,
-            $normalizedHeaders,
-            msgId: $deduplicationStamp === null ? null : $this->natsMessageId($deduplicationStamp, $envelope),
-        ));
+        $messageId = $deduplicationStamp === null ? null : $this->natsMessageId($deduplicationStamp, $envelope);
+        try {
+            $this->awaitOnConnection($this->jetStream()->publish($topic, $payload, $normalizedHeaders, msgId: $messageId));
+        } catch (JetStreamException $reply) {
+            if (!$this->reprovisionedForThePublishAfterReconnect($reply)) {
+                throw $reply;
+            }
+
+            // The same frame once more: the same subject (the scheduled one of a delayed message), payload, headers
+            // and Nats-Msg-Id. A second pass through send() would mint another id and, for a delayed message,
+            // another schedule.
+            $this->awaitOnConnection($this->jetStream()->publish($topic, $payload, $normalizedHeaders, msgId: $messageId));
+        }
 
         return $envelope;
+    }
+
+    /**
+     * Whether a publish the server had no responder for gets one more try, after setup(), because the client
+     * reconnected on its own meanwhile.
+     *
+     * {@see autoSetupIfEnabled()} verifies provisioning before the publish, but a send begun while the client was
+     * recovering passes it with the old reconnect count: the recovery completes inside the publish's wait, the
+     * publish lands on the recovered connection, and when the stream went with the server (a memory stream over a
+     * restart, a failover to a server that does not have it) it fails with the client's 503 "No JetStream
+     * responder", after the client's own three attempts. So, with auto_setup on and the count moved since the last
+     * setup(), setup() runs once and the frame is published once more; a second failure propagates. Bounded to that
+     * and to this reply: nothing answered the first publish, so the message was not stored, and the second cannot
+     * duplicate it, with or without a Nats-Msg-Id. Any other failure propagates as it always did.
+     */
+    private function reprovisionedForThePublishAfterReconnect(JetStreamException $reply): bool
+    {
+        if ($reply->getCode() !== 503 || !$this->configuration->isAutoSetupEnabled() || !$this->clientReconnectedSinceSetup()) {
+            return false;
+        }
+
+        $this->autoSetupDone = false;
+        $this->autoSetupIfEnabled();
+
+        return true;
     }
 
     /**
@@ -696,12 +734,28 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // surfaces as the connection error it is rather than as a failed setup.
         $this->connectIfNeeded();
 
-        if ($this->autoSetupDone) {
+        if ($this->autoSetupDone && !$this->clientReconnectedSinceSetup()) {
             return;
         }
 
         $this->setup();
         $this->autoSetupDone = true;
+        $this->reconnectsAtSetup = $this->clientOwnsRecovery() ? $this->client->statistics()->reconnects : null;
+    }
+
+    /**
+     * Whether the client reconnected on its own since auto_setup last verified provisioning.
+     *
+     * The done flag is cleared when the transport replaces the connection ({@see dropConnection()}, {@see close()}),
+     * so that a stream lost during an outage is recreated on the new connection. A client that owns recovery
+     * ({@see clientOwnsRecovery()}) replaces the connection behind the transport's back, and the flag stayed
+     * latched: with a memory stream over a server restart, every send() after the client's reconnect failed with
+     * JetStream 503 "No JetStream responder" for the rest of the process (#81). The client's reconnect count,
+     * which only ever grows for one client object, tells the two connections apart.
+     */
+    private function clientReconnectedSinceSetup(): bool
+    {
+        return $this->reconnectsAtSetup !== null && $this->client->statistics()->reconnects > $this->reconnectsAtSetup;
     }
 
     /**
