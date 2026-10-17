@@ -121,8 +121,10 @@ The heart of the bridge. Responsibilities map almost 1:1 to `TransportInterface`
 
 Cross-cutting behavior:
 - **Lazy connection.** No socket is opened in the constructor. `jetStream()` calls `connectIfNeeded()`,
-  which connects on first use and caches the `JetStreamContext`. The client runs with reconnect off, so a
-  lost connection leaves it Closed; `connectIfNeeded()` then dials again on the next operation (#49). A
+  which connects on first use and caches the `JetStreamContext`. Unless `reconnect: true`, the client runs
+  with reconnect off, so a lost connection leaves it Closed; `connectIfNeeded()` then dials again on the
+  next operation (#49). With `reconnect: true` the client recovers a lost connection itself and the transport
+  steps back (`clientOwnsRecovery()`, `keptAfterFailedPing()`, `clientReconnectedSinceSetup()`, #81). A
   connection unused for longer than `ping_after_idle`, or one an operation just failed on (other than with
   a JetStream reply; a pull the server did not answer counts as a failure, and so does one refused at the
   subscription limit, since the server may close the connection right behind that error), is checked with

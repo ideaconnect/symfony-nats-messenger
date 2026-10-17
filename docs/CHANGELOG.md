@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.7.0] - 2026-10-17
+
+A **minor** release. It adds a reconnect mode: with `reconnect: true` the NATS client recovers a lost connection
+on its own and the transport leaves it to that, so a worker polls through an outage instead of exiting, and
+provisioning is verified again once the client reconnected. The NATS client logs through the application's
+logger, and a pull the server ended for its own shutdown or a leadership change is an empty batch rather than a
+missing consumer. With the option off, which is the default, the transport behaves as before.
+
+### Added
+- **`reconnect` and `max_reconnect_attempts` options: a mode in which the NATS client owns the recovery of a
+  lost connection (#45, #81).** Off by default, which is what the transport did before: the client runs with
+  reconnect off, the operation that runs into the lost connection fails, the next one dials again, a worker
+  exits and its supervisor restarts it. With `reconnect: true` the client re-dials in the background with its
+  backoff, up to `max_reconnect_attempts` times per recovery (default `null`, the client's own 10), replays
+  its subscriptions and flushes the frames it buffered, and the transport steps back. A client in the middle
+  of its recovery is left alone, with no PING and no dial of the transport's own, and the operation waits for
+  the recovery within its own budget: `request_timeout` for a request, `max_batch_timeout` plus a second for
+  a pull, which then ends empty. After a PING that failed, a client that is recovering or has already
+  recovered keeps its connection, a connection the client still reports open with no reconnect behind it is
+  replaced as without the option, and a client that gave up is Closed and dialled again, which runs the
+  client's attempt loop inside the operation and propagates its exception. With `auto_setup`, provisioning is
+  verified again once the client's reconnect count moved, since the client replaced the connection behind the
+  transport's back and the stream may have gone with the server; a send begun during the recovery that lands
+  on a server without the stream gets one `setup()` and one more publish of the same frame on the client's 503
+  "No JetStream responder". Measured with nats-server 2.14.2 over a 53 s `docker stop`: with the client's 10
+  attempts every operation waited within its budget and none dialled, with 2 attempts every operation after
+  the recovery gave up dialled inline for 18 s. Before this, the option as proposed in #45 ran the whole
+  attempt loop inside every operation during an outage, 109 s each at the defaults. The README's Automatic
+  Reconnect section has the table, the per-operation bounds and the two places the loop still runs inline.
+  Both options work from the DSN query string too. Two Behat scenarios restart the test server with docker
+  under a running worker and under a process that sends again after a quiet period.
+- **The NATS client logs through the application's logger (#81).** `NatsTransportFactory` takes an optional PSR-3
+  logger and hands it to every transport it creates, `NatsTransport` takes it as a fourth constructor argument,
+  and the bundle passes the application's `logger` service when there is one, under Messenger's Monolog
+  channel. The client writes its connection lifecycle at info level and its errors at error level; among them
+  `Reconnect exhausted: N bytes of buffered publishes were discarded`, the only trace of acknowledgements
+  written during an outage that a reconnect which gave up discarded (the messages come back after `ack_wait`).
+  Those went to a null logger before. `psr/log` `^3.0` is a direct requirement now; it was installed already,
+  through the client.
+
+### Fixed
+- **A pull the server ended for its shutdown or for a leadership change is an empty batch, not a missing
+  consumer (#81).** A server that is shutting down ends every pull in flight with `409 Server Shutdown`, and a
+  consumer whose leader moved ends them with `409 Leadership Change`. Every 409 used to read as a missing
+  consumer: with `auto_setup`, `setup()` ran against the server that was going away and failed, so a worker
+  exited with "Failed to setup NATS stream" on every graceful stop of its server, and without `auto_setup` the
+  409 propagated and ended the worker as well. Both read as an empty batch now, on the first pull and on the
+  one retried after re-provisioning, and after a shutdown the next operation checks the connection first, since
+  the server closes it right after. Only those two descriptions: `Consumer Deleted` is still a missing consumer,
+  and the 409s that report configuration (`Consumer is push based`, `Exceeded MaxRequestBatch`) still propagate.
+
 ## [5.6.0] - 2026-10-17
 
 A **minor** release. It adds the `stream_placement_cluster` and `stream_placement_tags` options, which pin a

@@ -1964,6 +1964,110 @@ class NatsSetupContext implements Context
         }
     }
 
+    /**
+     * Configures a transport with reconnect on: the NATS client recovers a lost connection on its own and the
+     * transport leaves it to that (#81). The attempt budget is generous, so a server restart of a few seconds is
+     * well within one recovery cycle.
+     */
+    #[Given('I have a messenger transport configured with reconnect enabled')]
+    public function iHaveAMessengerTransportConfiguredWithReconnectEnabled(): void
+    {
+        $this->writeTransportConfiguration('stream_max_age=900&reconnect=1&max_reconnect_attempts=30');
+    }
+
+    /**
+     * As above, with auto_setup and a memory stream, which a server restart loses: the fixture for provisioning
+     * verified again after the client's own reconnect. ping_after_idle is 2 s, so the send after the quiet period
+     * checks the connection first: a PHP process runs the event loop only inside a transport call, so the client
+     * notices the lost connection during that check, recovers, and the send goes out on the recovered connection.
+     * Without the check the send would write into the dead socket and time out after request_timeout, and only the
+     * next one would go out.
+     */
+    #[Given('I have a messenger transport configured with reconnect enabled, auto_setup and memory storage')]
+    public function iHaveAMessengerTransportConfiguredWithReconnectEnabledAutoSetupAndMemoryStorage(): void
+    {
+        $this->writeTransportConfiguration('stream_max_age=900&reconnect=1&max_reconnect_attempts=30&auto_setup=1&stream_storage=memory&ping_after_idle=2');
+    }
+
+    /** Writes the test transport's configuration with the given DSN query string, on the main test server. */
+    private function writeTransportConfiguration(string $query): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?%s'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $query
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /** Starts a consumer that stops after the given number of messages, before any of them is sent. */
+    #[When('I start a messenger consumer expecting :count messages')]
+    public function iStartAMessengerConsumerExpectingMessages(int $count): void
+    {
+        $this->messagesSent = $count;
+        $this->iStartAMessengerConsumer();
+    }
+
+    /**
+     * Restarts the main test server with docker. A graceful stop ends every pull in flight with "409 Server
+     * Shutdown" and closes every connection; a memory stream does not survive it. Returns once the server answers
+     * JetStream requests again.
+     */
+    #[When('I restart the NATS server')]
+    public function iRestartTheNatsServer(): void
+    {
+        $restart = new Process(['docker', 'restart', 'nats_test']);
+        $restart->setTimeout(90);
+        $restart->run();
+        if (!$restart->isSuccessful()) {
+            throw new \RuntimeException('docker restart nats_test failed: ' . $restart->getErrorOutput());
+        }
+
+        $deadline = microtime(true) + 60;
+        while (true) {
+            try {
+                $this->createNatsClient()->jetStream()->accountInfo()->await();
+
+                return;
+            } catch (\Throwable $e) {
+                if (microtime(true) > $deadline) {
+                    throw new \RuntimeException('The NATS server did not answer again after the restart: ' . $e->getMessage());
+                }
+                usleep(250000);
+            }
+        }
+    }
+
+    /**
+     * The send-after-idle command with the server restarted during its quiet period: the second send runs on the
+     * connection the client lost and, with reconnect on, recovers.
+     */
+    #[When('I send a message, restart the NATS server during a quiet period of :seconds seconds, and send another from the same process')]
+    public function iSendAMessageRestartTheServerDuringAQuietPeriodAndSendAnother(int $seconds): void
+    {
+        $this->idleSendProcess = new Process(
+            ['php', 'bin/console', 'app:send-after-idle', '--idle=' . $seconds, '--env=test'],
+            __DIR__ . '/../..'
+        );
+        $this->idleSendProcess->setTimeout($seconds + 120);
+        $this->idleSendProcess->start();
+
+        // The first message has to be out before the server goes away.
+        $deadline = microtime(true) + 60;
+        while (!str_contains($this->idleSendProcess->getOutput(), 'Sent message 1')) {
+            if (!$this->idleSendProcess->isRunning() || microtime(true) > $deadline) {
+                throw new \RuntimeException("The first send did not happen.\nOutput: " . $this->idleSendProcess->getOutput() . "\nError: " . $this->idleSendProcess->getErrorOutput());
+            }
+            usleep(100000);
+        }
+
+        $this->iRestartTheNatsServer();
+        $this->idleSendProcess->wait();
+    }
+
     private function createNatsStaleClient(): NatsClient
     {
         $client = new NatsClient(new NatsOptions(

@@ -2,11 +2,16 @@
 
 namespace IDCT\NatsMessenger\Tests\Unit;
 
+use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\NatsTransportFactory;
+use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
+use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
+use Psr\Log\LoggerInterface;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
+use Symfony\Component\Messenger\Transport\TransportInterface;
 
 class NatsTransportFactoryTest extends TestCase
 {
@@ -204,5 +209,35 @@ class NatsTransportFactoryTest extends TestCase
     {
         // Scheme matching is case-sensitive, matching how Symfony dispatches DSNs to factories.
         $this->assertFalse($this->factory->supports('NATS-JETSTREAM://localhost:4222/s/t', []));
+    }
+
+    /**
+     * The factory's logger reaches the NATS client of every transport it creates; a factory without one leaves the
+     * client without, as before.
+     */
+    #[Test]
+    public function createTransport_HandsTheFactorysLoggerToTheClient(): void
+    {
+        $dsn = 'nats-jetstream://admin:password@localhost:4222/test-stream/test-topic';
+        $logger = new RecordingLogger();
+
+        $withLogger = (new NatsTransportFactory($logger))->createTransport($dsn, [], $this->mockSerializer);
+        $withoutLogger = $this->factory->createTransport($dsn, [], $this->mockSerializer);
+
+        $this->assertSame($logger, self::clientLoggerOf($withLogger));
+        $this->assertNull(self::clientLoggerOf($withoutLogger));
+    }
+
+    /** The logger of the NATS client inside a transport, read the way the builder test reads the client's options. */
+    private static function clientLoggerOf(TransportInterface $transport): ?LoggerInterface
+    {
+        $configuration = (new \ReflectionClass($transport))->getProperty('configuration')->getValue($transport);
+        \assert($configuration instanceof NatsTransportConfiguration);
+        $connection = (new \ReflectionClass($configuration->client))->getProperty('connection')->getValue($configuration->client);
+        \assert(\is_object($connection));
+        $options = (new \ReflectionClass($connection))->getProperty('options')->getValue($connection);
+        \assert($options instanceof NatsOptions);
+
+        return $options->logger;
     }
 }

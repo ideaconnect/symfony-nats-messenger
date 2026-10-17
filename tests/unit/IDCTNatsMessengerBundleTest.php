@@ -6,6 +6,10 @@ namespace IDCT\NatsMessenger\Tests\Unit;
 
 use IDCT\NatsMessenger\IDCTNatsMessengerBundle;
 use IDCT\NatsMessenger\NatsTransport;
+use Psr\Log\LoggerInterface;
+use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
+use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
+use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NatsMessenger\NatsTransportFactory;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Tests\Support\MessengerTestKernel;
@@ -268,6 +272,59 @@ final class IDCTNatsMessengerBundleTest extends TestCase
         }
 
         $this->assertSame([IDCTNatsMessengerBundle::class], $found);
+    }
+
+    /**
+     * The bundle hands the application's `logger` service to the factory, which hands it to the NATS client of every
+     * transport, so the client's lifecycle and errors (a reconnect that gave up and discarded buffered
+     * acknowledgements among them) reach the application's log. Without a `logger` service the client gets none.
+     */
+    #[Test]
+    public function theBundleHandsTheApplicationsLoggerToTheFactory(): void
+    {
+        $withLogger = $this->kernel([new IDCTNatsMessengerBundle()], ['transports' => ['nats' => self::NATS_DSN]], [
+            "services:\n    logger:\n        class: " . RecordingLogger::class . "\n        public: true\n",
+        ])->testContainer();
+        $withoutLogger = $this->kernel([new IDCTNatsMessengerBundle()], ['transports' => ['nats' => self::NATS_DSN]])->testContainer();
+
+        $this->assertInstanceOf(RecordingLogger::class, $withLogger->get('logger'));
+        $this->assertSame($withLogger->get('logger'), self::clientLoggerOf($withLogger->get('messenger.transport.nats')));
+        $this->assertSame(
+            $withoutLogger->has('logger') ? $withoutLogger->get('logger') : null,
+            self::clientLoggerOf($withoutLogger->get('messenger.transport.nats')),
+            'the factory gets the logger service when the application has one, and null otherwise',
+        );
+    }
+
+    /** The logger of the NATS client inside a transport, read the way the builder test reads the client's options. */
+    private static function clientLoggerOf(mixed $transport): ?LoggerInterface
+    {
+        \assert($transport instanceof NatsTransport);
+        $configuration = (new \ReflectionClass($transport))->getProperty('configuration')->getValue($transport);
+        \assert($configuration instanceof NatsTransportConfiguration);
+        $connection = (new \ReflectionClass($configuration->client))->getProperty('connection')->getValue($configuration->client);
+        \assert(\is_object($connection));
+        $options = (new \ReflectionClass($connection))->getProperty('options')->getValue($connection);
+        \assert($options instanceof NatsOptions);
+
+        return $options->logger;
+    }
+
+    /**
+     * The factory is tagged for Monolog's `messenger` channel, as Messenger's own services are, so the client's lines
+     * land next to the worker's in an application that uses MonologBundle.
+     */
+    #[Test]
+    public function theFactoryIsTaggedForMonologsMessengerChannel(): void
+    {
+        $container = new ContainerBuilder();
+        $container->setParameter('kernel.environment', 'test');
+        $container->setParameter('kernel.build_dir', sys_get_temp_dir());
+        $extension = (new IDCTNatsMessengerBundle())->getContainerExtension();
+        self::assertNotNull($extension);
+        $extension->load([], $container);
+
+        $this->assertSame([['channel' => 'messenger']], $container->getDefinition(NatsTransportFactory::class)->getTag('monolog.logger'));
     }
 
     /**

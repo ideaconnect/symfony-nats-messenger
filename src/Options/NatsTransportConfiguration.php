@@ -106,6 +106,25 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns whether the NATS client re-dials on its own after the connection drops (default: false).
+     *
+     * The flag is applied to the client by {@see NatsTransportConfigurationBuilder}; this accessor
+     * only reports the configured value.
+     */
+    public function isReconnectEnabled(): bool
+    {
+        return TypeCoercion::boolValue($this->options[TransportOption::RECONNECT->value] ?? null);
+    }
+
+    /**
+     * Returns the re-dial attempts per outage, or null to keep the NATS client's own default.
+     */
+    public function maxReconnectAttempts(): ?int
+    {
+        return $this->nullableIntOption(TransportOption::MAX_RECONNECT_ATTEMPTS);
+    }
+
+    /**
      * Returns stream max age in seconds (0 means unlimited).
      *
      * Used by {@see NatsTransport::setup()} when creating/updating the stream.

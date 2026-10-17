@@ -30,6 +30,7 @@ use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
 use LogicException;
+use Psr\Log\LoggerInterface;
 use RuntimeException;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\TransportException;
@@ -95,6 +96,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private bool $autoSetupDone = false;
 
     /**
+     * The client's reconnect count when {@see autoSetupIfEnabled()} last verified provisioning, with the client
+     * owning recovery; null otherwise, and the flag above is then trusted on its own ({@see clientReconnectedSinceSetup()}).
+     */
+    private ?int $reconnectsAtSetup = null;
+
+    /**
      * JetStream err_code of "can not move and scale a stream in a single update" (JSStreamMoveAndScaleErr),
      * see {@see describeSetupRejection()}.
      */
@@ -122,8 +129,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * @param string                 $dsn        NATS JetStream DSN (e.g. nats-jetstream://host:4222/stream/topic)
      * @param array<string, mixed>   $options    Transport option overrides (take precedence over DSN query params)
      * @param SerializerInterface|null $serializer Custom serializer; when null, defaults to igbinary
+     * @param LoggerInterface|null   $logger     The NATS client's logger: the connection's lifecycle at info level,
+     *                                           its errors at error level, among them a reconnect that gave up and
+     *                                           discarded the acknowledgements buffered meanwhile. The bundle hands
+     *                                           the application's logger to {@see NatsTransportFactory}.
      */
-    public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null)
+    public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null, ?LoggerInterface $logger = null)
     {
         if ($serializer !== null) {
             $this->serializer = $serializer;
@@ -140,7 +151,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $this->serializer = new PhpSerializer();
         }
 
-        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options, $logger);
         $this->configuration = $configuration;
         $this->topic = $configuration->topic;
         $this->streamName = $configuration->streamName;
@@ -236,14 +247,46 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // messages. JetStreamContext::publish() retries transient 503 "no responders" and parses
         // the PubAck, throwing JetStreamException on an empty/malformed reply or a reported error -
         // so the publish fails closed instead of silently accepting an invalid acknowledgement.
-        $this->awaitOnConnection($this->jetStream()->publish(
-            $topic,
-            $payload,
-            $normalizedHeaders,
-            msgId: $deduplicationStamp === null ? null : $this->natsMessageId($deduplicationStamp, $envelope),
-        ));
+        $messageId = $deduplicationStamp === null ? null : $this->natsMessageId($deduplicationStamp, $envelope);
+        try {
+            $this->awaitOnConnection($this->jetStream()->publish($topic, $payload, $normalizedHeaders, msgId: $messageId));
+        } catch (JetStreamException $reply) {
+            if (!$this->reprovisionedForThePublishAfterReconnect($reply)) {
+                throw $reply;
+            }
+
+            // The same frame once more: the same subject (the scheduled one of a delayed message), payload, headers
+            // and Nats-Msg-Id. A second pass through send() would mint another id and, for a delayed message,
+            // another schedule.
+            $this->awaitOnConnection($this->jetStream()->publish($topic, $payload, $normalizedHeaders, msgId: $messageId));
+        }
 
         return $envelope;
+    }
+
+    /**
+     * Whether a publish the server had no responder for gets one more try, after setup(), because the client
+     * reconnected on its own meanwhile.
+     *
+     * {@see autoSetupIfEnabled()} verifies provisioning before the publish, but a send begun while the client was
+     * recovering passes it with the old reconnect count: the recovery completes inside the publish's wait, the
+     * publish lands on the recovered connection, and when the stream went with the server (a memory stream over a
+     * restart, a failover to a server that does not have it) it fails with the client's 503 "No JetStream
+     * responder", after the client's own three attempts. So, with auto_setup on and the count moved since the last
+     * setup(), setup() runs once and the frame is published once more; a second failure propagates. Bounded to that
+     * and to this reply: nothing answered the first publish, so the message was not stored, and the second cannot
+     * duplicate it, with or without a Nats-Msg-Id. Any other failure propagates as it always did.
+     */
+    private function reprovisionedForThePublishAfterReconnect(JetStreamException $reply): bool
+    {
+        if ($reply->getCode() !== 503 || !$this->configuration->isAutoSetupEnabled() || !$this->clientReconnectedSinceSetup()) {
+            return false;
+        }
+
+        // autoSetupIfEnabled() provisions again on its own here: the count moved since the last setup().
+        $this->autoSetupIfEnabled();
+
+        return true;
     }
 
     /**
@@ -305,7 +348,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * propagates.
      *
      * With auto_setup enabled, a 404, 409 or 503 (see {@see recoverFromFetchFailure()} for why
-     * all three) first triggers one re-provisioning attempt and a second pull.
+     * all three) first triggers one re-provisioning attempt and a second pull. A 409 with which the
+     * server ended the pull itself, "Server Shutdown" or "Leadership Change", is an empty batch
+     * instead, in either mode ({@see pullEndedByTheServer()}).
      *
      * A pull the server refuses because the connection is at its subscription limit fails with a
      * TransportException that names the stream, the consumer and the limit ({@see fetchBatchMessages()}).
@@ -696,12 +741,28 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // surfaces as the connection error it is rather than as a failed setup.
         $this->connectIfNeeded();
 
-        if ($this->autoSetupDone) {
+        if ($this->autoSetupDone && !$this->clientReconnectedSinceSetup()) {
             return;
         }
 
         $this->setup();
         $this->autoSetupDone = true;
+        $this->reconnectsAtSetup = $this->clientOwnsRecovery() ? $this->client->statistics()->reconnects : null;
+    }
+
+    /**
+     * Whether the client reconnected on its own since auto_setup last verified provisioning.
+     *
+     * The done flag is cleared when the transport replaces the connection ({@see dropConnection()}, {@see close()}),
+     * so that a stream lost during an outage is recreated on the new connection. A client that owns recovery
+     * ({@see clientOwnsRecovery()}) replaces the connection behind the transport's back, and the flag stayed
+     * latched: with a memory stream over a server restart, every send() after the client's reconnect failed with
+     * JetStream 503 "No JetStream responder" for the rest of the process (#81). The client's reconnect count,
+     * which only ever grows for one client object, tells the two connections apart.
+     */
+    private function clientReconnectedSinceSetup(): bool
+    {
+        return $this->reconnectsAtSetup !== null && $this->client->statistics()->reconnects > $this->reconnectsAtSetup;
     }
 
     /**
@@ -754,6 +815,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return null;
         }
 
+        if ($this->pullEndedByTheServer($exception)) {
+            return null;
+        }
+
         $missingResource = $code === 404 || $code === 409 || $code === 503;
 
         if ($missingResource && $this->reprovisionForAutoSetup()) {
@@ -765,8 +830,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 // point a 408 is a normal empty pull and a 404 keeps the historical empty-queue read,
                 // but a repeated 503 or 409 no longer means "missing" - it means pulls are failing on a
                 // consumer that verifiably exists, and flattening that into an empty batch would hide
-                // a real outage behind a worker that forever reports nothing to do.
-                if ($retryException->getCode() === 404 || $retryException->getCode() === 408) {
+                // a real outage behind a worker that forever reports nothing to do. A pull the server
+                // ended itself is as empty here as on the first try.
+                if ($retryException->getCode() === 404 || $retryException->getCode() === 408 || $this->pullEndedByTheServer($retryException)) {
                     return null;
                 }
 
@@ -781,6 +847,38 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         throw $exception;
+    }
+
+    /**
+     * Whether a 409 ends the pull for a reason of the server's, with the consumer unharmed, and arms the connection
+     * check when that reason is the server's shutdown.
+     *
+     * A server that is shutting down ends every pull in flight with "409 Server Shutdown", and a consumer whose
+     * leader moved to another server ends them with "409 Leadership Change". Neither means the consumer is missing,
+     * which is what every other 409 used to be read as: with auto_setup, setup() then ran against the server that
+     * was going away and failed, so a worker exited with "Failed to setup NATS stream" on every graceful stop of its
+     * server, and without auto_setup the 409 propagated and ended the worker as well (#81). Both read as an empty
+     * batch now. The shutting-down server closes the connection right after, so the operation after a shutdown
+     * checks the connection first, as after any failure on it; after a leadership change the connection is fine.
+     *
+     * Only these two descriptions. "Consumer Deleted" keeps its reading as a missing consumer, which auto_setup
+     * recreates, and the 409s that report configuration ("Consumer is push based", "Exceeded MaxRequestBatch") stay
+     * visible: no amount of polling heals them, and an empty batch would hide a misconfigured worker behind "nothing
+     * to do". The client classifies the same statuses for its own iterator, in a helper it marks internal.
+     */
+    private function pullEndedByTheServer(JetStreamException $exception): bool
+    {
+        if ($exception->getCode() !== 409) {
+            return false;
+        }
+
+        if (stripos($exception->getMessage(), 'Server Shutdown') !== false) {
+            $this->checkBeforeNextUse = true;
+
+            return true;
+        }
+
+        return stripos($exception->getMessage(), 'Leadership Change') !== false;
     }
 
     /**
@@ -830,14 +928,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * or the connection sat idle or just failed an operation and does not answer a PING
      * ({@see connectionUsable()}).
      *
-     * Called internally by {@see jetStream()} before every JetStream call. The client runs with reconnect
-     * off, so a connection the server closed or one that dropped leaves it in its terminal Closed state,
-     * as do refused credentials, and it then refuses every request. Dialling again is what keeps a
-     * long-lived process working after that (#49): a consumer worker exits on the failed get() and its
+     * Called internally by {@see jetStream()} before every JetStream call. Unless `reconnect` is on, the client
+     * runs with reconnect off, so a connection the server closed or one that dropped leaves it in its terminal
+     * Closed state, as do refused credentials, and it then refuses every request. Dialling again is what keeps
+     * a long-lived process working after that (#49): a consumer worker exits on the failed get() and its
      * supervisor starts a new one, but a process that sends for longer than one request - a web app in
      * worker mode, a daemon, a handler that dispatches - used to fail every later operation until it was
      * restarted. The client releases what it held on every terminal close, so a fresh connect() starts
-     * clean. As after {@see close()}, auto_setup verifies provisioning again on the new connection.
+     * clean. As after {@see close()}, auto_setup verifies provisioning again on the new connection. With
+     * `reconnect` on the client recovers a lost connection itself and the transport leaves it to that
+     * ({@see clientOwnsRecovery()}); a client that gave up is Closed and dialled again the same way, which in
+     * that mode runs the client's attempt loop.
      */
     private function connectIfNeeded(): void
     {
@@ -862,8 +963,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function connectionUsable(): bool
     {
-        if ($this->client->state() === ConnectionState::Closed) {
+        $state = $this->client->state();
+        if ($state === ConnectionState::Closed) {
             return false;
+        }
+
+        // A client in the middle of its own recovery is left to it ({@see clientOwnsRecovery()}). A PING now would
+        // go unanswered, and the dial that followed would stop the recovery and run the client's whole attempt loop
+        // inside this operation. The operation waits for the recovery within its own budget instead: a request
+        // within request_timeout, a pull within max_batch_timeout and a second.
+        if ($state === ConnectionState::Connecting && $this->clientOwnsRecovery()) {
+            return true;
         }
 
         $idleLimit = $this->configuration->pingAfterIdleSeconds();
@@ -876,19 +986,76 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return true;
         }
 
+        // What a failed PING is read against when the client owns recovery, see keptAfterFailedPing(). Read only
+        // then: the count is the client's, and nothing else here needs it.
+        $reconnectsBeforePing = $this->clientOwnsRecovery() ? $this->client->statistics()->reconnects : null;
+
         $ping = $this->client->rtt();
         // When the wait below gives up, the PING still ends later, with nobody awaiting it.
         $ping->ignore();
         try {
             $ping->await(new TimeoutCancellation($this->configuration->connectionTimeoutSeconds()));
         } catch (\Throwable) {
-            return false;
+            return $reconnectsBeforePing !== null && $this->keptAfterFailedPing($reconnectsBeforePing);
         }
 
         $this->lastUsedAt = $this->monotonicSeconds();
         $this->checkBeforeNextUse = false;
 
         return true;
+    }
+
+    /**
+     * Whether the client owns the recovery of a lost connection, as it does with `reconnect: true`.
+     *
+     * Without the option the client runs with reconnect off: a lost connection leaves it Closed, the operation that
+     * ran into it fails, and the transport dials again on the next one ({@see connectIfNeeded()}). With it, the
+     * client re-dials on its own, with its backoff and up to max_reconnect_attempts times, replays its subscriptions
+     * and flushes the frames it buffered meanwhile, and the transport steps back: it never ends a recovery in
+     * flight, keeps a connection the client has already recovered, verifies provisioning again after a reconnect
+     * ({@see autoSetupIfEnabled()}), and only replaces a connection the client does not know to be lost
+     * ({@see keptAfterFailedPing()}). A client that gave up is Closed, and the next operation dials again as without
+     * the option; in this mode that dial runs the client's attempt loop, which is the wait the option asks for.
+     */
+    private function clientOwnsRecovery(): bool
+    {
+        return $this->configuration->isReconnectEnabled();
+    }
+
+    /**
+     * After a PING that failed or went unanswered, with the client owning recovery: whether the connection stays.
+     *
+     * The failure alone does not say what the client made of it. Four cases, told apart by the client's state and
+     * by its reconnect count from before the PING:
+     *
+     *  - Connecting: the PING's write failed and the client is recovering. Kept. The operation waits for the
+     *    recovery within its own budget, and the check stays armed for the operation after it.
+     *  - Open, with a higher reconnect count: the client already recovered, and the PONG that never came belonged
+     *    to the lost connection. Kept, and as good as checked. Provisioning is verified again when auto_setup is on,
+     *    since the stream may have gone with the server ({@see autoSetupIfEnabled()}).
+     *  - Open, with the same count: the same connection, and it delivers nothing. Nothing in the client recovers
+     *    it before its heartbeat has gone unanswered (maxPingsOut + 1) times, about 90 s at the client's defaults,
+     *    and the heartbeat only runs while an operation holds the event loop. Replaced, as without the option.
+     *  - Closed: the recovery gave up. Replaced; the dial runs the client's attempt loop.
+     *
+     * Measured with the real client over a scripted connection in ReconnectModeTest: keeping the connection in the
+     * third case left every later send timing out, and replacing it in the second ended a connection that worked.
+     */
+    private function keptAfterFailedPing(int $reconnectsBeforePing): bool
+    {
+        $state = $this->client->state();
+        if ($state === ConnectionState::Connecting) {
+            return true;
+        }
+
+        if ($state === ConnectionState::Open && $this->client->statistics()->reconnects > $reconnectsBeforePing) {
+            $this->lastUsedAt = $this->monotonicSeconds();
+            $this->checkBeforeNextUse = false;
+
+            return true;
+        }
+
+        return false;
     }
 
     /**

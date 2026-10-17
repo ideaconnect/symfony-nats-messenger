@@ -9,6 +9,7 @@ use IDCT\NATS\JetStream\Enum\ReplayPolicy;
 use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Options\StreamCompression;
 use IDCT\NatsMessenger\Options\TransportOption;
@@ -569,14 +570,19 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
-     * The client runs with reconnect off, so that a lost connection leaves it Closed and the transport dials
-     * again itself, and without pedantic protocol checks.
+     * Unless `reconnect` is on, the client runs with reconnect off, so that a lost connection leaves it Closed and
+     * the transport dials again itself; the attempt count stays the client's own default for when it is on, and
+     * pedantic protocol checks are off either way.
      */
     public function testBuildTurnsClientReconnectAndPedanticModeOff(): void
     {
-        $options = $this->extractNatsOptions((new NatsTransportConfigurationBuilder())->build(self::VALID_DSN)->client);
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN);
+        $options = $this->extractNatsOptions($configuration->client);
 
+        self::assertFalse($configuration->isReconnectEnabled());
+        self::assertNull($configuration->maxReconnectAttempts());
         self::assertFalse($options->reconnectEnabled);
+        self::assertSame((new NatsOptions())->maxReconnectAttempts, $options->maxReconnectAttempts);
         self::assertFalse($options->pedantic);
     }
 
@@ -1184,6 +1190,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'connection_timeout' => 1.0,
                 'ping_after_idle' => 30,
                 'request_timeout' => 10,
+                'reconnect' => false,
+                'max_reconnect_attempts' => 10,
                 'deduplicate' => false,
                 'stream_max_age' => 86400,
                 'stream_max_bytes' => 1073741824,
@@ -1227,6 +1235,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame('file', $configuration->streamStorage()->value);
         self::assertSame(1, $configuration->streamReplicas());
         self::assertSame(['cluster' => 'east', 'tags' => ['ssd', 'eu-west']], $configuration->streamPlacement());
+        self::assertFalse($configuration->isReconnectEnabled());
+        self::assertSame(10, $configuration->maxReconnectAttempts());
         self::assertSame('limits', $configuration->streamRetention()?->value);
         self::assertSame('old', $configuration->streamDiscard()?->value);
         self::assertSame(120, $configuration->streamDuplicateWindowSeconds());
@@ -1458,6 +1468,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertNull($config->replayPolicy());
         self::assertFalse($config->isAutoSetupEnabled());
         self::assertNull($config->streamPlacement());
+        self::assertFalse($config->isReconnectEnabled());
+        self::assertNull($config->maxReconnectAttempts());
     }
 
     public function testBuildWithInvalidRetentionThrowsException(): void
@@ -1774,5 +1786,79 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'list with a nested array' => [['ssd', ['nested']]];
         yield 'list with a boolean' => [['ssd', true]];
         yield 'boolean' => [false];
+    }
+
+    public function testBuildWithReconnectOptionsPropagatesToNatsOptions(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'reconnect' => 'true',
+            'max_reconnect_attempts' => '25',
+        ]);
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertTrue($configuration->isReconnectEnabled());
+        self::assertSame(25, $configuration->maxReconnectAttempts());
+        self::assertTrue($options->reconnectEnabled);
+        self::assertSame(25, $options->maxReconnectAttempts);
+    }
+
+    public function testBuildWithReconnectFromDsnQueryString(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?reconnect=1&max_reconnect_attempts=3',
+            []
+        );
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertTrue($options->reconnectEnabled);
+        self::assertSame(3, $options->maxReconnectAttempts);
+    }
+
+    /**
+     * The attempt count is forwarded only when configured, so the client's own default must survive
+     * a bare `reconnect: true` - otherwise a client-side change of that default would be masked here.
+     */
+    public function testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['reconnect' => true]);
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertTrue($options->reconnectEnabled);
+        self::assertSame((new NatsOptions())->maxReconnectAttempts, $options->maxReconnectAttempts);
+    }
+
+    #[DataProvider('invalidMaxReconnectAttemptsProvider')]
+    public function testBuildWithInvalidMaxReconnectAttemptsThrowsException(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('max_reconnect_attempts');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_reconnect_attempts' => $value]);
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function invalidMaxReconnectAttemptsProvider(): iterable
+    {
+        yield 'zero' => [0];
+        yield 'negative' => [-1];
+        yield 'fractional' => [1.5];
+        yield 'non-numeric' => ['many'];
+    }
+
+    /**
+     * The logger given to build() is the client's, and the client gets none by default: the transport constructed on
+     * its own, outside the bundle, logs nothing, as before the logger existed.
+     */
+    public function testBuildPassesTheLoggerToTheClientAndNoneByDefault(): void
+    {
+        $logger = new RecordingLogger();
+
+        $withLogger = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [], $logger);
+        $withoutLogger = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);
+
+        self::assertSame($logger, $this->extractNatsOptions($withLogger->client)->logger);
+        self::assertNull($this->extractNatsOptions($withoutLogger->client)->logger);
     }
 }
