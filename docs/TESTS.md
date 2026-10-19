@@ -348,6 +348,12 @@ supported NATS. Each prints `OK ...` when what it shows held, and fails otherwis
 | `request-timeout.php` | against a `no_ack` stream, a send with `request_timeout: 1` gives up after about 1 s although the message is stored, and sending it again with the same deduplication id stores nothing more |
 | `keepalive.php` | with `keepalive()` called from a SIGALRM handler every second, a message handled for 5 s on `ack_wait: 2` is not redelivered to a second worker (on 5.2.1 the first alarm broke the worker) |
 | `connection-checks.php` | sends after idling past `ping_after_idle` and after `close()` both succeed |
+| `reconnect.php` | with `reconnect: true`, `auto_setup` and a memory stream, `docker restart nats_test` during a pull: that pull and every pull until the restart is over end empty without an exception (`409 Server Shutdown`, then the client's recovery), the message sent once the server is back is stored in the recreated stream and received, and the logger the transport was given received the client's `Reconnected` |
+| `cluster-failover.php` | on the three-server test cluster, an R3 stream; a worker with `reconnect: true` whose DSN names only the stream's leader receives 2 of 4 messages, `docker stop` stops that server, and the worker receives the other 2 and one it sends afterwards without an exception, through a server it learned from the cluster; another server leads the stream; the logger received `Reconnected` |
+| `stream-placement.php` | on the three-server test cluster (two servers tagged `disk:ssd`, one `disk:hdd`): `stream_replicas: 2` with `stream_placement_tags: disk:ssd` puts the replicas on the two ssd servers; `stream_placement_cluster` set alone stores `{cluster, tags}` with the live tags and the replicas stay; one replica on `disk:hdd` in one update fails `setup()` with "can not move and scale" and the staging advice, leaving the stream as it was; staged (replicas first, then the tags) the stream moves to the hdd server with its 3 messages |
+
+The cluster examples run against the cluster `composer nats:start` starts next to the single servers
+(`tests/nats/nats-cluster*.conf`, ports 4226 to 4228, see `examples/README.md`), in both CI jobs.
 
 ### Automatic Reconnect (`tests/functional/features/nats_reconnect.feature`)
 

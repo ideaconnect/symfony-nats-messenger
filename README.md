@@ -101,7 +101,7 @@ transport recovers a lost connection as before. Two differences apply in either 
   connection lifecycle at info level and its errors at error level, under Monolog's `messenger` channel (see
   [Logging](#logging)). Those lines went nowhere before.
 
-> **Tested by:** `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`
+> **Tested by:** `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`, the example `reconnect.php`
 
 ### Logging
 
@@ -125,7 +125,7 @@ services:
         tags: [messenger.transport_factory]
 ```
 
-> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`
+> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, the examples `reconnect.php` and `cluster-failover.php`
 
 ### Development Setup
 
@@ -309,6 +309,12 @@ the test server and print `OK` when what they show held:
 | `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it |
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
+| `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, and `auto_setup` recreates the memory stream the restart lost |
+| `cluster-failover.php` | `reconnect: true` on a cluster: a worker carries on through another server when the one it is connected to stops |
+| `stream-placement.php` | `stream_placement_tags` and `stream_placement_cluster` on a cluster, and staging a move with a replica change |
+
+`composer nats:start` runs a three-server JetStream cluster for the last two next to the single test servers;
+[`examples/README.md`](examples/README.md#the-test-cluster) describes it.
 
 ```bash
 composer nats:start
@@ -918,7 +924,7 @@ restart or fail over. Not for web requests that dispatch: a request handler stal
 when it runs into an outage once the client gave up. Leave it off to rely on the process supervisor and
 Symfony's retries, and to have `messenger:setup-transports` fail fast when NATS is unreachable.
 
-> **Tested by:** `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `testReconnectModeLeavesAClientInTheMiddleOfItsRecoveryAlone`, `testReconnectModeReadsAFailedPingAgainstTheClientsRecovery`, `testReconnectModeTakesARecoveredConnectionAsChecked`, `testWithoutReconnectAFailedPingReplacesTheConnectionAndTheReconnectCountIsNeverRead`, `testReconnectModeVerifiesProvisioningAgainAfterTheClientReconnected`, `testReconnectModeReprovisionsOnceWhenTheFirstPublishAfterTheReconnectFindsNoResponder`, `testReconnectModeDoesNotRetryAPublishOutsideTheNoResponderCase`, `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testAPullEndedByALeadershipChangeIsEmptyAndTheNextOneDoesNotCheckTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`, the real-client tests in `tests/unit/ReconnectModeTest.php`, and the Behat scenarios `A worker keeps consuming across a server restart` and `A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated`
+> **Tested by:** `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `testReconnectModeLeavesAClientInTheMiddleOfItsRecoveryAlone`, `testReconnectModeReadsAFailedPingAgainstTheClientsRecovery`, `testReconnectModeTakesARecoveredConnectionAsChecked`, `testWithoutReconnectAFailedPingReplacesTheConnectionAndTheReconnectCountIsNeverRead`, `testReconnectModeVerifiesProvisioningAgainAfterTheClientReconnected`, `testReconnectModeReprovisionsOnceWhenTheFirstPublishAfterTheReconnectFindsNoResponder`, `testReconnectModeDoesNotRetryAPublishOutsideTheNoResponderCase`, `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testAPullEndedByALeadershipChangeIsEmptyAndTheNextOneDoesNotCheckTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`, the real-client tests in `tests/unit/ReconnectModeTest.php`, and the Behat scenarios `A worker keeps consuming across a server restart` and `A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated`; the examples `reconnect.php` and `cluster-failover.php` (a failover in a three-server cluster)
 
 ## Stream Configuration
 
@@ -985,7 +991,7 @@ options:
 
 In a DSN the tags are a comma-separated list: `?stream_placement_tags=ssd,eu-west`.
 
-> **Tested by:** `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testSetupUpdateMergesConfiguredPlacementIntoTheLivePlacement`, `testSetupExplainsHowToStageAMoveAndScaleRejection`, `testAutoSetupRepeatsARejectedMoveAndScaleUpdateOnEverySend`, Behat scenarios in `nats_stream_placement.feature`
+> **Tested by:** `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testSetupUpdateMergesConfiguredPlacementIntoTheLivePlacement`, `testSetupExplainsHowToStageAMoveAndScaleRejection`, `testAutoSetupRepeatsARejectedMoveAndScaleUpdateOnEverySend`, Behat scenarios in `nats_stream_placement.feature`, and the example `stream-placement.php` on a three-server cluster
 
 - Both options default to `null`, which leaves the stream's placement untouched: a new stream gets the
   server's default placement and an existing stream keeps whatever placement it already has. This
@@ -1108,7 +1114,8 @@ Functional tests require a running NATS server with JetStream enabled:
 # Set up functional test dependencies
 composer test:functional:setup
 
-# Start NATS server in Docker (generates the test TLS certificates first, which needs openssl)
+# Start the NATS test servers in Docker, with the three-server cluster the examples use (generates the test
+# TLS certificates first, which needs openssl)
 composer nats:start
 
 # Run functional tests
