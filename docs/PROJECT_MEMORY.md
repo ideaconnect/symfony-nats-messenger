@@ -145,7 +145,13 @@ Transport checks: `composer test` (PHPStan max on `src` plus fast unit tests) af
 Coverage: `composer test:unit`, then `composer coverage:check` (>= 90%). Live transport changes:
 `composer test:functional:setup`, `composer nats:start`, `composer test:functional`, and relevant
 `composer examples`; stop the fixtures afterwards. TLS certificates are generated, not committed.
-Fixtures expose plain/TLS/mTLS/stale-idle NATS on 4222/4223/4224/4225. CI runs PHP 8.2 with the lowest
+Fixtures expose plain/TLS/mTLS/stale-idle NATS on 4222/4223/4224/4225, and a three-server JetStream cluster
+`east` for the examples on 4226-4228 (containers and server names `nats_cluster_1..3`; two servers tagged
+`disk:ssd`, one `disk:hdd`). Examples that stop or restart a server with docker start it again. Measured on it
+(2026-10-19, client 2.27.0): after a graceful `docker stop` of a stream's leader (nats 2.15.1 and 2.10.29) a
+`reconnect: true` worker failed over with no empty pull; after `docker kill` (2.15.1) the first send timed out after
+`request_timeout`, or failed with 503 "No JetStream responder" while the stream had no leader. The DSN names one
+server (`servers: [$server]`), so a worker started while that server is down cannot connect. CI runs PHP 8.2 with the lowest
 allowed client and PHP 8.5 with latest, verifies root/app versions match, and also tests NATS 2.10
 without delayed scenarios. README advertises NATS ^2.9; the oldest CI image is actually 2.10.
 

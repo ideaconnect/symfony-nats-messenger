@@ -70,10 +70,12 @@ tests/
 │   ├── tests/Behat/NatsSetupContext.php        # all step definitions
 │   └── src/, config/, bin/, public/            # a minimal Symfony app exercising the transport end-to-end
 └── nats/                                       # Docker Compose + NATS configs + test TLS certificate generator
+                                                # (nats-cluster*.conf: the three-server cluster "east" for the examples)
 
 examples/                                       # Runnable scripts, one per behaviour (composer examples)
-├── _bootstrap.php                              # shared setup: autoloader, server, stream helpers
-└── *.php                                       # send-and-consume, duplicate-protection, request-timeout, keepalive, connection-checks
+├── _bootstrap.php                              # shared setup: autoloader, server, stream, test cluster and docker helpers
+└── *.php                                       # send-and-consume, duplicate-protection, request-timeout, keepalive, connection-checks,
+                                                # reconnect, cluster-failover, stream-placement
 
 scripts/
 ├── run-examples.sh                             # runs examples/*.php, strict mode for CI

@@ -58,3 +58,44 @@ services:
     volumes:
       - ./nats-stale.conf:/etc/nats/nats.conf
       - ./data-stale:/data
+
+  # A JetStream cluster of three servers ("east", see nats-cluster.conf), for the examples that need one:
+  # stream placement on tagged servers, and a worker that fails over when the server it is connected to
+  # stops. Each server advertises its published port on 127.0.0.1, so a client on the host can fail over to
+  # the others. JetStream data stays inside the containers: `docker stop` and `docker start` keep it,
+  # `composer nats:stop` removes it.
+  nats-cluster-1:
+    image: ${NATS_IMAGE:-nats:alpine}
+    container_name: nats_cluster_1
+    restart: always
+    command: -c /etc/nats/nats.conf
+    ports:
+      - "4226:4222" # client port
+      - "8227:8222" # monitoring port
+    volumes:
+      - ./nats-cluster-1.conf:/etc/nats/nats.conf
+      - ./nats-cluster.conf:/etc/nats/nats-cluster.conf
+
+  nats-cluster-2:
+    image: ${NATS_IMAGE:-nats:alpine}
+    container_name: nats_cluster_2
+    restart: always
+    command: -c /etc/nats/nats.conf
+    ports:
+      - "4227:4222" # client port
+      - "8228:8222" # monitoring port
+    volumes:
+      - ./nats-cluster-2.conf:/etc/nats/nats.conf
+      - ./nats-cluster.conf:/etc/nats/nats-cluster.conf
+
+  nats-cluster-3:
+    image: ${NATS_IMAGE:-nats:alpine}
+    container_name: nats_cluster_3
+    restart: always
+    command: -c /etc/nats/nats.conf
+    ports:
+      - "4228:4222" # client port
+      - "8229:8222" # monitoring port
+    volumes:
+      - ./nats-cluster-3.conf:/etc/nats/nats.conf
+      - ./nats-cluster.conf:/etc/nats/nats-cluster.conf

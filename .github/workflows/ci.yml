@@ -82,6 +82,8 @@ jobs:
         timeout 60 bash -c 'until nc -z localhost 4224; do sleep 2; done'
         echo "Waiting for NATS (drops idle clients) on port 4225..."
         timeout 60 bash -c 'until nc -z localhost 4225; do sleep 2; done'
+        echo "Waiting for the NATS cluster of the examples on ports 4226-4228..."
+        timeout 60 bash -c 'until nc -z localhost 4226 && nc -z localhost 4227 && nc -z localhost 4228; do sleep 2; done'
         echo "All NATS servers are ready"
 
         # Verify monitoring endpoints
@@ -145,8 +147,9 @@ jobs:
       timeout-minutes: 25  # Behat suite runs the full matrix (plain/TLS/mTLS) incl. high-volume, large-message and scheduled scenarios
       run: composer test:functional
 
-    # Every examples/*.php must run and pass against the servers started above; strict mode makes a skipped
-    # example fail the job too.
+    # Every examples/*.php must run and pass against the servers started above, the three-server cluster
+    # (nats_cluster_1 to 3) included; strict mode makes a skipped example fail the job too. Two examples stop
+    # or restart a test server with docker and start it again.
     - name: Run examples
       timeout-minutes: 5
       run: composer examples
@@ -169,10 +172,13 @@ jobs:
         docker logs nats_test_tls || echo "Could not get NATS TLS logs"
         docker logs nats_test_mtls || echo "Could not get NATS mTLS logs"
         docker logs nats_test_stale || echo "Could not get the logs of the NATS that drops idle clients"
+        for server in nats_cluster_1 nats_cluster_2 nats_cluster_3; do
+          docker logs --tail 200 "$server" || echo "Could not get the logs of $server"
+        done
         echo "=== Docker Containers ==="
         docker ps -a
         echo "=== Network Status ==="
-        netstat -tlnp | grep -E ':422[2345]' || echo "NATS ports not listening"
+        netstat -tlnp | grep -E ':422[2-8]' || echo "NATS ports not listening"
 
     - name: Upload coverage reports
       uses: actions/upload-artifact@v7
@@ -240,6 +246,7 @@ jobs:
         timeout 60 bash -c 'until nc -z localhost 4223; do sleep 2; done'
         timeout 60 bash -c 'until nc -z localhost 4224; do sleep 2; done'
         timeout 60 bash -c 'until nc -z localhost 4225; do sleep 2; done'
+        timeout 60 bash -c 'until nc -z localhost 4226 && nc -z localhost 4227 && nc -z localhost 4228; do sleep 2; done'
         docker exec nats_test nats-server --version
 
     - name: Set up functional tests
@@ -256,15 +263,18 @@ jobs:
         EXAMPLES_STRICT: "1"
 
     # Belt and braces for the same hazard: if anything recreated the containers from the default
-    # image mid-run, the suite above proved nothing about the oldest supported server.
+    # image mid-run, the suite above proved nothing about the oldest supported server. The cluster the
+    # examples ran on is checked too.
     - name: Verify the suite really ran against the oldest supported server
       run: |
-        VERSION=$(docker exec nats_test nats-server --version)
-        echo "$VERSION"
-        echo "$VERSION" | grep -q ' v2\.10\.' || {
-          echo "::error::Expected a v2.10.x server, got: $VERSION"
-          exit 1
-        }
+        for server in nats_test nats_cluster_1 nats_cluster_2 nats_cluster_3; do
+          VERSION=$(docker exec "$server" nats-server --version)
+          echo "$server: $VERSION"
+          echo "$VERSION" | grep -q ' v2\.10\.' || {
+            echo "::error::Expected a v2.10.x server on $server, got: $VERSION"
+            exit 1
+          }
+        done
 
     - name: Stop NATS server
       if: always()

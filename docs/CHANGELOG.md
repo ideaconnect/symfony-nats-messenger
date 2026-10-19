@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Examples for the reconnect mode, cluster failover and stream placement, and a test cluster to run them on
+  (#84).** `composer nats:start` also runs a JetStream cluster `east` of three servers
+  (`tests/nats/nats-cluster*.conf`, ports 4226 to 4228, two servers tagged `disk:ssd` and one `disk:hdd`), and
+  `composer examples` runs three more examples, in CI on the latest and the oldest supported NATS as before:
+  `reconnect.php` restarts the test server under a worker with `reconnect: true` and `auto_setup`: the pull in
+  flight ends empty, no pull throws, and the memory stream the restart lost is recreated by the next send;
+  `cluster-failover.php` stops the server a worker is connected to, and the client fails over to a server it
+  learned from the cluster while the worker receives every message; `stream-placement.php` places replicas on
+  tagged servers, changes one half of a placement, and stages a move that comes with a replica change after
+  NATS refused it in one update. The two that take a server away do it with docker and start it again. Both
+  reconnect examples hand the transport a logger and print what the NATS client logged.
+
 ### Changed
 - **README:** an "Upgrading from 5.6" note (nothing to change; the two differences that apply in either mode), a
   Logging section (what the NATS client logs at which level, how the bundle wires the application's `logger`, how to
