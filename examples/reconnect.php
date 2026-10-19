@@ -72,15 +72,17 @@ try {
 
     // The worker goes on polling until the restart is over; none of these pulls may throw.
     $emptyPulls = 0;
-    while (proc_get_status($restart)['running']) {
+    while (($status = proc_get_status($restart))['running']) {
         $emptyPulls += $pull() === [] ? 1 : 0;
     }
     $error = stream_get_contents($pipes[2]);
     fclose($pipes[2]);
-    if (proc_close($restart) !== 0) {
+    proc_close($restart);
+    $restart = null;
+    // The exit code as proc_get_status() saw it end: on PHP 8.2 proc_close() returns -1 after that.
+    if ($status['exitcode'] !== 0) {
         throw new RuntimeException('docker restart nats_test failed: ' . $error);
     }
-    $restart = null;
 
     // The first send once the server is back recreates the memory stream before it publishes.
     $worker->send(new Envelope(new ExampleMessage('after the restart')));
