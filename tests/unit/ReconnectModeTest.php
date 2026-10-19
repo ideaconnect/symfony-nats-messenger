@@ -11,6 +11,7 @@ use IDCT\NatsMessenger\Tests\Support\FaultInjectingNatsServer;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Tests\Support\RttCountingNatsClient;
 use IDCT\NatsMessenger\Tests\Support\SubscriptionLimitNatsServer;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
@@ -222,6 +223,54 @@ final class ReconnectModeTest extends TestCase
         self::assertSame(0, $client->rtts, 'no PING: the client recovered, and a pull the server ended is no failure');
         self::assertSame(2, $server->sessions());
         self::assertSame(1, $client->statistics()->reconnects);
+    }
+
+    /**
+     * An acknowledgement whose own write is the first to notice the lost connection, while the client still reports
+     * it Open. From client 2.27.1 (#244) the frame goes into the reconnect buffer, ack() or reject() returns at once,
+     * and the recovery sends the frame on the connection it makes. With 2.27.0 the client recovered inline and
+     * retried the write, so the call waited for the whole recovery, here the held dial, with no budget of its own.
+     *
+     * @param \Closure(ClientInjectedNatsTransport, Envelope): void $acknowledge
+     */
+    #[DataProvider('acknowledgements')]
+    public function testAnAcknowledgementWhoseWriteFindsTheConnectionLostReturnsAtOnceAndTheRecoverySendsIt(\Closure $acknowledge, string $frame): void
+    {
+        $server = self::server();
+        $faults = new FaultInjectingNatsServer($server);
+        [$transport, $client] = self::transportOver($faults);
+
+        try {
+            $transport->send(new Envelope(self::message('m-1')));
+            [$received] = iterator_to_array($transport->get(), false);
+            $faults->holdNextDial(300);
+            $faults->failNextWriteContaining('$JS.ACK.');
+
+            $start = hrtime(true);
+            $acknowledge($transport, $received);
+            $elapsed = (hrtime(true) - $start) / 1e9;
+            $stateAfterTheCall = $client->state();
+            self::waitUntil(static fn (): bool => $server->acks() !== []);
+        } finally {
+            $transport->close();
+        }
+
+        self::assertLessThan(0.1, $elapsed, sprintf('the call did not wait for the held dial, it took %.3f s', $elapsed));
+        self::assertSame(ConnectionState::Connecting, $stateAfterTheCall, 'the call returned while the client was recovering: the frame was buffered');
+        self::assertSame(0, $client->rtts, 'the client noticed the loss on its own write, the transport checked nothing');
+        self::assertSame(2, $server->sessions());
+        self::assertSame(1, $client->statistics()->reconnects);
+        self::assertSame([$frame], array_column($server->acks(), 'payload'));
+        self::assertContains('ACK ' . $frame, $server->received(session: 1), 'the frame went out on the recovered connection');
+    }
+
+    /**
+     * @return iterable<string, array{\Closure(ClientInjectedNatsTransport, Envelope): void, string}>
+     */
+    public static function acknowledgements(): iterable
+    {
+        yield 'ack()' => [static fn (ClientInjectedNatsTransport $transport, Envelope $envelope) => $transport->ack($envelope), '+ACK'];
+        yield 'reject(), a TERM with retry_handler symfony' => [static fn (ClientInjectedNatsTransport $transport, Envelope $envelope) => $transport->reject($envelope), '+TERM'];
     }
 
     /**

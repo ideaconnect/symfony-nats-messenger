@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reconnect examples hand the transport a logger and print what the NATS client logged.
 
 ### Changed
+- **Requires `idct/php-nats-jetstream-client` `^2.27.1` (was `^2.27`), so that with `reconnect: true` an
+  acknowledgement no longer waits for the client's recovery (client #244).** With client 2.27.0, an ACK, NAK or
+  TERM whose own write was the first to notice a lost connection, while the client still reported it open, ran
+  the client's recovery inline and retried the write, with no budget of its own: one `ack()` or `reject()` could
+  wait for a whole attempt loop, about 109 s at the client's defaults against a server that refuses connections.
+  Client 2.27.1 puts such a frame into the reconnect buffer and returns at once, as it already did for a frame
+  written while the recovery was under way, and the recovery sends it on the connection it makes; a recovery that
+  gives up discards it with the rest of the buffer and says so at error level, as the README describes. The
+  5.7.0 README and release notes pointed at the client issue as open. With the option off nothing changes: the
+  client runs with reconnect off and a failed write fails the acknowledgement as before. A new real-client test,
+  over a connection whose ACK write fails while the next dial is held 300 ms, has `ack()` and `reject()` return in
+  under 0.1 s and the frame reach the server on the recovered connection; on 2.27.0 both calls took 0.31 s.
 - **README:** an "Upgrading from 5.6" note (nothing to change; the two differences that apply in either mode), a
   Logging section (what the NATS client logs at which level, how the bundle wires the application's `logger`, how to
   wire one without the bundle), a note on a server that stops in the provisioning section, a troubleshooting entry
