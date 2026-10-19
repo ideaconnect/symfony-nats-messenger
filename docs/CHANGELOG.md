@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Logging section (what the NATS client logs at which level, how the bundle wires the application's `logger`, how to
   wire one without the bundle), a note on a server that stops in the provisioning section, a troubleshooting entry
   for "Reconnect attempts exhausted", and the logger and the two recovery modes in the architecture overview.
+- **README: a "Using a NATS Cluster" section, and the reconnect and placement options checked against the
+  README (#86).** The section covers how a process finds the servers (one in the DSN, the others learned from
+  it through `connect_urls`, `client_advertise`, and why the DSN should name more than one server for the first
+  dial), what each reconnect mode does when the server it is connected to stops, with figures measured on the
+  test cluster, replicas, placement, provisioning and leader changes on a cluster, and TLS on a cluster:
+  `tls_required: true` next to the `+tls` scheme, without which the client dials the servers it learned without
+  TLS, and the certificate name it checks. It points at the `cluster-failover.php` and `stream-placement.php`
+  examples. Elsewhere: the DSN form of `reconnect` and `max_reconnect_attempts`, that more than one replica
+  needs a cluster and that an existing stream keeps its replica count while `stream_replicas` is unset, a cluster
+  bullet in the features, and two troubleshooting entries.
 
 ## [5.7.0] - 2026-10-17
 
