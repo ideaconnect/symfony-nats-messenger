@@ -23,7 +23,9 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   changes only its own half of an existing placement (see [Stream Placement](#stream-placement))
 - 🔁 **Automatic Reconnect** - Optional mode in which the NATS client recovers a lost connection and a worker
   polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
-- 🧪 **Thoroughly Tested** - 669 unit tests, ~99.8% coverage, mutation-tested (96.9% MSI)
+- 🌐 **NATS Clusters** - One server in the DSN, the others learned from the cluster; failover, replicated streams
+  and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
+- 🧪 **Thoroughly Tested** - 671 unit tests, ~99.8% coverage, mutation-tested (96.9% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -314,7 +316,8 @@ the test server and print `OK` when what they show held:
 | `stream-placement.php` | `stream_placement_tags` and `stream_placement_cluster` on a cluster, and staging a move with a replica change |
 
 `composer nats:start` runs a three-server JetStream cluster for the last two next to the single test servers;
-[`examples/README.md`](examples/README.md#the-test-cluster) describes it.
+[`examples/README.md`](examples/README.md#the-test-cluster) describes it, and
+[Using a NATS Cluster](#using-a-nats-cluster) what they mean for an application.
 
 ```bash
 composer nats:start
@@ -444,7 +447,9 @@ framework:
           stream_allow_rollup_headers: false # Allow Nats-Rollup headers
 
           # High Availability
-          stream_replicas: 1                # Number of replicas (default: 1)
+          stream_replicas: 1                # Number of replicas of a new stream (default: 1). Unset,
+                                            # an existing stream keeps its count. More than 1 needs a
+                                            # JetStream cluster (see "Using a NATS Cluster").
           stream_placement_cluster: null    # Pin the stream to a named JetStream cluster
                                             # (null = leave the stream's placement untouched)
           stream_placement_tags: null       # Only place the stream on servers carrying ALL of these
@@ -784,9 +789,11 @@ instead:
   minutes; a load balancer or NAT gateway may drop an idle connection sooner.
 - The operation that runs into the lost connection fails. For `send()` that means the outcome is unknown:
   the server may or may not have stored the message. Once the client reports the connection closed, the
-  next operation opens a new one. A consumer worker exits on the failed `get()` and its supervisor starts a
-  new one; a process that sends for longer than one request (a web app in worker mode such as FrankenPHP or
-  RoadRunner, a daemon, a handler that dispatches) keeps working from the next operation on.
+  next operation opens a new one, on a cluster possibly to another server (see
+  [Using a NATS Cluster](#using-a-nats-cluster)). A consumer worker exits on the failed `get()` and its
+  supervisor starts a new one; a process that sends for longer than one request (a web app in worker mode
+  such as FrankenPHP or RoadRunner, a daemon, a handler that dispatches) keeps working from the next
+  operation on.
 - With `auto_setup`, the new connection is verified in the same call that dials it, and a dial that fails
   surfaces as the connection error itself.
 
@@ -851,6 +858,8 @@ options:
   reconnect: true             # the client recovers a lost connection (default: false)
   max_reconnect_attempts: 20  # attempts per recovery (default: null = the client's default of 10)
 ```
+
+In a DSN: `?reconnect=true&max_reconnect_attempts=20`.
 
 - A client in the middle of its recovery is left alone: no PING, no dial of the transport's own. The
   operation waits for the recovery within its own budget: a request (`send()`, an `ack_sync` ACK, `setup()`,
@@ -920,9 +929,10 @@ operation during an outage, 109 s each at the defaults. The figures are measurem
 bounds attempts per recovery, not time, and a process can run any number of recovery cycles over its life.
 
 **When to enable:** long-running workers where a restart is expensive, against a NATS cluster whose nodes
-restart or fail over. Not for web requests that dispatch: a request handler stalls for a whole attempt loop
-when it runs into an outage once the client gave up. Leave it off to rely on the process supervisor and
-Symfony's retries, and to have `messenger:setup-transports` fail fast when NATS is unreachable.
+restart or fail over (see [Losing a Server](#losing-a-server)). Not for web requests that dispatch: a
+request handler stalls for a whole attempt loop when it runs into an outage once the client gave up. Leave
+it off to rely on the process supervisor and Symfony's retries, and to have `messenger:setup-transports`
+fail fast when NATS is unreachable.
 
 > **Tested by:** `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `testReconnectModeLeavesAClientInTheMiddleOfItsRecoveryAlone`, `testReconnectModeReadsAFailedPingAgainstTheClientsRecovery`, `testReconnectModeTakesARecoveredConnectionAsChecked`, `testWithoutReconnectAFailedPingReplacesTheConnectionAndTheReconnectCountIsNeverRead`, `testReconnectModeVerifiesProvisioningAgainAfterTheClientReconnected`, `testReconnectModeReprovisionsOnceWhenTheFirstPublishAfterTheReconnectFindsNoResponder`, `testReconnectModeDoesNotRetryAPublishOutsideTheNoResponderCase`, `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testAPullEndedByALeadershipChangeIsEmptyAndTheNextOneDoesNotCheckTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`, the real-client tests in `tests/unit/ReconnectModeTest.php`, and the Behat scenarios `A worker keeps consuming across a server restart` and `A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated`; the examples `reconnect.php` and `cluster-failover.php` (a failover in a three-server cluster)
 
@@ -968,7 +978,12 @@ options:
   stream_replicas: 3
 ```
 
-> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`
+More than one replica needs a JetStream cluster: a standalone server refuses to create such a stream. Left
+unset, `stream_replicas` gives a new stream one replica and leaves the count of an existing stream alone, so
+a stream scaled up in NATS is not scaled back down by the next `setup()`. See
+[Using a NATS Cluster](#using-a-nats-cluster).
+
+> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`, `testSetupPreservesExistingReplicaCountWhenStreamReplicasNotConfigured`, `testSetupOverridesExistingReplicaCountWhenStreamReplicasExplicitlyConfigured`
 
 ### Stream Placement
 
@@ -1054,6 +1069,112 @@ options:
   stream_replicas: 3
   stream_placement_tags: ['ssd']
 ```
+
+## Using a NATS Cluster
+
+The transport runs against a NATS cluster as it runs against a single server. A cluster changes how a process
+finds the servers, what happens when the one it is connected to goes away, and how many servers a stream lives
+on. Two examples show it on the three-server JetStream cluster `composer nats:start` runs next to the test
+servers ([`examples/README.md`](examples/README.md#the-test-cluster) describes it):
+[`cluster-failover.php`](examples/cluster-failover.php) stops the server a worker is connected to, and the
+worker carries on through another one; [`stream-placement.php`](examples/stream-placement.php) places a
+stream's replicas on tagged servers and stages a move.
+
+```yaml
+framework:
+  messenger:
+    transports:
+      nats_transport:
+        # One server of the cluster, or a name that resolves to several; the client learns the others from it.
+        dsn: 'nats-jetstream+tls://nats.internal:4222/orders/orders.created'
+        options:
+          stream_replicas: 3            # the stream outlives the loss of one server
+          reconnect: true               # a worker fails over to another server instead of exiting
+          max_reconnect_attempts: 20
+          tls_required: true            # TLS for the servers learned from the cluster as well
+          tls_ca_file: '/etc/nats/ca.pem'
+```
+
+> **Tested by:** `testReadmeDsnExamplesParseSuccessfully[README: cluster transport]`, `testReadmeClusterOptionsAreAccepted`, the examples `cluster-failover.php` and `stream-placement.php` (CI runs both on the test cluster)
+
+### Finding the Servers
+
+The DSN names one server. Once connected, the NATS client learns the other servers of the cluster from it (the
+`connect_urls` the server sends) and keeps them for its later dials. What it learns is the address each server
+advertises, so behind NAT, in Docker or in Kubernetes set `client_advertise` in every server's configuration to
+an address the application reaches that server on, as the test cluster does. A cluster that advertises nothing
+(`no_advertise`) leaves the client with the DSN's server alone.
+
+Until it has connected once, a process knows only the server its DSN names, and so does every PHP-FPM request
+that dispatches, since each one builds its transport anew. One that starts while that server is down cannot
+connect, whichever servers of the cluster are up: it fails after one dial, about 6 s against a refused port, or
+with `reconnect: true` after the client's whole attempt loop over that one server. Point the DSN at a name
+that resolves to several servers of the cluster (the dial tries each address it resolves to in turn), or at a
+load balancer or a Kubernetes Service in front of the cluster.
+
+### Losing a Server
+
+What a process does when the server it is connected to goes away depends on
+[`reconnect`](#automatic-reconnect):
+
+- **`reconnect: false` (the default):** the operation that runs into the lost connection fails, and the next
+  one dials the next server in the client's list, learned ones included; a server there that is down as well
+  costs that operation a failed dial, and the one after it tries the next. A process that keeps running, such
+  as a long-lived sender, carries on through another server. A consumer worker exits on the failed `get()`,
+  though, and the worker its supervisor starts knows only the DSN's server again (see above).
+- **`reconnect: true`:** the client recovers the connection in the background on a server it learned, and a
+  worker polls on. `cluster-failover.php` stops the server a worker is connected to halfway through its
+  messages: the worker receives the rest through another server, without an exception.
+
+Measured on the test cluster (nats-server 2.15.1, client 2.27.2, PHP 8.5), a stream with three replicas, the
+DSN on the server that leads it, that server stopped with `docker stop`, `request_timeout` 10 and
+`max_reconnect_attempts` 2 (for the pause, `ping_after_idle` 1 and 2 s), one transport object throughout:
+
+| | `reconnect: false` | `reconnect: true` |
+|---|---|---|
+| first `send()`, right after the stop | fails at once, `Reconnect is disabled` | 10.0 s, `TimeoutException`; the client is on another server by then |
+| first `send()`, after a pause longer than `ping_after_idle` | stored at once, through another server | stored at once, through another server |
+| next `send()` | stored at once, through another server | stored at once, through another server |
+| a new transport whose DSN names the stopped server | 6.0 s, connection refused | 18.4 s, `Reconnect attempts exhausted` |
+
+Right after the stop, the first send ran into the lost connection: with the option off the client reported the
+loss at once, with it on the send went into the dead connection before the client noticed and waited for a
+reply that never came. After a pause longer than `ping_after_idle` the check that runs first finds the
+connection gone, in either mode, and the send goes out through another server (see
+[Losing the Connection](#losing-the-connection)). Whether a send that failed was stored is unknown either way
+(see [Duplicate Protection](#duplicate-protection)).
+
+### Streams on a Cluster
+
+- **Replicas.** A stream with one replica lives on one server and is unavailable while that server is down.
+  With `stream_replicas: 3` it outlives the loss of one server, with 5 the loss of two. The durable consumer
+  the transport creates takes the stream's replica count. Left unset, the option gives a new stream one replica
+  and leaves an existing stream's count alone (see [High Availability](#high-availability)).
+- **Placement.** `stream_placement_tags` and `stream_placement_cluster` choose the servers, and in a
+  super-cluster the cluster, that hold the replicas. A change of the replica count and of the placement has to
+  be staged in two runs of `messenger:setup-transports`. See [Stream Placement](#stream-placement).
+- **Provisioning.** `messenger:setup-transports` can run through any server of the cluster. In a super-cluster
+  a stream without `stream_placement_cluster` is created in the cluster that server belongs to, or in one of
+  its alternates.
+- **Leader changes.** A pull that ends because the consumer's leader moved (`409 Leadership Change`) is an
+  empty batch in either mode, and the worker pulls on.
+
+### TLS on a Cluster
+
+The `nats-jetstream+tls://` scheme turns TLS on for the server the DSN names. The servers the client learns
+from the cluster are dialled with TLS only when `tls_required: true` is set as well. Without it, a server that
+requires TLS refuses the client (`TLS upgrade requested but no TLS context was configured at connect time`), so
+no failover succeeds, in either mode, and a server that also accepts plain connections would receive the
+credentials unencrypted. Set both, as the example above does.
+
+Each dial checks the server's certificate against the host it dialled: the DSN's host for the first dial, the
+address a learned server advertises (`client_advertise`) for the others. Issue each server's certificate for
+those names, or set `tls_peer_name` to a name every server's certificate carries.
+
+> **Checked by hand** on a two-server TLS cluster (nats-server 2.15.1, client 2.27.2): with the `+tls` scheme
+> alone, every dial of the second server failed once the first one stopped, with `reconnect` off and on; with
+> `tls_required: true` the next dial reached it. A server advertising a name its certificate does not carry was
+> refused (`Peer certificate CN=... did not match expected CN=...`) until `tls_peer_name` named one it carries.
 
 ## Testing
 
@@ -1436,6 +1557,17 @@ acknowledgements were buffered during the outage, the discard at error level (se
 
 > **Tested by:** `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`
 
+**Error: "TLS upgrade requested but no TLS context was configured at connect time"**
+
+On a cluster that requires TLS, the client dialled a server it learned from the cluster without TLS, because
+only the `nats-jetstream+tls://` scheme asked for it. Set `tls_required: true` as well (see
+[TLS on a Cluster](#tls-on-a-cluster)).
+
+**Error: "replicas > 1 not supported in non-clustered mode"**
+
+`stream_replicas` above 1 needs a JetStream cluster; on a standalone server leave it at 1 (see
+[High Availability](#high-availability)).
+
 ### Message Processing Issues
 
 **Messages not being consumed**
@@ -1493,7 +1625,7 @@ The bridge consists of two main components, wired into the framework by a thin b
 
 3. **Use appropriate replicas**
    - `stream_replicas: 1` for development
-   - `stream_replicas: 3` for production
+   - `stream_replicas: 3` for production, on a JetStream cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 
 4. **Monitor performance**
    - Use `getMessageCount()` to track queue depth

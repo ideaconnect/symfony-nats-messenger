@@ -1173,6 +1173,12 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
             'my-stream',
             'my-topic',
         ];
+
+        yield 'README: cluster transport' => [
+            'nats-jetstream+tls://nats.internal:4222/orders/orders.created',
+            'orders',
+            'orders.created',
+        ];
     }
 
     /**
@@ -1412,6 +1418,36 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame('audit-consumer', $config->consumer());
         self::assertSame(2592000, $config->streamMaxAgeSeconds());
         self::assertSame(3, $config->streamReplicas());
+    }
+
+    /**
+     * Verifies the README "Using a NATS Cluster" example: one TLS server in the DSN, three replicas, the
+     * reconnect mode, and tls_required so that the servers learned from the cluster are dialled with TLS too.
+     */
+    public function testReadmeClusterOptionsAreAccepted(): void
+    {
+        $config = (new NatsTransportConfigurationBuilder())->build(
+            'nats-jetstream+tls://nats.internal:4222/orders/orders.created',
+            [
+                'stream_replicas' => 3,
+                'reconnect' => true,
+                'max_reconnect_attempts' => 20,
+                'tls_required' => true,
+                'tls_ca_file' => '/etc/nats/ca.pem',
+            ]
+        );
+        $options = $this->extractNatsOptions($config->client);
+
+        self::assertSame('orders', $config->streamName);
+        self::assertSame('orders.created', $config->topic);
+        self::assertSame(3, $config->streamReplicas());
+        self::assertTrue($config->isReconnectEnabled());
+        self::assertSame(20, $config->maxReconnectAttempts());
+        self::assertSame(['tls://nats.internal:4222'], $options->servers);
+        self::assertTrue($options->reconnectEnabled);
+        self::assertSame(20, $options->maxReconnectAttempts);
+        self::assertTrue($options->tlsRequired);
+        self::assertSame('/etc/nats/ca.pem', $options->tlsCaFile);
     }
 
     public function testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions(): void
