@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.7.1] - 2026-10-19
+
+A **patch** release. It requires client 2.27.1, in which an acknowledgement whose write is the first to notice a
+lost connection no longer waits for the client's recovery when `reconnect` is on, and it adds three examples, for
+the reconnect mode, a failover in a three-server NATS cluster and stream placement, with the test cluster they
+run on. The README has a section on using a NATS cluster, a Logging section and an upgrade note. The transport's
+code and its public PHP API are unchanged.
+
 ### Added
 - **Examples for the reconnect mode, cluster failover and stream placement, and a test cluster to run them on
   (#84).** `composer nats:start` also runs a JetStream cluster `east` of three servers
