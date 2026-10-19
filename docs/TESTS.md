@@ -79,6 +79,7 @@ client's heartbeat is off (#81).
 | **A connection the client recovered behind the transport's failed PING is kept (two connections, not three)** | `testAConnectionTheClientRecoveredBehindAFailedPingIsKept` |
 | **A recovery started by the failed PING is left to run; the operation waits for it** | `testARecoveryStartedByAFailedPingIsLeftToRunAndTheOperationWaitsForIt` |
 | **A pull that runs into the lost connection ends empty and the next one delivers** | `testAPullThatRunsIntoTheLostConnectionEndsEmptyAndTheNextOneDelivers` |
+| **An ACK or TERM whose own write is the first to notice the lost connection returns at once, and the recovery sends it on the new connection** | `testAnAcknowledgementWhoseWriteFindsTheConnectionLostReturnsAtOnceAndTheRecoverySendsIt` (`ack()` and `reject()`; both fail on client 2.27.0, where the call waited for the held dial, which is why the transport requires 2.27.1, client #244) |
 | **A recovery that gives up with a buffered acknowledgement is reported to the logger at error level, and the next operation dials again and fails with the client's exception** | `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails` |
 
 ### Bundle (`tests/unit/IDCTNatsMessengerBundleTest.php`)

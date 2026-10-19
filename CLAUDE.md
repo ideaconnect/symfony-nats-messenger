@@ -8,7 +8,7 @@ for Claude Code. For architecture see [STRUCTURE.md](STRUCTURE.md); for human on
 
 A Symfony Messenger **transport** for NATS JetStream. It implements `TransportInterface`,
 `MessageCountAwareInterface`, and `SetupableTransportInterface`, bridging Symfony's message bus to
-NATS via the async `idct/php-nats-jetstream-client` (`^2.27`, amphp-based). It ships
+NATS via the async `idct/php-nats-jetstream-client` (`^2.27.1`, amphp-based). It ships
 `IDCTNatsMessengerBundle` (auto-enabled by Flex), which registers the transport factory
 and the igbinary serializer so projects need no manual wiring.
 

@@ -25,7 +25,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
 - 🌐 **NATS Clusters** - One server in the DSN, the others learned from the cluster; failover, replicated streams
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
-- 🧪 **Thoroughly Tested** - 671 unit tests, ~99.8% coverage, mutation-tested (96.9% MSI)
+- 🧪 **Thoroughly Tested** - 673 unit tests, ~99.8% coverage, mutation-tested (96.9% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -104,6 +104,16 @@ transport recovers a lost connection as before. Two differences apply in either 
   [Logging](#logging)). Those lines went nowhere before.
 
 > **Tested by:** `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`, the example `reconnect.php`
+
+### Upgrading from 5.7.0
+
+Nothing to change. 5.7.1 requires `idct/php-nats-jetstream-client` 2.27.1 or later, which `composer update`
+installs. With `reconnect: true`, an `ack()` or `reject()` whose write is the first to notice a lost connection
+now returns at once, its frame buffered for the connection the client's recovery makes, where with client 2.27.0
+it waited for that recovery (see [Automatic Reconnect](#automatic-reconnect)). With the option off nothing
+changes.
+
+> **Tested by:** `testAnAcknowledgementWhoseWriteFindsTheConnectionLostReturnsAtOnceAndTheRecoverySendsIt`
 
 ### Logging
 
@@ -897,10 +907,12 @@ In a DSN: `?reconnect=true&max_reconnect_attempts=20`.
   where a refused dial costs about 6 s. An `ack_sync` acknowledgement that runs into the outage still fails
   after `request_timeout`, which ends the worker's run as any exception from `ack()` does: synchronous
   acknowledgement keeps its meaning.
-- An ACK, NAK or TERM whose write fails while the client still reports the connection open is retried by the
-  client after an inline recovery without a budget, so that one `ack()` or `reject()` can wait for a whole
-  attempt loop ([client issue #244](https://github.com/ideaconnect/php-nats-jetstream-client/issues/244)). A
-  frame written while the client is already recovering is buffered and returns at once. `keepalive()` only
+- An ACK, NAK or TERM written during a recovery is buffered by the client, and `ack()` or `reject()` returns at
+  once. That holds too when its own write is the first to notice the lost connection while the client still
+  reports it open: the write starts the recovery, and the frame goes out on the connection the recovery makes.
+  Before client 2.27.1, which the transport requires since 5.7.1, such a write ran the recovery inline, so one
+  `ack()` or `reject()` could wait for a whole attempt loop
+  ([client issue #244](https://github.com/ideaconnect/php-nats-jetstream-client/issues/244)). `keepalive()` only
   queues its frame, as it must inside a signal handler, and never waits, PINGs or dials.
 - A server that stops gracefully ends every pull in flight with `409 Server Shutdown`, and a consumer whose
   leader moved ends them with `409 Leadership Change`. Both are empty batches, in either mode, and no longer
@@ -934,7 +946,7 @@ request handler stalls for a whole attempt loop when it runs into an outage once
 it off to rely on the process supervisor and Symfony's retries, and to have `messenger:setup-transports`
 fail fast when NATS is unreachable.
 
-> **Tested by:** `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `testReconnectModeLeavesAClientInTheMiddleOfItsRecoveryAlone`, `testReconnectModeReadsAFailedPingAgainstTheClientsRecovery`, `testReconnectModeTakesARecoveredConnectionAsChecked`, `testWithoutReconnectAFailedPingReplacesTheConnectionAndTheReconnectCountIsNeverRead`, `testReconnectModeVerifiesProvisioningAgainAfterTheClientReconnected`, `testReconnectModeReprovisionsOnceWhenTheFirstPublishAfterTheReconnectFindsNoResponder`, `testReconnectModeDoesNotRetryAPublishOutsideTheNoResponderCase`, `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testAPullEndedByALeadershipChangeIsEmptyAndTheNextOneDoesNotCheckTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`, the real-client tests in `tests/unit/ReconnectModeTest.php`, and the Behat scenarios `A worker keeps consuming across a server restart` and `A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated`; the examples `reconnect.php` and `cluster-failover.php` (a failover in a three-server cluster)
+> **Tested by:** `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `testReconnectModeLeavesAClientInTheMiddleOfItsRecoveryAlone`, `testReconnectModeReadsAFailedPingAgainstTheClientsRecovery`, `testReconnectModeTakesARecoveredConnectionAsChecked`, `testWithoutReconnectAFailedPingReplacesTheConnectionAndTheReconnectCountIsNeverRead`, `testReconnectModeVerifiesProvisioningAgainAfterTheClientReconnected`, `testReconnectModeReprovisionsOnceWhenTheFirstPublishAfterTheReconnectFindsNoResponder`, `testReconnectModeDoesNotRetryAPublishOutsideTheNoResponderCase`, `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testAPullEndedByALeadershipChangeIsEmptyAndTheNextOneDoesNotCheckTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `testAnAcknowledgementWhoseWriteFindsTheConnectionLostReturnsAtOnceAndTheRecoverySendsIt`, the real-client tests in `tests/unit/ReconnectModeTest.php`, and the Behat scenarios `A worker keeps consuming across a server restart` and `A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated`; the examples `reconnect.php` and `cluster-failover.php` (a failover in a three-server cluster)
 
 ## Stream Configuration
 

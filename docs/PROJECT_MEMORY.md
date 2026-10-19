@@ -70,8 +70,10 @@ Start in these locations for a bug:
 
 The transport uses one-shot `fetchBatch()`, explicit ACKs, and `disconnect()`. It does not use
 `PullConsumerIterator::handle()`, client graceful `drain()`, KeyValue, ObjectStore, or services.
-Its builder explicitly disables automatic reconnect and pedantic mode. Assess upstream changes
-against these actual paths; many iterator/drain/reconnect issues have different preconditions.
+Its builder turns pedantic mode off, and the client's automatic reconnect off unless the transport
+option `reconnect: true` (5.7.0, off by default) turns it on. Assess upstream changes against
+these actual paths; many iterator/drain issues have different preconditions, and reconnect issues
+apply only with the option on.
 
 ## Behavior to preserve
 
@@ -81,9 +83,21 @@ against these actual paths; many iterator/drain/reconnect issues have different 
   `connection_timeout`, or the client's shorter `request_timeout`. `ping_after_idle: 0` disables
   idle and post-failure checks, but Closed-state recovery still applies. `close()` resets the
   connection and provisioning state; the same transport remains reusable.
+- **Reconnect mode** (`reconnect: true`, 5.7.0, #81): the client owns recovery. A Connecting
+  client gets no PING and no dial; the operation waits within its own budget. After a failed
+  PING, the client's state and reconnect count decide: recovering or recovered is kept, the same
+  connection silent is replaced, Closed is dialled (running the client's attempt loop inline).
+  With `auto_setup`, provisioning is verified again once the count moved, and a first publish
+  after a reconnect that gets 503 "No JetStream responder" re-provisions once and republishes.
+  The count is read only with the option on; default-mode mocks have no stats stub. An ACK/NAK/
+  TERM whose write meets the dead socket is buffered and returns at once from client 2.27.1
+  (#244), hence the `^2.27.1` floor since 5.7.1. The factory's optional PSR-3 logger reaches the
+  client; the bundle passes `logger` on Monolog's `messenger` channel.
 - **Pull status:** 408 is empty; 404 is historically empty. A missing consumer normally gives 503,
   and deletion during a pull can give 409. With `auto_setup`, 404/409/503 cause one provisioning
-  attempt and one retried pull; repeated 409/503 propagate. The client's own unanswered-pull
+  attempt and one retried pull; repeated 409/503 propagate. Since 5.7.0, `409 Server Shutdown`
+  (which also checks the connection next time) and `409 Leadership Change` are empty batches in
+  both modes, on the first and the retried pull; other 409s keep the handling above. The client's own unanswered-pull
   deadline is also a JetStream 408, distinguished by the prefix `No messages received within
   timeout`. It triggers a check next time. A server-answered empty pull counts as connection use.
 - **Delivery identity:** outgoing `TransportMessageIdStamp` is a UUID; incoming it holds the
@@ -204,7 +218,8 @@ its AGENTS guidance about JWT fixture generation and the mutating fixture-validi
   errors with reconnect), [#204](https://github.com/ideaconnect/php-nats-jetstream-client/issues/204)
   (request-inbox rejection wake-up), and
   [#188](https://github.com/ideaconnect/php-nats-jetstream-client/issues/188) (batch subscribe deadlines
-  during reconnect). Check their preconditions: reconnect is disabled here. The iterator/drain
+  during reconnect). Check their preconditions: reconnect is disabled here (true then; since
+  5.7.0 only while `reconnect` is off, the default. All three were closed by 2026-10-19). The iterator/drain
   reports, including [#213](https://github.com/ideaconnect/php-nats-jetstream-client/issues/213),
   concern APIs the transport does not currently use. The historical client #175 fix is linked
   from transport #76 and introduced prompt rejection reporting and the SUB fence.
@@ -312,3 +327,14 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   is successful for this head, including PHP 8.2/lowest client, PHP 8.5/latest client,
   functional suites, coverage, mutation checks and the NATS 2.10 job. Functional and mutation
   suites were not rerun locally for this review. No GitHub review/comment was submitted.
+
+## Dated snapshot: 2026-10-19
+
+- Releases since the 2026-10-09 snapshot: 5.5.0 (bundle, subscription-limit `TransportException`,
+  client `^2.27`, Behat 4), 5.6.0 (stream placement), 5.7.0 (reconnect mode, logger, 409 shutdown
+  and leadership statuses), and 5.7.1 (client `^2.27.1`, examples on a three-server test cluster,
+  README cluster section). PR #45, adapted in #82 and #83, was closed on 2026-10-19.
+- No open transport issues. Open client issues are the roadmap items #12, #14 and #15. Client
+  2.27.2 is the latest release; root and functional app both require `^2.27.1`.
+- `composer test` passed with client 2.27.1 (the lowest allowed) and 2.27.2 on PHP 8.5.11:
+  PHPStan clean; 673 tests, 1941 assertions; coverage 99.78 % (893/895).
