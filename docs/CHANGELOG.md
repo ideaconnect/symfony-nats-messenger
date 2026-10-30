@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks that it is handled on the redelivery; it fails on Symfony Messenger 8.1.10 without the fix. Unit tests
   run Symfony's Worker over a batch with one failing and one handled message, and cover the NAK on `ack()`
   (with `nak_delay` and `ack_sync`), its single use, and that only the delivery sent for retry is NAKed.
+- A new example, `nats-retry.php`, runs Symfony's Worker and retry listener with FrameworkBundle's default retry
+  strategy against the test server, in nats mode, over a message whose handler fails once: NATS redelivers it
+  `nak_delay` later and it is handled, with Symfony's retry left unpublished. `composer examples` runs it in CI
+  on the latest and the oldest supported NATS, and it fails without the fix on Symfony Messenger 8.1.10.
 
 ## [5.7.1] - 2026-10-19
 

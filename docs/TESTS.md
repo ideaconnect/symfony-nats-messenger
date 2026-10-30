@@ -348,6 +348,7 @@ supported NATS. Each prints `OK ...` when what it shows held, and fails otherwis
 |---|---|
 | `send-and-consume.php` | 3 messages sent are waiting, then received in order and acknowledged, leaving the queue empty |
 | `duplicate-protection.php` | an application id sent twice is stored once; the envelope `send()` returned, sent again, is dropped; its retry (`RedeliveryStamp` 1) is stored |
+| `nats-retry.php` | with `retry_handler: nats`, `nak_delay: 1` and `max_deliver: 3`, Symfony's Worker and retry listener with FrameworkBundle's default strategy (3 retries) over a message whose handler fails once: the handler runs exactly twice, at least 0.9 s apart, the stream holds the one message (the retry was not published) and the consumer has nothing pending; fails on 5.7.1 with Symfony Messenger 7.4.22 / 8.1.10 or later, where the message was acknowledged after its first failure (#90) |
 | `request-timeout.php` | against a `no_ack` stream, a send with `request_timeout: 1` gives up after about 1 s although the message is stored, and sending it again with the same deduplication id stores nothing more |
 | `keepalive.php` | with `keepalive()` called from a SIGALRM handler every second, a message handled for 5 s on `ack_wait: 2` is not redelivered to a second worker (on 5.2.1 the first alarm broke the worker) |
 | `connection-checks.php` | sends after idling past `ping_after_idle` and after `close()` both succeed |
