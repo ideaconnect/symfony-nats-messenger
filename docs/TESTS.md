@@ -270,6 +270,7 @@ processes through `tests/Support/PhpProcess.php`, and the bootstrap tests are sk
 | Feature | Scenarios |
 |---------|-----------|
 | **NAK retry** | Message retry handled by NATS via NAK |
+| **NAK retry with Symfony's default retry strategy (#90)** | A message that fails once is redelivered with Symfony's default retry strategy |
 | **TERM failure** | Failed message routed to Symfony failure transport via TERM |
 | **TERM failure with the igbinary serializer (retry and failure-transport re-sends)** | Failed message routed to Symfony failure transport via TERM with the igbinary serializer |
 

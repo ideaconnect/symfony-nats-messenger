@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on for a delivery that was handled, and for every delivery with the default `retry_handler: symfony`. The
   README's warning says that up to 5.7.1 `max_retries: 0` is required in nats mode on those Symfony releases.
 
+### Testing & CI
+- A Behat scenario, "A message that fails once is redelivered with Symfony's default retry strategy", sends a
+  message whose handler fails once to a transport in nats mode with Symfony's default retry strategy, and
+  checks that it is handled on the redelivery; it fails on Symfony Messenger 8.1.10 without the fix. Unit tests
+  run Symfony's Worker over a batch with one failing and one handled message, and cover the NAK on `ack()`
+  (with `nak_delay` and `ack_sync`), its single use, and that only the delivery sent for retry is NAKed.
+
 ## [5.7.1] - 2026-10-19
 
 A **patch** release. It requires client 2.27.1, in which an acknowledgement whose write is the first to notice a
