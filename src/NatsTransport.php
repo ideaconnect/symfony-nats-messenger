@@ -120,6 +120,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private bool $checkBeforeNextUse = false;
 
     /**
+     * The delivery token (reply subject) of each received message whose retry copy {@see send()} left out in
+     * nats mode, by message, until the worker settles that delivery ({@see natsRedeliversTheRetryOf()}).
+     * Weak, so a message that is never settled leaves nothing behind.
+     *
+     * @var \WeakMap<object, string>|null
+     */
+    private ?\WeakMap $retriesNatsRedelivers = null;
+
+    /**
      * Creates a transport instance from DSN/options and optional serializer override.
      *
      * Parses the DSN and options via {@see NatsTransportConfigurationBuilder}, sets up
@@ -180,7 +189,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * the original topic.
      *
      * With retry_handler=nats, the copy Symfony's retry sends of a message this transport received is not
-     * published ({@see isRetryNatsRedeliversItself()}).
+     * published ({@see isRetryNatsRedeliversItself()}): the delivery it belongs to is remembered instead, so that
+     * the worker's ack() of it NAKs it ({@see natsRedeliversTheRetryOf()}).
      *
      * @throws RuntimeException     If serialization fails and the envelope carries an ErrorDetailsStamp.
      * @throws \Throwable           The original serializer exception when serialization fails and the
@@ -193,6 +203,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function send(Envelope $envelope): Envelope
     {
         if ($this->isRetryNatsRedeliversItself($envelope)) {
+            $delivery = $envelope->last(TransportMessageIdStamp::class);
+            if ($delivery !== null) {
+                $this->retriesNatsRedelivers ??= new \WeakMap();
+                $this->retriesNatsRedelivers[$envelope->getMessage()] = TypeCoercion::stringValue($delivery->getId());
+            }
+
             return $envelope;
         }
 
@@ -314,12 +330,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * NATS handles redelivery (retry_handler=nats).
      *
      * Symfony's retry listener runs for every transport with a retry strategy, and FrameworkBundle gives each
-     * one a strategy by default. It re-sends the failed message with a retry count, and the worker then calls
-     * reject(), which in nats mode NAKs the original so NATS redelivers it. Publishing the copy as well
+     * one a strategy by default. It re-sends the failed message with a retry count, and the worker then settles
+     * the original, which in nats mode is NAKed so NATS redelivers it. Publishing the copy as well
      * retried the same failure twice, and every copy did the same again, multiplying the deliveries: one
      * message that kept failing ran its handler 120 times with max_deliver 3 (#47). So in nats mode the copy
      * is not published, which means Symfony's retry strategy (max_retries, delay, multiplier) is ignored and
      * NATS redelivers alone, under nak_delay, backoff and max_deliver.
+     *
+     * The worker settles the original with reject() up to Symfony Messenger 7.4.21 and 8.1.9, and with ack()
+     * from 7.4.22 and 8.1.10 on, since the retry copy was sent (symfony/symfony#67038). An ACK would drop the
+     * message for good, so ack() NAKs a delivery whose copy was left out ({@see natsRedeliversTheRetryOf()},
+     * #90).
      *
      * A copy for the failure transport carries a retry count of 0 and is still sent, as is anything that was
      * not received in this process.
@@ -480,11 +501,21 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * {@see NatsTransportConfiguration::isAckSyncEnabled()} option is on, the ACK waits for
      * server confirmation (double-ack) so a dropped ACK cannot silently cause redelivery.
      *
+     * A delivery whose retry copy {@see send()} left out in nats mode is NAKed instead, so NATS redelivers it:
+     * Symfony Messenger 7.4.22, 8.1.10 and later acknowledge a message they sent for retry (#90).
+     *
      * @throws LogicException If the envelope lacks a TransportMessageIdStamp
      */
     public function ack(Envelope $envelope): void
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
+
+        if ($this->natsRedeliversTheRetryOf($envelope, $id)) {
+            $this->sendNak($id);
+
+            return;
+        }
+
         $message = $this->buildAckMessage($id);
 
         if ($this->configuration->isAckSyncEnabled()) {
@@ -507,7 +538,25 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function reject(Envelope $envelope): void
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
+        $this->natsRedeliversTheRetryOf($envelope, $id);
         $this->handleFailedDelivery($id);
+    }
+
+    /**
+     * Whether the delivery being settled is one whose retry copy {@see send()} left out in nats mode, which it
+     * then forgets: it is settled once, by the ack() of Symfony Messenger 7.4.22, 8.1.10 and later or the
+     * reject() of earlier releases, and both NAK it. Another delivery of the same message is not that one.
+     */
+    private function natsRedeliversTheRetryOf(Envelope $envelope, string $id): bool
+    {
+        $message = $envelope->getMessage();
+        if (($this->retriesNatsRedelivers[$message] ?? null) !== $id) {
+            return false;
+        }
+
+        unset($this->retriesNatsRedelivers[$message]);
+
+        return true;
     }
 
     /**

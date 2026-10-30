@@ -110,6 +110,11 @@ apply only with the option on.
   Symfony's retry copy when it carries `ReceivedStamp` and a positive retry count. NATS owns
   redelivery through `nak_delay`, `backoff`, `max_deliver`, etc. Publishing both copies formerly
   multiplied failures (#47). Symfony delay stamps only take effect with scheduled messages on.
+  The worker settles a delivery it sent for retry with `reject()` up to Messenger 7.4.21/8.1.9
+  and with `ack()` from 7.4.22/8.1.10 on (symfony/symfony#67038). `send()` therefore remembers
+  the delivery token of a suppressed copy (a `WeakMap` by message) and `ack()` NAKs that one
+  delivery; an ACK there lost the message (#90). Any code path that settles a received message
+  must keep both Messenger lines in mind.
 - **Keepalive:** Symfony invokes it from SIGALRM. It queues `inProgress()->ignore()` without
   awaiting, pinging, or connecting, because a signal handler cannot switch fibers (#48).
   The event loop must run for the queued write to leave. Plain blocking PHP work therefore

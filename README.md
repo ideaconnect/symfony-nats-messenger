@@ -554,9 +554,17 @@ When NATS manages redelivery (`retry_handler: nats`), tune it with `nak_delay`, 
 **Symfony's retry strategy is ignored with `retry_handler: nats`.** Symfony's retry listener runs for every
 transport, and FrameworkBundle gives each one a retry strategy (`max_retries: 3` by default). In nats mode the
 transport does not publish the copy that retry sends, because NATS redelivers the original after the NAK, so
-`max_retries`, `delay` and `multiplier` have no effect and `max_deliver` bounds the attempts. Set
-`max_retries: 0` on the transport anyway: with retries left on, Symfony still logs each failure as a retry it
-never makes ("Sending for retry #1") and never treats the message as failed for good.
+`max_retries`, `delay` and `multiplier` have no effect and `max_deliver` bounds the attempts. The worker then
+settles the original: Symfony Messenger up to 7.4.21 and 8.1.9 rejects it, and 7.4.22, 8.1.10 and later
+acknowledge it, since the retry was sent ([symfony/symfony#67038](https://github.com/symfony/symfony/pull/67038)).
+The transport NAKs it either way. Set `max_retries: 0` on the transport anyway: with retries left on, Symfony
+still logs each failure as a retry it never makes ("Sending for retry #1") and never treats the message as
+failed for good.
+
+> ⚠️ **Up to 5.7.1 of this transport, `max_retries: 0` is required with `retry_handler: nats` on Symfony
+> Messenger 7.4.22, 8.1.10 or later.** Those releases acknowledge the message they send for retry, and 5.7.1
+> and earlier passed that ACK on to NATS: with retries left on, a message whose handler failed once was gone,
+> neither redelivered nor in a failure transport (#90). Later releases NAK it.
 
 A failure transport does not combine well with nats mode. Symfony sends a message there each time it treats a
 failure as final: with `max_retries: 0` that is every failed delivery, so a message that keeps failing lands
@@ -574,7 +582,7 @@ framework:
           max_retries: 0
 ```
 
-> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, Behat scenarios `nats_nak.feature`, `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`
+> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`
 
 ### Long-Running Handlers (`--keepalive`)
 

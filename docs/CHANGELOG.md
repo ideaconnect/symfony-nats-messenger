@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **With `retry_handler: nats`, a message whose handler fails is redelivered again on Symfony Messenger 7.4.22,
+  8.1.10 and later (#90).** Those releases acknowledge a message they send for retry instead of rejecting it
+  (symfony/symfony#67038). In nats mode the transport does not publish that retry and relies on NATS to
+  redeliver the original (#47), so the acknowledgement went to NATS as an ACK: with Symfony's retry strategy
+  left on (FrameworkBundle's default `max_retries: 3`), a message whose handler failed once was gone, with
+  neither a redelivery nor a failure-transport copy. `send()` now remembers the delivery whose retry copy it
+  leaves out, and `ack()` NAKs that delivery (with `nak_delay` when set) instead of acknowledging it. The worker
+  of earlier Messenger releases rejects it, which NAKs it as before. The transport still passes the worker's ACK
+  on for a delivery that was handled, and for every delivery with the default `retry_handler: symfony`. The
+  README's warning says that up to 5.7.1 `max_retries: 0` is required in nats mode on those Symfony releases.
+
 ## [5.7.1] - 2026-10-19
 
 A **patch** release. It requires client 2.27.1, in which an acknowledgement whose write is the first to notice a
