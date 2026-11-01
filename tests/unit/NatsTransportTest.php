@@ -161,6 +161,31 @@ class ClockedNatsTransport extends RealConnectNatsTransport
     }
 }
 
+/**
+ * Records the pauses setup() takes while the cluster settles instead of waiting, and moves the clock it reads by
+ * $secondsPerPause for each of them.
+ */
+class PausingNatsTransport extends RuntimeTestableNatsTransport
+{
+    public float $now = 1000.0;
+
+    public float $secondsPerPause = 0.0;
+
+    /** @var list<float> */
+    public array $pauses = [];
+
+    protected function monotonicSeconds(): float
+    {
+        return $this->now;
+    }
+
+    protected function pause(float $seconds): void
+    {
+        $this->pauses[] = $seconds;
+        $this->now += $this->secondsPerPause;
+    }
+}
+
 final class NatsTransportTest extends TestCase
 {
     private const VALID_DSN = 'nats://admin:password@localhost:4222/test-stream/test-topic';
@@ -2898,6 +2923,146 @@ final class NatsTransportTest extends TestCase
         $this->expectExceptionMessage('permissions violation');
 
         $transport->setup();
+    }
+
+    /**
+     * What nats-server 2.10 answers to a consumer request while it moves the consumer after a change of
+     * stream_replicas, and the consumer has no leader for a moment.
+     */
+    private static function clusterNotAvailable(): JetStreamException
+    {
+        return new JetStreamException('JetStream system temporarily unavailable', 503, null, 10008);
+    }
+
+    private static function liveConsumer(string $replayPolicy): ConsumerInfo
+    {
+        return new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => [
+                'ack_policy' => 'explicit',
+                'deliver_policy' => 'all',
+                'filter_subject' => 'test-topic',
+                'replay_policy' => $replayPolicy,
+            ]],
+        );
+    }
+
+    public function testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->with('test-stream', 'client')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(self::clusterNotAvailable()),
+                Future::complete(self::liveConsumer('original')),
+            );
+        // The live consumer's replay policy, which only the second answer carried, is the one sent.
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static fn (ConsumerConfiguration $configuration): bool => ($configuration->toArray()['replay_policy'] ?? null) === 'original'))
+            ->willReturn(Future::complete(self::liveConsumer('original')));
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    public function testSetupCreatesTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->willReturn(Future::error(new JetStreamException('consumer not found', 404, null, 10014)));
+        $jetStream->expects(self::exactly(3))
+            ->method('addConsumer')
+            ->with('test-stream', self::isInstanceOf(ConsumerConfiguration::class))
+            ->willReturnOnConsecutiveCalls(
+                Future::error(self::clusterNotAvailable()),
+                Future::error(self::clusterNotAvailable()),
+                Future::complete(self::liveConsumer('instant')),
+            );
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1, 0.1], $transport->pauses);
+    }
+
+    public function testSetupGivesUpOnATemporarilyUnavailableClusterAfterFiveSeconds(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        // Asked at 0, 1, 2, 3, 4 and 5 seconds; the answer at 5 seconds is the last one.
+        $jetStream->expects(self::exactly(6))
+            ->method('getConsumer')
+            ->willReturnCallback(static fn (): Future => Future::error(self::clusterNotAvailable()));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+        $transport->secondsPerPause = 1.0;
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have failed');
+        } catch (\RuntimeException $exception) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': JetStream system temporarily unavailable", $exception->getMessage());
+            self::assertInstanceOf(JetStreamException::class, $exception->getPrevious());
+        }
+        self::assertCount(5, $transport->pauses);
+    }
+
+    public function testSetupDoesNotAskForTheConsumerAgainAfterAnotherJetStreamError(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->willReturn(Future::error(new JetStreamException('jetstream not enabled for account', 503, null, 10039)));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have failed');
+        } catch (\RuntimeException $exception) {
+            self::assertStringContainsString('jetstream not enabled for account', $exception->getMessage());
+        }
+        self::assertSame([], $transport->pauses);
+    }
+
+    public function testSetupWaitsBeforeAskingTheTemporarilyUnavailableClusterAgain(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(self::clusterNotAvailable()),
+                Future::complete(self::liveConsumer('instant')),
+            );
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete(self::liveConsumer('instant')));
+
+        // The real pause and clock.
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $start = hrtime(true);
+        $transport->setup();
+
+        self::assertGreaterThanOrEqual(0.1, (hrtime(true) - $start) / 1e9);
     }
 
     public function testAutoSetupProvisionsOnFirstSendOnce(): void

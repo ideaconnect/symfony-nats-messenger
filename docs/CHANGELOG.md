@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of earlier Messenger releases rejects it, which NAKs it as before. The transport still passes the worker's ACK
   on for a delivery that was handled, and for every delivery with the default `retry_handler: symfony`. The
   README's warning says that up to 5.7.1 `max_retries: 0` is required in nats mode on those Symfony releases.
+- **`setup()` no longer fails when NATS is still moving the consumer after a change of `stream_replicas`.**
+  A stream update that changes the replica count makes NATS move the stream's durable consumer to the stream's
+  new set of servers, after it has answered the update. A consumer whose leader was on a server the stream left
+  has no leader until a remaining server takes over, and the consumer lookup or create that `setup()` sends next
+  could land in that window and fail with err_code 10008, "JetStream system temporarily unavailable" (seen in CI
+  and reproduced on nats-server 2.10.29 going from 2 replicas to 1; running the setup again passed). `setup()`
+  now sends those two consumer requests again while the server answers 10008, every 100 ms for up to 5 seconds.
+  Any other error fails the setup at once, as before.
 
 ### Changed
 - **README: with the default `retry_handler: symfony`, a message that Symfony Messenger 7.4.22, 8.1.10 and later
@@ -56,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   received in this process, plain dispatch). The Behat scenario "Symfony's retry strategy is ignored with the NATS
   retry handler" checks that the consumer warned once, and "NATS stops redelivering a poison message after
   max_deliver attempts" (`max_retries: 0`) that it did not.
+- The consumer requests `setup()` sends again while the cluster answers 10008: unit tests cover the lookup and
+  the create asked again after a pause of 100 ms, the real pause, the setup failing with the server's message
+  once 5 seconds have passed, and no second request after another JetStream error. The example
+  `stream-placement.php`, whose staged step from 2 replicas to 1 failed this way on NATS 2.10 in CI, covers it on
+  the three-server test cluster.
 
 ## [5.7.1] - 2026-10-19
 

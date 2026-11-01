@@ -1026,7 +1026,14 @@ unset, `stream_replicas` gives a new stream one replica and leaves the count of 
 a stream scaled up in NATS is not scaled back down by the next `setup()`. See
 [Using a NATS Cluster](#using-a-nats-cluster).
 
-> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`, `testSetupPreservesExistingReplicaCountWhenStreamReplicasNotConfigured`, `testSetupOverridesExistingReplicaCountWhenStreamReplicasExplicitlyConfigured`
+When `setup()` changes the replica count of an existing stream, NATS moves the stream's durable consumer to the
+stream's new set of servers after it has answered the update. A consumer whose leader was on a server the stream
+left has no leader for a moment, and the server answers a request for it with err_code 10008, "JetStream system
+temporarily unavailable" (measured on nats-server 2.10 going from 2 replicas to 1). `setup()` asks for the
+consumer again, every 100 ms for up to 5 seconds, so `messenger:setup-transports` does not fail on that moment.
+A cluster that stays unavailable longer still fails the setup with that message.
+
+> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`, `testSetupPreservesExistingReplicaCountWhenStreamReplicasNotConfigured`, `testSetupOverridesExistingReplicaCountWhenStreamReplicasExplicitlyConfigured`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testSetupCreatesTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testSetupWaitsBeforeAskingTheTemporarilyUnavailableClusterAgain`, `testSetupGivesUpOnATemporarilyUnavailableClusterAfterFiveSeconds`, `testSetupDoesNotAskForTheConsumerAgainAfterAnotherJetStreamError`, the example `stream-placement.php` (from 2 replicas to 1 on the test cluster)
 
 ### Stream Placement
 
@@ -1192,7 +1199,8 @@ connection gone, in either mode, and the send goes out through another server (s
 - **Replicas.** A stream with one replica lives on one server and is unavailable while that server is down.
   With `stream_replicas: 3` it outlives the loss of one server, with 5 the loss of two. The durable consumer
   the transport creates takes the stream's replica count. Left unset, the option gives a new stream one replica
-  and leaves an existing stream's count alone (see [High Availability](#high-availability)).
+  and leaves an existing stream's count alone (see [High Availability](#high-availability)). When `setup()`
+  changes the count, it waits out the moment the consumer moves to the stream's new servers (up to 5 seconds).
 - **Placement.** `stream_placement_tags` and `stream_placement_cluster` choose the servers, and in a
   super-cluster the cluster, that hold the replicas. A change of the replica count and of the placement has to
   be staged in two runs of `messenger:setup-transports`. See [Stream Placement](#stream-placement).

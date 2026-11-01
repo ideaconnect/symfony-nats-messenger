@@ -175,6 +175,10 @@ Fixtures expose plain/TLS/mTLS/stale-idle NATS on 4222/4223/4224/4225, and a thr
 server (`servers: [$server]`), so a worker started while that server is down cannot connect. CI runs PHP 8.2 with the lowest
 allowed client and PHP 8.5 with latest, verifies root/app versions match, and also tests NATS 2.10
 without delayed scenarios. README advertises NATS ^2.9; the oldest CI image is actually 2.10.
+Measured on it (2026-11-01, nats 2.10.29): right after a stream update from 2 replicas to 1, consumer requests
+can get err_code 10008 "JetStream system temporarily unavailable", "stream not found" or no answer for a few ms
+while NATS moves the consumer; `setup()` asks again on 10008 only (up to 5 s). The example `stream-placement.php`
+hit it in CI (PR #98); a reproduction needs parallel consumer-info probes to load the 2-core test machine.
 
 Transport unit tests use `DG\BypassFinals` for final client mocks, `Future::complete/error`,
 `TestableNatsTransport`, and `RuntimeTestableNatsTransport`. `UnansweredPullTest` exercises the real

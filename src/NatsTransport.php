@@ -49,6 +49,8 @@ use Symfony\Component\Messenger\Transport\SetupableTransportInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
 use Symfony\Component\Uid\Uuid;
 
+use function Amp\delay;
+
 /**
  * Symfony Messenger transport for NATS JetStream.
  *
@@ -106,6 +108,18 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * see {@see describeSetupRejection()}.
      */
     private const JS_ERR_STREAM_MOVE_AND_SCALE = 10123;
+
+    /**
+     * JetStream err_code of "JetStream system temporarily unavailable" (JSClusterNotAvailErr), which setup() waits
+     * out for its consumer requests, see {@see whileTheClusterSettles()}.
+     */
+    private const JS_ERR_CLUSTER_NOT_AVAILABLE = 10008;
+
+    /** How long {@see whileTheClusterSettles()} sends a consumer request again, in seconds. */
+    private const CLUSTER_SETTLE_SECONDS = 5.0;
+
+    /** The pause before each of those requests, in seconds. */
+    private const CLUSTER_SETTLE_PAUSE = 0.1;
 
     /**
      * When an operation last used the connection, in monotonic seconds; null while the transport has none.
@@ -785,12 +799,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $consumerConfiguration->inactiveThreshold($inactiveThresholdMs);
             }
 
-            $replayPolicy = $this->resolveReplayPolicy();
+            // A setup() that changed stream_replicas reaches the consumer while NATS may still be moving it.
+            $replayPolicy = $this->whileTheClusterSettles($this->resolveReplayPolicy(...));
             if ($replayPolicy !== null) {
                 $consumerConfiguration->replayPolicy($replayPolicy);
             }
 
-            $consumerInfo = $this->awaitOnConnection($this->jetStream()->addConsumer($this->streamName, $consumerConfiguration));
+            $consumerInfo = $this->whileTheClusterSettles(fn (): ConsumerInfo => $this->awaitOnConnection($this->jetStream()->addConsumer($this->streamName, $consumerConfiguration)));
             $this->assertConsumerMatchesConfiguration($consumerInfo);
         } catch (UnsupportedFeatureException $unsupportedFeature) {
             throw new RuntimeException($this->describeUnsupportedFeature($unsupportedFeature), 0, $unsupportedFeature);
@@ -1242,6 +1257,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
+     * Waits $seconds while the event loop goes on serving the connection. Exposed for testability.
+     */
+    protected function pause(float $seconds): void
+    {
+        delay($seconds);
+    }
+
+    /**
      * Applies configured failure strategy for failed deliveries.
      *
      * When {@see RetryHandler::NATS} is active, sends a NAK so JetStream redelivers
@@ -1300,6 +1323,38 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         if ($consumerInfo->push) {
             throw new RuntimeException('Consumer must be configured as a pull consumer.');
+        }
+    }
+
+    /**
+     * Runs one of setup()'s consumer requests, and runs it again while the cluster answers err_code 10008,
+     * "JetStream system temporarily unavailable", pausing CLUSTER_SETTLE_PAUSE before each new attempt, for up to
+     * CLUSTER_SETTLE_SECONDS. Any other error, and 10008 still there at the end, propagates as before.
+     *
+     * A stream update that changes the replica count makes NATS move the stream's consumers to its new set of
+     * servers. It does that after it has answered the update, so setup() reaches the consumer in the middle of the
+     * move. A consumer whose leader was on a server the stream left has no leader until a remaining server takes
+     * over, and a consumer request in that window is answered with 10008 (measured on nats-server 2.10.29 with
+     * stream_replicas going from 2 to 1: the window lasts milliseconds). Before this, that failed the setup, and
+     * running it again passed. Both requests repeated here are reads or idempotent: the consumer lookup, and the
+     * consumer create with the same configuration.
+     *
+     * @template T
+     * @param \Closure(): T $request
+     * @return T
+     */
+    private function whileTheClusterSettles(\Closure $request): mixed
+    {
+        $deadline = $this->monotonicSeconds() + self::CLUSTER_SETTLE_SECONDS;
+        while (true) {
+            try {
+                return $request();
+            } catch (JetStreamException $exception) {
+                if ($exception->getErrCode() !== self::JS_ERR_CLUSTER_NOT_AVAILABLE || $this->monotonicSeconds() >= $deadline) {
+                    throw $exception;
+                }
+            }
+            $this->pause(self::CLUSTER_SETTLE_PAUSE);
         }
     }
 
