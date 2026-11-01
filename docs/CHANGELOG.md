@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of earlier Messenger releases rejects it, which NAKs it as before. The transport still passes the worker's ACK
   on for a delivery that was handled, and for every delivery with the default `retry_handler: symfony`. The
   README's warning says that up to 5.7.1 `max_retries: 0` is required in nats mode on those Symfony releases.
-- **`setup()` no longer fails when NATS is still moving the consumer after a change of `stream_replicas`.**
+- **`setup()` no longer fails when NATS is still moving the consumer after a change of `stream_replicas` (#98).**
   A stream update that changes the replica count makes NATS move the stream's durable consumer to the stream's
   new set of servers, after it has answered the update. A consumer whose leader was on a server the stream left
   has no leader until a remaining server takes over, and the consumer lookup or create that `setup()` sends next
