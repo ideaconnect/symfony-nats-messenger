@@ -98,7 +98,9 @@ apply only with the option on.
   "A Handler Failing During the Loss"; measured 2026-11-01, nats 2.15.1, client 2.27.2). #95
   analysed a transport re-publish after the timeout (misfires on a slow but connected leader with
   409 err_code 10158, doubles the wait with no server to fail over to) and pointed at the client
-  instead. In nats mode the NAK at that moment did not take effect (redelivery after `ack_wait`).
+  instead: tracked in ideaconnect/php-nats-jetstream-client#249 (send a publish with a `Nats-Msg-Id`
+  again once the connection its frame went out on is replaced). In nats mode the NAK at that moment
+  did not take effect (redelivery after `ack_wait`).
 - **Pull status:** 408 is empty; 404 is historically empty. A missing consumer normally gives 503,
   and deletion during a pull can give 409. With `auto_setup`, 404/409/503 cause one provisioning
   attempt and one retried pull; repeated 409/503 propagate. Since 5.7.0, `409 Server Shutdown`
