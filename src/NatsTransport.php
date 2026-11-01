@@ -585,6 +585,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function reject(Envelope $envelope): void
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
+        // Forget the delivery whose retry copy send() left out; handleFailedDelivery() NAKs it in nats mode either way.
         $this->natsRedeliversTheRetryOf($envelope, $id);
         $this->handleFailedDelivery($id);
     }

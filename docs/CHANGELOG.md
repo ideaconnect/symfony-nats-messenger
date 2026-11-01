@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on for a delivery that was handled, and for every delivery with the default `retry_handler: symfony`. The
   README's warning says that up to 5.7.1 `max_retries: 0` is required in nats mode on those Symfony releases.
 
+### Changed
+- **README: with the default `retry_handler: symfony`, a message that Symfony Messenger 7.4.22, 8.1.10 and later
+  send for retry is ACKed, not TERMed (#92).** Since symfony/symfony#67038 the worker acknowledges a failed
+  message once its retry copy is sent instead of rejecting it, and the transport passes that ACK on. The "Retry
+  Handler Behavior" section now says so: a `TERM`, and its JetStream `MSG_TERMINATED` advisory, marks only a
+  failure Symfony treats as final or a message that could not be decoded, so counts or alerts built on those
+  advisories drop after such a Symfony upgrade, with no message lost. The transport's behaviour is unchanged.
+
 ### Testing & CI
 - A Behat scenario, "A message that fails once is redelivered with Symfony's default retry strategy", sends a
   message whose handler fails once to a transport in nats mode with Symfony's default retry strategy, and
