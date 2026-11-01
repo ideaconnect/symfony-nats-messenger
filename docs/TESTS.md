@@ -314,8 +314,8 @@ processes through `tests/Support/PhpProcess.php`, and the bootstrap tests are sk
 
 | Feature | Scenarios |
 |---------|-----------|
-| **max_deliver** | NATS stops redelivering a poison message after `max_deliver` attempts (no infinite loop) |
-| **Symfony's retry strategy ignored in nats mode** | Symfony's retry strategy is ignored with the NATS retry handler (default 3 retries, `max_deliver: 3`, exactly 3 attempts) |
+| **max_deliver** | NATS stops redelivering a poison message after `max_deliver` attempts (no infinite loop); with `max_retries: 0` the consumer logs no warning about Symfony's retry strategy (#94) |
+| **Symfony's retry strategy ignored in nats mode** | Symfony's retry strategy is ignored with the NATS retry handler (default 3 retries, `max_deliver: 3`, exactly 3 attempts); the consumer's log, on stderr through FrameworkBundle's default logger, has the warning that Symfony's retry strategy is on exactly once (#94) |
 
 ### Keepalive (`tests/functional/features/nats_keepalive.feature`)
 

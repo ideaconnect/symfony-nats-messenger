@@ -42,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strategy against the test server, in nats mode, over a message whose handler fails once: NATS redelivers it
   `nak_delay` later and it is handled, with Symfony's retry left unpublished. `composer examples` runs it in CI
   on the latest and the oldest supported NATS, and it fails without the fix on Symfony Messenger 8.1.10.
+- The warning about Symfony's retry strategy in nats mode (#94): unit tests check that it is logged once for two
+  left-out copies through Symfony's Worker, once per transport object with its own stream and subject, and not
+  at all in symfony mode, with `max_retries: 0`, or for a copy that is not a retry (failure transport, message not
+  received in this process, plain dispatch). The Behat scenario "Symfony's retry strategy is ignored with the NATS
+  retry handler" checks that the consumer warned once, and "NATS stops redelivering a poison message after
+  max_deliver attempts" (`max_retries: 0`) that it did not.
 
 ## [5.7.1] - 2026-10-19
 
