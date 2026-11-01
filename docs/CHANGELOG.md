@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **With `retry_handler: nats`, a message whose handler fails is redelivered again on Symfony Messenger 7.4.22,
+  8.1.10 and later (#90).** Those releases acknowledge a message they send for retry instead of rejecting it
+  (symfony/symfony#67038). In nats mode the transport does not publish that retry and relies on NATS to
+  redeliver the original (#47), so the acknowledgement went to NATS as an ACK: with Symfony's retry strategy
+  left on (FrameworkBundle's default `max_retries: 3`), a message whose handler failed once was gone, with
+  neither a redelivery nor a failure-transport copy. `send()` now remembers the delivery whose retry copy it
+  leaves out, and `ack()` NAKs that delivery (with `nak_delay` when set) instead of acknowledging it. The worker
+  of earlier Messenger releases rejects it, which NAKs it as before. The transport still passes the worker's ACK
+  on for a delivery that was handled, and for every delivery with the default `retry_handler: symfony`. The
+  README's warning says that up to 5.7.1 `max_retries: 0` is required in nats mode on those Symfony releases.
+
+### Testing & CI
+- A Behat scenario, "A message that fails once is redelivered with Symfony's default retry strategy", sends a
+  message whose handler fails once to a transport in nats mode with Symfony's default retry strategy, and
+  checks that it is handled on the redelivery; it fails on Symfony Messenger 8.1.10 without the fix. Unit tests
+  run Symfony's Worker over a batch with one failing and one handled message, and cover the NAK on `ack()`
+  (with `nak_delay` and `ack_sync`), its single use, and that only the delivery sent for retry is NAKed.
+- A new example, `nats-retry.php`, runs Symfony's Worker and retry listener with FrameworkBundle's default retry
+  strategy against the test server, in nats mode, over a message whose handler fails once: NATS redelivers it
+  `nak_delay` later and it is handled, with Symfony's retry left unpublished. `composer examples` runs it in CI
+  on the latest and the oldest supported NATS, and it fails without the fix on Symfony Messenger 8.1.10.
+
 ## [5.7.1] - 2026-10-19
 
 A **patch** release. It requires client 2.27.1, in which an acknowledgement whose write is the first to notice a
