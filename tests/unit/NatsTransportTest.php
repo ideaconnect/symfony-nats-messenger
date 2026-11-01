@@ -20,6 +20,7 @@ use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
+use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Tests\Support\StrictHeaderNameSerializer;
 use InvalidArgumentException;
 use LogicException;
@@ -2216,6 +2217,142 @@ final class NatsTransportTest extends TestCase
 
         $transport->send($failed->with(new RedeliveryStamp(1)));
         $transport->ack($failed);
+    }
+
+    /**
+     * In nats mode the first retry copy send() leaves out is logged, through the transport's logger, as a warning
+     * that Symfony's retry strategy is on, and only the first: here through Symfony's Worker and retry listener with
+     * FrameworkBundle's default strategy (3 retries) over a batch of two failing messages, whose two copies are both
+     * left out (#94).
+     */
+    public function testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'first'),
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.2.2.0.0', payload: 'second'),
+        ]));
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::exactly(2))->method('nak')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $this->decodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        self::runWorkerOverFailingMessages($transport, new MultiplierRetryStrategy(3, 1000, 2), 2);
+
+        self::assertSame([[
+            'level' => 'warning',
+            'message' => 'retry_handler=nats on stream "test-stream", subject "test-topic": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+        ]], $logger->records);
+    }
+
+    /**
+     * With max_retries: 0, as the README asks for in nats mode, Symfony's Worker sends no retry copy and rejects the
+     * failed delivery, which is NAKed, and nothing is logged (#94).
+     */
+    public function testNatsModeWithoutSymfonysRetriesLogsNoWarning(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'encoded'),
+        ]));
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $this->decodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        self::runWorkerOverFailingMessages($transport, new MultiplierRetryStrategy(0), 1);
+
+        self::assertSame([], $logger->records);
+    }
+
+    /**
+     * Nothing is logged when send() leaves out no retry copy: in symfony mode, where Symfony's retry copy is
+     * published, and in nats mode for a copy for the failure transport, a message not received in this process and
+     * a plain dispatch (#94).
+     *
+     * @param array<string, mixed> $options
+     * @param list<StampInterface> $stamps
+     */
+    #[DataProvider('sendsThatLeaveOutNoRetryCopy')]
+    public function testNoWarningWhenSendLeavesOutNoRetryCopy(array $options, array $stamps): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $serializer, $logger);
+        $transport->setJetStreamContext($jetStream);
+        $transport->send(new Envelope(new \stdClass(), $stamps));
+
+        self::assertSame([], $logger->records);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, list<StampInterface>}>
+     */
+    public static function sendsThatLeaveOutNoRetryCopy(): iterable
+    {
+        yield 'symfony mode, Symfony\'s retry copy' => [[], [new ReceivedStamp('async'), new DelayStamp(1000), new RedeliveryStamp(1)]];
+        foreach (self::envelopesNatsModeStillPublishes() as $name => [$stamps]) {
+            yield 'nats mode, ' . $name => [['retry_handler' => 'nats'], $stamps];
+        }
+    }
+
+    /**
+     * Once per transport object: each transport in nats mode warns about its own stream and subject the first time
+     * it leaves out a retry copy, whether the copy carries a delivery token or not, and stays quiet after that.
+     */
+    public function testEachTransportWarnsOnceAboutItsOwnStreamAndSubject(): void
+    {
+        $logger = new RecordingLogger();
+        $first = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], new PhpSerializer(), $logger);
+        $second = new RuntimeTestableNatsTransport('nats://localhost:4222/orders/orders.created', ['retry_handler' => 'nats'], new PhpSerializer(), $logger);
+        $retry = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new RedeliveryStamp(1)]);
+
+        $first->send($retry);
+        $second->send($retry->with(new TransportMessageIdStamp('delivery-1')));
+        $first->send($retry->with(new TransportMessageIdStamp('delivery-2')));
+        $second->send($retry->with(new RedeliveryStamp(2)));
+
+        self::assertSame([
+            'retry_handler=nats on stream "test-stream", subject "test-topic": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+            'retry_handler=nats on stream "orders", subject "orders.created": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+        ], $logger->messagesAt('warning'));
+        self::assertCount(2, $logger->records);
+    }
+
+    /** A serializer that decodes every payload into an envelope of its own. */
+    private function decodingSerializer(): SerializerInterface
+    {
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willReturnCallback(static fn (): Envelope => new Envelope(new \stdClass()));
+
+        return $serializer;
+    }
+
+    /**
+     * Runs Symfony's Worker, with its retry listener and the given retry strategy, over the transport until it has
+     * received the given number of messages, the handler failing every one of them.
+     */
+    private static function runWorkerOverFailingMessages(NatsTransport $transport, MultiplierRetryStrategy $strategy, int $messages): void
+    {
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function (): void {
+                throw new \RuntimeException('always fails');
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($transport),
+            self::singleServiceLocator($strategy),
+        ));
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener($messages));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
     }
 
     /**

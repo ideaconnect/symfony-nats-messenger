@@ -123,6 +123,10 @@ errors at error level. Among the errors is the only trace of acknowledgements lo
 [`reconnect: true`](#automatic-reconnect): `Reconnect exhausted: N bytes of buffered publishes were discarded`.
 There is no debug-level chatter, so a wired logger costs a few lines per connection.
 
+The transport writes one line of its own to the same logger: a warning, once per transport object, when a
+transport in nats mode leaves out a retry Symfony's retry strategy sent, i.e. when `max_retries` is above 0 with
+`retry_handler: nats` (see [Retry Handler Behavior](#retry-handler-behavior)).
+
 With the bundle, the application's `logger` service is handed to the factory, tagged for Monolog's
 `messenger` channel, so the client's lines land next to the worker's. Without that service, or without the
 bundle, the client gets no logger, as before 5.7.0. To wire one yourself, give it to the factory, which hands
@@ -137,7 +141,7 @@ services:
         tags: [messenger.transport_factory]
 ```
 
-> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, the examples `reconnect.php` and `cluster-failover.php`
+> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, the examples `reconnect.php` and `cluster-failover.php`
 
 ### Development Setup
 
@@ -560,7 +564,15 @@ settles the original: Symfony Messenger up to 7.4.21 and 8.1.9 rejects it, and 7
 acknowledge it, since the retry was sent ([symfony/symfony#67038](https://github.com/symfony/symfony/pull/67038)).
 The transport NAKs it either way. Set `max_retries: 0` on the transport anyway: with retries left on, Symfony
 still logs each failure as a retry it never makes ("Sending for retry #1") and never treats the message as
-failed for good.
+failed for good. The transport warns about it through its logger (see [Logging](#logging)), once per transport
+object, so once per worker, the first time it leaves out such a retry:
+
+```text
+retry_handler=nats on stream "my-stream", subject "my-topic": Symfony's retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").
+```
+
+The warning reads no configuration: a strategy that does not retry never sends a retry, so it cannot appear with
+`max_retries: 0`, and it works the same when `retry_handler` comes from a DSN in an environment variable.
 
 > ⚠️ **Up to 5.7.1 of this transport, `max_retries: 0` is required with `retry_handler: nats` on Symfony
 > Messenger 7.4.22, 8.1.10 or later.** Those releases acknowledge the message they send for retry, and 5.7.1
@@ -583,7 +595,7 @@ framework:
           max_retries: 0
 ```
 
-> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
+> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testNatsModeWithoutSymfonysRetriesLogsNoWarning`, `testNoWarningWhenSendLeavesOutNoRetryCopy`, `testEachTransportWarnsOnceAboutItsOwnStreamAndSubject`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
 
 ### Long-Running Handlers (`--keepalive`)
 
@@ -1621,7 +1633,7 @@ The bridge consists of two main components, wired into the framework by a thin b
 
 ### NatsTransportFactory
 - Handles DSN scheme detection (`nats-jetstream://`)
-- Creates `NatsTransport` instances, handing them its optional PSR-3 logger for the NATS client
+- Creates `NatsTransport` instances, handing them its optional PSR-3 logger for the NATS client and the transport's warning in nats mode
 - Validates configuration
 
 ### NatsTransport

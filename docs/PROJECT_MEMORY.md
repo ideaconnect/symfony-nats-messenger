@@ -114,7 +114,9 @@ apply only with the option on.
   and with `ack()` from 7.4.22/8.1.10 on (symfony/symfony#67038). `send()` therefore remembers
   the delivery token of a suppressed copy (a `WeakMap` by message) and `ack()` NAKs that one
   delivery; an ACK there lost the message (#90). Any code path that settles a received message
-  must keep both Messenger lines in mind.
+  must keep both Messenger lines in mind. The first copy left out logs a warning, once per transport object,
+  that Symfony's retry strategy is on (#94), through the logger the transport now keeps besides handing it to
+  the client; it parses no configuration and cannot fire with `max_retries: 0`.
 - **Keepalive:** Symfony invokes it from SIGALRM. It queues `inProgress()->ignore()` without
   awaiting, pinging, or connecting, because a signal handler cannot switch fibers (#48).
   The event loop must run for the queued write to leave. Plain blocking PHP work therefore

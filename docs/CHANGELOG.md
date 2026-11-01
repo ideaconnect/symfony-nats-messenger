@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A transport in nats mode warns, once, when Symfony's retry strategy is on (#94).** With
+  `retry_handler: nats`, Symfony's retry strategy has no effect and the README asks for `max_retries: 0`, but
+  FrameworkBundle gives every transport `max_retries: 3`, and nothing told a user who missed that paragraph:
+  Symfony logged every failure as a retry it never made, dispatched `WorkerMessageRetriedEvent` for it, and never
+  sent the message to a failure transport (and up to 5.7.1, on Symfony Messenger 7.4.22 / 8.1.10 or later, the
+  message was lost, #90). The first time `send()` leaves out the copy Symfony's retry sends, the transport now logs
+  `retry_handler=nats on stream "S", subject "T": Symfony's retry strategy retried a message that NATS redelivers
+  itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").` at warning level, once per
+  transport object. It reads no configuration, so it cannot appear with `max_retries: 0` (no copy is sent then)
+  and it works with a DSN in an environment variable. The transport keeps the PSR-3 logger it is given (by the
+  factory, which the bundle hands the application's `logger`), which until now only went to the NATS client.
+
 ### Fixed
 - **With `retry_handler: nats`, a message whose handler fails is redelivered again on Symfony Messenger 7.4.22,
   8.1.10 and later (#90).** Those releases acknowledge a message they send for retry instead of rejecting it

@@ -128,6 +128,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private ?\WeakMap $retriesNatsRedelivers = null;
 
+    /** The logger this transport was given, which the NATS client got too; null without one. */
+    private ?LoggerInterface $logger;
+
+    /**
+     * Whether this transport has logged that Symfony's retry strategy is on while it is in nats mode
+     * ({@see warnThatSymfonysRetryStrategyIsOn()}), which it does once.
+     */
+    private bool $symfonysRetryStrategyReported = false;
+
     /**
      * Creates a transport instance from DSN/options and optional serializer override.
      *
@@ -140,11 +149,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * @param SerializerInterface|null $serializer Custom serializer; when null, defaults to igbinary
      * @param LoggerInterface|null   $logger     The NATS client's logger: the connection's lifecycle at info level,
      *                                           its errors at error level, among them a reconnect that gave up and
-     *                                           discarded the acknowledgements buffered meanwhile. The bundle hands
-     *                                           the application's logger to {@see NatsTransportFactory}.
+     *                                           discarded the acknowledgements buffered meanwhile. The transport
+     *                                           keeps it as well, for a warning in nats mode when Symfony's retry
+     *                                           strategy is on ({@see warnThatSymfonysRetryStrategyIsOn()}). The
+     *                                           bundle hands the application's logger to {@see NatsTransportFactory}.
      */
     public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null, ?LoggerInterface $logger = null)
     {
+        $this->logger = $logger;
+
         if ($serializer !== null) {
             $this->serializer = $serializer;
         } elseif ($this->isExtensionLoaded('igbinary')) {
@@ -190,7 +203,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *
      * With retry_handler=nats, the copy Symfony's retry sends of a message this transport received is not
      * published ({@see isRetryNatsRedeliversItself()}): the delivery it belongs to is remembered instead, so that
-     * the worker's ack() of it NAKs it ({@see natsRedeliversTheRetryOf()}).
+     * the worker's ack() of it NAKs it ({@see natsRedeliversTheRetryOf()}). The first such copy is logged as a
+     * warning that Symfony's retry strategy is on ({@see warnThatSymfonysRetryStrategyIsOn()}).
      *
      * @throws RuntimeException     If serialization fails and the envelope carries an ErrorDetailsStamp.
      * @throws \Throwable           The original serializer exception when serialization fails and the
@@ -203,6 +217,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function send(Envelope $envelope): Envelope
     {
         if ($this->isRetryNatsRedeliversItself($envelope)) {
+            $this->warnThatSymfonysRetryStrategyIsOn();
+
             $delivery = $envelope->last(TransportMessageIdStamp::class);
             if ($delivery !== null) {
                 $this->retriesNatsRedelivers ??= new \WeakMap();
@@ -350,6 +366,37 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         return $this->configuration->retryHandler() === RetryHandler::NATS
             && $envelope->last(ReceivedStamp::class) !== null
             && RedeliveryStamp::getRetryCountFromEnvelope($envelope) > 0;
+    }
+
+    /**
+     * Logs a warning, the first time {@see send()} leaves out the copy Symfony's retry sends, that Symfony's retry
+     * strategy is on for this transport in nats mode, where it has no effect (#94).
+     *
+     * FrameworkBundle gives every transport max_retries: 3, and the README asks for max_retries: 0 in nats mode, in
+     * a paragraph that is easy to miss. With retries on, Symfony logs every failure as a retry it never makes
+     * ("Sending for retry #1"), dispatches WorkerMessageRetriedEvent for it, and never treats the message as failed
+     * for good, so a failure transport never receives it; up to 5.7.1, on Symfony Messenger 7.4.22 / 8.1.10 and
+     * later, the message was lost after its first failure (#90).
+     *
+     * A strategy that does not retry (max_retries: 0, or one of its own that says no) sends no copy, so the first
+     * copy left out proves that retries are on: no configuration is read and nothing is guessed, whether
+     * retry_handler comes from the transport's options or from a DSN in an environment variable. Once per
+     * transport object, so a worker logs it once rather than for every failure, through the logger the transport
+     * was given; without one nothing is logged.
+     */
+    private function warnThatSymfonysRetryStrategyIsOn(): void
+    {
+        if ($this->symfonysRetryStrategyReported) {
+            return;
+        }
+
+        $this->symfonysRetryStrategyReported = true;
+        $this->logger?->warning(sprintf(
+            'retry_handler=nats on stream "%s", subject "%s": Symfony\'s retry strategy retried a message that NATS'
+            . ' redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+            $this->streamName,
+            $this->topic,
+        ));
     }
 
     /**
