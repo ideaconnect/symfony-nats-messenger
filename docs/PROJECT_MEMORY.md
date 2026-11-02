@@ -93,6 +93,19 @@ apply only with the option on.
   TERM whose write meets the dead socket is buffered and returns at once from client 2.27.1
   (#244), hence the `^2.27.1` floor since 5.7.1. The factory's optional PSR-3 logger reaches the
   client; the bundle passes `logger` on Monolog's `messenger` channel.
+  A handler failing while the worker's server goes away still ends the worker in symfony mode:
+  Symfony's retry send is a request whose reply the lost connection cannot bring, so it times out (#95, README
+  "A Handler Failing During the Loss"; measured 2026-11-01, nats 2.15.1, client 2.27.2). #95
+  analysed a transport re-publish after the timeout (misfires on a slow but connected leader with
+  409 err_code 10158, doubles the wait with no server to fail over to) and pointed at the client
+  instead: ideaconnect/php-nats-jetstream-client#249, merged in its #251 (`58106f4`, 2026-11-02, no
+  client release yet), adds the opt-in `NatsOptions::$resendJetStreamPublishOnReconnect` (off by
+  default): a publish with a `Nats-Msg-Id` goes out again once the connection its frame went out on
+  is replaced. On the test cluster (2.15.1) a publish right after the leader's `docker stop` was
+  stored 0.01 s later with it, and timed out after 10 s without it. The transport does not set it:
+  that needs a client release, a raised requirement and an option for sends with a message id; the
+  default configuration (no id) stays as described. In nats mode the NAK at that moment
+  did not take effect (redelivery after `ack_wait`).
 - **Pull status:** 408 is empty; 404 is historically empty. A missing consumer normally gives 503,
   and deletion during a pull can give 409. With `auto_setup`, 404/409/503 cause one provisioning
   attempt and one retried pull; repeated 409/503 propagate. Since 5.7.0, `409 Server Shutdown`
