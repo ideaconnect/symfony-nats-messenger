@@ -275,9 +275,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $headers = is_array($encodedMessage['headers'] ?? null) ? $encodedMessage['headers'] : [];
         $topic = $this->topic;
 
-        $delayMs = $envelope->last(DelayStamp::class)?->getDelay() ?? 0;
+        $delayMs = $envelope->last(DelayStamp::class)?->getDelay();
         if ($delayMs > 0 && $this->configuration->isScheduledMessagesEnabled()) {
-            $deliverAt = new \DateTimeImmutable('+' . $delayMs . ' milliseconds');
+            $deliverAt = $this->deliveryTime($delayMs);
             // The @at schedule expression has whole-second resolution and truncates any sub-second
             // component. Round up to the next whole second when one is present so a delayed message is
             // never delivered before the requested delay elapses - truncating down could otherwise fire
@@ -292,7 +292,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $normalizedHeaders = [];
         foreach ($headers as $name => $value) {
-            $normalizedHeaders[(string) $name] = TypeCoercion::stringValue($value);
+            $normalizedHeaders[$name] = TypeCoercion::stringValue($value);
         }
 
         // A single JetStream publish path for both plain and header-carrying (incl. scheduled)
@@ -314,6 +314,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         return $envelope;
+    }
+
+    /**
+     * When a message sent now with a delay of $delayMs milliseconds is due. Exposed for testability: send() rounds
+     * a time with a fraction of a second up to the next whole second, and a test needs a time without one.
+     */
+    protected function deliveryTime(int $delayMs): \DateTimeImmutable
+    {
+        return new \DateTimeImmutable(sprintf('+%d milliseconds', $delayMs));
     }
 
     /**
@@ -481,9 +490,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 continue;
             }
 
-            $headers = ($message->rawHeaders !== null && $message->rawHeaders !== '')
-                ? self::stringNamedHeaders(NatsHeaders::fromWireBlock($message->rawHeaders))
-                : [];
+            // fromWireBlock() reads a message without headers (null, or an empty block) as no headers.
+            $headers = self::stringNamedHeaders(NatsHeaders::fromWireBlock($message->rawHeaders));
 
             try {
                 $decoded = $this->serializer->decode([
@@ -1569,9 +1577,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $streamConfiguration->maxConsumers($this->configuration->streamMaxConsumers());
         }
 
-        if ($this->configuration->streamReplicas() > 0) {
-            $streamConfiguration->replicas($this->configuration->streamReplicas());
-        }
+        // At least 1: NatsTransportConfiguration::streamReplicas() reads an unset option as one replica. The update
+        // path keeps an existing stream's count when the option is unset ({@see buildUpdatedStreamConfiguration()}).
+        $streamConfiguration->replicas($this->configuration->streamReplicas());
 
         // Retention is set only at creation - NATS rejects changing it on an existing stream, so the
         // update path ({@see buildUpdatedStreamConfiguration()}) preserves the server value instead.
@@ -1674,7 +1682,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         unset($serverConfiguration['name']);
         $serverConfiguration = $this->normalizeStreamConfigurationForUpdate($serverConfiguration);
 
-        $serverSubjects = $this->normalizeSubjects($serverConfiguration['subjects'] ?? $streamInfo->subjects);
+        // StreamInfo::fromArray() reads its subjects from this same config entry.
+        $serverSubjects = $this->normalizeSubjects($serverConfiguration['subjects'] ?? []);
         $mergedSubjects = $this->mergeSubjects($serverSubjects, $desiredSubjects);
 
         // When scheduled messages are disabled, actively drop the transport-managed '{topic}.delayed.>'
@@ -1707,10 +1716,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // The transport authoritatively manages these retention limits. On update we always write
         // the value - including JetStream's "unlimited" sentinels (max_age 0, others -1) when the
         // option is unset - so a previously-configured limit is actually relaxed/cleared instead of
-        // being preserved from the existing server configuration by the array_merge above.
-        $updatedConfiguration['max_age'] = $this->configuration->streamMaxAgeSeconds() > 0
-            ? $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS
-            : 0;
+        // being preserved from the existing server configuration by the array_merge above. An unset
+        // stream_max_age reads as 0 seconds, which is 0 nanoseconds.
+        $updatedConfiguration['max_age'] = $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS;
         $updatedConfiguration['max_bytes'] = $this->configuration->streamMaxBytes() ?? -1;
         $updatedConfiguration['max_msgs'] = $this->configuration->streamMaxMessages() ?? -1;
         $updatedConfiguration['max_msgs_per_subject'] = $this->configuration->streamMaxMessagesPerSubject() ?? -1;

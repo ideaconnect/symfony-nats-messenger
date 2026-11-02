@@ -54,9 +54,27 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
 
 class TestableNatsTransport extends NatsTransport
 {
+    /** How often {@see pause()} may run in one test: whileTheClusterSettles() pauses at most 50 times in its 5 s. */
+    private const MAX_PAUSES = 60;
+
+    private int $pausesTaken = 0;
+
     protected function connect(): void
     {
         // Keep unit tests isolated from live NATS.
+    }
+
+    /**
+     * The real pause, failing the test once it ran more often than setup() ever pauses, so that a loop which never
+     * ends fails within seconds instead of hanging the run.
+     */
+    protected function pause(float $seconds): void
+    {
+        if (++$this->pausesTaken > self::MAX_PAUSES) {
+            throw new \LogicException(sprintf('pause() ran more than %d times: a loop that never ends.', self::MAX_PAUSES));
+        }
+
+        parent::pause($seconds);
     }
 }
 
@@ -184,6 +202,29 @@ class PausingNatsTransport extends RuntimeTestableNatsTransport
     {
         $this->pauses[] = $seconds;
         $this->now += $this->secondsPerPause;
+        // A loop that never ends, with a clock that does not move, fails the test instead of filling the memory.
+        if (count($this->pauses) > 1000) {
+            throw new \LogicException('pause() ran more than 1000 times: a loop that never ends.');
+        }
+    }
+}
+
+/**
+ * Sends a delayed message as due at a time the test gives instead of the clock's, and records the delays it was asked
+ * about.
+ */
+class DeliveryTimeNatsTransport extends RuntimeTestableNatsTransport
+{
+    public \DateTimeImmutable $dueAt;
+
+    /** @var list<int> */
+    public array $delays = [];
+
+    protected function deliveryTime(int $delayMs): \DateTimeImmutable
+    {
+        $this->delays[] = $delayMs;
+
+        return $this->dueAt;
     }
 }
 
@@ -4602,6 +4643,58 @@ final class NatsTransportTest extends TestCase
         self::assertArrayHasKey('Nats-Schedule', $capturedHeaders);
         $scheduled = new \DateTimeImmutable(substr($capturedHeaders['Nats-Schedule'], 4));
         self::assertGreaterThanOrEqual($requested, $scheduled, 'A short delay must not be scheduled before it has elapsed.');
+    }
+
+    /**
+     * A delivery time on a whole second is that second: only a fraction of a second is rounded up. (The real clock
+     * almost never gives a whole second, so the transport is given one.)
+     */
+    public function testSendDelayedMessageDueOnAWholeSecondIsScheduledForThatSecond(): void
+    {
+        $capturedHeaders = $this->sendDelayedMessageDueAt('2026-11-02T12:00:05.000000+00:00', 5000, $delays);
+
+        self::assertSame('@at 2026-11-02T12:00:05Z', $capturedHeaders['Nats-Schedule'] ?? null);
+        self::assertSame([5000], $delays);
+    }
+
+    public function testSendDelayedMessageDueWithinASecondIsScheduledForTheNextOne(): void
+    {
+        $capturedHeaders = $this->sendDelayedMessageDueAt('2026-11-02T12:00:05.000001+00:00', 1500, $delays);
+
+        self::assertSame('@at 2026-11-02T12:00:06Z', $capturedHeaders['Nats-Schedule'] ?? null);
+        self::assertSame([1500], $delays);
+    }
+
+    /**
+     * Sends a message with a DelayStamp of $delayMs through a transport whose delivery time is $dueAt, and returns
+     * the headers it was published with.
+     *
+     * @param list<int>|null $delays Set to the delays the transport asked the delivery time for.
+     * @return array<string, string>
+     */
+    private function sendDelayedMessageDueAt(string $dueAt, int $delayMs, ?array &$delays): array
+    {
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded-payload']);
+
+        $capturedHeaders = [];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturnCallback(
+            function (string $subject, string $payload, array $headers) use (&$capturedHeaders): Future {
+                $capturedHeaders = $headers;
+
+                return Future::complete();
+            }
+        );
+
+        $transport = new DeliveryTimeNatsTransport(self::VALID_DSN, ['scheduled_messages' => true], $serializer);
+        $transport->setJetStreamContext($jetStream);
+        $transport->dueAt = new \DateTimeImmutable($dueAt);
+
+        $transport->send(new Envelope(new \stdClass(), [new DelayStamp($delayMs)]));
+        $delays = $transport->delays;
+
+        return $capturedHeaders;
     }
 
     public function testSendDelayedMessageWithLargeDelaySchedulesFarInTheFuture(): void

@@ -202,10 +202,11 @@ final class NatsTransportConfigurationBuilder
 
         // A valid path is exactly two non-empty slash-separated tokens (/stream/topic). Coercing a
         // non-string/empty path to '' lets this single check reject every malformed path - missing,
-        // too few or too many segments, or an empty token.
+        // too few or too many segments, or an empty token: trim() takes the slashes off both ends, so
+        // an empty token can only sit between two slashes, which makes a third segment.
         $path = is_string($components['path']) ? $components['path'] : '';
         $pathParts = explode('/', trim($path, '/'));
-        if (count($pathParts) !== 2 || $pathParts[0] === '' || $pathParts[1] === '') {
+        if (count($pathParts) !== 2) {
             throw new InvalidArgumentException('NATS DSN must contain both stream name and topic name (format: /stream/topic).');
         }
 
@@ -523,12 +524,8 @@ final class NatsTransportConfigurationBuilder
      */
     private function assertStreamDescriptionLength(array $configuration): void
     {
-        $value = $configuration[TransportOption::STREAM_DESCRIPTION->value] ?? null;
-        if ($value === null) {
-            return;
-        }
-
-        $description = TypeCoercion::stringValue($value);
+        // An unset description reads as '', which is within the limit.
+        $description = TypeCoercion::stringValue($configuration[TransportOption::STREAM_DESCRIPTION->value] ?? null);
         if (strlen($description) > self::MAX_STREAM_DESCRIPTION_LENGTH) {
             throw new InvalidArgumentException(sprintf(
                 'The %s option must not exceed %d characters (got %d): NATS rejects longer descriptions.',
@@ -647,7 +644,9 @@ final class NatsTransportConfigurationBuilder
         }
 
         foreach ($backoff as $value) {
-            if ((!is_int($value) && !is_float($value) && !is_string($value)) || !is_numeric($value) || (float) $value < 0) {
+            // is_numeric() is false for anything but an int, a float or a numeric string, and PHP compares a
+            // numeric string with 0 as a number.
+            if (!is_numeric($value) || $value < 0) {
                 throw new InvalidArgumentException('The backoff option must be a list of non-negative numbers (seconds).');
             }
         }
@@ -695,17 +694,13 @@ final class NatsTransportConfigurationBuilder
      */
     private function assertDuplicateWindowNotExceedingMaxAge(array $configuration): void
     {
-        $duplicateWindow = $configuration[TransportOption::STREAM_DUPLICATE_WINDOW->value] ?? null;
-        if ($duplicateWindow === null) {
-            return;
-        }
-
         $maxAge = TypeCoercion::intValue($configuration[TransportOption::STREAM_MAX_AGE->value] ?? 0);
         if ($maxAge <= 0) {
             return;
         }
 
-        $duplicateWindowValue = TypeCoercion::intValue($duplicateWindow);
+        // An unset window reads as 0, which never exceeds a positive max age.
+        $duplicateWindowValue = TypeCoercion::intValue($configuration[TransportOption::STREAM_DUPLICATE_WINDOW->value] ?? null);
         if ($duplicateWindowValue > $maxAge) {
             throw new InvalidArgumentException(sprintf(
                 'The stream_duplicate_window option (%ds) must not exceed stream_max_age (%ds): NATS rejects a duplicate window larger than the stream max age.',
@@ -769,10 +764,7 @@ final class NatsTransportConfigurationBuilder
      */
     private function toNullableString(mixed $value): ?string
     {
-        if ($value === null) {
-            return null;
-        }
-
+        // null is not a scalar either.
         if (!is_string($value) && !is_int($value) && !is_float($value) && !is_bool($value)) {
             return null;
         }
