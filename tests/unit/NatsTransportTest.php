@@ -192,6 +192,13 @@ final class NatsTransportTest extends TestCase
     private const VALID_DSN = 'nats://admin:password@localhost:4222/test-stream/test-topic';
 
     /**
+     * retry_handler nats, with the connection check that the NAK of a failed delivery runs first turned off: the
+     * tests using it are about what is NAKed, against a JetStream double with no client to answer a PING, and the
+     * check has tests of its own (testSettlingAFailedDeliveryChecksTheConnectionFirst and those after it).
+     */
+    private const NATS_MODE = ['retry_handler' => 'nats', 'ping_after_idle' => 0];
+
+    /**
      * Matches an addStream() StreamConfiguration whose toArray() equals the expected config.
      *
      * @param array<string, mixed> $expected
@@ -1410,6 +1417,83 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * The NAK or TERM of a delivery whose handler failed checks the connection first, with one PING, though the
+     * connection was used a moment ago: the server may have closed it while the handler ran, and a write into a
+     * connection whose close the client has not read is lost (ReconnectModeTest shows it with the real client). The
+     * order is checked: PING, then the acknowledgement. The ACK of a handled message after it pings nothing.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('failedDeliverySettlements')]
+    public function testSettlingAFailedDeliveryChecksTheConnectionFirst(array $options, string $settle, string $frame): void
+    {
+        $calls = [];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        foreach (['ack', 'nak', 'nakWithDelay', 'term'] as $method) {
+            $jetStream->method($method)->willReturnCallback(static function () use (&$calls, $method): Future {
+                $calls[] = $method;
+
+                return Future::complete();
+            });
+        }
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::once())->method('rtt')->willReturnCallback(static function () use (&$calls): Future {
+            $calls[] = 'rtt';
+
+            return Future::complete(0.001);
+        });
+        $client->expects(self::never())->method('disconnect');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, $options);
+        $transport->setClient($client);
+        $message = new \stdClass();
+        $received = (new Envelope($message))->with(new TransportMessageIdStamp('reply-token'), new ReceivedStamp('nats'));
+        // The connection is in use: an ACK that needs no check.
+        $transport->ack($received);
+
+        if ($settle === 'ack') {
+            $transport->send($received->with(new RedeliveryStamp(1)));
+            $transport->ack($received);
+        } else {
+            $transport->reject($received);
+        }
+        // The check is over: the next ACK pings nothing.
+        $transport->ack($received);
+
+        self::assertSame(['ack', 'rtt', $frame, 'ack'], $calls);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string, string}>
+     */
+    public static function failedDeliverySettlements(): iterable
+    {
+        yield 'reject(), symfony mode: TERM' => [[], 'reject', 'term'];
+        yield 'reject(), nats mode: NAK' => [['retry_handler' => 'nats'], 'reject', 'nak'];
+        yield 'reject(), nats mode with nak_delay' => [['retry_handler' => 'nats', 'nak_delay' => 1], 'reject', 'nakWithDelay'];
+        yield 'ack() of a delivery whose retry copy was left out: NAK' => [['retry_handler' => 'nats'], 'ack', 'nak'];
+    }
+
+    /** ping_after_idle 0 turns this check off as well. */
+    public function testPingAfterIdleZeroTurnsTheCheckBeforeSettlingAFailedDeliveryOff(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats', 'ping_after_idle' => 0]);
+        $transport->setClient($client);
+        $transport->reject((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token')));
+    }
+
+    /**
      * A pull can wait up to max_batch_timeout for messages, with the connection in use all that time: the idle
      * time counts from when the pull ended, so a long max_batch_timeout does not make every pull PING first.
      */
@@ -2029,7 +2113,7 @@ final class NatsTransportTest extends TestCase
         $serializer->method('decode')->willReturn(new Envelope(new \stdClass()));
         $serializer->expects(self::never())->method('encode');
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $serializer);
         $transport->setJetStreamContext($jetStream);
 
         $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
@@ -2080,7 +2164,7 @@ final class NatsTransportTest extends TestCase
             return new Envelope($message);
         });
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $serializer);
         $transport->setJetStreamContext($jetStream);
 
         $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
@@ -2118,7 +2202,7 @@ final class NatsTransportTest extends TestCase
             ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === 'delivery-1'))
             ->willReturn(Future::complete());
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'] + $options);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + $options);
         $transport->setJetStreamContext($jetStream);
         $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
 
@@ -2147,7 +2231,7 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
         $jetStream->expects(self::once())->method('ack')->willReturn(Future::complete());
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats']);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
         $transport->setJetStreamContext($jetStream);
         $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
 
@@ -2184,7 +2268,7 @@ final class NatsTransportTest extends TestCase
             return Future::complete();
         });
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats']);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
         $transport->setJetStreamContext($jetStream);
         $retried = new \stdClass();
         $failed = new Envelope($retried, [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
@@ -2211,7 +2295,7 @@ final class NatsTransportTest extends TestCase
             return Future::complete();
         });
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats']);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
         $transport->setJetStreamContext($jetStream);
         $first = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
         $second = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-2')]);
@@ -2262,7 +2346,7 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::exactly(2))->method('nak')->willReturn(Future::complete());
         $logger = new RecordingLogger();
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $this->decodingSerializer(), $logger);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $this->decodingSerializer(), $logger);
         $transport->setJetStreamContext($jetStream);
         self::runWorkerOverFailingMessages($transport, new MultiplierRetryStrategy(3, 1000, 2), 2);
 
@@ -2286,7 +2370,7 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
         $logger = new RecordingLogger();
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $this->decodingSerializer(), $logger);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $this->decodingSerializer(), $logger);
         $transport->setJetStreamContext($jetStream);
         self::runWorkerOverFailingMessages($transport, new MultiplierRetryStrategy(0), 1);
 

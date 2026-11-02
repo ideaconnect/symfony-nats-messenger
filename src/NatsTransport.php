@@ -578,6 +578,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
 
         if ($this->natsRedeliversTheRetryOf($envelope, $id)) {
+            $this->checkTheConnectionBeforeSettlingAFailure();
             $this->sendNak($id);
 
             return;
@@ -607,7 +608,27 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
         // Forget the delivery whose retry copy send() left out; handleFailedDelivery() NAKs it in nats mode either way.
         $this->natsRedeliversTheRetryOf($envelope, $id);
+        $this->checkTheConnectionBeforeSettlingAFailure();
         $this->handleFailedDelivery($id);
+    }
+
+    /**
+     * Makes the NAK or TERM of a delivery whose handler failed check the connection first, as after a failed
+     * operation ({@see connectionUsable()}): one PING, unless ping_after_idle is 0.
+     *
+     * An acknowledgement is a write that waits for no reply, and the client reads the socket only while an operation
+     * waits for one. A server that closed the connection while the handler ran (a restart, a rolling upgrade, a
+     * failover) leaves that close unread, the write of the NAK still succeeds, and the frame is lost: measured on the
+     * test cluster (nats-server 2.15.1, client 2.27.2), the server stopped with `docker stop` inside the handler, the
+     * client still reported the connection open 1.5 s later, and the message came back after ack_wait instead of
+     * nak_delay. The PING reads the close, the client recovers the connection (or, without `reconnect`, the
+     * transport dials again), and the NAK goes out on the new one, where it took effect after nak_delay. A handler
+     * that failed is the likely moment for a lost connection, and a failure is rare enough to pay a round trip for;
+     * the ACK of a handled message stays a plain write.
+     */
+    private function checkTheConnectionBeforeSettlingAFailure(): void
+    {
+        $this->checkBeforeNextUse = true;
     }
 
     /**

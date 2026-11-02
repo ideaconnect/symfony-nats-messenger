@@ -21,6 +21,8 @@ use function Amp\delay;
  *  - failNextWriteContaining(): the next write that contains the needle fails as a write to a dead socket does, once.
  *    The client reads such a failure as a lost connection and, with reconnect on, starts its recovery;
  *  - dropConnection(): the server closes the connection, so the client's read meets EOF;
+ *  - closeUnread(): the server closes the connection while the client is not reading: the next write still succeeds
+ *    and is lost, and the next read meets EOF;
  *  - holdNextDial(): the next dial completes only after the given time, so a recovery stays in flight that long;
  *  - refuseDials: every dial fails, so a recovery runs through its attempts and gives up.
  */
@@ -38,6 +40,12 @@ final class FaultInjectingNatsServer implements TransportInterface
     private ?string $failWriteContaining = null;
 
     private int $holdNextDialMs = 0;
+
+    /** The session closeUnread() closed, by the server's count, or null. */
+    private ?int $closedUnreadSession = null;
+
+    /** @var list<string> */
+    private array $lostWrites = [];
 
     public function __construct(private readonly SubscriptionLimitNatsServer $server)
     {
@@ -69,6 +77,12 @@ final class FaultInjectingNatsServer implements TransportInterface
 
     public function write(string $bytes): Future
     {
+        if ($this->closedUnreadSession !== null && $this->closedUnreadSession === $this->server->sessions() - 1) {
+            $this->lostWrites[] = $bytes;
+
+            return Future::complete();
+        }
+
         if ($this->failWriteContaining !== null && str_contains($bytes, $this->failWriteContaining)) {
             $this->failWriteContaining = null;
 
@@ -118,5 +132,26 @@ final class FaultInjectingNatsServer implements TransportInterface
     public function dropConnection(): void
     {
         $this->server->close()->await();
+    }
+
+    /**
+     * The server closes the connection while the client is not reading, as a server that shuts down while a handler
+     * runs does: the close waits unread, the next write on that connection still succeeds, as a write after the
+     * peer's FIN does, and its bytes reach no server; the next read meets EOF.
+     */
+    public function closeUnread(): void
+    {
+        $this->server->close()->await();
+        $this->closedUnreadSession = $this->server->sessions() - 1;
+    }
+
+    /**
+     * What the client wrote into the connection closeUnread() closed, which no server read.
+     *
+     * @return list<string>
+     */
+    public function lostWrites(): array
+    {
+        return $this->lostWrites;
     }
 }

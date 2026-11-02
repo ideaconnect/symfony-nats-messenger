@@ -14,6 +14,8 @@ use IDCT\NatsMessenger\Tests\Support\SubscriptionLimitNatsServer;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Stamp\ReceivedStamp;
+use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 
 use function Amp\delay;
@@ -230,11 +232,13 @@ final class ReconnectModeTest extends TestCase
      * it Open. From client 2.27.1 (#244) the frame goes into the reconnect buffer, ack() or reject() returns at once,
      * and the recovery sends the frame on the connection it makes. With 2.27.0 the client recovered inline and
      * retried the write, so the call waited for the whole recovery, here the held dial, with no budget of its own.
+     * reject() checks the connection first with a PING, which the server still answers here: the TERM's own write is
+     * the one that notices the loss.
      *
      * @param \Closure(ClientInjectedNatsTransport, Envelope): void $acknowledge
      */
     #[DataProvider('acknowledgements')]
-    public function testAnAcknowledgementWhoseWriteFindsTheConnectionLostReturnsAtOnceAndTheRecoverySendsIt(\Closure $acknowledge, string $frame): void
+    public function testAnAcknowledgementWhoseWriteFindsTheConnectionLostReturnsAtOnceAndTheRecoverySendsIt(\Closure $acknowledge, string $frame, int $pings): void
     {
         $server = self::server();
         $faults = new FaultInjectingNatsServer($server);
@@ -257,7 +261,7 @@ final class ReconnectModeTest extends TestCase
 
         self::assertLessThan(0.1, $elapsed, sprintf('the call did not wait for the held dial, it took %.3f s', $elapsed));
         self::assertSame(ConnectionState::Connecting, $stateAfterTheCall, 'the call returned while the client was recovering: the frame was buffered');
-        self::assertSame(0, $client->rtts, 'the client noticed the loss on its own write, the transport checked nothing');
+        self::assertSame($pings, $client->rtts, 'the client noticed the loss on its own write, after the PING reject() checks the connection with');
         self::assertSame(2, $server->sessions());
         self::assertSame(1, $client->statistics()->reconnects);
         self::assertSame([$frame], array_column($server->acks(), 'payload'));
@@ -265,12 +269,85 @@ final class ReconnectModeTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{\Closure(ClientInjectedNatsTransport, Envelope): void, string}>
+     * @return iterable<string, array{\Closure(ClientInjectedNatsTransport, Envelope): void, string, int}>
      */
     public static function acknowledgements(): iterable
     {
-        yield 'ack()' => [static fn (ClientInjectedNatsTransport $transport, Envelope $envelope) => $transport->ack($envelope), '+ACK'];
-        yield 'reject(), a TERM with retry_handler symfony' => [static fn (ClientInjectedNatsTransport $transport, Envelope $envelope) => $transport->reject($envelope), '+TERM'];
+        yield 'ack()' => [static fn (ClientInjectedNatsTransport $transport, Envelope $envelope) => $transport->ack($envelope), '+ACK', 0];
+        yield 'reject(), a TERM with retry_handler symfony' => [static fn (ClientInjectedNatsTransport $transport, Envelope $envelope) => $transport->reject($envelope), '+TERM', 1];
+    }
+
+    /**
+     * The server closed the connection while the handler ran, and the client, which reads the socket only while an
+     * operation waits for a reply, has not read the close: a write into that connection still succeeds, and its frame
+     * reaches no server. The NAK of the failed delivery used to be that write, and the message came back only after
+     * ack_wait (measured on the test cluster with `docker stop`). The NAK checks the connection first: the PING's
+     * wait for its PONG reads the close, the client recovers, and the NAK goes out on the new connection. The same
+     * for the NAK that ack() sends for a delivery whose retry copy was left out (Symfony Messenger 7.4.22, 8.1.10).
+     *
+     * @param \Closure(ClientInjectedNatsTransport, Envelope): void $settle
+     */
+    #[DataProvider('settlementsOfAFailure')]
+    public function testTheNakOfAFailedDeliveryReachesTheServerThatReplacedOneWhichClosedTheConnectionDuringTheHandler(\Closure $settle): void
+    {
+        $server = self::server();
+        $faults = new FaultInjectingNatsServer($server);
+        [$transport, $client] = self::transportOver($faults, options: ['retry_handler' => 'nats']);
+
+        try {
+            $transport->send(new Envelope(self::message('m-1')));
+            [$received] = iterator_to_array($transport->get(), false);
+            $faults->closeUnread();
+
+            $settle($transport, $received);
+            self::waitUntil(static fn (): bool => $server->acks() !== []);
+        } finally {
+            $transport->close();
+        }
+
+        self::assertSame(1, $client->rtts, 'one PING, whose wait read the close');
+        self::assertStringNotContainsString('-NAK', implode('', $faults->lostWrites()), 'the NAK was not written into the closed connection');
+        self::assertSame(2, $server->sessions());
+        self::assertSame(['-NAK'], array_column($server->acks(), 'payload'));
+        self::assertContains('ACK -NAK', $server->received(session: 1), 'the NAK went out on the new connection');
+    }
+
+    /**
+     * @return iterable<string, array{\Closure(ClientInjectedNatsTransport, Envelope): void}>
+     */
+    public static function settlementsOfAFailure(): iterable
+    {
+        yield 'reject()' => [static fn (ClientInjectedNatsTransport $transport, Envelope $envelope) => $transport->reject($envelope)];
+        yield 'ack() after the retry copy was left out' => [static function (ClientInjectedNatsTransport $transport, Envelope $envelope): void {
+            $received = $envelope->with(new ReceivedStamp('nats'));
+            $transport->send($received->with(new RedeliveryStamp(1)));
+            $transport->ack($received);
+        }];
+    }
+
+    /**
+     * Guard: the ACK of a handled message stays a plain write, with no PING first, so a close the client has not read
+     * still takes it (the client's to fix: it would need to notice the close before the write).
+     */
+    public function testTheAckOfAHandledMessageChecksNothingFirst(): void
+    {
+        $server = self::server();
+        $faults = new FaultInjectingNatsServer($server);
+        [$transport, $client] = self::transportOver($faults);
+
+        try {
+            $transport->send(new Envelope(self::message('m-1')));
+            [$received] = iterator_to_array($transport->get(), false);
+            $faults->closeUnread();
+
+            $transport->ack($received);
+        } finally {
+            $transport->close();
+        }
+
+        self::assertSame(0, $client->rtts);
+        self::assertStringContainsString('+ACK', implode('', $faults->lostWrites()));
+        self::assertSame([], $server->acks());
     }
 
     /**
@@ -324,9 +401,10 @@ final class ReconnectModeTest extends TestCase
     }
 
     /**
+     * @param array<string, mixed> $options Merged over the transport options below.
      * @return array{ClientInjectedNatsTransport, RttCountingNatsClient}
      */
-    private static function transportOver(FaultInjectingNatsServer $connection, float $pingAfterIdle = 30, ?RecordingLogger $logger = null): array
+    private static function transportOver(FaultInjectingNatsServer $connection, float $pingAfterIdle = 30, ?RecordingLogger $logger = null, array $options = []): array
     {
         $client = new RttCountingNatsClient(new NatsOptions(
             connectTimeoutMs: 100,
@@ -347,7 +425,7 @@ final class ReconnectModeTest extends TestCase
             'max_reconnect_attempts' => 3,
             'request_timeout' => 0.1,
             'connection_timeout' => 0.02,
-        ], new PhpSerializer());
+        ] + $options, new PhpSerializer());
         $transport->setClient($client);
 
         return [$transport, $client];
