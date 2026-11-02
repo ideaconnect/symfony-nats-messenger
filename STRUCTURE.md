@@ -74,8 +74,9 @@ tests/
 
 examples/                                       # Runnable scripts, one per behaviour (composer examples)
 ├── _bootstrap.php                              # shared setup: autoloader, server, stream, test cluster and docker helpers
-└── *.php                                       # send-and-consume, duplicate-protection, request-timeout, keepalive, connection-checks,
-                                                # reconnect, cluster-failover, stream-placement
+└── *.php                                       # send-and-consume, duplicate-protection, nats-retry, request-timeout, keepalive,
+                                                # connection-checks, reconnect, cluster-failover,
+                                                # handler-failing-during-failover, stream-placement
 
 scripts/
 ├── run-examples.sh                             # runs examples/*.php, strict mode for CI

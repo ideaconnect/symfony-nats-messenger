@@ -78,8 +78,8 @@ apply only with the option on.
 ## Behavior to preserve
 
 - **Connections:** construction opens no socket. First use connects; a Closed client is dialled
-  again. An idle connection (strictly longer than `ping_after_idle`) or a failed operation calls
-  for an RTT PING before reuse. An unanswered PING causes replacement. The wait is bounded by
+  again. An idle connection (strictly longer than `ping_after_idle`), a failed operation, or the NAK/TERM of a
+  failed delivery calls for an RTT PING before reuse. An unanswered PING causes replacement. The wait is bounded by
   `connection_timeout`, or the client's shorter `request_timeout`. `ping_after_idle: 0` disables
   idle and post-failure checks, but Closed-state recovery still applies. `close()` resets the
   connection and provisioning state; the same transport remains reusable.
@@ -104,8 +104,15 @@ apply only with the option on.
   is replaced. On the test cluster (2.15.1) a publish right after the leader's `docker stop` was
   stored 0.01 s later with it, and timed out after 10 s without it. The transport does not set it:
   that needs a client release, a raised requirement and an option for sends with a message id; the
-  default configuration (no id) stays as described. In nats mode the NAK at that moment
-  did not take effect (redelivery after `ack_wait`).
+  default configuration (no id) stays as described. In nats mode the NAK at that moment did not take effect
+  (redelivery after `ack_wait`) up to 5.7.1. Cause (measured 2026-11-02, nats 2.15.1, client 2.27.2): the
+  client reads the socket only while an operation waits for a reply, so a close the server sent during the handler
+  stays unread (the socket sat in CLOSE-WAIT, the client reported Open 1.5 s after `docker stop`), and a write that
+  waits for no reply (ACK, NAK, TERM, WPI) is taken by the socket and lost; #244's buffer only catches writes that
+  fail. Since 5.8.0 `reject()` and `ack()`'s NAK of a left-out retry arm `checkBeforeNextUse` first, so a PING reads
+  the close and the NAK/TERM goes out on the recovered or newly dialled connection. The ACK of a handled message is
+  still unchecked and lost that way (handled twice after `ack_wait`); covering it without a round trip per message
+  needs the client to notice a pending close before such a write.
 - **Pull status:** 408 is empty; 404 is historically empty. A missing consumer normally gives 503,
   and deletion during a pull can give 409. With `auto_setup`, 404/409/503 cause one provisioning
   attempt and one retried pull; repeated 409/503 propagate. Since 5.7.0, `409 Server Shutdown`
@@ -190,7 +197,8 @@ allowed client and PHP 8.5 with latest, verifies root/app versions match, and al
 without delayed scenarios. README advertises NATS ^2.9; the oldest CI image is actually 2.10.
 Measured on it (2026-11-01, nats 2.10.29): right after a stream update from 2 replicas to 1, consumer requests
 can get err_code 10008 "JetStream system temporarily unavailable", "stream not found" or no answer for a few ms
-while NATS moves the consumer; `setup()` asks again on 10008 only (up to 5 s). The example `stream-placement.php`
+while NATS moves the consumer; `setup()` asks again on 10008 and 10059 (up to 5 s) and once more after no answer.
+The example `stream-placement.php`
 hit it in CI (PR #98); a reproduction needs parallel consumer-info probes to load the 2-core test machine.
 
 Transport unit tests use `DG\BypassFinals` for final client mocks, `Future::complete/error`,

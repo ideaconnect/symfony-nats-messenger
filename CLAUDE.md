@@ -75,7 +75,10 @@ composer nats:stop               # stop NATS
   leaves it Closed). A
   connection unused for longer than `ping_after_idle`, or one an operation just failed on (not counting
   JetStream replies, but counting a pull the server did not answer), gets a PING first and is replaced if
-  it goes unanswered; `ping_after_idle: 0` turns both checks off, and `keepalive()` never pings or dials (it
+  it goes unanswered. So does the NAK/TERM of a failed delivery (`reject()`, and `ack()` NAKing a left-out
+  retry): the client reads the socket only while an operation waits for a reply, so a close the server sent
+  during the handler is unread and a fire-and-forget write would be lost. `ping_after_idle: 0` turns these
+  checks off, and `keepalive()` never pings or dials (it
   runs in a signal handler).
 - **Reconnect mode (`reconnect: true`): the client owns recovery.** The transport leaves a Connecting client
   alone (no PING, no dial; the operation waits within its own budget), reads a failed PING by the client's state

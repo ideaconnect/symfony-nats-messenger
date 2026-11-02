@@ -3,7 +3,7 @@
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
 [![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.78%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
-[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-97.0%25-brightgreen)](https://infection.github.io/)
+[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-98.6%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -25,7 +25,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
 - 🌐 **NATS Clusters** - One server in the DSN, the others learned from the cluster; failover, replicated streams
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
-- 🧪 **Thoroughly Tested** - 694 unit tests, ~99.8% coverage, mutation-tested (97.0% MSI)
+- 🧪 **Thoroughly Tested** - 713 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -328,9 +328,10 @@ the test server and print `OK` when what they show held:
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, and `auto_setup` recreates the memory stream the restart lost |
 | `cluster-failover.php` | `reconnect: true` on a cluster: a worker carries on through another server when the one it is connected to stops |
+| `handler-failing-during-failover.php` | `retry_handler: nats` on a cluster: a handler fails while the worker's server stops, and the message comes back `nak_delay` later through another server |
 | `stream-placement.php` | `stream_placement_tags` and `stream_placement_cluster` on a cluster, and staging a move with a replica change |
 
-`composer nats:start` runs a three-server JetStream cluster for the last two next to the single test servers;
+`composer nats:start` runs a three-server JetStream cluster for the last three next to the single test servers;
 [`examples/README.md`](examples/README.md#the-test-cluster) describes it, and
 [Using a NATS Cluster](#using-a-nats-cluster) what they mean for an application.
 
@@ -850,15 +851,20 @@ the client can keep reporting a dead connection open, and a send to a connection
 delivering only times out. A pull from such a connection ends empty, which reads as no messages rather than
 a failure, but the server never answered it: a server that is there ends every pull itself, after
 `max_batch_timeout` at the latest. So the check follows such a pull too, and the pull after it runs on a new
-connection. `ping_after_idle: 0` turns both checks off. `keepalive()` never checks: Symfony calls it from a
-signal handler.
+connection. The NAK or TERM of a message whose handler failed runs the check too, even right after a pull: the
+handler may have run into the server going away, and the client reads the socket only while an operation waits
+for a reply, so a server that closed the connection meanwhile leaves that close unread, and an acknowledgement
+written then is taken by the socket and lost (see
+[A Handler Failing During the Loss](#a-handler-failing-during-the-loss)). That costs one round trip per failed
+message; the ACK of a handled message is not checked. `ping_after_idle: 0` turns all of these checks off.
+`keepalive()` never checks: Symfony calls it from a signal handler.
 
 ```yaml
 options:
   ping_after_idle: 30   # seconds; 0 turns the check off
 ```
 
-> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testBuildWithInvalidPingAfterIdleThrowsException`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
+> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testPingAfterIdleZeroTurnsTheCheckBeforeSettlingAFailedDeliveryOff`, `testBuildWithInvalidPingAfterIdleThrowsException`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
 
 ### Subscription Limits
 
@@ -1031,11 +1037,14 @@ a stream scaled up in NATS is not scaled back down by the next `setup()`. See
 When `setup()` changes the replica count of an existing stream, NATS moves the stream's durable consumer to the
 stream's new set of servers after it has answered the update. A consumer whose leader was on a server the stream
 left has no leader for a moment, and the server answers a request for it with err_code 10008, "JetStream system
-temporarily unavailable" (measured on nats-server 2.10 going from 2 replicas to 1). `setup()` asks for the
-consumer again, every 100 ms for up to 5 seconds, so `messenger:setup-transports` does not fail on that moment.
-A cluster that stays unavailable longer still fails the setup with that message.
+temporarily unavailable" (measured on nats-server 2.10 going from 2 replicas to 1). In the same moment a request
+can also be told that the stream is not found (err_code 10059), or get no answer at all. `setup()` asks for the
+consumer again on either code, every 100 ms for up to 5 seconds, and once more after a request that got no
+answer within `request_timeout`, so `messenger:setup-transports` does not fail on that moment. A cluster that
+stays unavailable longer, a stream that really is gone, and a second request without an answer still fail the
+setup with the server's message.
 
-> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`, `testSetupPreservesExistingReplicaCountWhenStreamReplicasNotConfigured`, `testSetupOverridesExistingReplicaCountWhenStreamReplicasExplicitlyConfigured`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testSetupCreatesTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testSetupWaitsBeforeAskingTheTemporarilyUnavailableClusterAgain`, `testSetupGivesUpOnATemporarilyUnavailableClusterAfterFiveSeconds`, `testSetupDoesNotAskForTheConsumerAgainAfterAnotherJetStreamError`, the example `stream-placement.php` (from 2 replicas to 1 on the test cluster)
+> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`, `testSetupPreservesExistingReplicaCountWhenStreamReplicasNotConfigured`, `testSetupOverridesExistingReplicaCountWhenStreamReplicasExplicitlyConfigured`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testSetupCreatesTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testSetupWaitsBeforeAskingTheTemporarilyUnavailableClusterAgain`, `testSetupGivesUpOnATemporarilyUnavailableClusterAfterFiveSeconds`, `testSetupDoesNotAskForTheConsumerAgainAfterAnotherJetStreamError`, `testSetupAsksForTheConsumerAgainWhileTheMovedStreamIsReportedAsNotFound`, `testSetupCreatesTheConsumerAgainWhileTheMovedStreamIsReportedAsNotFound`, `testSetupGivesUpOnAStreamStillReportedAsNotFoundAfterFiveSeconds`, `testSetupReadsAMissingConsumerAsNoConsumerWithoutAskingAgain`, `testSetupAsksForTheConsumerOnceMoreAfterARequestTheClusterDidNotAnswer`, `testSetupCreatesTheConsumerOnceMoreAfterARequestTheClusterDidNotAnswer`, `testSetupGivesUpOnASecondConsumerRequestTheClusterDidNotAnswer`, `testEachConsumerRequestGetsItsOwnSecondTryAfterAnUnansweredOne`, `testSetupGivesUpOnATemporarilyUnavailableClusterAfterAnUnansweredRequestPastFiveSeconds`, the example `stream-placement.php` (from 2 replicas to 1 on the test cluster)
 
 ### Stream Placement
 
@@ -1218,22 +1227,39 @@ cluster whose servers restart while workers run:
   that JetStream drops that second copy;
 - keep handlers idempotent, for a stored copy next to an original that succeeds, which no id can catch.
 
-With `retry_handler: nats` and `reconnect: true` the worker carries on: the transport does not publish Symfony's
-retry copy in that mode, and the NAK waits for no reply. The NAK did not take effect in the runs below, though
-(the cause is not pinned down): the message came back after `ack_wait`, not after `nak_delay`.
+With `retry_handler: nats` the worker carries on, in either `reconnect` mode: the transport does not publish
+Symfony's retry copy in that mode, and NATS delivers the message again `nak_delay` after the failure. The server
+closed the connection on its way out, and the client, which reads the socket only while an operation waits for a
+reply, has not read that close when the handler returns. So the NAK of a failed delivery checks the connection
+first, with one PING (see [Losing the Connection](#losing-the-connection)): with `reconnect: true` the PING's wait
+reads the close and the client recovers the connection on another server of the cluster, and with
+`reconnect: false` the transport dials another one; the NAK goes out there. Up to 5.7.1 the NAK was written
+without that check: the socket took it, no server received it, and the message came back only after `ack_wait`.
+
+The ACK of a message whose handler succeeded while the server went away is a plain write, with no check, and
+meets the same fate: no server receives it, and NATS delivers the message again after `ack_wait`, so it is handled
+twice (measured below). Keep handlers idempotent. Checking before every ACK would cost a round trip per message;
+the client would have to notice the close before it writes to cover every acknowledgement.
 
 Measured on the test cluster (nats-server 2.15.1, client 2.27.2, Symfony Messenger 8.1.9, PHP 8.5) with
 Symfony's `Worker` and retry listener and FrameworkBundle's default retry strategy. The worker's DSN named the
 server that leads a stream with three replicas, and the handler stopped that server with `docker stop` before
-it failed, on the message's first delivery; `request_timeout` 10, `ack_wait` 30, `deduplicate: true`:
+it failed, on the message's first delivery; `request_timeout` 10, `ack_wait` 30, `deduplicate: true`. The nats-mode
+rows were measured again with this release's transport (Symfony Messenger 8.1.10; `reject()`, and `send()` plus
+`ack()` as Messenger 8.1.10 calls them, right after the `docker stop`, 12 runs):
 
 | | `reconnect: false` | `reconnect: true` |
 |---|---|---|
 | `retry_handler: symfony` (default) | the worker exits at once, the retry send fails with `Reconnect is disabled` | the worker exits after 10.0 s, the retry send fails with `TimeoutException` |
-| `retry_handler: nats` | the worker exits at once, `Reconnect is disabled` | the worker carries on |
-| the message | a new worker gets it again 30.0 s after its first delivery and handles it; nothing left pending | symfony mode: the same; nats mode: the same worker gets it again 30.0 s after its first delivery, not 1 s after the failure (`nak_delay` 1) |
+| `retry_handler: nats` | the worker carries on through another server (up to 5.7.1 it exited at once, `Reconnect is disabled`) | the worker carries on |
+| the message | symfony mode: a new worker gets it again 30.0 s after its first delivery and handles it; nothing left pending. nats mode: the same worker gets it again 1.0 s after the failure (`nak_delay` 1) | symfony mode: the same; nats mode: the same worker gets it again 1.0 s after the failure (up to 5.7.1: 30.0 s after its first delivery) |
+| a handler that succeeded instead (an ACK) | the ACK is lost and the next pull fails with `Reconnect is disabled`; the message comes back 30.0 s after its first delivery and is handled again | the ACK is lost; the worker carries on and gets the message again 30.0 s after its first delivery, and handles it again |
 
-In symfony mode the retry copy was not stored in any of these runs.
+In symfony mode the retry copy was not stored in any of these runs. The example
+[`handler-failing-during-failover.php`](examples/handler-failing-during-failover.php) repeats the nats-mode case
+with `reconnect: true`, and CI runs it.
+
+> **Tested by:** `testTheNakOfAFailedDeliveryReachesTheServerThatReplacedOneWhichClosedTheConnectionDuringTheHandler` (the real client, against a connection the server closed without the client reading it; `reject()`, and `send()` plus `ack()`), `testTheAckOfAHandledMessageChecksNothingFirst`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, the example `handler-failing-during-failover.php`
 
 ### Streams on a Cluster
 
@@ -1312,11 +1338,10 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 97.0% (1040 of 1072 mutants detected, one of them by timeout, with 100% mutation code
-coverage).
-[docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 32 mutants that survive, with the reason for each:
-27 are equivalent, three make no difference with the real client, and two differ about once in a million
-runs. CI runs all three on the PHP 8.5 job and every day. Scores published before, 100% among them, were not
+95%; the suite scores 98.6% (1030 of 1045 mutants killed, with 100% mutation code coverage).
+[docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 15 mutants that survive, with the reason for each:
+13 are equivalent, and two make no difference with the real client. CI runs all three on the PHP 8.5 job and
+every day. Scores published before, 100% among them, were not
 real: in Infection's mutant processes the client's final classes could not be doubled, so every mutant their
 tests covered counted as killed.
 

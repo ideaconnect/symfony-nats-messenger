@@ -38,7 +38,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could land in that window and fail with err_code 10008, "JetStream system temporarily unavailable" (seen in CI
   and reproduced on nats-server 2.10.29 going from 2 replicas to 1; running the setup again passed). `setup()`
   now sends those two consumer requests again while the server answers 10008, every 100 ms for up to 5 seconds.
-  Any other error fails the setup at once, as before.
+  In the same window a consumer request could also be told that the stream `setup()` had just updated was not
+  found (err_code 10059), which the lookup read as "no consumer", or get no answer within `request_timeout`:
+  `setup()` asks again on 10059 as on 10008, and once more after a request without an answer, whatever the
+  5 seconds say. Any other error fails the setup at once, as before, and so do a stream still not found after
+  the 5 seconds and a second request without an answer.
+- **With `retry_handler: nats`, the NAK of a message whose handler failed while its server went away is no longer
+  lost.** The server closes the connection on its way out (a restart, a rolling upgrade, a failover in a
+  cluster), and the client reads the socket only while an operation waits for a reply, so the close is still
+  unread when the handler fails: the NAK, a write that waits for no reply, was taken by the socket, reached no
+  server, and the message came back only after `ack_wait` instead of `nak_delay` (#95 left the cause open; with
+  `reconnect: false` the next pull then ended the worker). The NAK or TERM of a failed delivery, from `reject()`
+  and from the `ack()` that NAKs a delivery whose retry copy was left out, now checks the connection first with
+  one PING, as after a failed operation: the PING's wait reads the close, the client recovers the connection
+  (with `reconnect: false` the transport dials another server), and the acknowledgement goes out there. Measured
+  on the test cluster (nats-server 2.15.1, client 2.27.2), the handler stopping the worker's server with
+  `docker stop`: none of 7 NAKs took effect before (each message came back 30.0 s after its first delivery, also
+  when the event loop ran for 1.5 s between the stop and the NAK), 12 of 12 after (1.0 s later, `nak_delay` 1),
+  in both `reconnect` modes, through `reject()` and through `ack()`. It costs one round
+  trip per failed message; `ping_after_idle: 0` turns it off with the other checks. The ACK of a handled message
+  is still a plain write and is lost the same way (the message comes back after `ack_wait` and is handled again):
+  the README says so.
 
 ### Changed
 - **README: with the default `retry_handler: symfony`, a message that Symfony Messenger 7.4.22, 8.1.10 and later
@@ -78,7 +98,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the create asked again after a pause of 100 ms, the real pause, the setup failing with the server's message
   once 5 seconds have passed, and no second request after another JetStream error. The example
   `stream-placement.php`, whose staged step from 2 replicas to 1 failed this way on NATS 2.10 in CI, covers it on
-  the three-server test cluster.
+  the three-server test cluster. Further unit tests cover 10059 asked again (the lookup no longer reading it as
+  "no consumer"), giving up on it after 5 seconds, 10014 still read as "no consumer" at once, an unanswered
+  lookup and create each asked once more, and a second unanswered request ending the setup. The test doubles'
+  `pause()` fails a test once it ran more often than `setup()` ever pauses, so a loop that never ends fails in
+  seconds instead of hanging the run (the mutant that drops `return $request();` used to time out after 60 s).
+- The NAK of a failed delivery after the server closed the connection during the handler: a real-client test
+  (`ReconnectModeTest`, against a connection the scripted server closed without the client reading it,
+  `FaultInjectingNatsServer::closeUnread()`) checks that the NAK of `reject()`, and of `ack()` after the retry
+  copy was left out, reaches the server on the recovered connection, and fails without the check; a guard shows
+  that the ACK of a handled message is still a plain write. Unit tests check the PING before the TERM and the NAK
+  (with and without `nak_delay`) and none with `ping_after_idle: 0`. A new example,
+  `handler-failing-during-failover.php`, runs Symfony's Worker on the test cluster in nats mode with
+  `reconnect: true`; its handler stops the worker's server and fails, and the message has to come back to the same
+  worker `nak_delay` later. It fails on 5.7.1.
+- Mutation testing: 17 of the 32 surviving mutants are gone. Two are killed by tests that give `send()` the
+  delivery time of a delayed message (a new protected `deliveryTime()`, the only seam), so a whole second is
+  checked not to be rounded up. The others were equivalent, and the code they mutated said the same thing twice:
+  a guard that a later check covers (`get()`'s check for no headers, the early returns of
+  `assertStreamDescriptionLength()`, `assertDuplicateWindowNotExceedingMaxAge()` and `toNullableString()`, the
+  type checks before `is_numeric()` in `assertBackoff()`, the empty-segment check after `trim()` in
+  `parseStreamAndTopic()`), a comparison that is always true (`streamReplicas() > 0`, `streamMaxAgeSeconds() > 0`
+  around a product that is 0 then), a cast PHP makes anyway, and a second source for the same value (the stream's
+  subjects). These spots now say it once; the behaviour is the same, and the unit suite passes unchanged.
 
 ## [5.7.1] - 2026-10-19
 

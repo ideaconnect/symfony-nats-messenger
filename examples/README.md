@@ -14,6 +14,7 @@ behaviour still works. In an application the same DSN and options go under `fram
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, the pull in flight ends empty (`409 Server Shutdown`), `auto_setup` recreates the memory stream the restart lost, and the client logs through the transport's logger (needs docker) |
 | `cluster-failover.php` | `reconnect: true` on a cluster: the server a worker is connected to stops, the client fails over to a server it learned from the cluster, and the worker receives everything (needs the cluster and docker) |
+| `handler-failing-during-failover.php` | `retry_handler: nats` and `reconnect: true` on a cluster, under Symfony's Worker: the handler stops the worker's server and fails, the NAK reaches the cluster through another server, and the message comes back `nak_delay` later to the same worker (needs the cluster and docker) |
 | `stream-placement.php` | `stream_replicas`, `stream_placement_tags` and `stream_placement_cluster` on a cluster: replicas on tagged servers only, one option changing only its own half of a placement, a move and scale refused in one update, then staged (needs the cluster) |
 
 ```bash
@@ -38,7 +39,8 @@ on `127.0.0.1:4226`, `4227` and `4228`. Each server is named after its container
 | `nats_cluster_3` | 4228 | `disk:hdd`, `zone:c` |
 
 Each one advertises its published port to clients (`client_advertise`), so a client on the host that connects
-to one of them learns the other two and can fail over to them. `cluster-failover.php` and `reconnect.php` take a
+to one of them learns the other two and can fail over to them. `cluster-failover.php`,
+`handler-failing-during-failover.php` and `reconnect.php` take a
 server away with `docker stop` or `docker restart` and start it again before they end. The cluster examples
 always run against this cluster, whatever `NATS_DSN` says, and print `SKIP` when it is not running;
 `reconnect.php` prints `SKIP` when `NATS_DSN` is set, since it restarts the test server `nats_test`.
