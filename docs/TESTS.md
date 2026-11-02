@@ -386,8 +386,8 @@ does not survive it.
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
-on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 96.9% MSI and covered
-MSI: 1008 of 1040 mutants killed, with 100% mutation code coverage.
+on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 97.0% MSI and covered
+MSI: 1040 of 1072 mutants detected (1039 killed, one timed out, see below), with 100% mutation code coverage.
 
 Scores reported before, 100% among them, were not real. Infection runs each mutant in a PHPUnit process
 whose bootstrap puts its include interceptor on `file://`; the interceptor dropped the wrapper BypassFinals
@@ -400,7 +400,7 @@ is not hit there.
 Two checks around the run keep the score honest; CI runs both:
 
 - **Before it, `composer test:mutation:canary`** runs Infection with `--noop` and the `TrueValue` and
-  `FalseValue` mutators. Its mutants (56 today) change nothing, so every one must escape;
+  `FalseValue` mutators. Its mutants (60 today) change nothing, so every one must escape;
   `scripts/check-mutation-canary.php` fails when one is detected, when none ran, or when the summary is
   missing or malformed. On the old bootstrap it detected 42 of 46.
 - **After it, `composer test:mutation:check-log`** (`scripts/check-mutation-log.php`) fails when
@@ -409,7 +409,7 @@ Two checks around the run keep the score honest; CI runs both:
   `--log-verbosity=all`, so the log holds every mutant's output.
 
 Both Infection runs pass `--logger-github=false`. On GitHub Actions Infection otherwise turns every escaped
-mutant into a warning annotation on its source line: the canary's 46, which escape by design, and the
+mutant into a warning annotation on its source line: the canary's, which all escape by design, and the
 survivors below, on every run and in every pull request. The real run lists every escaped mutant in the job
 log instead (`--show-mutations=max`), and CI uploads `infection.log` as the `infection-log` artifact when a
 mutation step fails.
@@ -451,6 +451,12 @@ Of the 32 mutants that survive:
 | `assertDuplicateWindowNotExceedingMaxAge()`: a null max age read as -1 instead of 0 | Both mean no age limit there |
 | `toNullableString()`: the early return for null removed | null fails the scalar check below and returns null as well |
 | `requiredString()`: `&&` instead of `\|\|` | `parseDsn()` already requires a host, and `parse_url()` never gives an empty one |
+
+### Timed-out mutant
+
+One mutant ends with Infection's per-mutant timeout rather than a failing test: `whileTheClusterSettles()`
+without `return $request();` never sends the consumer request and pauses forever. Infection counts a timeout as
+detected; the 60-second `timeout` in `infection.json5` is there so that only such a loop times out.
 
 ## README Example Coverage
 
