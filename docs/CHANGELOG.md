@@ -47,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Handler Behavior" section now says so: a `TERM`, and its JetStream `MSG_TERMINATED` advisory, marks only a
   failure Symfony treats as final or a message that could not be decoded, so counts or alerts built on those
   advisories drop after such a Symfony upgrade, with no message lost. The transport's behaviour is unchanged.
+- **README: a handler that fails while the worker's server goes away stops the worker with the default
+  `retry_handler: symfony`, also with `reconnect: true` (#95).** Symfony's retry listener sends the retry copy
+  right after the failure, and that publish runs into the lost connection: it fails after `request_timeout`
+  with `TimeoutException` (at once with `reconnect: false`), the exception leaves the worker before the failed
+  delivery is settled, and NATS delivers the message again after `ack_wait`. The "Losing a Server" section
+  said a worker polls on with `reconnect: true`; a new part of it, "A Handler Failing During the Loss", now
+  describes this case, with the measurements on the test cluster for both retry modes and both `reconnect`
+  modes, and recommends `deduplicate: true` with a `stream_duplicate_window` longer than `ack_wait` plus the
+  handler's run, and idempotent handlers. "Automatic Reconnect" points to it. The transport's behaviour is
+  unchanged.
 
 ### Testing & CI
 - A Behat scenario, "A message that fails once is redelivered with Symfony's default retry strategy", sends a

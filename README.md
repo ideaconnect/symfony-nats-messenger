@@ -937,7 +937,9 @@ In a DSN: `?reconnect=true&max_reconnect_attempts=20`.
   not in seconds: the client's default of 10 gives about 109 s against a server that refuses connections,
   where a refused dial costs about 6 s. An `ack_sync` acknowledgement that runs into the outage still fails
   after `request_timeout`, which ends the worker's run as any exception from `ack()` does: synchronous
-  acknowledgement keeps its meaning.
+  acknowledgement keeps its meaning. The retry copy Symfony sends when a handler fails in the default
+  `retry_handler: symfony` fails and ends the run the same way, since it is a publish (see
+  [A Handler Failing During the Loss](#a-handler-failing-during-the-loss)).
 - An ACK, NAK or TERM written during a recovery is buffered by the client, and `ack()` or `reject()` returns at
   once. That holds too when its own write is the first to notice the lost connection while the client still
   reports it open: the write starts the recovery, and the frame goes out on the connection the recovery makes.
@@ -1174,7 +1176,9 @@ What a process does when the server it is connected to goes away depends on
   though, and the worker its supervisor starts knows only the DSN's server again (see above).
 - **`reconnect: true`:** the client recovers the connection in the background on a server it learned, and a
   worker polls on. `cluster-failover.php` stops the server a worker is connected to halfway through its
-  messages: the worker receives the rest through another server, without an exception.
+  messages: the worker receives the rest through another server, without an exception. A handler that fails
+  at that moment still stops the worker with the default `retry_handler: symfony` (see
+  [A Handler Failing During the Loss](#a-handler-failing-during-the-loss)).
 
 Measured on the test cluster (nats-server 2.15.1, client 2.27.2, PHP 8.5), a stream with three replicas, the
 DSN on the server that leads it, that server stopped with `docker stop`, `request_timeout` 10 and
@@ -1193,6 +1197,43 @@ reply that never came. After a pause longer than `ping_after_idle` the check tha
 connection gone, in either mode, and the send goes out through another server (see
 [Losing the Connection](#losing-the-connection)). Whether a send that failed was stored is unknown either way
 (see [Duplicate Protection](#duplicate-protection)).
+
+#### A Handler Failing During the Loss
+
+With the default `retry_handler: symfony`, a worker exits when a handler fails while the connection to its
+server is being lost, in either `reconnect` mode. Symfony's retry listener sends the retry copy right after the
+failure, and that send is a publish into the lost connection: with `reconnect: true` it waits out
+`request_timeout` and fails with the client's `TimeoutException`, as the first `send()` in the table above
+does; with `reconnect: false` it fails at once. The exception leaves the worker before the failed delivery is
+settled, so `messenger:consume` exits. Nothing is lost: NATS delivers the message again, to the worker the
+supervisor starts or to another one, once `ack_wait` has passed since the failed delivery, which counts
+against `max_deliver`.
+
+Whether the retry copy was stored is unknown (see [Duplicate Protection](#duplicate-protection)). If it was,
+and the message delivered again is then handled, the message is handled twice: once from the original, once
+from the copy. If the message delivered again fails once more, Symfony sends the same copy again. So, on a
+cluster whose servers restart while workers run:
+
+- set `deduplicate: true` with a `stream_duplicate_window` longer than `ack_wait` plus the handler's run, so
+  that JetStream drops that second copy;
+- keep handlers idempotent, for a stored copy next to an original that succeeds, which no id can catch.
+
+With `retry_handler: nats` and `reconnect: true` the worker carries on: the transport does not publish Symfony's
+retry copy in that mode, and the NAK waits for no reply. The NAK did not take effect in the runs below, though
+(the cause is not pinned down): the message came back after `ack_wait`, not after `nak_delay`.
+
+Measured on the test cluster (nats-server 2.15.1, client 2.27.2, Symfony Messenger 8.1.9, PHP 8.5) with
+Symfony's `Worker` and retry listener and FrameworkBundle's default retry strategy. The worker's DSN named the
+server that leads a stream with three replicas, and the handler stopped that server with `docker stop` before
+it failed, on the message's first delivery; `request_timeout` 10, `ack_wait` 30, `deduplicate: true`:
+
+| | `reconnect: false` | `reconnect: true` |
+|---|---|---|
+| `retry_handler: symfony` (default) | the worker exits at once, the retry send fails with `Reconnect is disabled` | the worker exits after 10.0 s, the retry send fails with `TimeoutException` |
+| `retry_handler: nats` | the worker exits at once, `Reconnect is disabled` | the worker carries on |
+| the message | a new worker gets it again 30.0 s after its first delivery and handles it; nothing left pending | symfony mode: the same; nats mode: the same worker gets it again 30.0 s after its first delivery, not 1 s after the failure (`nak_delay` 1) |
+
+In symfony mode the retry copy was not stored in any of these runs.
 
 ### Streams on a Cluster
 
