@@ -115,6 +115,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private const JS_ERR_CLUSTER_NOT_AVAILABLE = 10008;
 
+    /**
+     * JetStream err_code of "stream not found" (JSStreamNotFoundErr). A consumer request of setup() can get it for a
+     * moment right after the stream update that changed the replica count, see {@see whileTheClusterSettles()}.
+     */
+    private const JS_ERR_STREAM_NOT_FOUND = 10059;
+
     /** How long {@see whileTheClusterSettles()} sends a consumer request again, in seconds. */
     private const CLUSTER_SETTLE_SECONDS = 5.0;
 
@@ -1327,17 +1333,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Runs one of setup()'s consumer requests, and runs it again while the cluster answers err_code 10008,
-     * "JetStream system temporarily unavailable", pausing CLUSTER_SETTLE_PAUSE before each new attempt, for up to
-     * CLUSTER_SETTLE_SECONDS. Any other error, and 10008 still there at the end, propagates as before.
+     * Runs one of setup()'s consumer requests, and runs it again while the cluster is still moving the consumer,
+     * pausing CLUSTER_SETTLE_PAUSE before each new attempt: for up to CLUSTER_SETTLE_SECONDS while it answers
+     * err_code 10008, "JetStream system temporarily unavailable", or 10059, "stream not found", and once after a
+     * request it did not answer at all. Any other error, either code still there at the end, and a second
+     * unanswered request propagate as before.
      *
      * A stream update that changes the replica count makes NATS move the stream's consumers to its new set of
      * servers. It does that after it has answered the update, so setup() reaches the consumer in the middle of the
      * move. A consumer whose leader was on a server the stream left has no leader until a remaining server takes
      * over, and a consumer request in that window is answered with 10008 (measured on nats-server 2.10.29 with
      * stream_replicas going from 2 to 1: the window lasts milliseconds). Before this, that failed the setup, and
-     * running it again passed. Both requests repeated here are reads or idempotent: the consumer lookup, and the
-     * consumer create with the same configuration.
+     * running it again passed. In the same window a request can also be told that the stream setup() has just
+     * created or updated is not found, or get no answer within request_timeout (both seen in the same
+     * measurements); a stream that really went away in between still fails the setup, after the window. Both
+     * requests repeated here are reads or idempotent: the consumer lookup, and the consumer create with the same
+     * configuration.
      *
      * @template T
      * @param \Closure(): T $request
@@ -1346,13 +1357,21 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private function whileTheClusterSettles(\Closure $request): mixed
     {
         $deadline = $this->monotonicSeconds() + self::CLUSTER_SETTLE_SECONDS;
+        $unanswered = false;
         while (true) {
             try {
                 return $request();
             } catch (JetStreamException $exception) {
-                if ($exception->getErrCode() !== self::JS_ERR_CLUSTER_NOT_AVAILABLE || $this->monotonicSeconds() >= $deadline) {
+                $errCode = $exception->getErrCode();
+                if (($errCode !== self::JS_ERR_CLUSTER_NOT_AVAILABLE && $errCode !== self::JS_ERR_STREAM_NOT_FOUND) || $this->monotonicSeconds() >= $deadline) {
                     throw $exception;
                 }
+            } catch (TimeoutException $timeout) {
+                // Already request_timeout long, so asked once more whatever the deadline says, and not again.
+                if ($unanswered) {
+                    throw $timeout;
+                }
+                $unanswered = true;
             }
             $this->pause(self::CLUSTER_SETTLE_PAUSE);
         }
@@ -1392,14 +1411,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /**
      * Returns the existing durable consumer, or null when it does not exist.
      *
-     * Mirrors {@see getExistingStream()}: a 404 means the consumer is absent, anything else propagates.
+     * Mirrors {@see getExistingStream()}: a 404 means the consumer is absent, anything else propagates. A 404 that
+     * says the stream is not found (err_code 10059) propagates too: setup() has just created or updated the stream,
+     * so the cluster is still moving it ({@see whileTheClusterSettles()}), and reading that as "no consumer" would
+     * send the configured replay policy to a consumer that may have another one.
      */
     private function getExistingConsumer(): ?ConsumerInfo
     {
         try {
             return $this->awaitOnConnection($this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer()));
         } catch (JetStreamException $exception) {
-            if ($exception->getCode() === 404) {
+            if ($exception->getCode() === 404 && $exception->getErrCode() !== self::JS_ERR_STREAM_NOT_FOUND) {
                 return null;
             }
 

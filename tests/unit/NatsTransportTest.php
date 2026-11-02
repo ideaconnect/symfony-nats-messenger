@@ -12,6 +12,7 @@ use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\ConnectionException;
 use IDCT\NATS\Exception\JetStreamException;
 use IDCT\NATS\Exception\SubscriptionLimitException;
+use IDCT\NATS\Exception\TimeoutException;
 use IDCT\NATS\Exception\UnsupportedFeatureException;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
 use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
@@ -3066,6 +3067,234 @@ final class NatsTransportTest extends TestCase
         // 100 ms: with ext-event, Revolt's loop runs on libevent, whose timers read a coarse clock, and a 100 ms
         // delay can end a little under 100 ms by hrtime() (measured: 0.0992 s).
         self::assertGreaterThanOrEqual(0.05, (hrtime(true) - $start) / 1e9);
+    }
+
+    /**
+     * What a consumer request can get for a moment while NATS moves the consumer after a change of stream_replicas:
+     * the stream setup() has just updated, reported as not found (measured on nats-server 2.10.29).
+     */
+    private static function streamNotFound(): JetStreamException
+    {
+        return new JetStreamException('stream not found', 404, null, 10059);
+    }
+
+    public function testSetupAsksForTheConsumerAgainWhileTheMovedStreamIsReportedAsNotFound(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(self::streamNotFound()),
+                Future::complete(self::liveConsumer('original')),
+            );
+        // Not read as "no consumer": the configured policy (instant) would differ from the live consumer's.
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static fn (ConsumerConfiguration $configuration): bool => ($configuration->toArray()['replay_policy'] ?? null) === 'original'))
+            ->willReturn(Future::complete(self::liveConsumer('original')));
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['replay_policy' => 'instant']);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    public function testSetupCreatesTheConsumerAgainWhileTheMovedStreamIsReportedAsNotFound(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->willReturn(Future::error(new JetStreamException('consumer not found', 404, null, 10014)));
+        $jetStream->expects(self::exactly(2))
+            ->method('addConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(self::streamNotFound()),
+                Future::complete(self::liveConsumer('instant')),
+            );
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    public function testSetupGivesUpOnAStreamStillReportedAsNotFoundAfterFiveSeconds(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        // Asked at 0, 1, 2, 3, 4 and 5 seconds, as for 10008.
+        $jetStream->expects(self::exactly(6))
+            ->method('getConsumer')
+            ->willReturnCallback(static fn (): Future => Future::error(self::streamNotFound()));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+        $transport->secondsPerPause = 1.0;
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have failed');
+        } catch (\RuntimeException $exception) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': stream not found", $exception->getMessage());
+            self::assertSame(10059, $exception->getPrevious() instanceof JetStreamException ? $exception->getPrevious()->getErrCode() : null);
+        }
+        self::assertCount(5, $transport->pauses);
+    }
+
+    /**
+     * Guard: a consumer that is not there (err_code 10014) is still read as no consumer at once, and the configured
+     * replay policy goes to the new one.
+     */
+    public function testSetupReadsAMissingConsumerAsNoConsumerWithoutAskingAgain(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->willReturn(Future::error(new JetStreamException('consumer not found', 404, null, 10014)));
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static fn (ConsumerConfiguration $configuration): bool => ($configuration->toArray()['replay_policy'] ?? null) === 'original'))
+            ->willReturn(Future::complete(self::liveConsumer('original')));
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['replay_policy' => 'original']);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([], $transport->pauses);
+    }
+
+    public function testSetupAsksForTheConsumerOnceMoreAfterARequestTheClusterDidNotAnswer(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new TimeoutException('Request timed out')),
+                Future::complete(self::liveConsumer('original')),
+            );
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static fn (ConsumerConfiguration $configuration): bool => ($configuration->toArray()['replay_policy'] ?? null) === 'original'))
+            ->willReturn(Future::complete(self::liveConsumer('original')));
+
+        // ping_after_idle 0: no connection check after the failed request, which this test is not about.
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+        // The unanswered request took request_timeout, longer than the 5 s the codes above are asked again for.
+        $transport->secondsPerPause = 10.0;
+
+        $transport->setup();
+
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    public function testSetupCreatesTheConsumerOnceMoreAfterARequestTheClusterDidNotAnswer(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->willReturn(Future::error(new JetStreamException('consumer not found', 404, null, 10014)));
+        $jetStream->expects(self::exactly(2))
+            ->method('addConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new TimeoutException('Request timed out')),
+                Future::complete(self::liveConsumer('instant')),
+            );
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    public function testSetupGivesUpOnASecondConsumerRequestTheClusterDidNotAnswer(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnCallback(static fn (): Future => Future::error(new TimeoutException('Request timed out')));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have failed');
+        } catch (\RuntimeException $exception) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': Request timed out", $exception->getMessage());
+            self::assertInstanceOf(TimeoutException::class, $exception->getPrevious());
+        }
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    /**
+     * An unanswered request is asked once more for each of the two consumer requests: a lookup that got its answer
+     * the second time leaves the create its own second try.
+     */
+    public function testEachConsumerRequestGetsItsOwnSecondTryAfterAnUnansweredOne(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new TimeoutException('Request timed out')),
+                Future::error(new JetStreamException('consumer not found', 404, null, 10014)),
+            );
+        $jetStream->expects(self::exactly(2))
+            ->method('addConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new TimeoutException('Request timed out')),
+                Future::complete(self::liveConsumer('instant')),
+            );
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1, 0.1], $transport->pauses);
+    }
+
+    /** After an unanswered request, a 10008 past the 5 seconds still ends the setup. */
+    public function testSetupGivesUpOnATemporarilyUnavailableClusterAfterAnUnansweredRequestPastFiveSeconds(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new TimeoutException('Request timed out')),
+                Future::error(self::clusterNotAvailable()),
+            );
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+        $transport->secondsPerPause = 10.0;
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have failed');
+        } catch (\RuntimeException $exception) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': JetStream system temporarily unavailable", $exception->getMessage());
+        }
+        self::assertSame([0.1], $transport->pauses);
     }
 
     public function testAutoSetupProvisionsOnFirstSendOnce(): void
