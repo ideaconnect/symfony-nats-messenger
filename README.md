@@ -115,6 +115,23 @@ changes.
 
 > **Tested by:** `testAnAcknowledgementWhoseWriteFindsTheConnectionLostReturnsAtOnceAndTheRecoverySendsIt`
 
+### Upgrading from 5.7.1
+
+Nothing to change in the configuration, but look at your logs and your retry settings:
+
+- **`retry_handler: nats` with Symfony's retries on.** Up to 5.7.1, on Symfony Messenger 7.4.22 / 8.1.10 or
+  later, a message whose handler failed was lost after its first failure in this setup (#90); 5.8.0 NAKs it, so
+  NATS delivers it again. A transport in nats mode whose retry strategy still retries (FrameworkBundle's default
+  `max_retries: 3`) now logs a warning once, through your `logger`. Set `max_retries: 0` on it (see
+  [Retry Handler Behavior](#retry-handler-behavior)).
+- **A failed message costs one round trip more.** The NAK or TERM of a message whose handler failed checks the
+  connection with a PING first, so that it is not lost when the server went away during the handler (see
+  [Losing the Connection](#losing-the-connection)). `ping_after_idle: 0` turns it off.
+- **`setup()` waits for a consumer NATS is moving** after a change of `stream_replicas`, for up to 5 seconds and
+  one more `request_timeout`, instead of failing (see [High Availability](#high-availability)).
+
+> **Tested by:** `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, the examples `nats-retry.php` and `handler-failing-during-failover.php`
+
 ### Logging
 
 The NATS client reports what it does with the connection through a PSR-3 logger: the connection's lifecycle

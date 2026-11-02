@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.8.0] - 2026-11-02
+
+A **minor** release. With `retry_handler: nats`, a message whose handler failed is no longer lost on Symfony
+Messenger 7.4.22 / 8.1.10 and later (#90), and its NAK is no longer lost when the worker's server goes away during
+the handler; a transport in that mode warns once when Symfony's retry strategy is still on (#94), which is the new
+behaviour that makes this a minor release. `setup()` waits for a consumer NATS is moving after a change of
+`stream_replicas` (#98). The README describes how Symfony Messenger 7.4.22 / 8.1.10 settle a retried message in
+symfony mode (#92) and what a handler failing during the loss of a server does (#95), with an upgrade note. The
+mutation score is 98.6%. The client requirement (`^2.27.1`) and the public PHP API are unchanged; the one new
+method, `deliveryTime()`, is protected.
+
 ### Added
 - **A transport in nats mode warns, once, when Symfony's retry strategy is on (#94).** With
   `retry_handler: nats`, Symfony's retry strategy has no effect and the README asks for `max_retries: 0`, but
