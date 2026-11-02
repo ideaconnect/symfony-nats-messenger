@@ -3062,7 +3062,10 @@ final class NatsTransportTest extends TestCase
         $start = hrtime(true);
         $transport->setup();
 
-        self::assertGreaterThanOrEqual(0.1, (hrtime(true) - $start) / 1e9);
+        // At least half of the 100 ms: without the pause, setup() returns within a few milliseconds. Not the whole
+        // 100 ms: with ext-event, Revolt's loop runs on libevent, whose timers read a coarse clock, and a 100 ms
+        // delay can end a little under 100 ms by hrtime() (measured: 0.0992 s).
+        self::assertGreaterThanOrEqual(0.05, (hrtime(true) - $start) / 1e9);
     }
 
     public function testAutoSetupProvisionsOnFirstSendOnce(): void
