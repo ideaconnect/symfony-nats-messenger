@@ -2010,7 +2010,220 @@ final class NatsTransportTest extends TestCase
                 throw new \RuntimeException('always fails');
             }],
         ]))]);
-        $locator = static fn (object $service): ContainerInterface => new class ($service) implements ContainerInterface {
+        $locator = static fn (object $service): ContainerInterface => self::singleServiceLocator($service);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            $locator($transport),
+            $locator(new MultiplierRetryStrategy(3, 1000, 2)),
+        ));
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
+    }
+
+    /**
+     * The same through Symfony's Worker with two messages in one batch, the first failing and the second handled:
+     * only the delivery whose retry copy was left out is NAKed, and the other is acknowledged as usual (#90).
+     * Holds on every Symfony Messenger release: the worker settles the failed one with ack() from 7.4.22 and
+     * 8.1.10 on, and with reject() before.
+     */
+    public function testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry(): void
+    {
+        $failing = '$JS.ACK.test-stream.client.1.1.1.0.0';
+        $handled = '$JS.ACK.test-stream.client.1.2.2.0.0';
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: $failing, payload: 'fails'),
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: $handled, payload: 'works'),
+        ]));
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::once())->method('nak')
+            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === $failing))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())->method('ack')
+            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === $handled))
+            ->willReturn(Future::complete());
+
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willReturnCallback(static function (array $encoded): Envelope {
+            $message = new \stdClass();
+            $message->fails = $encoded['body'] === 'fails';
+
+            return new Envelope($message);
+        });
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function (\stdClass $message): void {
+                if ($message->fails === true) {
+                    throw new \RuntimeException('fails once');
+                }
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($transport),
+            self::singleServiceLocator(new MultiplierRetryStrategy(3, 1000, 2)),
+        ));
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(2));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
+    }
+
+    /**
+     * In nats mode the ack() Symfony Messenger 7.4.22, 8.1.10 and later send for a delivery whose retry copy
+     * send() left out NAKs it, with nak_delay when one is set and never as an ACK, ack_sync or not: an ACK
+     * dropped the message for good (#90).
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('natsModeOptions')]
+    public function testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut(array $options, string $nakMethod): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::never())->method('ack');
+        $jetStream->expects(self::never())->method('ackSync');
+        $jetStream->expects(self::once())->method($nakMethod)
+            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === 'delivery-1'))
+            ->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'] + $options);
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
+
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(1)));
+        $transport->ack($failed);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function natsModeOptions(): iterable
+    {
+        yield 'defaults' => [[], 'nak'];
+        yield 'nak_delay' => [['nak_delay' => 5], 'nakWithDelay'];
+        yield 'ack_sync' => [['ack_sync' => true], 'nak'];
+    }
+
+    /**
+     * A delivery sent for retry is settled once: the ack() of newer Symfony Messenger releases or the reject() of
+     * older ones NAKs it and forgets it, so a later ack() of that envelope is an ACK again.
+     */
+    #[DataProvider('settlements')]
+    public function testADeliverySentForRetryIsNakedOnce(string $settlement): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
+        $jetStream->expects(self::once())->method('ack')->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats']);
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
+
+        $transport->send($failed->with(new RedeliveryStamp(1)));
+        $transport->{$settlement}($failed);
+        $transport->ack($failed);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function settlements(): iterable
+    {
+        yield 'ack (Messenger 7.4.22, 8.1.10 and later)' => ['ack'];
+        yield 'reject (earlier releases)' => ['reject'];
+    }
+
+    /**
+     * Only the delivery the retry copy belongs to is NAKed: another message, or another delivery of the same
+     * message, is acknowledged as usual.
+     */
+    public function testAckNaksOnlyTheDeliveryTheRetryCopyBelongsTo(): void
+    {
+        $settled = [];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('ack')->willReturnCallback(static function (NatsMessage $message) use (&$settled): Future {
+            $settled[] = 'ack ' . $message->replyTo;
+
+            return Future::complete();
+        });
+        $jetStream->method('nak')->willReturnCallback(static function (NatsMessage $message) use (&$settled): Future {
+            $settled[] = 'nak ' . $message->replyTo;
+
+            return Future::complete();
+        });
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats']);
+        $transport->setJetStreamContext($jetStream);
+        $retried = new \stdClass();
+        $failed = new Envelope($retried, [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
+        $transport->send($failed->with(new RedeliveryStamp(1)));
+
+        $transport->ack(new Envelope(new \stdClass(), [new TransportMessageIdStamp('delivery-1')]));
+        $transport->ack(new Envelope($retried, [new TransportMessageIdStamp('delivery-2')]));
+        $transport->ack($failed);
+
+        self::assertSame(['ack delivery-1', 'ack delivery-2', 'nak delivery-1'], $settled);
+    }
+
+    /**
+     * Each delivery sent for retry is remembered until it is settled, however many are waiting at once.
+     */
+    public function testEveryDeliverySentForRetryIsNakedWhenSettledLater(): void
+    {
+        $naked = [];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('ack');
+        $jetStream->method('nak')->willReturnCallback(static function (NatsMessage $message) use (&$naked): Future {
+            $naked[] = $message->replyTo;
+
+            return Future::complete();
+        });
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats']);
+        $transport->setJetStreamContext($jetStream);
+        $first = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
+        $second = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-2')]);
+
+        $transport->send($first->with(new RedeliveryStamp(1)));
+        $transport->send($second->with(new RedeliveryStamp(1)));
+        $transport->ack($first);
+        $transport->ack($second);
+
+        self::assertSame(['delivery-1', 'delivery-2'], $naked);
+    }
+
+    /**
+     * With the default retry_handler=symfony the retry copy is published, so the original is acknowledged as
+     * Symfony Messenger asks, not NAKed.
+     */
+    public function testSymfonyModeAcksADeliveryItPublishedTheRetryCopyOf(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $jetStream->expects(self::once())->method('ack')->willReturn(Future::complete());
+        $jetStream->expects(self::never())->method('nak');
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
+
+        $transport->send($failed->with(new RedeliveryStamp(1)));
+        $transport->ack($failed);
+    }
+
+    /**
+     * A service locator that answers every id with the one service, for Symfony's retry listener.
+     */
+    private static function singleServiceLocator(object $service): ContainerInterface
+    {
+        return new class ($service) implements ContainerInterface {
             public function __construct(private object $service)
             {
             }
@@ -2025,14 +2238,6 @@ final class NatsTransportTest extends TestCase
                 return true;
             }
         };
-        $dispatcher = new EventDispatcher();
-        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
-            $locator($transport),
-            $locator(new MultiplierRetryStrategy(3, 1000, 2)),
-        ));
-        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
-
-        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
     }
 
     public function testJetStreamThrowsWhenConnectLeavesContextUnavailable(): void

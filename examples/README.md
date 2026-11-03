@@ -8,6 +8,7 @@ behaviour still works. In an application the same DSN and options go under `fram
 |---|---|
 | `send-and-consume.php` | `setup()`, sending, the queue depth (`messenger:stats`), receiving and acknowledging |
 | `duplicate-protection.php` | `DeduplicationIdStamp` and `deduplicate: true`: a message sent again is stored once, Symfony's retry is not |
+| `nats-retry.php` | `retry_handler: nats` under Symfony's Worker with FrameworkBundle's default retry strategy: a handler that fails once runs again when NATS redelivers the message, `nak_delay` later, and Symfony's retry is not published |
 | `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it (needs pcntl) |
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |

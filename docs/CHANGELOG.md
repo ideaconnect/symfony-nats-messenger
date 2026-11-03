@@ -11,6 +11,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **NKey authentication: the `nkey_seed` option.** The transport signs the server's nonce with the given seed and
   sends the public key derived from it, so a user the server knows by its NKey can connect with the seed alone.
 
+### Fixed
+- **With `retry_handler: nats`, a message whose handler fails is redelivered again on Symfony Messenger 7.4.22,
+  8.1.10 and later (#90).** Those releases acknowledge a message they send for retry instead of rejecting it
+  (symfony/symfony#67038). In nats mode the transport does not publish that retry and relies on NATS to
+  redeliver the original (#47), so the acknowledgement went to NATS as an ACK: with Symfony's retry strategy
+  left on (FrameworkBundle's default `max_retries: 3`), a message whose handler failed once was gone, with
+  neither a redelivery nor a failure-transport copy. `send()` now remembers the delivery whose retry copy it
+  leaves out, and `ack()` NAKs that delivery (with `nak_delay` when set) instead of acknowledging it. The worker
+  of earlier Messenger releases rejects it, which NAKs it as before. The transport still passes the worker's ACK
+  on for a delivery that was handled, and for every delivery with the default `retry_handler: symfony`. The
+  README's warning says that up to 5.7.1 `max_retries: 0` is required in nats mode on those Symfony releases.
+
+### Changed
+- **README: with the default `retry_handler: symfony`, a message that Symfony Messenger 7.4.22, 8.1.10 and later
+  send for retry is ACKed, not TERMed (#92).** Since symfony/symfony#67038 the worker acknowledges a failed
+  message once its retry copy is sent instead of rejecting it, and the transport passes that ACK on. The "Retry
+  Handler Behavior" section now says so: a `TERM`, and its JetStream `MSG_TERMINATED` advisory, marks only a
+  failure Symfony treats as final or a message that could not be decoded, so counts or alerts built on those
+  advisories drop after such a Symfony upgrade, with no message lost. The transport's behaviour is unchanged.
+- **README: a handler that fails while the worker's server goes away stops the worker with the default
+  `retry_handler: symfony`, also with `reconnect: true` (#95).** Symfony's retry listener sends the retry copy
+  right after the failure, and that publish runs into the lost connection: it fails after `request_timeout`
+  with `TimeoutException` (at once with `reconnect: false`), the exception leaves the worker before the failed
+  delivery is settled, and NATS delivers the message again after `ack_wait`. The "Losing a Server" section
+  said a worker polls on with `reconnect: true`; a new part of it, "A Handler Failing During the Loss", now
+  describes this case, with the measurements on the test cluster for both retry modes and both `reconnect`
+  modes, and recommends `deduplicate: true` with a `stream_duplicate_window` longer than `ack_wait` plus the
+  handler's run, and idempotent handlers. "Automatic Reconnect" points to it. The transport's behaviour is
+  unchanged.
+
+### Testing & CI
+- A Behat scenario, "A message that fails once is redelivered with Symfony's default retry strategy", sends a
+  message whose handler fails once to a transport in nats mode with Symfony's default retry strategy, and
+  checks that it is handled on the redelivery; it fails on Symfony Messenger 8.1.10 without the fix. Unit tests
+  run Symfony's Worker over a batch with one failing and one handled message, and cover the NAK on `ack()`
+  (with `nak_delay` and `ack_sync`), its single use, and that only the delivery sent for retry is NAKed.
+- A new example, `nats-retry.php`, runs Symfony's Worker and retry listener with FrameworkBundle's default retry
+  strategy against the test server, in nats mode, over a message whose handler fails once: NATS redelivers it
+  `nak_delay` later and it is handled, with Symfony's retry left unpublished. `composer examples` runs it in CI
+  on the latest and the oldest supported NATS, and it fails without the fix on Symfony Messenger 8.1.10.
+
 ### Deprecated
 - **The `nkey` option, to be removed in 6.0.** The public key is derived from `nkey_seed`, so only the seed is
   needed. Setting `nkey` triggers an `E_USER_DEPRECATED`; until 6.0 it may still repeat the seed's public key.

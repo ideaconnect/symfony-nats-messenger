@@ -318,6 +318,7 @@ the test server and print `OK` when what they show held:
 |---|---|
 | `send-and-consume.php` | `setup()`, sending, the queue depth, receiving and acknowledging |
 | `duplicate-protection.php` | `DeduplicationIdStamp` and `deduplicate: true`: a message sent again is stored once |
+| `nats-retry.php` | `retry_handler: nats` with Symfony's default retry strategy: NATS redelivers a message whose handler failed |
 | `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it |
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
@@ -569,6 +570,16 @@ authorization {
 ### Retry Handler Behavior
 
 - `retry_handler: symfony` (default) sends `TERM` when a message fails during transport decoding or is rejected. Symfony's retry/failure transport then handles redelivery.
+
+  Which failed messages the worker rejects depends on the Symfony Messenger release. Up to 7.4.21 and 8.1.9 it
+  also rejects a message it sends for retry, so that message is TERMed next to its retry copy. From 7.4.22 and
+  8.1.10 it acknowledges that message once the retry copy is sent, so it is ACKed
+  ([symfony/symfony#67038](https://github.com/symfony/symfony/pull/67038)). A `TERM`, and the `MSG_TERMINATED`
+  advisory JetStream publishes for it (`$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.<stream>.<consumer>`), then
+  marks only a failure Symfony treats as final (retries used up, an unrecoverable exception, no retries
+  configured) or a message that could not be decoded. Counts or alerts built on those advisories therefore drop
+  after such a Symfony upgrade, although the transport did not change. No message is lost: the retry copy is in
+  the stream.
 - `retry_handler: nats` sends `NAK` when a message fails during transport decoding or is rejected, so NATS redelivers the message itself.
 
 **Symfony's retry delays need `scheduled_messages: true`.** Symfony's retry strategy waits between attempts
@@ -594,9 +605,17 @@ When NATS manages redelivery (`retry_handler: nats`), tune it with `nak_delay`, 
 **Symfony's retry strategy is ignored with `retry_handler: nats`.** Symfony's retry listener runs for every
 transport, and FrameworkBundle gives each one a retry strategy (`max_retries: 3` by default). In nats mode the
 transport does not publish the copy that retry sends, because NATS redelivers the original after the NAK, so
-`max_retries`, `delay` and `multiplier` have no effect and `max_deliver` bounds the attempts. Set
-`max_retries: 0` on the transport anyway: with retries left on, Symfony still logs each failure as a retry it
-never makes ("Sending for retry #1") and never treats the message as failed for good.
+`max_retries`, `delay` and `multiplier` have no effect and `max_deliver` bounds the attempts. The worker then
+settles the original: Symfony Messenger up to 7.4.21 and 8.1.9 rejects it, and 7.4.22, 8.1.10 and later
+acknowledge it, since the retry was sent ([symfony/symfony#67038](https://github.com/symfony/symfony/pull/67038)).
+The transport NAKs it either way. Set `max_retries: 0` on the transport anyway: with retries left on, Symfony
+still logs each failure as a retry it never makes ("Sending for retry #1") and never treats the message as
+failed for good.
+
+> ⚠️ **Up to 5.7.1 of this transport, `max_retries: 0` is required with `retry_handler: nats` on Symfony
+> Messenger 7.4.22, 8.1.10 or later.** Those releases acknowledge the message they send for retry, and 5.7.1
+> and earlier passed that ACK on to NATS: with retries left on, a message whose handler failed once was gone,
+> neither redelivered nor in a failure transport (#90). Later releases NAK it.
 
 A failure transport does not combine well with nats mode. Symfony sends a message there each time it treats a
 failure as final: with `max_retries: 0` that is every failed delivery, so a message that keeps failing lands
@@ -614,7 +633,7 @@ framework:
           max_retries: 0
 ```
 
-> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, Behat scenarios `nats_nak.feature`, `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`
+> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSymfonyModeAcksADeliveryItPublishedTheRetryCopyOf`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
 
 ### Long-Running Handlers (`--keepalive`)
 
@@ -946,7 +965,9 @@ In a DSN: `?reconnect=true&max_reconnect_attempts=20`.
   not in seconds: the client's default of 10 gives about 109 s against a server that refuses connections,
   where a refused dial costs about 6 s. An `ack_sync` acknowledgement that runs into the outage still fails
   after `request_timeout`, which ends the worker's run as any exception from `ack()` does: synchronous
-  acknowledgement keeps its meaning.
+  acknowledgement keeps its meaning. The retry copy Symfony sends when a handler fails in the default
+  `retry_handler: symfony` fails and ends the run the same way, since it is a publish (see
+  [A Handler Failing During the Loss](#a-handler-failing-during-the-loss)).
 - An ACK, NAK or TERM written during a recovery is buffered by the client, and `ack()` or `reject()` returns at
   once. That holds too when its own write is the first to notice the lost connection while the client still
   reports it open: the write starts the recovery, and the frame goes out on the connection the recovery makes.
@@ -1176,7 +1197,9 @@ What a process does when the server it is connected to goes away depends on
   though, and the worker its supervisor starts knows only the DSN's server again (see above).
 - **`reconnect: true`:** the client recovers the connection in the background on a server it learned, and a
   worker polls on. `cluster-failover.php` stops the server a worker is connected to halfway through its
-  messages: the worker receives the rest through another server, without an exception.
+  messages: the worker receives the rest through another server, without an exception. A handler that fails
+  at that moment still stops the worker with the default `retry_handler: symfony` (see
+  [A Handler Failing During the Loss](#a-handler-failing-during-the-loss)).
 
 Measured on the test cluster (nats-server 2.15.1, client 2.27.2, PHP 8.5), a stream with three replicas, the
 DSN on the server that leads it, that server stopped with `docker stop`, `request_timeout` 10 and
@@ -1195,6 +1218,43 @@ reply that never came. After a pause longer than `ping_after_idle` the check tha
 connection gone, in either mode, and the send goes out through another server (see
 [Losing the Connection](#losing-the-connection)). Whether a send that failed was stored is unknown either way
 (see [Duplicate Protection](#duplicate-protection)).
+
+#### A Handler Failing During the Loss
+
+With the default `retry_handler: symfony`, a worker exits when a handler fails while the connection to its
+server is being lost, in either `reconnect` mode. Symfony's retry listener sends the retry copy right after the
+failure, and that send is a publish into the lost connection: with `reconnect: true` it waits out
+`request_timeout` and fails with the client's `TimeoutException`, as the first `send()` in the table above
+does; with `reconnect: false` it fails at once. The exception leaves the worker before the failed delivery is
+settled, so `messenger:consume` exits. Nothing is lost: NATS delivers the message again, to the worker the
+supervisor starts or to another one, once `ack_wait` has passed since the failed delivery, which counts
+against `max_deliver`.
+
+Whether the retry copy was stored is unknown (see [Duplicate Protection](#duplicate-protection)). If it was,
+and the message delivered again is then handled, the message is handled twice: once from the original, once
+from the copy. If the message delivered again fails once more, Symfony sends the same copy again. So, on a
+cluster whose servers restart while workers run:
+
+- set `deduplicate: true` with a `stream_duplicate_window` longer than `ack_wait` plus the handler's run, so
+  that JetStream drops that second copy;
+- keep handlers idempotent, for a stored copy next to an original that succeeds, which no id can catch.
+
+With `retry_handler: nats` and `reconnect: true` the worker carries on: the transport does not publish Symfony's
+retry copy in that mode, and the NAK waits for no reply. The NAK did not take effect in the runs below, though
+(the cause is not pinned down): the message came back after `ack_wait`, not after `nak_delay`.
+
+Measured on the test cluster (nats-server 2.15.1, client 2.27.2, Symfony Messenger 8.1.9, PHP 8.5) with
+Symfony's `Worker` and retry listener and FrameworkBundle's default retry strategy. The worker's DSN named the
+server that leads a stream with three replicas, and the handler stopped that server with `docker stop` before
+it failed, on the message's first delivery; `request_timeout` 10, `ack_wait` 30, `deduplicate: true`:
+
+| | `reconnect: false` | `reconnect: true` |
+|---|---|---|
+| `retry_handler: symfony` (default) | the worker exits at once, the retry send fails with `Reconnect is disabled` | the worker exits after 10.0 s, the retry send fails with `TimeoutException` |
+| `retry_handler: nats` | the worker exits at once, `Reconnect is disabled` | the worker carries on |
+| the message | a new worker gets it again 30.0 s after its first delivery and handles it; nothing left pending | symfony mode: the same; nats mode: the same worker gets it again 30.0 s after its first delivery, not 1 s after the failure (`nak_delay` 1) |
+
+In symfony mode the retry copy was not stored in any of these runs.
 
 ### Streams on a Cluster
 
