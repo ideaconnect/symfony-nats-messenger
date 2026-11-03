@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Per-message subjects: `NatsSubjectStamp` and the `additional_subjects` option.** The topic in the DSN stays the
+  default publish subject. A `NatsSubjectStamp` publishes one message to another subject, such as
+  `orders.updated.42` for one entity. `additional_subjects` lists the patterns those subjects fall under:
+  `setup()` adds them to the stream, and the transport's one durable consumer filters on the topic and the
+  patterns with `filter_subjects` (NATS 2.10+), so every message still goes through one consumer in stream order.
+  Without the option the consumer keeps its single `filter_subject` and nothing changes. `get()` records the
+  subject a message arrived on in a `NatsReceivedSubjectStamp`, and Symfony's retry goes back to that subject.
+  A retry is an envelope a worker received (its `ReceivedStamp`) re-sent with a retry count, the one rule the
+  transport applies to the subject and, in nats mode, to the copy it leaves out. A copy for a failure transport
+  goes to that transport's topic. A delayed stamped message waits under the topic 
+  and is delivered to the stamped subject. `setup()` writes the filters to an existing durable consumer as well
+  (JetStream's consumer create updates an existing durable), so a changed `additional_subjects` applies on the next
+  setup; a removed pattern narrows the consumer at once, and the messages still stored on it are no longer delivered
+  or counted. The pattern itself stays on the stream, since `setup()` only adds subjects; the README describes
+  draining it first and removing it from the stream by hand. The stamp refuses a subject a message cannot be
+  published to (empty, whitespace, an empty token, a `*` or `>` token) with an `InvalidArgumentException`.
+
 ### Fixed
 - **With `retry_handler: nats`, a message whose handler fails is redelivered again on Symfony Messenger 7.4.22,
   8.1.10 and later (#90).** Those releases acknowledge a message they send for retry instead of rejecting it
@@ -36,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   modes, and recommends `deduplicate: true` with a `stream_duplicate_window` longer than `ack_wait` plus the
   handler's run, and idempotent handlers. "Automatic Reconnect" points to it. The transport's behaviour is
   unchanged.
+- **`Nats-Msg-Id` names the subject the message is delivered to, not the topic:** `<id>:<subject>:<retry count>`.
+  With `NatsSubjectStamp` one transport publishes to many subjects, and an id naming only the topic made JetStream
+  drop the copy one deduplication id sent to a second subject. The subject is the topic, the stamped subject or,
+  for Symfony's retry, the subject the message arrived on; for a delayed message it is the schedule's target.
+  Messages without a stamp keep the ids they had. Two transports publishing one stamped message to the same
+  subject now store it once.
 
 ### Testing & CI
 - A Behat scenario, "A message that fails once is redelivered with Symfony's default retry strategy", sends a

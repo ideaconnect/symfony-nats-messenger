@@ -38,7 +38,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 ### System Requirements
 - **PHP**: ^8.2
 - **Symfony**: ^7.2 || ^8
-- **NATS Server**: ^2.9 with JetStream enabled, ^2.12 for scheduled messages support and for `!` exclusion
+- **NATS Server**: ^2.9 with JetStream enabled, ^2.10 for `additional_subjects`, ^2.12 for scheduled messages support and for `!` exclusion
   tags in `stream_placement_tags`.
 
 ## Installation
@@ -379,6 +379,10 @@ framework:
         options:
           # Consumer Configuration
           consumer: 'my-consumer'           # Consumer group name (default: 'client')
+          additional_subjects: null         # Subject patterns the stream and this consumer cover next to
+                                            # the topic, so a message stamped with NatsSubjectStamp reaches
+                                            # the same consumer (list, or comma-separated in the DSN).
+                                            # See "Per-Message Subjects". Needs NATS >= 2.10.
 
           # Performance Tuning
           batching: 5                       # Messages per batch (default: 1)
@@ -794,17 +798,20 @@ and the copy for a failure transport, gets an id of its own, so none of them is 
 you add yourself, as above, is used with the option off as well, and covers a message your application
 dispatches again as a new envelope, which would otherwise get a new id.
 
-The header holds the id together with the transport's subject and the retry count, and on a failure-transport
-copy the transport the message failed on. JetStream deduplicates per stream whatever the subject, and Symfony
-hands each transport a message is routed to the envelope the one before returned, id included, so transports
-that share a stream (see [Multi-Subject Streams](#multi-subject-streams)) each keep their copy.
+The header holds the id together with the subject the message is delivered to and the retry count, and on a
+failure-transport copy the transport the message failed on. The subject is the topic, a `NatsSubjectStamp`'s
+subject, or for Symfony's retry the subject the message arrived on; for a delayed message it is the subject the
+schedule delivers to. JetStream deduplicates per stream whatever the subject, and Symfony hands each transport a
+message is routed to the envelope the one before returned, id included, so transports that share a stream (see
+[Multi-Subject Streams](#multi-subject-streams)) each keep their copy, and so does each stamped subject you send
+one id to. Two transports that publish the same stamped message to the same subject store it once.
 
 ```yaml
 options:
   deduplicate: true   # default: false
 ```
 
-> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, `testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn`, `testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn`, Behat scenarios `A message dispatched again with the same deduplication id is stored once`, `Distinct messages are all stored with the deduplicate option` and `A message routed to two deduplicating transports on one stream is stored for each`
+> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, `testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn`, `testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn`, `testSendGivesTheCopiesForTwoStampedSubjectsMessageIdsOfTheirOwn`, `testSendGivesTwoTransportsPublishingToOneStampedSubjectTheSameMessageId`, `testSendNamesTheScheduleTargetInTheMessageIdOfADelayedStampedMessage`, `testSendNamesTheReceivedSubjectInTheMessageIdOfARetry`, `testSendNamesTheTopicInTheMessageIdOfAFailureTransportCopy`, Behat scenarios `A message dispatched again with the same deduplication id is stored once`, `Distinct messages are all stored with the deduplicate option` and `A message routed to two deduplicating transports on one stream is stored for each`
 
 ### Losing the Connection
 
@@ -1408,6 +1415,67 @@ The `events` stream will have both `orders` and `payments` as subjects.
 > **Tested by:** `testReadmeDsnExamplesParseSuccessfully[README: multi-subject orders]`, `testReadmeDsnExamplesParseSuccessfully[README: multi-subject payments]`, `testReadmeMultiSubjectOptionsAreAccepted`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenario `Setup command merges subjects for transports sharing one stream`
 
 > **Note:** When a stream already exists, setup reads the current JetStream configuration, merges in any new subjects, and then overlays the stream settings managed by this transport. Existing subjects are preserved, duplicate subjects are not added, and the existing storage backend is kept for already-created streams.
+
+### Per-Message Subjects
+
+The topic in the DSN is the subject a message is published to by default. To publish one message to a subject of
+its own, such as one per entity, stamp it with `NatsSubjectStamp`, and list the patterns those subjects fall under
+in `additional_subjects`. The stream stores them, and the transport's one durable consumer reads them next to the
+topic, so every message of the transport still goes through one consumer, in stream order:
+
+```yaml
+framework:
+  messenger:
+    transports:
+      nats_orders:
+        dsn: 'nats-jetstream://localhost/events/orders?consumer=order-consumer&additional_subjects=orders.updated.>'
+```
+
+```php
+use IDCT\NatsMessenger\Stamp\NatsSubjectStamp;
+use Symfony\Component\Messenger\Envelope;
+
+$bus->dispatch(new Envelope(new OrderUpdated($orderId), [
+    new NatsSubjectStamp('orders.updated.' . $orderId),
+]));
+```
+
+- **Stream and consumer.** `setup()` adds the patterns to the stream's subjects. The consumer filters on the topic
+  and the patterns with `filter_subjects`, which needs NATS 2.10 or later. Without `additional_subjects` the
+  consumer keeps the single `filter_subject` it always had. A stamped subject that none of the patterns covers is
+  not read by this consumer: if another stream, or another subject of this stream, covers it, the message is
+  stored there, and if no stream covers it, `send()` fails with `No responders for subject ...`, since JetStream
+  has nothing to store it in.
+- **The stamp checks its subject.** A subject a message cannot be published to, one that is empty, contains
+  whitespace or an empty token, or has a `*` or `>` token, is refused with an `InvalidArgumentException` when the
+  stamp is made, at dispatch, instead of breaking the connection's protocol frame later.
+- **Keep the patterns clear of `{topic}.delayed.>` with `scheduled_messages`.** A pattern such as `orders.>` also
+  matches the subjects scheduled messages wait on (`orders.delayed.{uuid}`). JetStream refuses a stream whose
+  subjects overlap each other, so `setup()` fails with the server's error naming the two subjects, `orders.>` and
+  `orders.delayed.>`, as overlapping, and with `auto_setup` every send and pull repeats that failure. List the
+  subjects under their own token instead, such as `orders.updated.>`.
+- **Retries.** The stamp is not sent with the message. Symfony's retry of a received message goes back to the
+  subject the message arrived on, which the transport records in a `NatsReceivedSubjectStamp`. The consumer
+  delivered the message from that subject, so it reads the retry there too. With `retry_handler=nats`, NATS
+  redelivers the original on its own subject.
+- **Failure transport.** A failed message sent to a failure transport goes to that transport's topic.
+- **Delayed messages.** A delayed stamped message waits under the topic (`{topic}.delayed.{uuid}`) and is delivered
+  to the stamped subject when it is due.
+- **Existing consumers.** `setup()` writes the filters to a durable consumer that already exists too: JetStream's
+  consumer create is an update when the durable exists. A changed `additional_subjects` therefore applies on the
+  next `messenger:setup-transports`, or with `auto_setup` on the next worker's first pull or the next sender's first
+  send. The consumer keeps its position in the stream, so a pattern added later covers what is published from then
+  on; messages the stream already held on that pattern are not replayed once the consumer has moved past them.
+- **Removing a pattern.** Drain it first: `setup()` with the pattern gone narrows the consumer's filters at once,
+  and the messages still stored on the old pattern are then neither delivered nor counted by `getMessageCount()`,
+  without any error. Stop publishing to the pattern, let the workers empty it, then remove it from the
+  configuration. The pattern also stays on the stream: `setup()` removes no subject it cannot derive from its own
+  configuration, so the stream goes on storing whatever is still published to it. Remove the subject yourself, for
+  example with `nats stream edit`, which takes the full list of the subjects the stream keeps (those of every
+  transport sharing it). The transport cannot remove the subject for you: on a stream that several transports
+  share, or one an operator edited, it cannot tell its own old pattern from a subject someone else needs.
+
+> **Tested by:** `testAcceptsASubjectAMessageCanBePublishedTo`, `testRefusesASubjectAMessageCannotBePublishedTo`, `testSendPublishesToTheStampedSubject`, `testSendPublishesAStampedSubjectThisConsumerDoesNotRead`, `testSendPublishesARetryToTheSubjectTheMessageArrivedOn`, `testSendPublishesAFailureTransportCopyToTheTopic`, `testSendPublishesARetryOnTheFailureTransportToTheSubjectItArrivedOn`, `testSendIgnoresTheReceivedSubjectWithoutAReceivedStamp`, `testSendPublishesARetryToTheReceivedSubjectEvenWhenTheOptionsDoNotListIt`, `testSendSchedulesADelayedStampedMessageUnderTheTopicForTheStampedSubject`, `testGetStampsTheSubjectTheMessageArrivedOn`, `testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects`, `testSetupAddsTheAdditionalSubjectsToAnExistingStream`, `testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects`, `testSetupComparesTheFilterSubjectsAsStrings`, Behat scenarios `One consumer reads messages published to the topic and to a stamped subject`, `A delayed stamped message is delivered once, to its subject, after the scheduled time`, `Symfony's retry of a stamped message keeps its subject`, `Setup widens the filters of an existing consumer when a pattern is added`, `Setup narrows the filters of an existing consumer when a pattern is removed` and `A pattern added after the consumer moved past its stored messages does not replay them`
 
 ### Provisioning the Stream & Consumer
 

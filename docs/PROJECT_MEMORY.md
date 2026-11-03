@@ -134,8 +134,10 @@ apply only with the option on.
   still needs an `ack_wait` long enough to cover the handler.
 - **Deduplication:** `deduplicate` adds a sendable `DeduplicationIdStamp` before encoding.
   An application-supplied stamp works with the option off too. Wire ID is
-  `<id>:<topic>:<retry count>`, plus `:failed:<original receiver>` for a failure copy. JetStream
-  deduplicates per stream; subject and original receiver prevent legitimate copies being dropped.
+  `<id>:<subject>:<retry count>`, plus `:failed:<original receiver>` for a failure copy. The subject is
+  the resolved publish subject (topic, `NatsSubjectStamp`, or the received subject on a retry; the
+  schedule target for a delayed message, never `{topic}.delayed.{uuid}`). JetStream deduplicates per
+  stream; subject and original receiver prevent legitimate copies being dropped.
   Automatic stamps cannot deduplicate a newly constructed envelope after an uncertain publish;
   applications must retain a stable ID for that. The 5.4.1 ID change matters in rolling upgrades.
 - **Scheduling:** enabled positive delays publish to `{topic}.delayed.{uuid}`, with `Nats-Schedule`

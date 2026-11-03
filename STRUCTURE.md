@@ -34,7 +34,9 @@ src/
 │   ├── RetryHandler.php                        # Enum: SYMFONY (TERM) | NATS (NAK)
 │   └── TransportOption.php                     # Enum of every recognized option key
 ├── Stamp/
-│   └── DeduplicationIdStamp.php                # The id JetStream deduplicates a message by (Nats-Msg-Id)
+│   ├── DeduplicationIdStamp.php                # The id JetStream deduplicates a message by (Nats-Msg-Id)
+│   ├── NatsSubjectStamp.php                    # Publish one message to a chosen subject instead of the default
+│   └── NatsReceivedSubjectStamp.php            # The subject get() received a message on; retries go back to it
 └── Serializer/
     ├── AbstractEnveloperSerializer.php         # Base encode/decode envelope wrapping + validation
     └── IgbinarySerializer.php                  # Default serializer (igbinary), falls back to PhpSerializer
@@ -114,12 +116,12 @@ The heart of the bridge. Responsibilities map almost 1:1 to `TransportInterface`
 
 | Method | What it does |
 |--------|--------------|
-| `send()` | Stamps a UUIDv4 `TransportMessageIdStamp`, serializes the envelope, publishes to the subject through `JetStreamContext::publish()`, which waits for the publish acknowledgement and throws `JetStreamException` on an error or an invalid acknowledgement. A `DelayStamp` (when `scheduled_messages` is on) is published to `{topic}.delayed.{uuid}` with `Nats-Schedule` headers. A `DeduplicationIdStamp` (added with `deduplicate`) is sent as `Nats-Msg-Id`. With `retry_handler=nats` the copy Symfony's retry sends is not published. |
-| `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. A pull that found no messages (408, or 404) is an empty result. A missing consumer reports 503: `auto_setup` re-provisions it once, otherwise the error propagates. A pull refused at the connection's subscription limit (the client's `SubscriptionLimitException`) fails with Symfony's `TransportException` naming the stream, the consumer and the limit, since the transport needs two subscriptions per connection (#76). Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp`. |
+| `send()` | Stamps a UUIDv4 `TransportMessageIdStamp`, serializes the envelope, publishes to the subject through `JetStreamContext::publish()`, which waits for the publish acknowledgement and throws `JetStreamException` on an error or an invalid acknowledgement. A `DelayStamp` (when `scheduled_messages` is on) is published to `{topic}.delayed.{uuid}` with `Nats-Schedule` headers. A `DeduplicationIdStamp` (added with `deduplicate`) is sent as `Nats-Msg-Id`. With `retry_handler=nats` the copy Symfony's retry sends is not published. The subject is the topic, a `NatsSubjectStamp`'s subject (not checked against the consumer's filters), or for Symfony's retry the subject the message arrived on. |
+| `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. A pull that found no messages (408, or 404) is an empty result. A missing consumer reports 503: `auto_setup` re-provisions it once, otherwise the error propagates. A pull refused at the connection's subscription limit (the client's `SubscriptionLimitException`) fails with Symfony's `TransportException` naming the stream, the consumer and the limit, since the transport needs two subscriptions per connection (#76). Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp` and the subject it arrived on as a `NatsReceivedSubjectStamp`. |
 | `ack()` | Sends JetStream ACK for the message's reply token. |
 | `reject()` | Delegates to `handleFailedDelivery()` → TERM (Symfony retry) or NAK (NATS retry). |
 | `getMessageCount()` | Tries consumer info (`num_ack_pending` / `num_pending`), falls back to stream `state.messages`, then 0. |
-| `setup()` | Creates the stream with configured retention/storage/replicas; if it already exists, reads the live config, merges subjects, and updates. Then creates a durable **pull** consumer with explicit ACK / deliver-all and asserts it matches expectations. |
+| `setup()` | Creates the stream with configured retention/storage/replicas; if it already exists, reads the live config, merges subjects, and updates. The stream's subjects are the topic, any `additional_subjects` and, with `scheduled_messages`, `{topic}.delayed.>`. Then creates a durable **pull** consumer with explicit ACK / deliver-all and asserts it matches expectations. The consumer filters on the topic with `filter_subject`, or on the topic plus `additional_subjects` with `filter_subjects`; an existing consumer's filters are updated, since JetStream's consumer create is an update when the durable exists. |
 
 Cross-cutting behavior:
 - **Lazy connection.** No socket is opened in the constructor. `jetStream()` calls `connectIfNeeded()`,

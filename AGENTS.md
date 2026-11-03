@@ -86,6 +86,7 @@ tests/
 - **Batching**: configurable `batching` count and `max_batch_timeout`
 - **Retry handling**: `retry_handler` - `symfony` (TERM, default) or `nats` (NAK)
 - **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers
+- **Per-message subjects**: `NatsSubjectStamp` overrides the topic per message; `additional_subjects` adds the patterns the stream and the one consumer cover (`filter_subjects`); retries go back to the subject a message arrived on (`NatsReceivedSubjectStamp`)
 - **TLS/mTLS**: full TLS config options including client certificates
 - **Authentication**: username/password, token, JWT, NKey
 - **Serialization**: igbinary (default with fallback) or custom via `AbstractEnveloperSerializer`

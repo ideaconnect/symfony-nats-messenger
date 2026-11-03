@@ -1897,4 +1897,58 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame($logger, $this->extractNatsOptions($withLogger->client)->logger);
         self::assertNull($this->extractNatsOptions($withoutLogger->client)->logger);
     }
+
+    public function testBuildLeavesAdditionalSubjectsEmptyByDefault(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);
+
+        self::assertSame([], $configuration->additionalSubjects());
+    }
+
+    public function testBuildAcceptsAdditionalSubjectsAsList(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'additional_subjects' => ['test-topic.updated.>', ' test-topic.deleted.* ', 'test-topic.updated.>'],
+        ]);
+
+        self::assertSame(['test-topic.updated.>', 'test-topic.deleted.*'], $configuration->additionalSubjects());
+    }
+
+    public function testBuildParsesAdditionalSubjectsFromDsnQueryString(): void
+    {
+        $commaForm = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?additional_subjects=test-topic.updated.%3E,other.subject',
+            []
+        );
+        $listForm = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?additional_subjects[]=test-topic.updated.>&additional_subjects[]=other.subject',
+            []
+        );
+
+        self::assertSame(['test-topic.updated.>', 'other.subject'], $commaForm->additionalSubjects());
+        self::assertSame(['test-topic.updated.>', 'other.subject'], $listForm->additionalSubjects());
+    }
+
+    #[DataProvider('invalidAdditionalSubjectsShapeProvider')]
+    public function testBuildWithInvalidAdditionalSubjectsShapeThrowsException(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The additional_subjects option must be a non-empty list of subjects, or a comma-separated string of them.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['additional_subjects' => $value]);
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function invalidAdditionalSubjectsShapeProvider(): iterable
+    {
+        yield 'empty string' => [''];
+        yield 'only separators' => [' , ,'];
+        yield 'empty list' => [[]];
+        yield 'list with a nested array' => [['a.b', ['nested']]];
+        yield 'list with an integer' => [['a.b', 5]];
+        yield 'boolean' => [true];
+        yield 'integer' => [5];
+    }
 }

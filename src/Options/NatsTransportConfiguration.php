@@ -331,6 +331,16 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns the subjects the stream and the durable consumer cover next to the topic; empty when none are set.
+     *
+     * @return list<string>
+     */
+    public function additionalSubjects(): array
+    {
+        return TypeCoercion::stringListValue($this->options[TransportOption::ADDITIONAL_SUBJECTS->value] ?? null);
+    }
+
+    /**
      * Returns the JetStream `placement` block built from the two placement options, or null when
      * neither is set.
      *
