@@ -92,27 +92,41 @@ apply only with the option on.
   The count is read only with the option on; default-mode mocks have no stats stub. An ACK/NAK/
   TERM whose write meets the dead socket is buffered and returns at once from client 2.27.1
   (#244), hence the `^2.27.1` floor since 5.7.1. The factory's optional PSR-3 logger reaches the
-  client; the bundle passes `logger` on Monolog's `messenger` channel.
-  A handler failing while the worker's server goes away still ends the worker in symfony mode:
-  Symfony's retry send is a request whose reply the lost connection cannot bring, so it times out (#95, README
+  client; the bundle passes `logger` on Monolog's `messenger` channel. Since 5.8.0 the floor is `^2.28`:
+  client 2.28.0 asks the socket transport, before a publish or request write, whether the server already
+  closed the connection (`PeerCloseAwareTransportInterface::peerClosed()`, a MSG_PEEK; client #252) and
+  treats a yes as a failed write, so the ACK of a handled message and Symfony's retry copy written after a
+  server stopped during the handler go out on the recovered connection (reconnect on) or fail with
+  "Reconnect is disabled" (off), instead of vanishing. A close behind unread bytes (TLS close_notify,
+  a WebSocket Close frame) is still invisible to it, which is why the PING before a failed delivery's
+  NAK/TERM stays (with reconnect off it also dials another server, where the client would fail the NAK).
+  The transport option `resend_on_reconnect` (5.8.0, off) maps to the client's
+  `resendJetStreamPublishOnReconnect` (#249): a publish with a Nats-Msg-Id is written again once the
+  connection its frame went out on is replaced; the builder requires `reconnect: true` and a configured
+  `stream_duplicate_window` longer than `request_timeout`. Measured 2026-11-04 on the test cluster
+  (nats 2.15.1, client 2.28.0, Messenger 8.1.10, the handler `docker stop`ping the worker's server): with
+  reconnect on, both retry modes carry on and nothing is lost or handled twice (retry copy stored 0.3 s
+  after the first delivery, NAK effective after nak_delay, ACK delivered); with reconnect off an ACK or
+  retry copy ends the worker at once and the message returns after ack_wait, while nats mode's NAK still
+  carries on through another server.
+  History (#95, before 2.28.0):
+  a handler failing while the worker's server goes away ended the worker in symfony mode:
+  Symfony's retry send is a request whose reply the lost connection cannot bring, so it timed out (#95, README
   "A Handler Failing During the Loss"; measured 2026-11-01, nats 2.15.1, client 2.27.2). #95
   analysed a transport re-publish after the timeout (misfires on a slow but connected leader with
   409 err_code 10158, doubles the wait with no server to fail over to) and pointed at the client
-  instead: ideaconnect/php-nats-jetstream-client#249, merged in its #251 (`58106f4`, 2026-11-02, no
-  client release yet), adds the opt-in `NatsOptions::$resendJetStreamPublishOnReconnect` (off by
+  instead: ideaconnect/php-nats-jetstream-client#249, merged in its #251 (`58106f4`, 2026-11-02,
+  released in 2.28.0), adds the opt-in `NatsOptions::$resendJetStreamPublishOnReconnect` (off by
   default): a publish with a `Nats-Msg-Id` goes out again once the connection its frame went out on
   is replaced. On the test cluster (2.15.1) a publish right after the leader's `docker stop` was
-  stored 0.01 s later with it, and timed out after 10 s without it. The transport does not set it:
-  that needs a client release, a raised requirement and an option for sends with a message id; the
-  default configuration (no id) stays as described. In nats mode the NAK at that moment did not take effect
+  stored 0.01 s later with it, and timed out after 10 s without it. In nats mode the NAK at that moment did not take effect
   (redelivery after `ack_wait`) up to 5.7.1. Cause (measured 2026-11-02, nats 2.15.1, client 2.27.2): the
   client reads the socket only while an operation waits for a reply, so a close the server sent during the handler
   stays unread (the socket sat in CLOSE-WAIT, the client reported Open 1.5 s after `docker stop`), and a write that
   waits for no reply (ACK, NAK, TERM, WPI) is taken by the socket and lost; #244's buffer only catches writes that
   fail. Since 5.8.0 `reject()` and `ack()`'s NAK of a left-out retry arm `checkBeforeNextUse` first, so a PING reads
-  the close and the NAK/TERM goes out on the recovered or newly dialled connection. The ACK of a handled message is
-  still unchecked and lost that way (handled twice after `ack_wait`); covering it without a round trip per message
-  needs the client to notice a pending close before such a write.
+  the close and the NAK/TERM goes out on the recovered or newly dialled connection. The ACK of a handled message
+  stays unchecked by the transport (no round trip per message); client 2.28.0 covers it on plain sockets.
 - **Pull status:** 408 is empty; 404 is historically empty. A missing consumer normally gives 503,
   and deletion during a pull can give 409. With `auto_setup`, 404/409/503 cause one provisioning
   attempt and one retried pull; repeated 409/503 propagate. Since 5.7.0, `409 Server Shutdown`

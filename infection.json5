@@ -17,7 +17,7 @@
     // Generous per-mutant timeout so only genuine infinite loops time out — fast mutants never
     // straddle the boundary and get classified non-deterministically on a loaded CI runner.
     "timeout": 60,
-    // Regression floors. The suite scores 98.6% MSI and covered MSI (1030 of 1045 mutants killed, none timed
+    // Regression floors. The suite scores 98.6% MSI and covered MSI (1043 of 1058 mutants killed, none timed
     // out, 100% mutation code coverage); docs/TESTS.md lists the 15 mutants that survive, with the reason for
     // each.
     // minCoveredMsi 95 leaves 37 mutants of headroom, so the gate fails on real regressions, not on
