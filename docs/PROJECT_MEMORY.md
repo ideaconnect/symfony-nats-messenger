@@ -83,6 +83,13 @@ apply only with the option on.
   `connection_timeout`, or the client's shorter `request_timeout`. `ping_after_idle: 0` disables
   idle and post-failure checks, but Closed-state recovery still applies. `close()` resets the
   connection and provisioning state; the same transport remains reusable.
+- **Default mode** (`reconnect: false`; decided in #81, kept in #95 and client #249): Symfony owns
+  recovery. The operation that meets a lost connection fails with the client's exception and the
+  transport sends nothing again; the next operation checks the connection and dials. A worker exits on
+  a failed pull, ACK (`ack_sync` included) or retry copy, its supervisor starts a new one, and the
+  message comes back after `ack_wait`. Do not add a resend of a failed write in this mode: a worker that
+  should outlive the loss of its server is what `reconnect: true` is for (`resend_on_reconnect` requires
+  it). The PING before a failed delivery's NAK/TERM is a check before the write, not a resend.
 - **Reconnect mode** (`reconnect: true`, 5.7.0, #81): the client owns recovery. A Connecting
   client gets no PING and no dial; the operation waits within its own budget. After a failed
   PING, the client's state and reconnect count decide: recovering or recovered is kept, the same
