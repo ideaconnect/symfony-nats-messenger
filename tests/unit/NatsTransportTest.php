@@ -12,6 +12,7 @@ use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\ConnectionException;
 use IDCT\NATS\Exception\JetStreamException;
 use IDCT\NATS\Exception\SubscriptionLimitException;
+use IDCT\NATS\Exception\TimeoutException;
 use IDCT\NATS\Exception\UnsupportedFeatureException;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
 use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
@@ -20,6 +21,7 @@ use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
+use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Tests\Support\StrictHeaderNameSerializer;
 use InvalidArgumentException;
 use LogicException;
@@ -52,9 +54,27 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
 
 class TestableNatsTransport extends NatsTransport
 {
+    /** How often {@see pause()} may run in one test: whileTheClusterSettles() pauses at most 50 times in its 5 s. */
+    private const MAX_PAUSES = 60;
+
+    private int $pausesTaken = 0;
+
     protected function connect(): void
     {
         // Keep unit tests isolated from live NATS.
+    }
+
+    /**
+     * The real pause, failing the test once it ran more often than setup() ever pauses, so that a loop which never
+     * ends fails within seconds instead of hanging the run.
+     */
+    protected function pause(float $seconds): void
+    {
+        if (++$this->pausesTaken > self::MAX_PAUSES) {
+            throw new \LogicException(sprintf('pause() ran more than %d times: a loop that never ends.', self::MAX_PAUSES));
+        }
+
+        parent::pause($seconds);
     }
 }
 
@@ -160,9 +180,64 @@ class ClockedNatsTransport extends RealConnectNatsTransport
     }
 }
 
+/**
+ * Records the pauses setup() takes while the cluster settles instead of waiting, and moves the clock it reads by
+ * $secondsPerPause for each of them.
+ */
+class PausingNatsTransport extends RuntimeTestableNatsTransport
+{
+    public float $now = 1000.0;
+
+    public float $secondsPerPause = 0.0;
+
+    /** @var list<float> */
+    public array $pauses = [];
+
+    protected function monotonicSeconds(): float
+    {
+        return $this->now;
+    }
+
+    protected function pause(float $seconds): void
+    {
+        $this->pauses[] = $seconds;
+        $this->now += $this->secondsPerPause;
+        // A loop that never ends, with a clock that does not move, fails the test instead of filling the memory.
+        if (count($this->pauses) > 1000) {
+            throw new \LogicException('pause() ran more than 1000 times: a loop that never ends.');
+        }
+    }
+}
+
+/**
+ * Sends a delayed message as due at a time the test gives instead of the clock's, and records the delays it was asked
+ * about.
+ */
+class DeliveryTimeNatsTransport extends RuntimeTestableNatsTransport
+{
+    public \DateTimeImmutable $dueAt;
+
+    /** @var list<int> */
+    public array $delays = [];
+
+    protected function deliveryTime(int $delayMs): \DateTimeImmutable
+    {
+        $this->delays[] = $delayMs;
+
+        return $this->dueAt;
+    }
+}
+
 final class NatsTransportTest extends TestCase
 {
     private const VALID_DSN = 'nats://admin:password@localhost:4222/test-stream/test-topic';
+
+    /**
+     * retry_handler nats, with the connection check that the NAK of a failed delivery runs first turned off: the
+     * tests using it are about what is NAKed, against a JetStream double with no client to answer a PING, and the
+     * check has tests of its own (testSettlingAFailedDeliveryChecksTheConnectionFirst and those after it).
+     */
+    private const NATS_MODE = ['retry_handler' => 'nats', 'ping_after_idle' => 0];
 
     /**
      * Matches an addStream() StreamConfiguration whose toArray() equals the expected config.
@@ -1383,6 +1458,83 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * The NAK or TERM of a delivery whose handler failed checks the connection first, with one PING, though the
+     * connection was used a moment ago: the server may have closed it while the handler ran, and a write into a
+     * connection whose close the client has not read is lost (ReconnectModeTest shows it with the real client). The
+     * order is checked: PING, then the acknowledgement. The ACK of a handled message after it pings nothing.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('failedDeliverySettlements')]
+    public function testSettlingAFailedDeliveryChecksTheConnectionFirst(array $options, string $settle, string $frame): void
+    {
+        $calls = [];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        foreach (['ack', 'nak', 'nakWithDelay', 'term'] as $method) {
+            $jetStream->method($method)->willReturnCallback(static function () use (&$calls, $method): Future {
+                $calls[] = $method;
+
+                return Future::complete();
+            });
+        }
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::once())->method('rtt')->willReturnCallback(static function () use (&$calls): Future {
+            $calls[] = 'rtt';
+
+            return Future::complete(0.001);
+        });
+        $client->expects(self::never())->method('disconnect');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, $options);
+        $transport->setClient($client);
+        $message = new \stdClass();
+        $received = (new Envelope($message))->with(new TransportMessageIdStamp('reply-token'), new ReceivedStamp('nats'));
+        // The connection is in use: an ACK that needs no check.
+        $transport->ack($received);
+
+        if ($settle === 'ack') {
+            $transport->send($received->with(new RedeliveryStamp(1)));
+            $transport->ack($received);
+        } else {
+            $transport->reject($received);
+        }
+        // The check is over: the next ACK pings nothing.
+        $transport->ack($received);
+
+        self::assertSame(['ack', 'rtt', $frame, 'ack'], $calls);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string, string}>
+     */
+    public static function failedDeliverySettlements(): iterable
+    {
+        yield 'reject(), symfony mode: TERM' => [[], 'reject', 'term'];
+        yield 'reject(), nats mode: NAK' => [['retry_handler' => 'nats'], 'reject', 'nak'];
+        yield 'reject(), nats mode with nak_delay' => [['retry_handler' => 'nats', 'nak_delay' => 1], 'reject', 'nakWithDelay'];
+        yield 'ack() of a delivery whose retry copy was left out: NAK' => [['retry_handler' => 'nats'], 'ack', 'nak'];
+    }
+
+    /** ping_after_idle 0 turns this check off as well. */
+    public function testPingAfterIdleZeroTurnsTheCheckBeforeSettlingAFailedDeliveryOff(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats', 'ping_after_idle' => 0]);
+        $transport->setClient($client);
+        $transport->reject((new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token')));
+    }
+
+    /**
      * A pull can wait up to max_batch_timeout for messages, with the connection in use all that time: the idle
      * time counts from when the pull ended, so a long max_batch_timeout does not make every pull PING first.
      */
@@ -2002,7 +2154,7 @@ final class NatsTransportTest extends TestCase
         $serializer->method('decode')->willReturn(new Envelope(new \stdClass()));
         $serializer->expects(self::never())->method('encode');
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $serializer);
         $transport->setJetStreamContext($jetStream);
 
         $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
@@ -2053,7 +2205,7 @@ final class NatsTransportTest extends TestCase
             return new Envelope($message);
         });
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $serializer);
         $transport->setJetStreamContext($jetStream);
 
         $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
@@ -2091,7 +2243,7 @@ final class NatsTransportTest extends TestCase
             ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === 'delivery-1'))
             ->willReturn(Future::complete());
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'] + $options);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + $options);
         $transport->setJetStreamContext($jetStream);
         $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
 
@@ -2120,7 +2272,7 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
         $jetStream->expects(self::once())->method('ack')->willReturn(Future::complete());
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats']);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
         $transport->setJetStreamContext($jetStream);
         $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
 
@@ -2157,7 +2309,7 @@ final class NatsTransportTest extends TestCase
             return Future::complete();
         });
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats']);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
         $transport->setJetStreamContext($jetStream);
         $retried = new \stdClass();
         $failed = new Envelope($retried, [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
@@ -2184,7 +2336,7 @@ final class NatsTransportTest extends TestCase
             return Future::complete();
         });
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats']);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
         $transport->setJetStreamContext($jetStream);
         $first = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
         $second = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-2')]);
@@ -2216,6 +2368,142 @@ final class NatsTransportTest extends TestCase
 
         $transport->send($failed->with(new RedeliveryStamp(1)));
         $transport->ack($failed);
+    }
+
+    /**
+     * In nats mode the first retry copy send() leaves out is logged, through the transport's logger, as a warning
+     * that Symfony's retry strategy is on, and only the first: here through Symfony's Worker and retry listener with
+     * FrameworkBundle's default strategy (3 retries) over a batch of two failing messages, whose two copies are both
+     * left out (#94).
+     */
+    public function testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'first'),
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.2.2.0.0', payload: 'second'),
+        ]));
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::exactly(2))->method('nak')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $this->decodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        self::runWorkerOverFailingMessages($transport, new MultiplierRetryStrategy(3, 1000, 2), 2);
+
+        self::assertSame([[
+            'level' => 'warning',
+            'message' => 'retry_handler=nats on stream "test-stream", subject "test-topic": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+        ]], $logger->records);
+    }
+
+    /**
+     * With max_retries: 0, as the README asks for in nats mode, Symfony's Worker sends no retry copy and rejects the
+     * failed delivery, which is NAKed, and nothing is logged (#94).
+     */
+    public function testNatsModeWithoutSymfonysRetriesLogsNoWarning(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'encoded'),
+        ]));
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $this->decodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        self::runWorkerOverFailingMessages($transport, new MultiplierRetryStrategy(0), 1);
+
+        self::assertSame([], $logger->records);
+    }
+
+    /**
+     * Nothing is logged when send() leaves out no retry copy: in symfony mode, where Symfony's retry copy is
+     * published, and in nats mode for a copy for the failure transport, a message not received in this process and
+     * a plain dispatch (#94).
+     *
+     * @param array<string, mixed> $options
+     * @param list<StampInterface> $stamps
+     */
+    #[DataProvider('sendsThatLeaveOutNoRetryCopy')]
+    public function testNoWarningWhenSendLeavesOutNoRetryCopy(array $options, array $stamps): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $serializer, $logger);
+        $transport->setJetStreamContext($jetStream);
+        $transport->send(new Envelope(new \stdClass(), $stamps));
+
+        self::assertSame([], $logger->records);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, list<StampInterface>}>
+     */
+    public static function sendsThatLeaveOutNoRetryCopy(): iterable
+    {
+        yield 'symfony mode, Symfony\'s retry copy' => [[], [new ReceivedStamp('async'), new DelayStamp(1000), new RedeliveryStamp(1)]];
+        foreach (self::envelopesNatsModeStillPublishes() as $name => [$stamps]) {
+            yield 'nats mode, ' . $name => [['retry_handler' => 'nats'], $stamps];
+        }
+    }
+
+    /**
+     * Once per transport object: each transport in nats mode warns about its own stream and subject the first time
+     * it leaves out a retry copy, whether the copy carries a delivery token or not, and stays quiet after that.
+     */
+    public function testEachTransportWarnsOnceAboutItsOwnStreamAndSubject(): void
+    {
+        $logger = new RecordingLogger();
+        $first = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], new PhpSerializer(), $logger);
+        $second = new RuntimeTestableNatsTransport('nats://localhost:4222/orders/orders.created', ['retry_handler' => 'nats'], new PhpSerializer(), $logger);
+        $retry = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new RedeliveryStamp(1)]);
+
+        $first->send($retry);
+        $second->send($retry->with(new TransportMessageIdStamp('delivery-1')));
+        $first->send($retry->with(new TransportMessageIdStamp('delivery-2')));
+        $second->send($retry->with(new RedeliveryStamp(2)));
+
+        self::assertSame([
+            'retry_handler=nats on stream "test-stream", subject "test-topic": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+            'retry_handler=nats on stream "orders", subject "orders.created": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+        ], $logger->messagesAt('warning'));
+        self::assertCount(2, $logger->records);
+    }
+
+    /** A serializer that decodes every payload into an envelope of its own. */
+    private function decodingSerializer(): SerializerInterface
+    {
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willReturnCallback(static fn (): Envelope => new Envelope(new \stdClass()));
+
+        return $serializer;
+    }
+
+    /**
+     * Runs Symfony's Worker, with its retry listener and the given retry strategy, over the transport until it has
+     * received the given number of messages, the handler failing every one of them.
+     */
+    private static function runWorkerOverFailingMessages(NatsTransport $transport, MultiplierRetryStrategy $strategy, int $messages): void
+    {
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function (): void {
+                throw new \RuntimeException('always fails');
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($transport),
+            self::singleServiceLocator($strategy),
+        ));
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener($messages));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
     }
 
     /**
@@ -2761,6 +3049,377 @@ final class NatsTransportTest extends TestCase
         $this->expectExceptionMessage('permissions violation');
 
         $transport->setup();
+    }
+
+    /**
+     * What nats-server 2.10 answers to a consumer request while it moves the consumer after a change of
+     * stream_replicas, and the consumer has no leader for a moment.
+     */
+    private static function clusterNotAvailable(): JetStreamException
+    {
+        return new JetStreamException('JetStream system temporarily unavailable', 503, null, 10008);
+    }
+
+    private static function liveConsumer(string $replayPolicy): ConsumerInfo
+    {
+        return new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => [
+                'ack_policy' => 'explicit',
+                'deliver_policy' => 'all',
+                'filter_subject' => 'test-topic',
+                'replay_policy' => $replayPolicy,
+            ]],
+        );
+    }
+
+    public function testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->with('test-stream', 'client')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(self::clusterNotAvailable()),
+                Future::complete(self::liveConsumer('original')),
+            );
+        // The live consumer's replay policy, which only the second answer carried, is the one sent.
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static fn (ConsumerConfiguration $configuration): bool => ($configuration->toArray()['replay_policy'] ?? null) === 'original'))
+            ->willReturn(Future::complete(self::liveConsumer('original')));
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    public function testSetupCreatesTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->willReturn(Future::error(new JetStreamException('consumer not found', 404, null, 10014)));
+        $jetStream->expects(self::exactly(3))
+            ->method('addConsumer')
+            ->with('test-stream', self::isInstanceOf(ConsumerConfiguration::class))
+            ->willReturnOnConsecutiveCalls(
+                Future::error(self::clusterNotAvailable()),
+                Future::error(self::clusterNotAvailable()),
+                Future::complete(self::liveConsumer('instant')),
+            );
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1, 0.1], $transport->pauses);
+    }
+
+    public function testSetupGivesUpOnATemporarilyUnavailableClusterAfterFiveSeconds(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        // Asked at 0, 1, 2, 3, 4 and 5 seconds; the answer at 5 seconds is the last one.
+        $jetStream->expects(self::exactly(6))
+            ->method('getConsumer')
+            ->willReturnCallback(static fn (): Future => Future::error(self::clusterNotAvailable()));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+        $transport->secondsPerPause = 1.0;
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have failed');
+        } catch (\RuntimeException $exception) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': JetStream system temporarily unavailable", $exception->getMessage());
+            self::assertInstanceOf(JetStreamException::class, $exception->getPrevious());
+        }
+        self::assertCount(5, $transport->pauses);
+    }
+
+    public function testSetupDoesNotAskForTheConsumerAgainAfterAnotherJetStreamError(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->willReturn(Future::error(new JetStreamException('jetstream not enabled for account', 503, null, 10039)));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have failed');
+        } catch (\RuntimeException $exception) {
+            self::assertStringContainsString('jetstream not enabled for account', $exception->getMessage());
+        }
+        self::assertSame([], $transport->pauses);
+    }
+
+    public function testSetupWaitsBeforeAskingTheTemporarilyUnavailableClusterAgain(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(self::clusterNotAvailable()),
+                Future::complete(self::liveConsumer('instant')),
+            );
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete(self::liveConsumer('instant')));
+
+        // The real pause and clock.
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $start = hrtime(true);
+        $transport->setup();
+
+        // At least half of the 100 ms: without the pause, setup() returns within a few milliseconds. Not the whole
+        // 100 ms: with ext-event, Revolt's loop runs on libevent, whose timers read a coarse clock, and a 100 ms
+        // delay can end a little under 100 ms by hrtime() (measured: 0.0992 s).
+        self::assertGreaterThanOrEqual(0.05, (hrtime(true) - $start) / 1e9);
+    }
+
+    /**
+     * What a consumer request can get for a moment while NATS moves the consumer after a change of stream_replicas:
+     * the stream setup() has just updated, reported as not found (measured on nats-server 2.10.29).
+     */
+    private static function streamNotFound(): JetStreamException
+    {
+        return new JetStreamException('stream not found', 404, null, 10059);
+    }
+
+    public function testSetupAsksForTheConsumerAgainWhileTheMovedStreamIsReportedAsNotFound(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(self::streamNotFound()),
+                Future::complete(self::liveConsumer('original')),
+            );
+        // Not read as "no consumer": the configured policy (instant) would differ from the live consumer's.
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static fn (ConsumerConfiguration $configuration): bool => ($configuration->toArray()['replay_policy'] ?? null) === 'original'))
+            ->willReturn(Future::complete(self::liveConsumer('original')));
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['replay_policy' => 'instant']);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    public function testSetupCreatesTheConsumerAgainWhileTheMovedStreamIsReportedAsNotFound(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->willReturn(Future::error(new JetStreamException('consumer not found', 404, null, 10014)));
+        $jetStream->expects(self::exactly(2))
+            ->method('addConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(self::streamNotFound()),
+                Future::complete(self::liveConsumer('instant')),
+            );
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    public function testSetupGivesUpOnAStreamStillReportedAsNotFoundAfterFiveSeconds(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        // Asked at 0, 1, 2, 3, 4 and 5 seconds, as for 10008.
+        $jetStream->expects(self::exactly(6))
+            ->method('getConsumer')
+            ->willReturnCallback(static fn (): Future => Future::error(self::streamNotFound()));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+        $transport->secondsPerPause = 1.0;
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have failed');
+        } catch (\RuntimeException $exception) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': stream not found", $exception->getMessage());
+            self::assertSame(10059, $exception->getPrevious() instanceof JetStreamException ? $exception->getPrevious()->getErrCode() : null);
+        }
+        self::assertCount(5, $transport->pauses);
+    }
+
+    /**
+     * Guard: a consumer that is not there (err_code 10014) is still read as no consumer at once, and the configured
+     * replay policy goes to the new one.
+     */
+    public function testSetupReadsAMissingConsumerAsNoConsumerWithoutAskingAgain(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->willReturn(Future::error(new JetStreamException('consumer not found', 404, null, 10014)));
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static fn (ConsumerConfiguration $configuration): bool => ($configuration->toArray()['replay_policy'] ?? null) === 'original'))
+            ->willReturn(Future::complete(self::liveConsumer('original')));
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['replay_policy' => 'original']);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([], $transport->pauses);
+    }
+
+    public function testSetupAsksForTheConsumerOnceMoreAfterARequestTheClusterDidNotAnswer(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new TimeoutException('Request timed out')),
+                Future::complete(self::liveConsumer('original')),
+            );
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static fn (ConsumerConfiguration $configuration): bool => ($configuration->toArray()['replay_policy'] ?? null) === 'original'))
+            ->willReturn(Future::complete(self::liveConsumer('original')));
+
+        // ping_after_idle 0: no connection check after the failed request, which this test is not about.
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+        // The unanswered request took request_timeout, longer than the 5 s the codes above are asked again for.
+        $transport->secondsPerPause = 10.0;
+
+        $transport->setup();
+
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    public function testSetupCreatesTheConsumerOnceMoreAfterARequestTheClusterDidNotAnswer(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('getConsumer')
+            ->willReturn(Future::error(new JetStreamException('consumer not found', 404, null, 10014)));
+        $jetStream->expects(self::exactly(2))
+            ->method('addConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new TimeoutException('Request timed out')),
+                Future::complete(self::liveConsumer('instant')),
+            );
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    public function testSetupGivesUpOnASecondConsumerRequestTheClusterDidNotAnswer(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnCallback(static fn (): Future => Future::error(new TimeoutException('Request timed out')));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have failed');
+        } catch (\RuntimeException $exception) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': Request timed out", $exception->getMessage());
+            self::assertInstanceOf(TimeoutException::class, $exception->getPrevious());
+        }
+        self::assertSame([0.1], $transport->pauses);
+    }
+
+    /**
+     * An unanswered request is asked once more for each of the two consumer requests: a lookup that got its answer
+     * the second time leaves the create its own second try.
+     */
+    public function testEachConsumerRequestGetsItsOwnSecondTryAfterAnUnansweredOne(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new TimeoutException('Request timed out')),
+                Future::error(new JetStreamException('consumer not found', 404, null, 10014)),
+            );
+        $jetStream->expects(self::exactly(2))
+            ->method('addConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new TimeoutException('Request timed out')),
+                Future::complete(self::liveConsumer('instant')),
+            );
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+
+        self::assertSame([0.1, 0.1], $transport->pauses);
+    }
+
+    /** After an unanswered request, a 10008 past the 5 seconds still ends the setup. */
+    public function testSetupGivesUpOnATemporarilyUnavailableClusterAfterAnUnansweredRequestPastFiveSeconds(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(2))
+            ->method('getConsumer')
+            ->willReturnOnConsecutiveCalls(
+                Future::error(new TimeoutException('Request timed out')),
+                Future::error(self::clusterNotAvailable()),
+            );
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, ['ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+        $transport->secondsPerPause = 10.0;
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have failed');
+        } catch (\RuntimeException $exception) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': JetStream system temporarily unavailable", $exception->getMessage());
+        }
+        self::assertSame([0.1], $transport->pauses);
     }
 
     public function testAutoSetupProvisionsOnFirstSendOnce(): void
@@ -3984,6 +4643,58 @@ final class NatsTransportTest extends TestCase
         self::assertArrayHasKey('Nats-Schedule', $capturedHeaders);
         $scheduled = new \DateTimeImmutable(substr($capturedHeaders['Nats-Schedule'], 4));
         self::assertGreaterThanOrEqual($requested, $scheduled, 'A short delay must not be scheduled before it has elapsed.');
+    }
+
+    /**
+     * A delivery time on a whole second is that second: only a fraction of a second is rounded up. (The real clock
+     * almost never gives a whole second, so the transport is given one.)
+     */
+    public function testSendDelayedMessageDueOnAWholeSecondIsScheduledForThatSecond(): void
+    {
+        $capturedHeaders = $this->sendDelayedMessageDueAt('2026-11-02T12:00:05.000000+00:00', 5000, $delays);
+
+        self::assertSame('@at 2026-11-02T12:00:05Z', $capturedHeaders['Nats-Schedule'] ?? null);
+        self::assertSame([5000], $delays);
+    }
+
+    public function testSendDelayedMessageDueWithinASecondIsScheduledForTheNextOne(): void
+    {
+        $capturedHeaders = $this->sendDelayedMessageDueAt('2026-11-02T12:00:05.000001+00:00', 1500, $delays);
+
+        self::assertSame('@at 2026-11-02T12:00:06Z', $capturedHeaders['Nats-Schedule'] ?? null);
+        self::assertSame([1500], $delays);
+    }
+
+    /**
+     * Sends a message with a DelayStamp of $delayMs through a transport whose delivery time is $dueAt, and returns
+     * the headers it was published with.
+     *
+     * @param list<int>|null $delays Set to the delays the transport asked the delivery time for.
+     * @return array<string, string>
+     */
+    private function sendDelayedMessageDueAt(string $dueAt, int $delayMs, ?array &$delays): array
+    {
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded-payload']);
+
+        $capturedHeaders = [];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturnCallback(
+            function (string $subject, string $payload, array $headers) use (&$capturedHeaders): Future {
+                $capturedHeaders = $headers;
+
+                return Future::complete();
+            }
+        );
+
+        $transport = new DeliveryTimeNatsTransport(self::VALID_DSN, ['scheduled_messages' => true], $serializer);
+        $transport->setJetStreamContext($jetStream);
+        $transport->dueAt = new \DateTimeImmutable($dueAt);
+
+        $transport->send(new Envelope(new \stdClass(), [new DelayStamp($delayMs)]));
+        $delays = $transport->delays;
+
+        return $capturedHeaders;
     }
 
     public function testSendDelayedMessageWithLargeDelaySchedulesFarInTheFuture(): void

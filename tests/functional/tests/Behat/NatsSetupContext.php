@@ -1128,6 +1128,45 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Checks how often the consumer warned, in nats mode, that Symfony's retry strategy is on (#94). The functional
+     * app has no Monolog: FrameworkBundle's default logger writes warnings to the consumer's stderr, which the
+     * transport gets through the bundle. The transport warns once per transport object, so once per consumer process
+     * however many retry copies it leaves out, and not at all with max_retries: 0.
+     */
+    #[Then('the consumer should have warned once that Symfony\'s retry strategy is on')]
+    public function theConsumerShouldHaveWarnedOnceThatSymfonysRetryStrategyIsOn(): void
+    {
+        $this->assertSymfonysRetryStrategyWarnings(1);
+    }
+
+    #[Then('the consumer should not have warned that Symfony\'s retry strategy is on')]
+    public function theConsumerShouldNotHaveWarnedThatSymfonysRetryStrategyIsOn(): void
+    {
+        $this->assertSymfonysRetryStrategyWarnings(0);
+    }
+
+    private function assertSymfonysRetryStrategyWarnings(int $expected): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        $warning = sprintf(
+            'retry_handler=nats on stream "%s", subject "%s": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport',
+            $this->testStreamName,
+            $this->testSubject
+        );
+        $warnings = substr_count($output, $warning);
+
+        if ($warnings !== $expected) {
+            throw new \RuntimeException(
+                sprintf("Expected the warning that Symfony's retry strategy is on %d time(s), but found it %d time(s).\nConsumer output: %s", $expected, $warnings, $output)
+            );
+        }
+    }
+
+    /**
      * Verifies that the failure transport received the expected number of permanently
      * failed messages by parsing `messenger:stats` output for the `failed_transport` queue.
      *
