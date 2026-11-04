@@ -632,7 +632,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * nak_delay. The PING reads the close, the client recovers the connection (or, without `reconnect`, the
      * transport dials again), and the NAK goes out on the new one, where it took effect after nak_delay. A handler
      * that failed is the likely moment for a lost connection, and a failure is rare enough to pay a round trip for;
-     * the ACK of a handled message stays a plain write.
+     * the ACK of a handled message stays a plain write. Since client 2.28.0 the client sees such a close on a plain
+     * socket before it writes, ACK included; the PING still covers the close it cannot see, behind bytes not read
+     * yet, as behind the close_notify of a TLS server.
      */
     private function checkTheConnectionBeforeSettlingAFailure(): void
     {

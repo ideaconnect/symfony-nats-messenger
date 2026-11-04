@@ -8,7 +8,7 @@ for Claude Code. For architecture see [STRUCTURE.md](STRUCTURE.md); for human on
 
 A Symfony Messenger **transport** for NATS JetStream. It implements `TransportInterface`,
 `MessageCountAwareInterface`, and `SetupableTransportInterface`, bridging Symfony's message bus to
-NATS via the async `idct/php-nats-jetstream-client` (`^2.27.1`, amphp-based). It ships
+NATS via the async `idct/php-nats-jetstream-client` (`^2.28`, amphp-based). It ships
 `IDCTNatsMessengerBundle` (auto-enabled by Flex), which registers the transport factory
 and the igbinary serializer so projects need no manual wiring.
 
@@ -77,7 +77,9 @@ composer nats:stop               # stop NATS
   JetStream replies, but counting a pull the server did not answer), gets a PING first and is replaced if
   it goes unanswered. So does the NAK/TERM of a failed delivery (`reject()`, and `ack()` NAKing a left-out
   retry): the client reads the socket only while an operation waits for a reply, so a close the server sent
-  during the handler is unread and a fire-and-forget write would be lost. `ping_after_idle: 0` turns these
+  during the handler is unread and a fire-and-forget write would be lost. Since client 2.28.0 the client sees
+  such a close on a plain socket before it writes (ACK included); keep the PING for the close it cannot see,
+  behind unread bytes (a TLS server's close_notify). `ping_after_idle: 0` turns these
   checks off, and `keepalive()` never pings or dials (it
   runs in a signal handler).
 - **Reconnect mode (`reconnect: true`): the client owns recovery.** The transport leaves a Connecting client
@@ -88,7 +90,9 @@ composer nats:stop               # stop NATS
   The count is read only with the option on; mocked clients in the default-mode tests have no stats stub. The
   factory's optional logger reaches the client (the bundle passes `logger`); a reconnect that gives up logs the
   discarded buffer at error level. `409 Server Shutdown` and `409 Leadership Change` end a pull as an empty batch
-  in both modes.
+  in both modes. `resend_on_reconnect` maps to the client's `resendJetStreamPublishOnReconnect` (a publish with a
+  Nats-Msg-Id written again on the recovered connection); the builder requires `reconnect: true` with it and a
+  configured `stream_duplicate_window` longer than `request_timeout`.
 - **Pull consumers + explicit ACK.** A message is only "processed" once ACK'd. This underpins
   `retry_handler` and shared-consumer load balancing.
 - **`get()` reads JetStream 408 and 404 as an empty pull** (no messages); other codes propagate. A
