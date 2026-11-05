@@ -373,6 +373,43 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function credentialsNextToASeed(): iterable
+    {
+        yield 'username and password in the DSN' => ['nats://admin:some-password@localhost:4222/test-stream/test-topic', []];
+        yield 'username alone in the DSN' => ['nats://admin@localhost:4222/test-stream/test-topic', []];
+        yield 'password alone in the DSN' => ['nats://:some-password@localhost:4222/test-stream/test-topic', []];
+        yield 'username option' => ['nats://localhost:4222/test-stream/test-topic', ['username' => 'admin']];
+        yield 'password option' => ['nats://localhost:4222/test-stream/test-topic', ['password' => 'some-password']];
+        yield 'token option' => ['nats://localhost:4222/test-stream/test-topic', ['token' => 'some-token']];
+        yield 'token option, next to a jwt' => ['nats://localhost:4222/test-stream/test-topic', ['token' => 'some-token', 'jwt' => 'user-jwt']];
+    }
+
+    /**
+     * On a server with both kinds of users the NKey wins without a word, even over a wrong password, so the connection
+     * would not be who the configuration says. The error repeats none of the values.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('credentialsNextToASeed')]
+    public function testBuildRejectsASeedNextToAUsernamePasswordOrToken(string $dsn, array $options): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build($dsn, $options + ['nkey_seed' => self::TEST_NKEY_SEED]);
+            self::fail('A seed next to another credential was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The nkey_seed option cannot be combined with a username, password or token, from the DSN or the options: a '
+                . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and a '
+                . 'server without NKey users would refuse it. Remove them, or remove the seed.',
+                $refused->getMessage(),
+            );
+        }
+    }
+
+    /**
      * @return iterable<string, array{array<string, mixed>}>
      */
     public static function optionsThatConfigureASeed(): iterable

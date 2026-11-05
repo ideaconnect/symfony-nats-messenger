@@ -571,7 +571,7 @@ A NATS user can authenticate with an NKey instead of a password. The server keep
 (`U...`), and the client proves it holds the matching seed (`SU...`) by signing a nonce the server sends in its
 `INFO`.
 
-Give the transport the seed in `nkey_seed`, and leave the user and password out of the DSN:
+Give the transport the seed in `nkey_seed`, with no user, password or token in the DSN or the options:
 
 ```yaml
 framework:
@@ -594,6 +594,10 @@ authorization {
 ```
 
 - `nk -gen user -pubout` creates a key pair: the first line is the seed, the second the public key.
+- A username, password or token next to the seed, from the DSN or the options, is refused when the transport is built. A
+  server with both kinds of users would log the connection in with the NKey and ignore them, even a wrong password,
+  so the DSN could name one user while the connection is another. A server without NKey users would refuse the login
+  outright, though the password alone would have worked.
 - For a user the server knows by its NKey, the seed is all the transport needs: the public key it sends is derived
   from it, so leave the `nkey` option unset.
   It may repeat the derived key, but a different one is refused when the transport is built, not on its first
@@ -602,7 +606,7 @@ authorization {
   transport fails when it is built.
 - The seed works in the DSN query too (`?nkey_seed=SU...`)
 
-> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
+> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
 
 #### JWT Users (Operator Mode)
 

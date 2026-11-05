@@ -140,6 +140,10 @@ final class NatsTransportConfigurationBuilder
         }
 
         $nkeySigner = $this->resolveNkeySigner($configuration);
+        $token = $this->toNullableString($configuration[TransportOption::TOKEN->value]);
+        $username = $this->resolveCredential($components, $configuration, TransportOption::USERNAME, 'user');
+        $password = $this->resolveCredential($components, $configuration, TransportOption::PASSWORD, 'pass');
+        $this->assertSeedStandsAlone($nkeySigner, $username, $password, $token);
 
         $client = new NatsClient(new NatsOptions(
             ...$reconnectArguments,
@@ -160,9 +164,9 @@ final class NatsTransportConfigurationBuilder
             // recognize has to keep it on: only false, 0, no or off turns peer verification off. Any other
             // value, an empty one included, used to turn it off without a word (#42).
             tlsVerifyPeer: TypeCoercion::boolValue($configuration[TransportOption::TLS_VERIFY_PEER->value], true),
-            token: $this->toNullableString($configuration[TransportOption::TOKEN->value]),
-            username: $this->resolveCredential($components, $configuration, TransportOption::USERNAME, 'user'),
-            password: $this->resolveCredential($components, $configuration, TransportOption::PASSWORD, 'pass'),
+            token: $token,
+            username: $username,
+            password: $password,
             jwt: $this->resolveJwt($configuration, $nkeySigner),
             nkey: $this->resolveNkey($configuration, $nkeySigner),
             nonceSigner: $nkeySigner,
@@ -838,6 +842,31 @@ final class NatsTransportConfigurationBuilder
             return new NkeySeedSigner($seed);
         } catch (NatsException $invalid) {
             throw new InvalidArgumentException(sprintf('The NKey seed cannot be used: %s.', $invalid->getMessage()), 0, $invalid);
+        }
+    }
+
+    /**
+     * Refuses a seed next to a username, password or token, from the DSN or the options.
+     *
+     * The CONNECT would carry both, and a server with both kinds of users logs the connection in with the NKey and ignores
+     * the rest, even a wrong password: the DSN says one user and the connection is another, in another account if the
+     * server has more than one. A server without NKey users sends no nonce, so the client refuses the login outright,
+     * though the password alone would have worked. A jwt stays allowed: it goes with the seed.
+     *
+     * @throws InvalidArgumentException When a seed comes with a username, password or token.
+     */
+    private function assertSeedStandsAlone(
+        #[\SensitiveParameter] ?NkeySeedSigner $signer,
+        #[\SensitiveParameter] ?string $username,
+        #[\SensitiveParameter] ?string $password,
+        #[\SensitiveParameter] ?string $token,
+    ): void {
+        if ($signer !== null && ($username !== null || $password !== null || $token !== null)) {
+            throw new InvalidArgumentException(
+                'The nkey_seed option cannot be combined with a username, password or token, from the DSN or the options: a '
+                . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and a '
+                . 'server without NKey users would refuse it. Remove them, or remove the seed.'
+            );
         }
     }
 
