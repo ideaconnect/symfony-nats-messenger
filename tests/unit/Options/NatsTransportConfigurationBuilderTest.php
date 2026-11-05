@@ -418,7 +418,10 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         ];
         yield 'two parts' => ['a.user'];
         yield 'four parts' => ['a.user.jwt.more'];
+        yield 'an empty first part' => ['.user.jwt'];
         yield 'an empty part' => ['a..jwt'];
+        yield 'an empty last part' => ['a.user.'];
+        yield 'padding, which a JWT does not have' => ['a.user.jwt=='];
         yield 'something before a JWT' => ['some a.user.jwt'];
         yield 'something after a JWT' => ['a.user.jwt more'];
     }
