@@ -236,7 +236,7 @@ the examples do. With the client's `encodeConnect` made to ignore credentials or
 | Feature | Tests |
 |---------|-------|
 | **Every README ` ```php ` block is valid PHP** | `testReadmePhpExampleIsSyntacticallyValid` (data provider, one case per block), `testReadmeContainsThePhpExamplesWeExpect` |
-| **The README names no NKey to paste** | `testTheReadmeNamesNoUsableNkey` (no public key or seed, as the test user's seed is in this repository) |
+| **The README names no NKey to paste** | `testTheReadmeNamesNoUsableNkey` (no public key or seed: a server example gets pasted, so a reader must generate their own pair) |
 
 ### Mutation Testing Harness (`tests/unit/MutationTestingBootstrapTest.php`, `tests/unit/MutationTestingChecksTest.php`, `tests/unit/MutationTestingCommandsTest.php`)
 
