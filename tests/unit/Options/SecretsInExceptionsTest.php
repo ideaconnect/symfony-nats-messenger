@@ -399,6 +399,7 @@ final class SecretsInExceptionsTest extends TestCase
         yield 'a ; and an =' => ['nats;seed=abc'];
         yield 'an =' => ['seed=abc'];
         yield 'an encoded &' => ['a%26b'];
+        yield 'a double encoding' => ['a%253Bb'];
         yield 'a ?' => ['a?b'];
         yield 'a ;' => ['a;b'];
     }
