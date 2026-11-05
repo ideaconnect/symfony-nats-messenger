@@ -151,7 +151,9 @@ visible even where nothing uses that transport:
 
 - `messenger:stats` showed 0 for it and exited 0. A plain `messenger:stats` now exits 1 and shows no transport; naming the
   other transports still works.
-- A worker consuming from it and from other transports handled the others. It now stops when it starts.
+- A worker consuming from it and from other transports stopped with the client's `requires a nonce signer` once it reached
+  this one: at once if it comes first, otherwise when the transports before it had nothing to do. Under a supervisor it
+  still handled their messages between restarts. It now stops when it starts and handles none.
 - A `catch (\RuntimeException)` around a dispatch to it caught the connection error, and does not catch this one.
 - A service or smoke test that builds the transport fails.
 - A subclass of `NatsTransport` that replaces the protected `$client` with its own signed client must stop passing
