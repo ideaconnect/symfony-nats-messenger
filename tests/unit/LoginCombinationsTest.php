@@ -117,8 +117,8 @@ final class LoginCombinationsTest extends TestCase
     }
 
     /**
-     * A server with no NKey users sends no nonce, so there is nothing to sign. The README tells a reader to expect this
-     * message, and it depends on the server, so it cannot be refused when the transport is built.
+     * A server that sends no nonce, such as a password, token or open one, leaves nothing to sign. The README tells a reader
+     * to expect this message, and it depends on the server, so it cannot be refused when the transport is built.
      */
     public function testASeedOnAServerThatSendsNoNonceCannotLogIn(): void
     {
