@@ -96,9 +96,11 @@ composer nats:stop               # stop NATS
 - **Logins with a signature.** `jwt` and `nkey` need a signer: the client throws before it writes the CONNECT without one, on
   every server. The transport's one source of a signer is `nkey_seed`, so the builder refuses `jwt` or `nkey` without it, a
   seed next to a username, password or token (a server with both kinds of users ignores them without a word), a blank or
-  non-string seed and a seed that is not a user's. `nkey` stays as an optional check of the seed's key, and an external signer
-  would need it. Word such a rule as "no signer", not "no seed". These refusals and every accepted combination are checked
-  through the real client by `LoginCombinationsTest` on each `composer test`; the real logins are in `nats_nkey.feature`,
+  non-string seed, a seed that is not a user's, a `jwt` that does not have a JWT's three parts, and a credential after a second
+  `?` or a `;` in the DSN query. `nkey` stays as an optional check of the seed's key, and an external signer would need it.
+  Word such a rule as "no signer", not "no seed". On each `composer test` `LoginCombinationsTest` refuses the 32 combinations
+  of a user, token, `jwt`, `nkey` and seed when built, or sends them through the real client as a CONNECT; the other refusals
+  are in the builder's tests and `SecretsInExceptionsTest`, and the real logins are in `nats_nkey.feature`,
   `nats_jwt.feature`, `nats_token.feature` and the examples. Test keys are never committed (#9): the unit tests build theirs
   with `TestNkeys`, and `tests/nats/auth/generate.sh` makes the servers' at `composer nats:start`. An option stored in
   `NatsOptions` proves nothing about a login, which is how `jwt` and `nkey` shipped unable to log in.

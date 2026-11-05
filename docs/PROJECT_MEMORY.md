@@ -196,8 +196,8 @@ apply only with the option on.
   dump and its first 32 bytes are the seed; its frames and `encodeConnect`'s are unmarked; the wording of a seed on a
   server with no nonce, which `reconnect: true` retries for about 43 s. Real logins run in the functional suite and
   the examples: NKey on `nats`, `nats-tls` and `nats-mtls`, JWT on `nats-jwt`, token on `nats-token`, also across a restart
-  for NKey and JWT. `LoginCombinationsTest` takes all 32 combinations of credentials through the real client on every
-  `composer test`. Measured by hand, not in the suite: cluster failover with a seed, a JWT that expires under a worker.
+  for NKey and JWT. On every `composer test` the 32 combinations in `LoginCombinationsTest` are refused when built, or go
+  through the real client as a CONNECT that carries them. Measured by hand, not in the suite: cluster failover with a seed, a JWT that expires under a worker.
 - **Stats:** consumer `num_pending + num_ack_pending`, falling back to stream messages and then 0.
   Stream count can include already acknowledged messages; outage and empty queue both read as 0.
   A failed initial connection gets one dial attempt, not a second for the fallback (#54).
