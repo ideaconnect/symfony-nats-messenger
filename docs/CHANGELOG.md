@@ -55,8 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A credential typed after a second `?` or a `;` in the DSN query is refused when the transport is built (#89).** It stayed
   in the value of the option before it and went where that goes: into the TLS library's error for a file name, or to
   the server, which stores it, for a consumer name, a stream description or a placement. Only the DSN query is checked,
-  for `nkey_seed`, `nkey`, `jwt`, `token`, `username`, `password` and `tls_key_passphrase`, as nothing splits a value in
-  the options.
+  for `nkey_seed`, `nkey`, `jwt`, `token`, `username`, `password` and `tls_key_passphrase`, also with a space next to the
+  name or in another case, as nothing splits a value in the options. An encoded `&` or a double encoding stays a part of the
+  value.
 
 ## [5.8.0] - 2026-11-04
 

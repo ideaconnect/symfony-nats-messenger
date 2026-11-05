@@ -272,12 +272,19 @@ final class SecretsInExceptionsTest extends TestCase
         yield 'in a number' => ['nkey_seed', 'batching=5?'];
         yield 'after an option with no value' => ['nkey_seed', 'consumer?'];
         yield 'right after the first ?' => ['nkey_seed', '?'];
+        yield 'after a ; and a space' => ['token', 'consumer=workers; '];
+        yield 'after a ; and an encoded space' => ['token', 'consumer=workers;%20'];
+        yield 'after a ; and a +, which parse_str() reads as a space' => ['token', 'consumer=workers;+'];
+        yield 'with a space before its =' => ['token ', 'consumer=workers;'];
+        yield 'with a +, which parse_str() reads as a space, before its =' => ['token+', 'consumer=workers;'];
+        yield 'in capitals' => ['TOKEN', 'consumer=workers;'];
+        yield 'with a first capital' => ['Nkey_seed', 'consumer=workers?'];
     }
 
     /**
-     * parse_str() splits on & only, so such a credential is a part of the option before it, and goes where that goes: into
-     * the TLS library's error for a file name, or to the server, which stores it, for a consumer or a description. That is
-     * never what was meant, and the login that was meant does not happen either.
+     * By default parse_str() splits on & only, so such a credential is a part of the option before it, and goes where that
+     * goes: into the TLS library's error for a file name, or to the server, which stores it, for a consumer or a
+     * description. That is never what was meant, and the login that was meant does not happen either.
      */
     #[DataProvider('credentialsTypedAfterAnotherOption')]
     public function testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt(string $credential, string $before): void
@@ -311,6 +318,10 @@ final class SecretsInExceptionsTest extends TestCase
         yield 'an option that only ends like a credential' => [$dsn . '?stream_description=why;mytoken=abc', []];
         yield 'a ; with no option name after it' => [$dsn . '?stream_description=a;b', []];
         yield 'a name with no = after it' => [$dsn . '?stream_description=what?token', []];
+        yield 'a space and a name with no = after it' => [$dsn . '?stream_description=what;+token', []];
+        yield 'another word after the space' => [$dsn . '?stream_description=why;+mytoken=abc', []];
+        yield 'an encoded &, which stays a part of the value' => [$dsn . '?stream_description=a%26token=abc', []];
+        yield 'a double encoding, which stays a part of the value' => [$dsn . '?stream_description=a%253Btoken=abc', []];
         yield 'a password with a ; in the DSN, not in the query' => ['nats://admin:a%3Btoken=b@localhost:4222/test-stream/test-topic', []];
     }
 
