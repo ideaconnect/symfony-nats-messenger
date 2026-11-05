@@ -140,6 +140,9 @@ final class NatsTransportConfigurationBuilder
         }
 
         $nkeySigner = $this->resolveNkeySigner($configuration);
+        // Nothing reads the seed after this, and the option map stays with the transport for its lifetime, where a dump would
+        // print it as text.
+        unset($configuration[TransportOption::NKEY_SEED->value]);
         $token = $this->toNullableString($configuration[TransportOption::TOKEN->value]);
         $username = $this->resolveCredential($components, $configuration, TransportOption::USERNAME, 'user');
         $password = $this->resolveCredential($components, $configuration, TransportOption::PASSWORD, 'pass');

@@ -2,8 +2,11 @@
 
 namespace IDCT\NatsMessenger\Tests\Unit\Options;
 
+use IDCT\NATS\Auth\NkeySeedSigner;
+use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\NatsTransportFactory;
+use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -174,6 +177,22 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
+     * The transport keeps its configuration for its lifetime, and nothing reads the seed after the build, so a dump of
+     * either must not print it. The signer in the client still holds the key itself, as raw bytes, until the client hides it.
+     */
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('formsOfASeed')]
+    public function testTheConfigurationDoesNotKeepTheTextOfTheSeed(string $form): void
+    {
+        [$dsn, $options] = self::withSecret($form, self::DSN_WITHOUT_CREDENTIALS, []);
+
+        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+
+        self::assertInstanceOf(NkeySeedSigner::class, self::clientOptionsOf($configuration)->nonceSigner);
+        self::assertStringNotContainsString(TestNkeys::seed(), print_r($configuration, true));
+    }
+
+    /**
      * @return iterable<string, array{string}>
      */
     public static function placesInTheDsnPathForAMistypedQuery(): iterable
@@ -255,6 +274,16 @@ final class SecretsInExceptionsTest extends TestCase
             'password in the DSN' => [str_replace('nats://', 'nats://admin:' . self::PASSWORD . '@', $dsn), $options],
             default => self::fail('Unknown form of a secret: ' . $form),
         };
+    }
+
+    private static function clientOptionsOf(NatsTransportConfiguration $configuration): NatsOptions
+    {
+        $connection = (new \ReflectionClass($configuration->client))->getProperty('connection')->getValue($configuration->client);
+        self::assertIsObject($connection);
+        $options = (new \ReflectionClass($connection))->getProperty('options')->getValue($connection);
+        self::assertInstanceOf(NatsOptions::class, $options);
+
+        return $options;
     }
 
     private static function secretOf(string $form): string
