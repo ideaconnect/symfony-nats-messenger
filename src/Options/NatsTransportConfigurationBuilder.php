@@ -928,8 +928,9 @@ final class NatsTransportConfigurationBuilder
         if ($signer !== null && ($username !== null || $password !== null || $token !== null)) {
             throw new InvalidArgumentException(
                 'The nkey_seed option cannot be combined with a username, password or token, from the DSN or the options: a '
-                . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and a '
-                . 'server without NKey users would refuse it. Remove them, or remove the seed.'
+                . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and on '
+                . 'a server without NKey users the client would refuse the login, as there is no nonce to sign. Remove them, '
+                . 'or remove the seed.'
             );
         }
     }

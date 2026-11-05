@@ -621,8 +621,8 @@ authorization {
   there are, as the server's `no_auth_user`, or anonymously.
 - A username, password or token next to the seed, from the DSN or the options, is refused when the transport is built. A
   server with both kinds of users would log the connection in with the NKey and ignore them, even a wrong password,
-  so the DSN could name one user while the connection is another. A server without NKey users would refuse the login
-  outright, though the password alone would have worked.
+  so the DSN could name one user while the connection is another. On a server without NKey users the client would refuse
+  the login, as there is no nonce to sign, though the password alone would have worked.
 - For a user the server knows by its NKey, the seed is all the transport needs: the public key it sends is derived from
   it, so leave the `nkey` option unset. It may repeat the derived key, but a different one is refused when the transport
   is built, not on its first connect. So is `nkey` without a seed, which could never log in: the client needs a signer
