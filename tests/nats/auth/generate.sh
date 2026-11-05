@@ -4,7 +4,8 @@
 # for the plain, TLS and mTLS servers, and an operator with its accounts and users for the server in operator mode.
 # None of it is committed, since security scanners report private keys and JWTs found in a repository, test ones
 # included (#9). `composer nats:start` runs this before it starts the servers. Needs docker: nsc comes from
-# natsio/nats-box. The operator's and the accounts' seeds stay in that container, so nothing can sign another user.
+# natsio/nats-box. The seeds of the operator and of the accounts the server knows stay in that container, so nothing can
+# sign another user.
 #
 # Usage: generate.sh [--force]
 #   Without --force a complete set that already exists is kept, so running servers keep matching keys.
@@ -28,9 +29,14 @@ fi
 docker run --rm -i --user "$(id -u):$(id -g)" -v "$dir":/out \
   -e HOME=/tmp -e XDG_DATA_HOME=/tmp/nsc -e XDG_CONFIG_HOME=/tmp/nsc/config -e NKEYS_PATH=/tmp/nsc/nkeys \
   natsio/nats-box:0.19.0 sh -eu <<'NSC'
+# Runs nsc, for commands that print no key, and shows what it said only when it fails.
+nsc_step() {
+  output="$(nsc "$@" 2>&1)" || { printf 'nsc %s failed:\n%s\n' "$*" "$output" >&2; exit 1; }
+}
+
 # A key that no JWT goes with, of the type $1: the seed comes first, then the public key.
 nkey_pair() {
-  pair="$(nsc generate nkey "$1" 2>/dev/null)"
+  pair="$(nsc generate nkey "$1")"
   jq -n --arg seed "$(printf '%s\n' "$pair" | sed -n 1p)" --arg public "$(printf '%s\n' "$pair" | sed -n 2p)" \
     '{seed: $seed, public: $public}'
 }
@@ -43,15 +49,15 @@ jwt_pair() {
     '{jwt: $jwt, seed: $seed}'
 }
 
-nsc add operator --name test-operator --sys >/dev/null 2>&1
-nsc add account --name test-account >/dev/null 2>&1
+nsc_step add operator --name test-operator --sys
+nsc_step add account --name test-account
 # Limits on the account are what enables JetStream for it in operator mode.
-nsc edit account --name test-account --js-mem-storage 256M --js-disk-storage 1G >/dev/null 2>&1
-nsc add account --name no-jetstream-account >/dev/null 2>&1
-nsc add user --account test-account --name test-user >/dev/null 2>&1
-nsc add user --account test-account --name bearer-user --bearer >/dev/null 2>&1
-nsc add user --account test-account --name expired-user --start 2020-01-01 --expiry 2020-01-02 >/dev/null 2>&1
-nsc add user --account no-jetstream-account --name no-jetstream-user >/dev/null 2>&1
+nsc_step edit account --name test-account --js-mem-storage 256M --js-disk-storage 1G
+nsc_step add account --name no-jetstream-account
+nsc_step add user --account test-account --name test-user
+nsc_step add user --account test-account --name bearer-user --bearer
+nsc_step add user --account test-account --name expired-user --start 2020-01-01 --expiry 2020-01-02
+nsc_step add user --account no-jetstream-account --name no-jetstream-user
 
 nkey_user="$(nkey_pair --user)"
 jq -n \
@@ -65,9 +71,15 @@ jq -n \
   '{nkey_user: $nkey_user, unknown_user: $unknown_user, account_key: $account_key, jwt_user: $jwt_user, bearer_user: $bearer_user, expired_user: $expired_user, no_jetstream_user: $no_jetstream_user}' \
   > /tmp/credentials.json
 
-nsc generate config --mem-resolver --config-file /tmp/resolver.conf --force >/dev/null 2>&1
+# A failure inside the $(...) above does not stop this script, and an empty value would pass for a key.
+jq -e 'all(.[]; all(.[]; . != ""))' /tmp/credentials.json >/dev/null \
+  || { echo "A key or a JWT came out empty; see what nsc said above" >&2; exit 1; }
 
-# The servers' half, which holds no private key, then the clients' half. A set is complete once the last file exists.
+nsc_step generate config --mem-resolver --config-file /tmp/resolver.conf --force
+
+# A set is complete once the last file exists, so that one goes first when a set is replaced. The servers' half, which
+# holds no private key, comes next, and then the clients' half.
+rm -f /out/credentials.json
 printf '# Written by auth/generate.sh, for the tests only.\nNKEY_TEST_USER: "%s"\n' \
   "$(printf '%s' "$nkey_user" | jq -r .public)" > /out/nkey-user.conf
 cp /tmp/resolver.conf /out/resolver.conf

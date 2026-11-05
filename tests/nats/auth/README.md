@@ -20,11 +20,11 @@ bash tests/nats/auth/generate.sh --force  # replaces it; restart the servers to 
 |---|---|
 | `nkey_user` | `seed` and `public` of the NKey user the plain, TLS and mTLS servers list |
 | `unknown_user` | `seed` and `public` of a user key no server lists |
-| `account_key` | `seed` and `public` of an account key, which is not a user's: the transport refuses its seed |
+| `account_key` | `seed` and `public` of an account key no operator signed. It is not a user's, so the transport refuses its seed |
 | `jwt_user` | `jwt` and `seed` of `test-user` in `test-account` |
 | `bearer_user` | `jwt` and `seed` of a user whose JWT is a bearer token: the server does not check the signature |
 | `expired_user` | `jwt` and `seed` of a user whose JWT expired in 2020 |
 | `no_jetstream_user` | `jwt` and `seed` of a user in `no-jetstream-account` |
 
-The operator's and the accounts' seeds stay in the container that made them, so nothing can sign another user. Apart from
-the expired one, the JWTs have no expiry. **Do not use any of this outside the test suite.**
+The seeds of the operator and of the accounts the server knows stay in the container that made them, so nothing can sign
+another user. Apart from the expired one, the JWTs have no expiry. **Do not use any of this outside the test suite.**
