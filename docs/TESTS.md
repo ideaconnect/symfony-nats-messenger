@@ -491,8 +491,8 @@ does not survive it.
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
-on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.7% MSI and covered
-MSI: 1144 of 1159 mutants killed, none timed out, with 100% mutation code coverage.
+on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.5% MSI and covered
+MSI: 1158 of 1176 mutants killed, none timed out, with 100% mutation code coverage.
 
 Scores reported before, 100% among them, were not real. Infection runs each mutant in a PHPUnit process
 whose bootstrap puts its include interceptor on `file://`; the interceptor dropped the wrapper BypassFinals
@@ -521,12 +521,15 @@ mutation step fails.
 
 ### Surviving mutants
 
-Of the 15 mutants that survive:
+Of the 18 mutants that survive:
 
 - **13 are equivalent**: no input makes them behave differently.
 - **2 make no difference with the real client**: its acknowledgement calls do not read the `sid` of the
   message `buildAckMessage()` gives them. A test could kill them only by asserting on the `sid` its client
   double receives, which would pin a detail rather than behaviour.
+- **3 are caught by the suite where Infection cannot see it**: only a child process can disable or replace a sodium
+  function, and Infection applies a mutant in the test's own process, so the child loads the original class. Made by
+  hand, each fails a plain `composer test`.
 
 | Mutant | Why it survives |
 |---|---|
@@ -538,6 +541,7 @@ Of the 15 mutants that survive:
 | `assertPositiveNumber()`, `assertNonNegativeNumber()`: `ceil()` or `round()` instead of `floor()` (4 mutants) | All three return the number itself exactly when it is whole |
 | `assertDuplicateWindowNotExceedingMaxAge()`: a null max age read as -1 instead of 0 | Both mean no age limit there |
 | `requiredString()`: `&&` instead of `\|\|` | `parseDsn()` already requires a host, and `parse_url()` never gives an empty one |
+| `resolveNkeySigner()`: `\Error` removed from the catch, and `\|\|` for either `&&` of the condition on the seed advice (3 mutants) | `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError` and `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike` fail on each, but run in a child process, which the mutant does not reach |
 
 Before PR #98 dealt with them, 32 survived. Two of those, the round-up of a delayed message's delivery time
 compared with -1 or without its cast, are killed now: `send()` takes the delivery time from `deliveryTime()`, which
