@@ -1669,6 +1669,134 @@ class NatsSetupContext implements Context
         $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $this->credentials()['nkey_user']['seed'], 'username' => 'admin', 'password' => 'password']);
     }
 
+    /**
+     * The README's other form. A DSN usually comes from an environment variable, so a seed in it never reaches the
+     * options the bundle sees.
+     */
+    #[Given('I have a messenger transport with the NKey seed in the DSN query')]
+    public function iHaveAMessengerTransportWithTheNkeySeedInTheDsnQuery(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, [], '&nkey_seed=' . $this->credentials()['nkey_user']['seed']);
+    }
+
+    #[Given('I have a messenger transport configured with an NKey seed and its public key')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeedAndItsPublicKey(): void
+    {
+        $user = $this->credentials()['nkey_user'];
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $user['seed'], 'nkey' => $user['public']]);
+    }
+
+    /**
+     * Every connection after the restart has to sign the new server's nonce with the seed again.
+     */
+    #[Given('I have a messenger transport configured with an NKey seed and reconnect enabled')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeedAndReconnectEnabled(): void
+    {
+        $this->writeTransportThatLogsInWith(
+            4222,
+            ['nkey_seed' => $this->credentials()['nkey_user']['seed'], 'reconnect' => 'true', 'max_reconnect_attempts' => '30']
+        );
+    }
+
+    /**
+     * Port 4223 is the TLS server, with the same NKey user as the plain one. The DSN has no user or password.
+     */
+    #[Given('I have a TLS messenger transport configured with an NKey seed')]
+    public function iHaveATlsMessengerTransportConfiguredWithAnNkeySeed(): void
+    {
+        $this->writeTransportThatLogsInWith(
+            4223,
+            ['nkey_seed' => $this->credentials()['nkey_user']['seed']],
+            sprintf('&tls_handshake_first=true&tls_ca_file=%s&tls_verify_peer=true&tls_peer_name=localhost', realpath(__DIR__ . '/../../../nats/certs/ca.pem')),
+            'nats-jetstream+tls',
+        );
+    }
+
+    /**
+     * Port 4224 is the mTLS server, with the same NKey user as the plain one. The client certificate only opens the
+     * connection there: the seed still logs the user in.
+     */
+    #[Given('I have an mTLS messenger transport configured with an NKey seed')]
+    public function iHaveAnMtlsMessengerTransportConfiguredWithAnNkeySeed(): void
+    {
+        $certificates = __DIR__ . '/../../../nats/certs/';
+        $this->writeTransportThatLogsInWith(
+            4224,
+            ['nkey_seed' => $this->credentials()['nkey_user']['seed']],
+            sprintf(
+                '&tls_handshake_first=true&tls_ca_file=%s&tls_cert_file=%s&tls_key_file=%s&tls_verify_peer=true&tls_peer_name=localhost',
+                realpath($certificates . 'ca.pem'),
+                realpath($certificates . 'client-cert.pem'),
+                realpath($certificates . 'client-key.pem'),
+            ),
+            'nats-jetstream+tls',
+        );
+    }
+
+    /**
+     * The token server has no NKey users, so it sends no nonce to sign.
+     */
+    #[Given('I have a messenger transport on that server with an NKey seed')]
+    public function iHaveAMessengerTransportOnThatServerWithAnNkeySeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4230, ['nkey_seed' => $this->credentials()['nkey_user']['seed']]);
+    }
+
+    #[Given('I have a messenger transport configured with an empty NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithAnEmptyNkeySeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => '']);
+    }
+
+    #[Given('I have a messenger transport configured with a mistyped NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithAMistypedNkeySeed(): void
+    {
+        $seed = $this->credentials()['nkey_user']['seed'];
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => substr($seed, 0, -1) . ($seed[-1] === 'B' ? 'C' : 'B')]);
+    }
+
+    #[Given('I have a messenger transport configured with the seed of an account as the NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithTheSeedOfAnAccountAsTheNkeySeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $this->credentials()['account_key']['seed']]);
+    }
+
+    /**
+     * A mix-up the two option names invite. The error must not print the value, as it would then show a seed.
+     */
+    #[Given('I have a messenger transport configured with a seed in the nkey option next to the NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithASeedInTheNkeyOptionNextToTheNkeySeed(): void
+    {
+        $seed = $this->credentials()['nkey_user']['seed'];
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $seed, 'nkey' => $seed]);
+    }
+
+    #[Given('I have a messenger transport configured with another user\'s public key next to the NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithAnotherUsersPublicKeyNextToTheNkeySeed(): void
+    {
+        $credentials = $this->credentials();
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $credentials['nkey_user']['seed'], 'nkey' => $credentials['unknown_user']['public']]);
+    }
+
+    /**
+     * Whatever the command printed, no seed of the test credentials may be in it. A mistyped seed shares its start with
+     * the real one, and the console wraps a long line at any character, so this looks for that start without whitespace.
+     */
+    #[Then('the setup output should show no seed')]
+    public function theSetupOutputShouldShowNoSeed(): void
+    {
+        if ($this->setupProcess === null) {
+            throw new \RuntimeException('The command was not run');
+        }
+
+        $output = (string) preg_replace('/\s+/', '', $this->setupProcess->getOutput() . $this->setupProcess->getErrorOutput());
+        foreach ($this->credentials() as $name => $key) {
+            if (str_contains($output, substr($key['seed'], 0, 30))) {
+                throw new \RuntimeException(sprintf('The output shows the seed of %s.', $name));
+            }
+        }
+    }
+
     #[Then('the setup should fail saying :message')]
     public function theSetupShouldFailSaying(string $message): void
     {
@@ -2651,12 +2779,12 @@ class NatsSetupContext implements Context
     }
 
     /**
-     * Writes a transport on one test server whose DSN holds no credentials, so that it logs in with these options
-     * alone.
+     * Writes a transport on one test server whose DSN holds no user or password, so that it logs in with these options
+     * alone, or with what $query adds to the DSN.
      *
      * @param array<string, string> $options
      */
-    private function writeTransportThatLogsInWith(int $port, array $options): void
+    private function writeTransportThatLogsInWith(int $port, array $options, string $query = '', string $scheme = 'nats-jetstream'): void
     {
         $optionLines = '';
         foreach ($options as $name => $value) {
@@ -2664,10 +2792,12 @@ class NatsSetupContext implements Context
         }
 
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://127.0.0.1:%d/%s/%s?stream_max_age=900'\n                options:\n%s                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: '%s://127.0.0.1:%d/%s/%s?stream_max_age=900%s'\n                options:\n%s                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $scheme,
             $port,
             $this->testStreamName,
             $this->testSubject,
+            $query,
             $optionLines
         );
 

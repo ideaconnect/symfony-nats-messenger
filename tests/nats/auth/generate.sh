@@ -28,9 +28,9 @@ fi
 docker run --rm -i --user "$(id -u):$(id -g)" -v "$dir":/out \
   -e HOME=/tmp -e XDG_DATA_HOME=/tmp/nsc -e XDG_CONFIG_HOME=/tmp/nsc/config -e NKEYS_PATH=/tmp/nsc/nkeys \
   natsio/nats-box:0.19.0 sh -eu <<'NSC'
-# A user key that no JWT goes with: the seed comes first, then the public key.
+# A key that no JWT goes with, of the type $1: the seed comes first, then the public key.
 nkey_pair() {
-  pair="$(nsc generate nkey --user 2>/dev/null)"
+  pair="$(nsc generate nkey "$1" 2>/dev/null)"
   jq -n --arg seed "$(printf '%s\n' "$pair" | sed -n 1p)" --arg public "$(printf '%s\n' "$pair" | sed -n 2p)" \
     '{seed: $seed, public: $public}'
 }
@@ -53,15 +53,16 @@ nsc add user --account test-account --name bearer-user --bearer >/dev/null 2>&1
 nsc add user --account test-account --name expired-user --start 2020-01-01 --expiry 2020-01-02 >/dev/null 2>&1
 nsc add user --account no-jetstream-account --name no-jetstream-user >/dev/null 2>&1
 
-nkey_user="$(nkey_pair)"
+nkey_user="$(nkey_pair --user)"
 jq -n \
   --argjson nkey_user "$nkey_user" \
-  --argjson unknown_user "$(nkey_pair)" \
+  --argjson unknown_user "$(nkey_pair --user)" \
+  --argjson account_key "$(nkey_pair --account)" \
   --argjson jwt_user "$(jwt_pair test-account test-user)" \
   --argjson bearer_user "$(jwt_pair test-account bearer-user)" \
   --argjson expired_user "$(jwt_pair test-account expired-user)" \
   --argjson no_jetstream_user "$(jwt_pair no-jetstream-account no-jetstream-user)" \
-  '{nkey_user: $nkey_user, unknown_user: $unknown_user, jwt_user: $jwt_user, bearer_user: $bearer_user, expired_user: $expired_user, no_jetstream_user: $no_jetstream_user}' \
+  '{nkey_user: $nkey_user, unknown_user: $unknown_user, account_key: $account_key, jwt_user: $jwt_user, bearer_user: $bearer_user, expired_user: $expired_user, no_jetstream_user: $no_jetstream_user}' \
   > /tmp/credentials.json
 
 nsc generate config --mem-resolver --config-file /tmp/resolver.conf --force >/dev/null 2>&1
