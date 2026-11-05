@@ -54,6 +54,14 @@ final class TestNkeys
         return self::encode(chr($type) . sodium_crypto_sign_publickey($keyPair));
     }
 
+    /**
+     * The 32 bytes of the public key with this name, which check a signature.
+     */
+    public static function rawPublicKey(string $name = 'test-user'): string
+    {
+        return sodium_crypto_sign_publickey(sodium_crypto_sign_seed_keypair(self::rawSeed($name)));
+    }
+
     private static function rawSeed(string $name): string
     {
         return hash('sha256', 'symfony-nats-messenger test key ' . $name, true);
