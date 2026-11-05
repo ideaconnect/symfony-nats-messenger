@@ -37,11 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that does not have the three parts of a JWT, such as a seed or a whole `.creds` file, which the CONNECT would otherwise
   carry to the server. `nkey` stays
   optional and is best left unset, as the key is derived from the seed; with a seed it must be that key, and the error
-  names the seed's key and does not repeat the value. No login that worked is lost, but the error comes earlier, so see
-  the README's "Upgrading from 5.8" for `messenger:stats` and for workers on several transports.
+  names the seed's key and does not repeat the value. No login that worked is lost, unless a subclass that replaces
+  `$client` still passes these options, and the error comes earlier, so see the README's "Upgrading from 5.8" for
+  `messenger:stats`, for workers on several transports and for such a subclass.
 - **A failed build no longer keeps a seed, password or token in its stack frames (#89).** With exception arguments on
   (`zend.exception_ignore_args=0`, PHP's default without a php.ini), the frames of the factory, the transport's
-  constructor and the builder held the options and the DSN. Every such parameter is now `#[\SensitiveParameter]`. A
+  constructor and the builder held the options and the DSN. Every such parameter is now `#[\SensitiveParameter]`, and so
+  are those of the builder's helpers that take one value of them. A
   mistyped seed no longer chains the client's exception, whose frames hold the value. Symfony Messenger's factory marks
   its options only from 7.4.23 and 8.1.11, and the client marks nothing yet, so the README recommends turning those
   arguments off in production.
@@ -59,6 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for `nkey_seed`, `nkey`, `jwt`, `token`, `username`, `password` and `tls_key_passphrase`, also with a space next to the
   name or in another case, as nothing splits a value in the options. An encoded `&` or a double encoding stays a part of the
   value.
+
+### Testing & CI
+- The bundle test expects the wording of Symfony Messenger 7.4.23 and 8.1.11, whose change had turned `composer test` red.
+  It still passes on the earlier versions.
+- `ext-sodium` is in `require-dev`, so `composer install` asks contributors for it, and every CI job has it: losing it
+  now fails instead of skipping the tests of NKey authentication.
+- `composer test:functional` runs without Composer's process timeout, as the scenarios take about as long as its limit of
+  600 seconds, and past it Composer left Behat running.
 
 ## [5.8.0] - 2026-11-04
 
