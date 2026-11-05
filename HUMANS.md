@@ -52,7 +52,7 @@ These exercise the transport against an actual NATS server in Docker:
 
 ```bash
 composer test:functional:setup   # one-time: install the test app's dependencies
-composer nats:start              # generate the test TLS certs, then start NATS (plain + TLS + mTLS) in Docker
+composer nats:start              # generate the test TLS certs and NKey/JWT credentials, then start NATS in Docker
 composer test:functional         # run the Behat scenarios
 composer examples                # run the examples in examples/ against that NATS
 composer nats:stop               # tear NATS back down

@@ -72,6 +72,8 @@ tests/
 └── nats/                                       # Docker Compose + NATS configs for testing
     ├── docker-compose.yaml
     ├── nats.conf / nats-tls.conf / nats-mtls.conf
+    ├── nats-jwt.conf / nats-token.conf         # operator mode and token logins
+    ├── auth/                                   # generate.sh for the test NKey and JWT credentials (generated, not committed)
     └── certs/                                  # generate.sh for the test TLS certificates (generated, not committed)
 ```
 
@@ -111,7 +113,7 @@ composer coverage:check          # Verify ≥ 90% statement coverage
 ### Functional tests (require Docker)
 ```bash
 composer test:functional:setup   # Install Behat dependencies (first time)
-composer nats:start              # Generate the test TLS certs, then start NATS in Docker
+composer nats:start              # Generate the test TLS certs and NKey/JWT credentials, then start NATS in Docker
 composer test:functional         # Run Behat scenarios
 composer examples                # Run examples/*.php against the test NATS (needs nats:start)
 composer nats:stop               # Stop NATS

@@ -134,6 +134,9 @@ scenario-to-test mapping, see [`docs/TESTS.md`](../../docs/TESTS.md) in the repo
 | `nats_delayed.feature` | Scheduled / delayed messages (`DelayStamp` → NATS schedule headers) |
 | `nats_tls.feature` | TLS connections |
 | `nats_mtls.feature` | mTLS with client certificates |
+| `nats_nkey.feature` | Login with an NKey seed, over TLS and mTLS too and across a server restart, a seed the server refuses, and credentials refused when the transport is built |
+| `nats_jwt.feature` | Login with a JWT and its seed on a server in operator mode, a bearer JWT, a server restart, what the server refuses, and an account without JetStream |
+| `nats_token.feature` | Login with a token, and a wrong token refused |
 
 ## Test Architecture
 
@@ -167,7 +170,12 @@ PHP context class implementing the test step definitions.
 Docker Compose configuration for NATS server with JetStream.
 
 ### `nats/nats.conf`
-NATS server configuration with authentication and JetStream enabled.
+NATS server configuration with authentication and JetStream enabled. It lists a user with a password and an NKey user.
+`nats-jwt.conf` is the server in operator mode and `nats-token.conf` the server with a token.
+
+### `nats/auth/generate.sh`
+Generates the NKey and JWT credentials of those servers. `composer nats:start` runs it, and none of it is committed, see
+[`nats/auth/README.md`](../nats/auth/README.md).
 
 ## Debugging Tests
 
@@ -182,8 +190,8 @@ vendor/bin/behat --definitions l
 
 ### Manual Testing
 ```bash
-# Start NATS manually
-cd nats && docker compose up -d
+# Start NATS manually, from the repository root: this also generates the test certificates and credentials
+composer nats:start
 
 # Test setup command manually
 php bin/console messenger:setup-transports test_transport --env=test

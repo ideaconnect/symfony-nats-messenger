@@ -194,8 +194,10 @@ apply only with the option on.
   Every `$dsn`, `$options`, `$configuration` and `$components` parameter on the build path is `#[\SensitiveParameter]`,
   guarded by reflection in `SecretsInExceptionsTest`. Not fixed, in the client: `NkeySeedSigner`'s `secretKey` prints in a
   dump and its first 32 bytes are the seed; its frames and `encodeConnect`'s are unmarked; the wording of a seed on a
-  server with no nonce, which `reconnect: true` retries for about 43 s. Measured by hand, not in the suite: JWT logins on
-  an operator-mode server, NATS 2.9.25 to 2.15.1, and failover, TLS and mTLS with a seed.
+  server with no nonce, which `reconnect: true` retries for about 43 s. Real logins run in the functional suite and
+  the examples: NKey on `nats`, `nats-tls` and `nats-mtls`, JWT on `nats-jwt`, token on `nats-token`, also across a restart
+  for NKey and JWT. `LoginCombinationsTest` takes all 32 combinations of credentials through the real client on every
+  `composer test`. Measured by hand, not in the suite: cluster failover with a seed, a JWT that expires under a worker.
 - **Stats:** consumer `num_pending + num_ack_pending`, falling back to stream messages and then 0.
   Stream count can include already acknowledged messages; outage and empty queue both read as 0.
   A failed initial connection gets one dial attempt, not a second for the fallback (#54).
@@ -218,10 +220,12 @@ apply only with the option on.
 Transport checks: `composer test` (PHPStan max on `src` plus fast unit tests) after code changes.
 Coverage: `composer test:unit`, then `composer coverage:check` (>= 90%). Live transport changes:
 `composer test:functional:setup`, `composer nats:start`, `composer test:functional`, and relevant
-`composer examples`; stop the fixtures afterwards. TLS certificates are generated, not committed.
-Fixtures expose plain/TLS/mTLS/stale-idle NATS on 4222/4223/4224/4225, and a three-server JetStream cluster
+`composer examples`; stop the fixtures afterwards. TLS certificates, NKeys and JWTs are generated, not committed (#9):
+`tests/nats/auth/generate.sh` makes the credentials with `nsc` from `natsio/nats-box`, and the unit tests use `TestNkeys`.
+Fixtures expose plain/TLS/mTLS/stale-idle NATS on 4222/4223/4224/4225, a three-server JetStream cluster
 `east` for the examples on 4226-4228 (containers and server names `nats_cluster_1..3`; two servers tagged
-`disk:ssd`, one `disk:hdd`). Examples that stop or restart a server with docker start it again. Measured on it
+`disk:ssd`, one `disk:hdd`), a server in operator mode on 4229 and one with a token on 4230, these two on the loopback
+address only. Examples that stop or restart a server with docker start it again. Measured on it
 (2026-10-19, client 2.27.0): after a graceful `docker stop` of a stream's leader (nats 2.15.1 and 2.10.29) a
 `reconnect: true` worker failed over with no empty pull; after `docker kill` (2.15.1) the first send timed out after
 `request_timeout`, or failed with 503 "No JetStream responder" while the stream had no leader. The DSN names one

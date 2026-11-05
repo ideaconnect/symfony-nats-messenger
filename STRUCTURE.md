@@ -59,6 +59,8 @@ tests/
 │   ├── MutationTestingCommandsTest.php         # the Infection runs in composer.json write no GitHub annotations
 │   ├── SubscriptionLimitPullTest.php           # pulls at the subscription limit, real client over a scripted server
 │   ├── UnansweredPullTest.php                  # a pull the server never answered calls for a connection check
+│   ├── LoginCombinationsTest.php               # every combination of credentials: refused when built, or through the real client
+│   ├── TestNkeysTest.php                       # the keys tests/Support/TestNkeys.php builds when the tests run
 │   ├── Options/
 │   │   ├── NatsTransportConfigurationBuilderTest.php  # DSN parsing, validation, option merging
 │   │   ├── SecretsInExceptionsTest.php                 # a failed build leaves no seed or password in its exception
@@ -71,12 +73,14 @@ tests/
 │   ├── tests/Behat/NatsSetupContext.php        # all step definitions
 │   └── src/, config/, bin/, public/            # a minimal Symfony app exercising the transport end-to-end
 └── nats/                                       # Docker Compose + NATS configs + test TLS certificate generator
-                                                # (nats-cluster*.conf: the three-server cluster "east" for the examples)
+                                                # (nats-cluster*.conf: the three-server cluster "east" for the examples;
+                                                # nats-jwt.conf: the server in operator mode; nats-token.conf: the server
+                                                # with a token; auth/: the generator of the NKey and JWT credentials)
 
 examples/                                       # Runnable scripts, one per behaviour (composer examples)
 ├── _bootstrap.php                              # shared setup: autoloader, server, stream, test cluster and docker helpers
 └── *.php                                       # send-and-consume, duplicate-protection, nats-retry, request-timeout, keepalive,
-                                                # connection-checks, reconnect, cluster-failover,
+                                                # connection-checks, jwt-login, nkey-login, token-login, reconnect, cluster-failover,
                                                 # handler-failing-during-failover, handler-succeeding-during-failover,
                                                 # stream-placement
 

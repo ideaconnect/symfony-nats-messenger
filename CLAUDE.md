@@ -33,7 +33,7 @@ composer test:unit:fast          # PHPUnit only, no coverage
 composer test:unit               # PHPUnit with coverage → clover.xml + coverage/ (HTML)
 composer coverage:check          # enforce ≥ 90% statement coverage from clover.xml
 
-composer nats:start              # generate the test TLS certs, then start NATS in Docker (tests/nats/docker-compose.yaml)
+composer nats:start              # generate the test TLS certs and NKey/JWT credentials, then start NATS in Docker (tests/nats/docker-compose.yaml)
 composer test:functional:setup   # install Behat deps (first time only)
 composer test:functional         # run Behat scenarios (needs nats:start)
 composer examples                # run examples/*.php against the test NATS (needs nats:start)
@@ -93,6 +93,15 @@ composer nats:stop               # stop NATS
   in both modes. `resend_on_reconnect` maps to the client's `resendJetStreamPublishOnReconnect` (a publish with a
   Nats-Msg-Id written again on the recovered connection); the builder requires `reconnect: true` with it and a
   configured `stream_duplicate_window` longer than `request_timeout`.
+- **Logins with a signature.** `jwt` and `nkey` need a signer: the client throws before it writes the CONNECT without one, on
+  every server. The transport's one source of a signer is `nkey_seed`, so the builder refuses `jwt` or `nkey` without it, a
+  seed next to a username, password or token (a server with both kinds of users ignores them without a word), a blank or
+  non-string seed and a seed that is not a user's. `nkey` stays as an optional check of the seed's key, and an external signer
+  would need it. Word such a rule as "no signer", not "no seed". These refusals and every accepted combination are checked
+  through the real client by `LoginCombinationsTest` on each `composer test`; the real logins are in `nats_nkey.feature`,
+  `nats_jwt.feature`, `nats_token.feature` and the examples. Test keys are never committed (#9): the unit tests build theirs
+  with `TestNkeys`, and `tests/nats/auth/generate.sh` makes the servers' at `composer nats:start`. An option stored in
+  `NatsOptions` proves nothing about a login, which is how `jwt` and `nkey` shipped unable to log in.
 - **Pull consumers + explicit ACK.** A message is only "processed" once ACK'd. This underpins
   `retry_handler` and shared-consumer load balancing.
 - **`get()` reads JetStream 408 and 404 as an empty pull** (no messages); other codes propagate. A
