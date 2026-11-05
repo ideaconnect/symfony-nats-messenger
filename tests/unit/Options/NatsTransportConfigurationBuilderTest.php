@@ -277,7 +277,11 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
             ['nkey_seed' => self::TEST_NKEY_SEED, 'nkey' => self::TEST_NKEY_PUBLIC]
         );
 
-        self::assertSame(self::TEST_NKEY_PUBLIC, $this->extractNatsOptions($configuration->client)->nkey);
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertSame(self::TEST_NKEY_PUBLIC, $options->nkey);
+        // A transport without the signer could not connect, whatever nkey says.
+        self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
     }
 
     /**
