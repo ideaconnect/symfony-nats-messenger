@@ -110,8 +110,8 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
-     * A parameter under one of these names holds the DSN, the merged options, a signer, or one value or name that may
-     * contain them, whatever the method does with it. A new method that takes one and can throw must not bring the secrets
+     * A parameter under one of these names holds the DSN or its query, the merged options, a signer, or one value or name
+     * that may contain them, whatever the method does with it. A new method that takes one and can throw must not bring the secrets
      * back into the frames.
      */
     public function testEveryParameterThatCanHoldASecretIsMarkedSensitive(): void
@@ -126,7 +126,7 @@ final class SecretsInExceptionsTest extends TestCase
         foreach ($methods as $method) {
             foreach ($method->getParameters() as $parameter) {
                 if (
-                    in_array($parameter->getName(), ['dsn', 'options', 'configuration', 'components', 'signer', 'name', 'value'], true)
+                    in_array($parameter->getName(), ['dsn', 'query', 'options', 'configuration', 'components', 'signer', 'name', 'value'], true)
                     && $parameter->getAttributes(\SensitiveParameter::class) === []
                 ) {
                     $unmarked[] = $method->getDeclaringClass()->getShortName() . '::' . $method->getName() . '($' . $parameter->getName() . ')';
@@ -227,16 +227,17 @@ final class SecretsInExceptionsTest extends TestCase
     {
         $dsn = 'nats://localhost:4222/test-stream/test-topic';
 
-        yield 'a second ? after a list of allowed values' => [$dsn . '?retry_handler=nats?nkey_seed=' . self::PLACEHOLDER];
-        yield 'a ; after a list of allowed values' => [$dsn . '?replay_policy=instant;nkey_seed=' . self::PLACEHOLDER];
-        yield 'a ; after stream_storage' => [$dsn . '?stream_storage=file;nkey_seed=' . self::PLACEHOLDER];
-        yield 'a ; after a boolean' => [$dsn . '?stream_deny_delete=true;nkey_seed=' . self::PLACEHOLDER];
-        yield 'a second ? after a number' => [$dsn . '?batching=5?nkey_seed=' . self::PLACEHOLDER];
-        yield 'a ; after a number' => [$dsn . '?stream_max_age=900;nkey_seed=' . self::PLACEHOLDER];
+        yield 'a second ? after a list of allowed values' => [$dsn . '?retry_handler=nats?seed=' . self::PLACEHOLDER];
+        yield 'a ; after a list of allowed values' => [$dsn . '?replay_policy=instant;seed=' . self::PLACEHOLDER];
+        yield 'a ; after stream_storage' => [$dsn . '?stream_storage=file;seed=' . self::PLACEHOLDER];
+        yield 'a ; after a boolean' => [$dsn . '?stream_deny_delete=true;seed=' . self::PLACEHOLDER];
+        yield 'a second ? after a number' => [$dsn . '?batching=5?seed=' . self::PLACEHOLDER];
+        yield 'a ; after a number' => [$dsn . '?stream_max_age=900;seed=' . self::PLACEHOLDER];
     }
 
     /**
      * Typed with a second ? or a ; the seed stays in the value of the option before it, and those errors print the value.
+     * The option names here are no credentials, as a credential's name is refused before these errors can happen.
      */
     #[DataProvider('optionsAMistypedQueryCanEndUpIn')]
     public function testASeedTypedIntoAnOptionsValueStaysOutOfTheError(string $dsnWithAPlaceholder): void
@@ -250,6 +251,72 @@ final class SecretsInExceptionsTest extends TestCase
             self::assertMatchesRegularExpression('/^Invalid |must be numeric/', $thrown->getMessage());
             self::assertNoSecretIn($thrown, TestNkeys::seed());
         }
+    }
+
+    /**
+     * @return iterable<string, array{string, string}> The credential option and the query before it, which is left out of
+     *                                                 the provider's values for the seed to stay out of the frames
+     */
+    public static function credentialsTypedAfterAnotherOption(): iterable
+    {
+        foreach (['nkey_seed', 'nkey', 'jwt', 'token', 'username', 'password', 'tls_key_passphrase'] as $credential) {
+            yield $credential . ' after a second ?' => [$credential, 'consumer=workers?'];
+            yield $credential . ' after a ;' => [$credential, 'consumer=workers;'];
+            yield $credential . ' after an encoded ?' => [$credential, 'consumer=workers%3F'];
+            yield $credential . ' after an encoded ;' => [$credential, 'consumer=workers%3B'];
+        }
+
+        yield 'in a file name, whose error would print it' => ['nkey_seed', 'tls_ca_file=/no/such/ca.pem?'];
+        yield 'in a description, which the server would store' => ['nkey_seed', 'stream_description=orders;'];
+        yield 'in a list of tags' => ['token', 'stream_placement_tags[]=ssd;'];
+        yield 'in a number' => ['nkey_seed', 'batching=5?'];
+        yield 'after an option with no value' => ['nkey_seed', 'consumer?'];
+        yield 'right after the first ?' => ['nkey_seed', '?'];
+    }
+
+    /**
+     * parse_str() splits on & only, so such a credential is a part of the option before it, and goes where that goes: into
+     * the TLS library's error for a file name, or to the server, which stores it, for a consumer or a description. That is
+     * never what was meant, and the login that was meant does not happen either.
+     */
+    #[DataProvider('credentialsTypedAfterAnotherOption')]
+    public function testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt(string $credential, string $before): void
+    {
+        $dsn = self::DSN_WITHOUT_CREDENTIALS . '?' . $before . $credential . '=' . TestNkeys::seed();
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build($dsn);
+            self::fail('A credential typed into the value of another option was accepted.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringStartsWith('The NATS DSN holds a credential after a second "?" or a ";"', $thrown->getMessage());
+            self::assertNoSecretIn($thrown, TestNkeys::seed());
+        }
+    }
+
+    /**
+     * Those are not separators in an option, where nothing is split, and a value that merely looks alike is left alone.
+     *
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function valuesThatOnlyLookLikeACredentialInAQuery(): iterable
+    {
+        $dsn = self::DSN_WITHOUT_CREDENTIALS;
+
+        yield 'a description given as an option' => [$dsn, ['stream_description' => 'orders?token=none']];
+        yield 'a credential after a proper &' => [$dsn . '?consumer=workers&token=abc', []];
+        yield 'an option that only ends like a credential' => [$dsn . '?stream_description=why;mytoken=abc', []];
+        yield 'a ; with no option name after it' => [$dsn . '?stream_description=a;b', []];
+        yield 'a name with no = after it' => [$dsn . '?stream_description=what?token', []];
+        yield 'a password with a ; in the DSN, not in the query' => ['nats://admin:a%3Btoken=b@localhost:4222/test-stream/test-topic', []];
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('valuesThatOnlyLookLikeACredentialInAQuery')]
+    public function testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted(string $dsn, array $options): void
+    {
+        self::assertInstanceOf(NatsTransportConfiguration::class, (new NatsTransportConfigurationBuilder())->build($dsn, $options));
     }
 
     /**

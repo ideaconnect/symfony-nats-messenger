@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `?`, or with a second `?`, stays in the stream or topic name or in the value of the option before it, and the errors for
   those printed it. They now repeat a name or value only if it is at most 50 plain characters, and still say what is
   allowed.
+- **A credential typed after a second `?` or a `;` in the DSN query is refused when the transport is built (#89).** It stayed
+  in the value of the option before it and went where that goes: into the TLS library's error for a file name, or to
+  the server, which stores it, for a consumer name, a stream description or a placement. Only the DSN query is checked,
+  for `nkey_seed`, `nkey`, `jwt`, `token`, `username`, `password` and `tls_key_passphrase`, as nothing splits a value in
+  the options.
 
 ## [5.8.0] - 2026-11-04
 

@@ -118,3 +118,4 @@ Feature: NKey authentication
       | the seed of an account as the NKey seed             | it is not a user seed                                       |
       | a seed in the nkey option next to the NKey seed     | The nkey option is not the public key of the configured     |
       | another user's public key next to the NKey seed     | The nkey option is not the public key of the configured     |
+      | an NKey seed typed after a second question mark in the DSN | The NATS DSN holds a credential after a second        |

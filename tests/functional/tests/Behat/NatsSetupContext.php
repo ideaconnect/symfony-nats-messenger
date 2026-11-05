@@ -1755,6 +1755,16 @@ class NatsSetupContext implements Context
         $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => substr($seed, 0, -1) . ($seed[-1] === 'B' ? 'C' : 'B')]);
     }
 
+    /**
+     * A query typed with a second ?, which leaves the seed in the value of the option before it: there, in the transport's
+     * DSN, stream_max_age.
+     */
+    #[Given('I have a messenger transport configured with an NKey seed typed after a second question mark in the DSN')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeedTypedAfterASecondQuestionMarkInTheDsn(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, [], '?nkey_seed=' . $this->credentials()['nkey_user']['seed']);
+    }
+
     #[Given('I have a messenger transport configured with the seed of an account as the NKey seed')]
     public function iHaveAMessengerTransportConfiguredWithTheSeedOfAnAccountAsTheNkeySeed(): void
     {

@@ -279,6 +279,26 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
+     * Refuses a credential option typed after a second ? or a ; in the DSN query.
+     *
+     * parse_str() splits on & only, so such a credential stays in the value of the option before it, and goes where that
+     * goes: into the TLS library's error for a file name, or to the server, which stores it, for a consumer name or a
+     * stream description. That is never what was meant, and the login that was meant does not happen either. The value is
+     * not repeated. An option in the options map is not checked, as nothing splits it.
+     *
+     * @throws InvalidArgumentException When the query holds such a credential.
+     */
+    private function assertNoCredentialAfterASecondQuery(#[\SensitiveParameter] string $query): void
+    {
+        if (preg_match('/[?;](?:nkey_seed|nkey|jwt|token|username|password|tls_key_passphrase)=/', rawurldecode($query)) === 1) {
+            throw new InvalidArgumentException(
+                'The NATS DSN holds a credential after a second "?" or a ";" in its query, where it would be read as a part '
+                . 'of the option before it. Separate the options with "&".'
+            );
+        }
+    }
+
+    /**
      * Merges and validates final runtime options.
      *
      * Merge precedence: $options (method params) > $query (DSN query string) > DEFAULT_OPTIONS.
@@ -293,6 +313,7 @@ final class NatsTransportConfigurationBuilder
     {
         $query = [];
         if (isset($components['query']) && is_string($components['query'])) {
+            $this->assertNoCredentialAfterASecondQuery($components['query']);
             /** @var array<string, mixed> $query */
             parse_str($components['query'], $query);
         }

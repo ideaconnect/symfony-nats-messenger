@@ -165,6 +165,7 @@ test keeps the secret out of its own frames, which PHP records too.
 | **A mistyped seed** | `testAMistypedSeedStaysOutOfTheFailure` (the client's exception, whose frames hold the value, is not chained) |
 | **An `nkey` that contradicts the seed** | `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure` (neither the seed nor the signer's secret key) |
 | **A query typed with `&`, `;` or a second `?`** | `testASeedTypedIntoTheDsnPathStaysOutOfTheError` (the stream or topic name error), `testASeedTypedIntoAnOptionsValueStaysOutOfTheError` (the errors that print an option's value) |
+| **A credential after a second `?` or a `;` in the query is refused** | `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt` (all seven credential options, encoded and not, in a file name, a description, a list and a number), `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted` (in the options, after a proper `&`, a name that only ends like one) |
 | **A plain mistake is still repeated** | `testAPlainMistakeIsRepeatedInTheError` (names and values of at most 50 plain characters), `testAValueLongerThanTheLimitIsNotRepeated` |
 | **After a build that worked** | `testTheConfigurationDoesNotKeepTheTextOfTheSeed` (a dump of the configuration does not print it; the client's signer still holds the raw key) |
 
@@ -364,7 +365,7 @@ see `tests/nats/auth/README.md`.
 | **The server checks the seed** | A seed the server does not know is refused by the server (the server's `Authorization Violation`) |
 | **A server with no NKey users** | A seed on a server without NKey users is refused by the client, as there is no nonce to sign |
 | **Refusals when the transport is built, seen from the console** | Credentials that need or exclude a seed are refused when the transport is built, on every command (`messenger:setup-transports`, `messenger:stats` and `messenger:consume` each exit non-zero with the error, for a JWT and no seed, a public NKey and no seed, and a seed next to a password) |
-| **Values that cannot log in, and no seed in the output** | A value that cannot log in is refused when the transport is built, and no seed is printed (an empty seed, a mistyped one, an account's seed, a seed in `nkey`, another user's public key) |
+| **Values that cannot log in, and no seed in the output** | A value that cannot log in is refused when the transport is built, and no seed is printed (an empty seed, a mistyped one, an account's seed, a seed in `nkey`, another user's public key, a seed after a second `?` in the DSN) |
 
 ### JWT Authentication (`tests/functional/features/nats_jwt.feature`)
 
