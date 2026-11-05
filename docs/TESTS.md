@@ -474,7 +474,7 @@ does not survive it.
 
 | Feature | Scenarios |
 |---------|-----------|
-| **A worker polls through a server restart without exiting** | A worker keeps consuming across a server restart (the consumer holds a connection before the restart, reconnects, and consumes the five messages sent after it) |
+| **A worker polls through a server restart without exiting** | A worker keeps consuming across a server restart (the consumer holds a connection before the restart, reconnects, and consumes the five messages sent after it; the step pauses 300 ms after the connection, which keeps the scenario out of the gap the README names, a pull in the last moments of a graceful stop on NATS 2.15) |
 | **The client's own reconnect is used by the next send, and auto_setup recreates the memory stream the restart lost** | A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated (`ping_after_idle` 2 s, so the send after the quiet period checks the connection first and finds the client recovering it; the stats show the one message the recreated stream holds) |
 
 ### Stream Placement (`tests/functional/features/nats_stream_placement.feature`)
