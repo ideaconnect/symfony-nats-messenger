@@ -188,16 +188,21 @@ apply only with the option on.
   it. Only null means no seed. A blank or non-string value, an invalid seed and a seed that is not a user key are refused
   at build, as are a username, password or token next to it (a server with both kinds of users ignores them without a
   word) and `jwt` or `nkey` without it (the client throws before the CONNECT without a signer, on every server, and for
-  a bearer JWT too, though the server would not check the signature). `nkey` stays as an optional check: it must equal
+  a bearer JWT too, though the server would not check the signature). So are a `jwt` without a JWT's three parts, which the
+  CONNECT would carry to the server, and a credential after a second `?` or a `;` in the DSN query, which `parse_str()`
+  leaves in the value of the option before it. `nkey` stays as an optional check: it must equal
   the derived key, its error prints the derived key and never the value. The seed is unset from the option map once the
   signer exists. Keep the client's exception out of `previous`: its frames hold the seed, and the client marks nothing.
-  Every `$dsn`, `$options`, `$configuration` and `$components` parameter on the build path is `#[\SensitiveParameter]`,
-  guarded by reflection in `SecretsInExceptionsTest`. Not fixed, in the client: `NkeySeedSigner`'s `secretKey` prints in a
+  Every parameter on the build path that holds the DSN, the options, a credential or one value of them is
+  `#[\SensitiveParameter]`, guarded by reflection in `SecretsInExceptionsTest`. Not fixed, in the client: `NkeySeedSigner`'s `secretKey` prints in a
   dump and its first 32 bytes are the seed; its frames and `encodeConnect`'s are unmarked; the wording of a seed on a
   server with no nonce, which `reconnect: true` retries for about 43 s. Real logins run in the functional suite and
   the examples: NKey on `nats`, `nats-tls` and `nats-mtls`, JWT on `nats-jwt`, token on `nats-token`, also across a restart
   for NKey and JWT. On every `composer test` the 32 combinations in `LoginCombinationsTest` are refused when built, or go
   through the real client as a CONNECT that carries them. Measured by hand, not in the suite: cluster failover with a seed, a JWT that expires under a worker.
+  A scenario that restarts a server must wait for the worker's connection first, as `I start a messenger consumer expecting
+  :count messages` does: on CI's runners the console boots after the restart begins, so without the wait nothing reconnects
+  and the scenario proves nothing, while a local run looks fine.
 - **Stats:** consumer `num_pending + num_ack_pending`, falling back to stream messages and then 0.
   Stream count can include already acknowledged messages; outage and empty queue both read as 0.
   A failed initial connection gets one dial attempt, not a second for the fallback (#54).
