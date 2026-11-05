@@ -374,6 +374,55 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
+     * A credential can be shorter than the limit, so it is the pattern that keeps one typed into a value out of the message.
+     * None of the characters that separate a query may be repeated, in any value that gets to an error of its own.
+     *
+     * @return iterable<string, array{string}>
+     */
+    public static function shortValuesWithACharacterOfAQuery(): iterable
+    {
+        yield 'a ? and an =' => ['nats?seed=abc'];
+        yield 'a ; and an =' => ['nats;seed=abc'];
+        yield 'an =' => ['seed=abc'];
+        yield 'an encoded &' => ['a%26b'];
+        yield 'a ?' => ['a?b'];
+        yield 'a ;' => ['a;b'];
+    }
+
+    #[DataProvider('shortValuesWithACharacterOfAQuery')]
+    public function testAShortValueWithACharacterOfAQueryIsNotRepeated(string $value): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic?retry_handler=' . $value);
+            self::fail('An unknown retry handler was accepted.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringStartsWith('Invalid retry_handler option. Allowed values are', $thrown->getMessage());
+        }
+    }
+
+    /**
+     * The same for a name in the DSN's path, where a query typed with & instead of ? ends up.
+     *
+     * @return iterable<string, array{string, string}>
+     */
+    public static function shortNamesWithACharacterOfAQuery(): iterable
+    {
+        yield 'a stream' => ['nats://localhost:4222/orders&seed=abc/test-topic', 'NATS stream name contains invalid characters.'];
+        yield 'a topic' => ['nats://localhost:4222/test-stream/orders&seed=abc', 'NATS topic name contains invalid characters.'];
+    }
+
+    #[DataProvider('shortNamesWithACharacterOfAQuery')]
+    public function testAShortNameWithACharacterOfAQueryIsNotRepeated(string $dsn, string $expectedStart): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build($dsn);
+            self::fail('An invalid name was accepted.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringStartsWith($expectedStart, $thrown->getMessage());
+        }
+    }
+
+    /**
      * The end of the pattern must not let a last newline through, as "natz\n" is not a plain value.
      */
     public function testAValueEndingInANewlineIsNotRepeated(): void
