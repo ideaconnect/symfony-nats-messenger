@@ -2162,6 +2162,8 @@ class NatsSetupContext implements Context
         $this->useJwtServer = true;
 
         $this->startNatsServer();
+        // Without the credentials the wait below would only retry for a minute before it says so.
+        $this->credentials();
         $this->waitForTestServer('nats-jwt', 4229, $this->createNatsJwtClient(...));
     }
 
@@ -2586,7 +2588,7 @@ class NatsSetupContext implements Context
             throw new \RuntimeException('Failed to generate the test TLS certificates: ' . $certificates->getErrorOutput());
         }
 
-        // The NKey user the servers list, and later the logins of the server in operator mode, are generated too (#9).
+        // The NKey user and the logins of the server in operator mode are generated too (#9).
         $credentials = new Process(['bash', __DIR__ . '/../../../nats/auth/generate.sh']);
         $credentials->setTimeout(180);
         $credentials->run();
