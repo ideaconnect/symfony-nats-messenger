@@ -34,13 +34,15 @@ final class TestNkeys
     }
 
     /**
-     * That seed with its last character changed, which no longer decodes: the client's checksum refuses it.
+     * That seed with a character in the middle changed, which the client's checksum refuses. A change in the last character
+     * would not get as far: a seed only ends in some of the letters, so the client stops at the last bits.
      */
     public static function mistypedSeed(string $name = 'test-user'): string
     {
         $seed = self::seed($name);
+        $seed[20] = $seed[20] === 'B' ? 'C' : 'B';
 
-        return substr($seed, 0, -1) . ($seed[-1] === 'B' ? 'C' : 'B');
+        return $seed;
     }
 
     /**

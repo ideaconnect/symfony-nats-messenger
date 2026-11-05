@@ -138,7 +138,7 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
-     * A seed with its last character changed fails the client's checksum. Its message is safe to pass on, but the client's
+     * A seed with one character changed fails the client's checksum. Its message is safe to pass on, but the client's
      * exception is not: its frames hold the whole seed as a string argument, and one wrong character is easily repaired.
      */
     #[RequiresPhpExtension('sodium')]
@@ -152,7 +152,7 @@ final class SecretsInExceptionsTest extends TestCase
             (new NatsTransportConfigurationBuilder())->build($dsn, $options);
             self::fail('A mistyped seed was accepted.');
         } catch (\InvalidArgumentException $thrown) {
-            self::assertStringStartsWith('The NKey seed cannot be used: ', $thrown->getMessage());
+            self::assertSame('The NKey seed cannot be used: Invalid NKey checksum.', $thrown->getMessage());
             self::assertNoSecretIn($thrown, $mistyped);
         }
     }

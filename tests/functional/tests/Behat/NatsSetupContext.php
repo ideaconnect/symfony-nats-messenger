@@ -1752,7 +1752,8 @@ class NatsSetupContext implements Context
     public function iHaveAMessengerTransportConfiguredWithAMistypedNkeySeed(): void
     {
         $seed = $this->credentials()['nkey_user']['seed'];
-        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => substr($seed, 0, -1) . ($seed[-1] === 'B' ? 'C' : 'B')]);
+        $seed[20] = $seed[20] === 'B' ? 'C' : 'B';
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $seed]);
     }
 
     /**
