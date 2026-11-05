@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mistyped seed no longer chains the client's exception, whose frames hold the value. Symfony Messenger's factory marks
   its options only from 7.4.23 and 8.1.11, and the client marks nothing yet, so the README recommends turning those
   arguments off in production.
-- **An error no longer prints a seed or token typed into the DSN by mistake (#89).** A query typed with `&` or `;` instead of
+- **An error no longer repeats a name or value that may hold a credential (#89).** A query typed with `&` or `;` instead of
   `?`, or with a second `?`, stays in the stream or topic name or in the value of the option before it, and the errors for
   those printed it. They now repeat a name or value only if it is at most 50 plain characters, and still say what is
   allowed.
