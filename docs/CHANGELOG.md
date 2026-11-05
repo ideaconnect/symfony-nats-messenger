@@ -8,8 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **NKey authentication: the `nkey_seed` option.** The transport signs the server's nonce with the given seed and
-  sends the public key derived from it, so a user the server knows by its NKey can connect with the seed alone.
+- **NKey authentication: the `nkey_seed` option (#89).** The transport signs the server's nonce with the given seed and
+  sends the public key derived from it, so a user the server knows by its NKey can connect with the seed alone. Signing
+  needs the `sodium` extension. The value is refused when the transport is built, and never repeated, unless it is a
+  user seed (`SU...`) or null: a blank value, a list or another key type's seed would otherwise connect without it
+  or fail late. `%env(default::NATS_NKEY_SEED)%` gives null for an optional seed. A username, password or token next to
+  the seed, from the DSN or the options, is refused too: a server with both kinds of users would log the connection in
+  with the NKey and ignore them, even a wrong password. The seed does not stay in the transport's options.
+
+### Fixed
+- **`jwt` and `nkey` could never connect (#89).** The transport passed them to the client without a signer, and the
+  client throws before it writes the CONNECT then, on every server: `requires a nonce signer`, after 43 seconds and as
+  `Reconnect attempts exhausted` with `reconnect: true`. `jwt` now works next to `nkey_seed`, its user's seed: a `.creds`
+  file holds both. Each one without a seed is refused when the transport is built, naming `nkey_seed`. `nkey` stays
+  optional and is best left unset, as the key is derived from the seed; with a seed it must be that key, and the error
+  names the seed's key and does not repeat the value. No login that worked is lost, but the error comes earlier, so see
+  the README's "Upgrading from 5.8" for `messenger:stats` and for workers on several transports.
+- **A failed build no longer keeps a seed, password or token in its stack frames (#89).** With exception arguments on
+  (`zend.exception_ignore_args=0`, PHP's default without a php.ini), the frames of the factory, the transport's
+  constructor and the builder held the options and the DSN. Every such parameter is now `#[\SensitiveParameter]`. A
+  mistyped seed no longer chains the client's exception, whose frames hold the value. Symfony Messenger's factory marks
+  its options only from 7.4.23 and 8.1.11, and the client marks nothing yet, so the README recommends turning those
+  arguments off in production.
+- **A stream or topic name error no longer repeats the name (#89).** A DSN query typed with `&` instead of `?` stays in
+  the path, so the error printed a seed or token in it. The message still says which name is wrong and what it may hold.
 
 ## [5.8.0] - 2026-11-04
 

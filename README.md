@@ -142,6 +142,22 @@ Nothing to change in the configuration, but look at your logs and your retry set
 
 > **Tested by:** `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testTheAckOfAHandledMessageReachesTheServerOnTheRecoveredConnectionWithNoCheckFirst`, `testSymfonysRetryCopyAfterTheServerClosedTheConnectionDuringTheHandlerGoesOutOnTheRecoveredConnection`, `testBuildWithResendOnReconnectPropagatesToNatsOptions`, the examples `nats-retry.php`, `handler-failing-during-failover.php` and `handler-succeeding-during-failover.php`
 
+### Upgrading from 5.8
+
+Nothing to change unless a transport has `nkey` or `jwt` set and no `nkey_seed`. Such a transport could never connect,
+as the client needs the seed to sign the server's nonce, but it could be built. It now fails when it is built, with an
+`InvalidArgumentException` naming `nkey_seed`. Add the seed or remove the option. Until you do, the earlier error is
+visible even where nothing uses that transport:
+
+- `messenger:stats` showed 0 for it and exited 0. It now exits 1, for all transports.
+- A worker consuming from it and from other transports handled the others. It now stops when it starts.
+- A `catch (\RuntimeException)` around a dispatch to it caught the connection error, and does not catch this one.
+- A service or smoke test that builds the transport fails.
+- A subclass of `NatsTransport` that replaces the protected `$client` with its own signed client must stop passing
+  `nkey` or `jwt` here, as its client has them.
+
+> **Tested by:** `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`. The effects on `messenger:stats` and on a worker were measured by hand.
+
 ### Logging
 
 The NATS client reports what it does with the connection through a PSR-3 logger: the connection's lifecycle
