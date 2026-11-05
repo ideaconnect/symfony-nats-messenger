@@ -60,7 +60,7 @@ class NatsTransportFactory implements TransportFactoryInterface
      * @param SerializerInterface $serializer Symfony serializer
      * @return TransportInterface A new NatsTransport instance
      */
-    public function createTransport(#[\SensitiveParameter] string $dsn, array $options, SerializerInterface $serializer): TransportInterface
+    public function createTransport(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options, SerializerInterface $serializer): TransportInterface
     {
         return new NatsTransport($dsn, $options, $serializer, $this->logger);
     }
@@ -75,7 +75,7 @@ class NatsTransportFactory implements TransportFactoryInterface
      * @param array<string, mixed> $options Transport configuration options (unused but required by interface)
      * @return bool True if the DSN scheme matches NATS JetStream, false otherwise
      */
-    public function supports(#[\SensitiveParameter] string $dsn, array $options): bool
+    public function supports(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options): bool
     {
         return str_starts_with($dsn, self::SCHEME) || str_starts_with($dsn, self::TLS_SCHEME);
     }

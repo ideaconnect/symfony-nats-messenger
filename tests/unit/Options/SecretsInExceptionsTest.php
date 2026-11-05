@@ -2,10 +2,14 @@
 
 namespace IDCT\NatsMessenger\Tests\Unit\Options;
 
+use IDCT\NatsMessenger\NatsTransport;
+use IDCT\NatsMessenger\NatsTransportFactory;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Throwable;
 
 /**
@@ -13,53 +17,219 @@ use Throwable;
  * default without a php.ini and what the official php:8.x-cli images run, and tools that record stack frames read them.
  *
  * Each test keeps the secret out of its own frames: PHP records the arguments of every frame down to the test runner, so
- * the secrets are not passed as arguments here, and no argument is a closure that captures them.
+ * the tests take the name of a case and look its values up, and no argument is a closure that captures them.
  */
 final class SecretsInExceptionsTest extends TestCase
 {
+    private const PASSWORD = 'a-password-long-enough';
+
     private const DSN_WITHOUT_CREDENTIALS = 'nats://localhost:4222/test-stream/test-topic';
+
+    /** Set while a test runs with exception arguments on; restored after it. */
+    private string|false $ignoreArgs = false;
+
+    protected function setUp(): void
+    {
+        $this->ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+    }
+
+    protected function tearDown(): void
+    {
+        ini_set('zend.exception_ignore_args', (string) $this->ignoreArgs);
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function failuresOfABuild(): iterable
+    {
+        foreach (array_keys(self::dsnAndOptionsOfTheFailures()) as $failure) {
+            foreach (self::secretForms() as $form) {
+                yield $failure . ', ' . $form => [$failure, $form];
+            }
+        }
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function formsOfASecret(): iterable
+    {
+        foreach (self::secretForms() as $form) {
+            yield $form => [$form];
+        }
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function formsOfASeed(): iterable
+    {
+        yield 'seed option' => ['seed option'];
+        yield 'seed in the DSN query' => ['seed in the DSN query'];
+    }
+
+    /**
+     * One case for each place in the build that throws, as the option maps and DSN parts are its arguments.
+     */
+    #[DataProvider('failuresOfABuild')]
+    public function testNoFrameOfAFailedBuildHoldsASecret(string $failure, string $form): void
+    {
+        [$dsn, $options] = self::dsnAndOptionsOfTheFailures()[$failure];
+        [$dsn, $options] = self::withSecret($form, $dsn, $options);
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+            self::fail('The build was expected to fail.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertNoSecretIn($thrown, self::secretOf($form));
+        }
+    }
+
+    /**
+     * The frames above the build: Symfony's own factory calls createTransport(), which calls the constructor.
+     */
+    #[DataProvider('formsOfASecret')]
+    public function testNoFrameOfAFailedTransportCreationHoldsASecret(string $form): void
+    {
+        [$dsn, $options] = self::withSecret($form, self::DSN_WITHOUT_CREDENTIALS, ['retry_handler' => 'nope']);
+
+        try {
+            (new NatsTransportFactory())->createTransport($dsn, $options, new PhpSerializer());
+            self::fail('The transport was expected to fail.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertNoSecretIn($thrown, self::secretOf($form));
+            self::assertStringContainsString('createTransport', $thrown->getTraceAsString());
+        }
+    }
+
+    /**
+     * A parameter under one of these names holds the DSN or the merged options, whatever the method does with them. A new
+     * method that takes one and can throw must not bring the secrets back into the frames.
+     */
+    public function testEveryParameterThatCanHoldASecretIsMarkedSensitive(): void
+    {
+        $methods = [
+            ...(new \ReflectionClass(NatsTransportConfigurationBuilder::class))->getMethods(),
+            ...(new \ReflectionClass(NatsTransportFactory::class))->getMethods(),
+            new \ReflectionMethod(NatsTransport::class, '__construct'),
+        ];
+
+        $unmarked = [];
+        foreach ($methods as $method) {
+            foreach ($method->getParameters() as $parameter) {
+                if (
+                    in_array($parameter->getName(), ['dsn', 'options', 'configuration', 'components', 'signer'], true)
+                    && $parameter->getAttributes(\SensitiveParameter::class) === []
+                ) {
+                    $unmarked[] = $method->getDeclaringClass()->getShortName() . '::' . $method->getName() . '($' . $parameter->getName() . ')';
+                }
+            }
+        }
+
+        self::assertSame([], $unmarked);
+    }
 
     /**
      * A seed with its last character changed fails the client's checksum. Its message is safe to pass on, but the client's
      * exception is not: its frames hold the whole seed as a string argument, and one wrong character is easily repaired.
      */
     #[RequiresPhpExtension('sodium')]
-    public function testAMistypedSeedStaysOutOfTheFailure(): void
+    #[DataProvider('formsOfASeed')]
+    public function testAMistypedSeedStaysOutOfTheFailure(string $form): void
     {
         $mistyped = substr(TestNkeys::seed(), 0, -1) . 'B';
-
-        $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+        [$dsn, $options] = self::withSecret($form, self::DSN_WITHOUT_CREDENTIALS, [], $mistyped);
 
         try {
-            (new NatsTransportConfigurationBuilder())->build(self::DSN_WITHOUT_CREDENTIALS . '?nkey_seed=' . $mistyped);
+            (new NatsTransportConfigurationBuilder())->build($dsn, $options);
             self::fail('A mistyped seed was accepted.');
-        } catch (\InvalidArgumentException $failure) {
-            self::assertStringStartsWith('The NKey seed cannot be used: ', $failure->getMessage());
-            self::assertNoSecretIn($failure, $mistyped);
-        } finally {
-            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringStartsWith('The NKey seed cannot be used: ', $thrown->getMessage());
+            self::assertNoSecretIn($thrown, $mistyped);
         }
     }
 
     /**
-     * The seed in the DSN makes resolveNkey() the only frame that could hold it. The signer in that frame's arguments would
-     * also print the raw secret key, whose first 32 bytes are the seed itself.
+     * With the seed in the DSN, resolveNkey() was the only frame that could hold it. The signer in that frame's arguments
+     * would also print the raw secret key, whose first 32 bytes are the seed itself.
      */
     #[RequiresPhpExtension('sodium')]
-    public function testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure(): void
+    #[DataProvider('formsOfASeed')]
+    public function testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure(string $form): void
     {
-        $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+        [$dsn, $options] = self::withSecret($form, self::DSN_WITHOUT_CREDENTIALS, ['nkey' => 'UOTHERPUBLICKEY']);
 
         try {
-            (new NatsTransportConfigurationBuilder())->build(self::DSN_WITHOUT_CREDENTIALS . '?nkey=UOTHERPUBLICKEY&nkey_seed=' . TestNkeys::seed());
+            (new NatsTransportConfigurationBuilder())->build($dsn, $options);
             self::fail('An nkey that contradicts the seed was accepted.');
-        } catch (\InvalidArgumentException $failure) {
-            self::assertStringStartsWith('The nkey option is not the public key', $failure->getMessage());
-            self::assertNoSecretIn($failure, TestNkeys::seed());
-            self::assertStringNotContainsString('secretKey', self::printedFrames($failure));
-        } finally {
-            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringStartsWith('The nkey option is not the public key', $thrown->getMessage());
+            self::assertNoSecretIn($thrown, TestNkeys::seed());
+            self::assertStringNotContainsString('secretKey', self::printedFrames($thrown));
         }
+    }
+
+    /**
+     * @return array<string, array{string, array<string, mixed>}> The DSN and the options of a build that fails at the
+     *                                                            place in the key.
+     */
+    private static function dsnAndOptionsOfTheFailures(): array
+    {
+        $dsn = self::DSN_WITHOUT_CREDENTIALS;
+
+        return [
+            'parseDsn' => ['nats:///test-stream/test-topic', []],
+            'parseStreamAndTopic' => ['nats://localhost:4222', []],
+            'buildConfiguration' => [$dsn, ['retry_handler' => 'nope']],
+            'assertPositiveNumber' => [$dsn, ['batching' => 0]],
+            'assertNonNegativeNumber' => [$dsn, ['nak_delay' => -1]],
+            'toNumber' => [$dsn, ['batching' => 'many']],
+            'assertNotExceedingInt32' => [$dsn, ['stream_max_message_size' => 2147483648]],
+            'assertStreamDescriptionLength' => [$dsn, ['stream_description' => str_repeat('x', 4097)]],
+            'assertTriStateBooleans' => [$dsn, ['stream_deny_delete' => 'maybe']],
+            'normalizeStreamPlacement' => [$dsn, ['stream_placement_cluster' => ' ']],
+            'assertBackoff' => [$dsn, ['backoff' => 'soon']],
+            'assertMaxDeliverExceedsBackoff' => [$dsn, ['max_deliver' => 1, 'backoff' => [1, 2]]],
+            'assertDuplicateWindowNotExceedingMaxAge' => [$dsn, ['stream_max_age' => 1, 'stream_duplicate_window' => 2]],
+            'assertResendOnReconnect' => [$dsn, ['resend_on_reconnect' => true]],
+            'normalizeStorageBackend' => [$dsn, ['stream_storage' => 'paper']],
+            'normalizeStreamRetention' => [$dsn, ['stream_retention' => 'forever']],
+            'normalizeStreamDiscard' => [$dsn, ['stream_discard' => 'nope']],
+            'normalizeStreamCompression' => [$dsn, ['stream_compression' => 'nope']],
+            'normalizeReplayPolicy' => [$dsn, ['replay_policy' => 'nope']],
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function secretForms(): array
+    {
+        return ['seed option', 'seed in the DSN query', 'password option', 'password in the DSN'];
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     *
+     * @return array{string, array<string, mixed>} The DSN and the options with the secret in them, in the given form
+     */
+    private static function withSecret(string $form, string $dsn, array $options, ?string $seed = null): array
+    {
+        $seed ??= TestNkeys::seed();
+
+        return match ($form) {
+            'seed option' => [$dsn, $options + ['nkey_seed' => $seed]],
+            'seed in the DSN query' => [$dsn . '?nkey_seed=' . $seed, $options],
+            'password option' => [$dsn, $options + ['password' => self::PASSWORD]],
+            'password in the DSN' => [str_replace('nats://', 'nats://admin:' . self::PASSWORD . '@', $dsn), $options],
+            default => self::fail('Unknown form of a secret: ' . $form),
+        };
+    }
+
+    private static function secretOf(string $form): string
+    {
+        return str_starts_with($form, 'seed') ? TestNkeys::seed() : self::PASSWORD;
     }
 
     /**

@@ -174,7 +174,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *                                           strategy is on ({@see warnThatSymfonysRetryStrategyIsOn()}). The
      *                                           bundle hands the application's logger to {@see NatsTransportFactory}.
      */
-    public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null, ?LoggerInterface $logger = null)
+    public function __construct(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options, ?SerializerInterface $serializer = null, ?LoggerInterface $logger = null)
     {
         $this->logger = $logger;
 

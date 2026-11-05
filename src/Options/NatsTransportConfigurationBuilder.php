@@ -113,7 +113,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $options
      */
-    public function build(#[\SensitiveParameter] string $dsn, array $options = [], ?LoggerInterface $logger = null): NatsTransportConfiguration
+    public function build(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options = [], ?LoggerInterface $logger = null): NatsTransportConfiguration
     {
         $components = $this->parseDsn($dsn);
         $configuration = $this->buildConfiguration($components, $options);
@@ -191,7 +191,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @return array<string, mixed>
      */
-    private function parseDsn(string $dsn): array
+    private function parseDsn(#[\SensitiveParameter] string $dsn): array
     {
         // A single gate for both structural failures: parse_url() returns false on a seriously
         // malformed DSN, and a hostless URL (e.g. "nats:///stream/topic") has no 'host'. Both are
@@ -211,7 +211,7 @@ final class NatsTransportConfigurationBuilder
      * @param array<string, mixed> $components
      * @return array{0: string, 1: string}
      */
-    private function parseStreamAndTopic(array $components): array
+    private function parseStreamAndTopic(#[\SensitiveParameter] array $components): array
     {
         if (!isset($components['path'])) {
             throw new InvalidArgumentException('NATS Stream name not provided.');
@@ -275,7 +275,7 @@ final class NatsTransportConfigurationBuilder
      * @param array<string, mixed> $options    Method-level option overrides
      * @return array<string, mixed>            Fully merged and validated configuration
      */
-    private function buildConfiguration(array $components, array $options): array
+    private function buildConfiguration(#[\SensitiveParameter] array $components, #[\SensitiveParameter] array $options): array
     {
         $query = [];
         if (isset($components['query']) && is_string($components['query'])) {
@@ -352,7 +352,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeStorageBackend(array &$configuration): void
+    private function normalizeStorageBackend(#[\SensitiveParameter] array &$configuration): void
     {
         $storage = TypeCoercion::stringValue(
             $configuration[TransportOption::STREAM_STORAGE->value] ?? StorageBackend::File->value,
@@ -375,7 +375,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeStreamRetention(array &$configuration): void
+    private function normalizeStreamRetention(#[\SensitiveParameter] array &$configuration): void
     {
         $this->normalizeEnumOption(
             $configuration,
@@ -390,7 +390,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeStreamDiscard(array &$configuration): void
+    private function normalizeStreamDiscard(#[\SensitiveParameter] array &$configuration): void
     {
         $this->normalizeEnumOption(
             $configuration,
@@ -405,7 +405,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeReplayPolicy(array &$configuration): void
+    private function normalizeReplayPolicy(#[\SensitiveParameter] array &$configuration): void
     {
         $this->normalizeEnumOption(
             $configuration,
@@ -427,7 +427,7 @@ final class NatsTransportConfigurationBuilder
      * @param callable(string): ?\BackedEnum $tryFrom       Enum resolver (e.g. RetentionPolicy::tryFrom(...))
      * @param list<string>                   $allowed       Allowed values, for the error message
      */
-    private function normalizeEnumOption(array &$configuration, TransportOption $option, callable $tryFrom, array $allowed): void
+    private function normalizeEnumOption(#[\SensitiveParameter] array &$configuration, TransportOption $option, callable $tryFrom, array $allowed): void
     {
         $value = $configuration[$option->value] ?? null;
         if ($value === null) {
@@ -457,7 +457,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeStreamCompression(array &$configuration): void
+    private function normalizeStreamCompression(#[\SensitiveParameter] array &$configuration): void
     {
         $this->normalizeEnumOption(
             $configuration,
@@ -474,7 +474,7 @@ final class NatsTransportConfigurationBuilder
      * @param TransportOption      $option        The option key to validate
      * @param bool                 $integerOnly   When true, also rejects non-integer values
      */
-    private function assertPositiveNumber(array $configuration, TransportOption $option, bool $integerOnly = false): void
+    private function assertPositiveNumber(#[\SensitiveParameter] array $configuration, TransportOption $option, bool $integerOnly = false): void
     {
         $value = $configuration[$option->value] ?? null;
         if ($value === null) {
@@ -494,7 +494,7 @@ final class NatsTransportConfigurationBuilder
      * @param TransportOption      $option        The option key to validate
      * @param bool                 $integerOnly   When true, also rejects non-integer values
      */
-    private function assertNonNegativeNumber(array $configuration, TransportOption $option, bool $integerOnly = false): void
+    private function assertNonNegativeNumber(#[\SensitiveParameter] array $configuration, TransportOption $option, bool $integerOnly = false): void
     {
         $value = $configuration[$option->value] ?? null;
         if ($value === null) {
@@ -517,7 +517,7 @@ final class NatsTransportConfigurationBuilder
      * @param array<string, mixed> $configuration Merged configuration array
      * @param TransportOption      $option        The option key to validate
      */
-    private function assertNotExceedingInt32(array $configuration, TransportOption $option): void
+    private function assertNotExceedingInt32(#[\SensitiveParameter] array $configuration, TransportOption $option): void
     {
         $value = $configuration[$option->value] ?? null;
         if ($value === null) {
@@ -540,7 +540,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertStreamDescriptionLength(array $configuration): void
+    private function assertStreamDescriptionLength(#[\SensitiveParameter] array $configuration): void
     {
         // An unset description reads as '', which is within the limit.
         $description = TypeCoercion::stringValue($configuration[TransportOption::STREAM_DESCRIPTION->value] ?? null);
@@ -570,7 +570,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeStreamPlacement(array &$configuration): void
+    private function normalizeStreamPlacement(#[\SensitiveParameter] array &$configuration): void
     {
         $cluster = $configuration[TransportOption::STREAM_PLACEMENT_CLUSTER->value] ?? null;
         if ($cluster !== null) {
@@ -618,7 +618,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertTriStateBooleans(array $configuration): void
+    private function assertTriStateBooleans(#[\SensitiveParameter] array $configuration): void
     {
         $flags = [
             TransportOption::STREAM_DENY_DELETE,
@@ -650,7 +650,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertBackoff(array $configuration): void
+    private function assertBackoff(#[\SensitiveParameter] array $configuration): void
     {
         $backoff = $configuration[TransportOption::BACKOFF->value] ?? null;
         if ($backoff === null) {
@@ -680,7 +680,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertMaxDeliverExceedsBackoff(array $configuration): void
+    private function assertMaxDeliverExceedsBackoff(#[\SensitiveParameter] array $configuration): void
     {
         $backoff = $configuration[TransportOption::BACKOFF->value] ?? null;
         $maxDeliver = $configuration[TransportOption::MAX_DELIVER->value] ?? null;
@@ -711,7 +711,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertResendOnReconnect(array $configuration): void
+    private function assertResendOnReconnect(#[\SensitiveParameter] array $configuration): void
     {
         if (!$this->toBool($configuration[TransportOption::RESEND_ON_RECONNECT->value])) {
             return;
@@ -742,7 +742,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertDuplicateWindowNotExceedingMaxAge(array $configuration): void
+    private function assertDuplicateWindowNotExceedingMaxAge(#[\SensitiveParameter] array $configuration): void
     {
         $maxAge = TypeCoercion::intValue($configuration[TransportOption::STREAM_MAX_AGE->value] ?? 0);
         if ($maxAge <= 0) {
@@ -967,7 +967,7 @@ final class NatsTransportConfigurationBuilder
      * @param TransportOption       $option        Explicit-option key (USERNAME or PASSWORD)
      * @param string                $componentKey  DSN component key ('user' or 'pass')
      */
-    private function resolveCredential(array $components, array $configuration, TransportOption $option, string $componentKey): ?string
+    private function resolveCredential(#[\SensitiveParameter] array $components, #[\SensitiveParameter] array $configuration, TransportOption $option, string $componentKey): ?string
     {
         $configured = $this->normalizeCredential($configuration[$option->value] ?? null);
         if ($configured !== null) {
@@ -1004,7 +1004,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @throws InvalidArgumentException If the key is missing or empty
      */
-    private function requiredString(array $components, string $key): string
+    private function requiredString(#[\SensitiveParameter] array $components, string $key): string
     {
         $value = $components[$key] ?? null;
 
