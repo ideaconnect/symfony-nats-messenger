@@ -85,7 +85,7 @@ Feature: NKey authentication
     And the messenger stats should show exactly 0 messages waiting
 
   @nkey
-  Scenario: A seed on a server without NKey users is refused by the client, as there is no nonce to sign
+  Scenario: A seed on a server that sends no nonce is refused by the client
     Given the NATS server that logs clients in with a token is running
     And I have a messenger transport on that server with an NKey seed
     When I run the messenger setup command

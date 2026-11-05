@@ -363,7 +363,7 @@ see `tests/nats/auth/README.md`.
 | **TLS and mTLS** | A seed logs in over TLS; A seed logs in over mTLS, next to the client certificate |
 | **Every new connection signs a new nonce** | A worker that logs in with a seed keeps consuming across a server restart (the worker holds a connection before the restart, and the scenario checks that it reconnected) |
 | **The server checks the seed** | A seed the server does not know is refused by the server (the server's `Authorization Violation`) |
-| **A server with no NKey users** | A seed on a server without NKey users is refused by the client, as there is no nonce to sign |
+| **A server that sends no nonce** | A seed on a server that sends no nonce is refused by the client |
 | **Refusals when the transport is built, seen from the console** | Credentials that need or exclude a seed are refused when the transport is built, on every command (`messenger:setup-transports`, `messenger:stats` and `messenger:consume` each exit non-zero with the error, for a JWT and no seed, a public NKey and no seed, and a seed next to a password) |
 | **Values that cannot log in, and no seed in the output** | A value that cannot log in is refused when the transport is built, and no seed is printed (an empty seed, a mistyped one, an account's seed, a seed in `nkey`, another user's public key, a seed after a second `?` in the DSN) |
 

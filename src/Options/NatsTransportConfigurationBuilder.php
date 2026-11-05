@@ -936,8 +936,8 @@ final class NatsTransportConfigurationBuilder
      *
      * The CONNECT would carry both, and a server with both kinds of users logs the connection in with the NKey and ignores
      * the rest, even a wrong password: the DSN says one user and the connection is another, in another account if the
-     * server has more than one. A server without NKey users sends no nonce, so the client refuses the login outright,
-     * though the password alone would have worked. A jwt stays allowed: it goes with the seed.
+     * server has more than one. On a server that sends no nonce the client refuses the login outright, though the password
+     * alone would have worked, and a server in operator mode refuses it. A jwt stays allowed: it goes with the seed.
      *
      * @throws InvalidArgumentException When a seed comes with a username, password or token.
      */
@@ -951,7 +951,7 @@ final class NatsTransportConfigurationBuilder
             throw new InvalidArgumentException(
                 'The nkey_seed option cannot be combined with a username, password or token, from the DSN or the options: a '
                 . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and on '
-                . 'a server without NKey users the client would refuse the login, as there is no nonce to sign. Remove them, '
+                . 'a server that sends no nonce the client would refuse the login, as there is nothing to sign. Remove them, '
                 . 'or remove the seed.'
             );
         }

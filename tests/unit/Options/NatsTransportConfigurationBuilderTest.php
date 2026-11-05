@@ -600,7 +600,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
             self::assertSame(
                 'The nkey_seed option cannot be combined with a username, password or token, from the DSN or the options: a '
                 . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and on '
-                . 'a server without NKey users the client would refuse the login, as there is no nonce to sign. Remove them, '
+                . 'a server that sends no nonce the client would refuse the login, as there is nothing to sign. Remove them, '
                 . 'or remove the seed.',
                 $refused->getMessage(),
             );
