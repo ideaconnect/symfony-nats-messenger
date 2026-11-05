@@ -371,6 +371,7 @@ the test server and print `OK` when what they show held:
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
 | `jwt-login.php` | `jwt` with `nkey_seed`: a user of a server in operator mode logs in, and its JWT with another user's seed is refused |
 | `nkey-login.php` | `nkey_seed`: a user the server knows by its public key logs in, and a seed it does not know is refused |
+| `token-login.php` | `token`: a client logs in with the server's token, and a wrong one is refused |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, and `auto_setup` recreates the memory stream the restart lost |
 | `cluster-failover.php` | `reconnect: true` on a cluster: a worker carries on through another server when the one it is connected to stops |
 | `handler-failing-during-failover.php` | both retry modes on a cluster: a handler fails while the worker's server stops, and the worker carries on through another server; the message comes back at once as Symfony's retry copy, or `nak_delay` later in nats mode |
