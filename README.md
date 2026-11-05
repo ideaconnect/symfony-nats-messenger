@@ -157,11 +157,12 @@ visible even where nothing uses that transport:
 - A subclass of `NatsTransport` that replaces the protected `$client` with its own signed client must stop passing
   `nkey` or `jwt` here, as its client has them.
 
-Two other values that were built before are refused now, in the same way: a `max_reconnect_attempts` over 2147483647, and a
-credential option after a second `?` or a `;` in the DSN query, which was a part of the option before it. A value that
-really holds such text goes in the options, where nothing splits it.
+Two other values are refused now, in the same way: a `max_reconnect_attempts` float past the range of an int, such as
+`1e300` or `.inf`, which became 0, or a negative number that the client refused, and a credential option after a second `?`
+or a `;` in the DSN query, which was a part of the option before it. A value that really holds such text goes in the
+options, where nothing splits it.
 
-> **Tested by:** `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, Behat scenario `Credentials that need or exclude a seed are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). `messenger:stats` naming a transport, and a worker on several transports, were measured by hand.
+> **Tested by:** `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAFloatMaxReconnectAttemptsPastTheRangeOfAnInt`, `testBuildPassesALargeMaxReconnectAttemptsToTheClient`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, Behat scenario `Credentials that need or exclude a seed are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). `messenger:stats` naming a transport, and a worker on several transports, were measured by hand.
 
 ### Logging
 

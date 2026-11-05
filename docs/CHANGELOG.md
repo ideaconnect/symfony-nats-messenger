@@ -48,9 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `?`, or with a second `?`, stays in the stream or topic name or in the value of the option before it, and the errors for
   those printed it. They now repeat a name or value only if it is at most 50 plain characters, and still say what is
   allowed.
-- **`max_reconnect_attempts` has an upper limit (#89).** A number past the range of an int wrapped around to a negative one on
-  its way to the client, whose constructor refused it with every credential in its frame, naming no option the user set.
-  Over 2147483647 it is now refused when the transport is built, naming the option.
+- **A `max_reconnect_attempts` float past the range of an int is refused (#89).** It did not survive the cast on its way to
+  the client: `1e19` became a negative number, which the client's constructor refused with every credential in its frame,
+  naming no option the user set, and `1e300` or `.inf` became 0. It is now refused when the transport is built, naming the
+  option. An int of any size, and a numeric string, which stops at the largest int, still work.
 - **A credential typed after a second `?` or a `;` in the DSN query is refused when the transport is built (#89).** It stayed
   in the value of the option before it and went where that goes: into the TLS library's error for a file name, or to
   the server, which stores it, for a consumer name, a stream description or a placement. Only the DSN query is checked,

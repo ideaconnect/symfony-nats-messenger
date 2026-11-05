@@ -2064,7 +2064,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     public function testBuildWithStreamMaxMessageSizeExceedingInt32ThrowsException(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('The stream_max_message_size option must not exceed 2147483647');
+        $this->expectExceptionMessage('The stream_max_message_size option must not exceed 2147483647: NATS stores it as a 32-bit integer.');
 
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_message_size' => 3000000000]);
     }
@@ -2389,9 +2389,60 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'negative' => [-1];
         yield 'fractional' => [1.5];
         yield 'non-numeric' => ['many'];
-        yield 'past the range of an int' => [1e19];
-        yield 'a string past the range of an int' => ['99999999999999999999'];
-        yield 'one past the limit' => [2147483648];
+    }
+
+    /**
+     * A float past the range of an int does not survive the cast to an int, which on PHP 8.5 also warns.
+     *
+     * @return iterable<string, array{float}>
+     */
+    public static function floatsPastTheRangeOfAnInt(): iterable
+    {
+        yield 'the first one, which wrapped around to the smallest int' => [(float) PHP_INT_MAX];
+        yield 'one that wrapped around to a negative number' => [1e19];
+        yield 'one that became 0' => [1e300];
+        yield 'infinity, which became 0' => [INF];
+    }
+
+    #[DataProvider('floatsPastTheRangeOfAnInt')]
+    public function testBuildRejectsAFloatMaxReconnectAttemptsPastTheRangeOfAnInt(float $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The max_reconnect_attempts option is too large to be an integer.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_reconnect_attempts' => $value]);
+    }
+
+    /**
+     * 0 and -1 are refused, so a huge number is how to ask for attempts without an end, and these all worked before there
+     * was any check. A numeric string stops at the largest int.
+     *
+     * @return iterable<string, array{mixed, int}>
+     */
+    public static function largeMaxReconnectAttempts(): iterable
+    {
+        yield 'past an int32' => [2147483648, 2147483648];
+        yield 'the largest int' => [PHP_INT_MAX, PHP_INT_MAX];
+        yield 'the largest float that fits' => [9223372036854774784.0, 9223372036854774784];
+        yield 'a string past the range of an int' => ['99999999999999999999', PHP_INT_MAX];
+        yield 'a string with an exponent, past the range of an int' => ['1e19', PHP_INT_MAX];
+    }
+
+    #[DataProvider('largeMaxReconnectAttempts')]
+    public function testBuildPassesALargeMaxReconnectAttemptsToTheClient(mixed $value, int $expected): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['reconnect' => true, 'max_reconnect_attempts' => $value]);
+
+        self::assertSame($expected, $this->extractNatsOptions($configuration->client)->maxReconnectAttempts);
+    }
+
+    public function testBuildPassesALargeMaxReconnectAttemptsFromTheDsnToTheClient(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?reconnect=1&max_reconnect_attempts=1e19',
+        );
+
+        self::assertSame(PHP_INT_MAX, $this->extractNatsOptions($configuration->client)->maxReconnectAttempts);
     }
 
     /**
