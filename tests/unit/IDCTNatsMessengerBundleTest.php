@@ -6,7 +6,6 @@ namespace IDCT\NatsMessenger\Tests\Unit;
 
 use IDCT\NatsMessenger\IDCTNatsMessengerBundle;
 use IDCT\NatsMessenger\NatsTransport;
-use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use Psr\Log\LoggerInterface;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
@@ -16,6 +15,7 @@ use IDCT\NatsMessenger\NatsTransportFactory;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Tests\Support\MessengerTestKernel;
 use IDCT\NatsMessenger\Tests\Support\SignedMessage;
+use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use IDCT\NatsMessenger\Tests\Support\TransportFactoryUser;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresMethod;
@@ -47,6 +47,7 @@ final class IDCTNatsMessengerBundleTest extends TestCase
 
     /** The environment variable the tests of the README's nkey_seed forms set. */
     private const SEED_VARIABLE = 'NATS_MESSENGER_TEST_NKEY_SEED';
+
 
     /** Makes SignedMessage a message type Messenger signs, as `sign: true` on a handler does. */
     private const SIGNED_MESSAGE_HANDLER = <<<'YAML'

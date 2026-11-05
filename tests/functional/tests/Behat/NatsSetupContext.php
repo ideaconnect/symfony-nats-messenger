@@ -49,9 +49,6 @@ class NatsSetupContext implements Context
     /** The serializer service the igbinary steps give a transport's `serializer:` key: the README's value. */
     private const IGBINARY_SERIALIZER = IgbinarySerializer::class;
 
-    /** Seed of the NKey user in tests/nats/nats.conf, generated with `nk -gen user -pubout` for the tests only. */
-    private const TEST_NKEY_SEED = 'SUAANUDRLXQXVVCRIMOAGGDTAYN2CGCU737QZ2MKOLEVBR6RPDZKNGXT6A';
-
     private ?Process $natsProcess = null;
     private ?Process $setupProcess = null;
     private ?Process $consumerProcess = null;
@@ -1631,7 +1628,7 @@ class NatsSetupContext implements Context
             "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://localhost:4222/%s/%s?stream_max_age=900'\n                options:\n                    nkey_seed: '%s'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
-            self::TEST_NKEY_SEED
+            $this->credentials()['nkey_user']['seed']
         );
 
         file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
@@ -2248,6 +2245,14 @@ class NatsSetupContext implements Context
             throw new \RuntimeException('Failed to generate the test TLS certificates: ' . $certificates->getErrorOutput());
         }
 
+        // The NKey user the servers list, and later the logins of the server in operator mode, are generated too (#9).
+        $credentials = new Process(['bash', __DIR__ . '/../../../nats/auth/generate.sh']);
+        $credentials->setTimeout(180);
+        $credentials->run();
+        if (!$credentials->isSuccessful()) {
+            throw new \RuntimeException('Failed to generate the test NKey and JWT credentials: ' . $credentials->getErrorOutput());
+        }
+
         // Use docker compose to start NATS
         $command = ['docker', 'compose', 'up', '-d'];
         $process = new Process($command, __DIR__ . '/../../../nats');
@@ -2460,6 +2465,21 @@ class NatsSetupContext implements Context
         $client->connect()->await();
 
         return $client;
+    }
+
+    /**
+     * The logins of the test servers, as tests/nats/auth/generate.sh wrote them.
+     *
+     * @return array<string, array<string, string>>
+     */
+    private function credentials(): array
+    {
+        $file = __DIR__ . '/../../../nats/auth/credentials.json';
+        if (!is_file($file)) {
+            throw new \RuntimeException('No test credentials: run composer nats:start, which generates them (tests/nats/auth/README.md)');
+        }
+
+        return json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
     }
 
     /**

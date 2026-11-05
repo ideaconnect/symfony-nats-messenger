@@ -34,6 +34,16 @@ final class TestNkeys
     }
 
     /**
+     * That seed with its last character changed, which no longer decodes: the client's checksum refuses it.
+     */
+    public static function mistypedSeed(string $name = 'test-user'): string
+    {
+        $seed = self::seed($name);
+
+        return substr($seed, 0, -1) . ($seed[-1] === 'B' ? 'C' : 'B');
+    }
+
+    /**
      * The encoded public key of the user with this name: "U...". It is worked out here rather than with the client's
      * signer, so that a test comparing the two checks the client.
      */

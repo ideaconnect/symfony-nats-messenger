@@ -144,7 +144,7 @@ final class SecretsInExceptionsTest extends TestCase
     #[DataProvider('formsOfASeed')]
     public function testAMistypedSeedStaysOutOfTheFailure(string $form): void
     {
-        $mistyped = substr(TestNkeys::seed(), 0, -1) . 'B';
+        $mistyped = TestNkeys::mistypedSeed();
         [$dsn, $options] = self::withSecret($form, self::DSN_WITHOUT_CREDENTIALS, [], $mistyped);
 
         try {

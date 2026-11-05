@@ -40,8 +40,10 @@
     "scripts": {
         "analyse": "phpstan analyse --configuration phpstan.neon.dist",
         "nats:certs": "bash tests/nats/certs/generate.sh",
+        "nats:auth": "bash tests/nats/auth/generate.sh",
         "nats:start": [
             "@nats:certs",
+            "@nats:auth",
             "cd tests/nats && docker compose up -d"
         ],
         "nats:stop": "cd tests/nats && docker compose down -v",

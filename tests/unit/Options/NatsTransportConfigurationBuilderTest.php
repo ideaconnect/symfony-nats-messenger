@@ -28,8 +28,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     private const NKEY_SEED_MUST_BE_A_STRING = 'The nkey_seed option must be a non-empty string, or null for no seed. For an optional '
         . 'seed from an environment variable use the default processor, as in %env(default::NATS_NKEY_SEED)%.';
 
-    private const TEST_NKEY_SEED = 'SUAANUDRLXQXVVCRIMOAGGDTAYN2CGCU737QZ2MKOLEVBR6RPDZKNGXT6A';
-    private const TEST_NKEY_PUBLIC = 'UA4XDK2I75UAGJO5XDZBYLLOAJTFMHWHVOV7SQBEX2DZ3XUCRRUCS2DJ';
 
     public function testBuildWithValidDsnReturnsConfiguration(): void
     {
@@ -244,14 +242,14 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
             'nats://localhost:4222/test-stream/test-topic',
-            ['nkey_seed' => self::TEST_NKEY_SEED]
+            ['nkey_seed' => TestNkeys::seed()]
         );
 
         $options = $this->extractNatsOptions($configuration->client);
 
         self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
-        self::assertSame(self::TEST_NKEY_PUBLIC, $options->nonceSigner->publicKey());
-        self::assertSame(self::TEST_NKEY_PUBLIC, $options->nkey);
+        self::assertSame(TestNkeys::publicKey(), $options->nonceSigner->publicKey());
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
         self::assertNull($options->username);
         self::assertNull($options->password);
     }
@@ -260,14 +258,14 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     public function testBuildReadsTheNkeySeedFromTheDsnQuery(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
-            'nats://localhost:4222/test-stream/test-topic?nkey_seed=' . self::TEST_NKEY_SEED,
+            'nats://localhost:4222/test-stream/test-topic?nkey_seed=' . TestNkeys::seed(),
             []
         );
 
         $options = $this->extractNatsOptions($configuration->client);
 
         self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
-        self::assertSame(self::TEST_NKEY_PUBLIC, $options->nkey);
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
     }
 
     #[RequiresPhpExtension('sodium')]
@@ -275,12 +273,12 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
             'nats://localhost:4222/test-stream/test-topic',
-            ['nkey_seed' => self::TEST_NKEY_SEED, 'nkey' => self::TEST_NKEY_PUBLIC]
+            ['nkey_seed' => TestNkeys::seed(), 'nkey' => TestNkeys::publicKey()]
         );
 
         $options = $this->extractNatsOptions($configuration->client);
 
-        self::assertSame(self::TEST_NKEY_PUBLIC, $options->nkey);
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
         // A transport without the signer could not connect, whatever nkey says.
         self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
     }
@@ -291,7 +289,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     public static function nkeyValuesThatContradictTheSeed(): iterable
     {
         yield 'another public key' => ['UOTHERPUBLICKEY'];
-        yield 'the seed itself, as when both options read one variable' => [self::TEST_NKEY_SEED];
+        yield 'the seed itself, as when both options read one variable' => [TestNkeys::seed()];
     }
 
     /**
@@ -304,12 +302,12 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         try {
             (new NatsTransportConfigurationBuilder())->build(
                 'nats://localhost:4222/test-stream/test-topic',
-                ['nkey_seed' => self::TEST_NKEY_SEED, 'nkey' => $nkey]
+                ['nkey_seed' => TestNkeys::seed(), 'nkey' => $nkey]
             );
             self::fail('An nkey that contradicts the seed was accepted.');
         } catch (InvalidArgumentException $refused) {
             self::assertSame(
-                'The nkey option is not the public key of the configured NKey seed, which is "' . self::TEST_NKEY_PUBLIC . '". '
+                'The nkey option is not the public key of the configured NKey seed, which is "' . TestNkeys::publicKey() . '". '
                 . 'Leave nkey unset: the transport derives the key from the seed.',
                 $refused->getMessage(),
             );
@@ -334,7 +332,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
             PHP;
 
         $process = PhpProcess::run(
-            ['-d', 'disable_functions=sodium_crypto_sign_seed_keypair', '-r', $script, '--', self::TEST_NKEY_SEED],
+            ['-d', 'disable_functions=sodium_crypto_sign_seed_keypair', '-r', $script, '--', TestNkeys::seed()],
             dirname(__DIR__, 3),
         );
 
@@ -347,8 +345,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
      */
     public static function nkeyValuesWithoutASeed(): iterable
     {
-        yield 'the public key' => [self::TEST_NKEY_PUBLIC];
-        yield 'a seed put in the wrong option' => [self::TEST_NKEY_SEED];
+        yield 'the public key' => [TestNkeys::publicKey()];
+        yield 'a seed put in the wrong option' => [TestNkeys::seed()];
     }
 
     /**
@@ -394,15 +392,15 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
             'nats://localhost:4222/test-stream/test-topic',
-            ['jwt' => 'user-jwt', 'nkey_seed' => self::TEST_NKEY_SEED]
+            ['jwt' => 'user-jwt', 'nkey_seed' => TestNkeys::seed()]
         );
 
         $options = $this->extractNatsOptions($configuration->client);
 
         self::assertSame('user-jwt', $options->jwt);
-        self::assertSame(self::TEST_NKEY_PUBLIC, $options->nkey);
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
         self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
-        self::assertSame(self::TEST_NKEY_PUBLIC, $options->nonceSigner->publicKey());
+        self::assertSame(TestNkeys::publicKey(), $options->nonceSigner->publicKey());
     }
 
     /**
@@ -452,7 +450,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'an integer' => [0];
         yield 'a float' => [1.5];
         yield 'an empty list' => [[]];
-        yield 'a list holding the seed' => [[self::TEST_NKEY_SEED]];
+        yield 'a list holding the seed' => [[TestNkeys::seed()]];
         yield 'an object' => [new \stdClass()];
     }
 
@@ -476,7 +474,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     {
         yield 'empty' => ['nkey_seed='];
         yield 'an encoded space' => ['nkey_seed=%20'];
-        yield 'a list holding the seed' => ['nkey_seed[]=' . self::TEST_NKEY_SEED];
+        yield 'a list holding the seed' => ['nkey_seed[]=' . TestNkeys::seed()];
     }
 
     #[DataProvider('dsnQueriesWhoseNkeySeedIsNotANonEmptyString')]
@@ -495,7 +493,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     public function testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
-            'nats://localhost:4222/test-stream/test-topic?nkey_seed=' . self::TEST_NKEY_SEED,
+            'nats://localhost:4222/test-stream/test-topic?nkey_seed=' . TestNkeys::seed(),
             ['nkey_seed' => null]
         );
 
@@ -540,7 +538,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     public function testBuildRejectsASeedNextToAUsernamePasswordOrToken(string $dsn, array $options): void
     {
         try {
-            (new NatsTransportConfigurationBuilder())->build($dsn, $options + ['nkey_seed' => self::TEST_NKEY_SEED]);
+            (new NatsTransportConfigurationBuilder())->build($dsn, $options + ['nkey_seed' => TestNkeys::seed()]);
             self::fail('A seed next to another credential was accepted.');
         } catch (InvalidArgumentException $refused) {
             self::assertSame(
@@ -557,8 +555,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
      */
     public static function optionsThatConfigureASeed(): iterable
     {
-        yield 'the seed alone' => [['nkey_seed' => self::TEST_NKEY_SEED]];
-        yield 'nkey repeating the seed\'s public key' => [['nkey' => self::TEST_NKEY_PUBLIC, 'nkey_seed' => self::TEST_NKEY_SEED]];
+        yield 'the seed alone' => [['nkey_seed' => TestNkeys::seed()]];
+        yield 'nkey repeating the seed\'s public key' => [['nkey' => TestNkeys::publicKey(), 'nkey_seed' => TestNkeys::seed()]];
     }
 
     /**
@@ -591,8 +589,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     #[RequiresPhpExtension('sodium')]
     public function testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt(): void
     {
-        // The test seed with its last character changed, so it no longer decodes.
-        $invalidSeed = substr(self::TEST_NKEY_SEED, 0, -1) . 'B';
+        $invalidSeed = TestNkeys::mistypedSeed();
 
         try {
             (new NatsTransportConfigurationBuilder())->build(

@@ -47,8 +47,7 @@ final class ReadmeExamplesTest extends TestCase
     }
 
     /**
-     * A key in a server example gets pasted, and a seed or public key in this file is one whose seed is, or can be, public:
-     * the test user's seed is in this repository. A reader must generate their own pair.
+     * A key in a server example gets pasted, so this file names none: a reader must generate their own pair.
      */
     public function testTheReadmeNamesNoUsableNkey(): void
     {
