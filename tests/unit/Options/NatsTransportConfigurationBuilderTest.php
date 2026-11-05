@@ -15,6 +15,7 @@ use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Options\StreamCompression;
 use IDCT\NatsMessenger\Options\TransportOption;
+use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
@@ -373,6 +374,40 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(self::TEST_NKEY_PUBLIC, $options->nkey);
         self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
         self::assertSame(self::TEST_NKEY_PUBLIC, $options->nonceSigner->publicKey());
+    }
+
+    /**
+     * Valid seeds of the other key types.
+     *
+     * @return iterable<string, array{string}>
+     */
+    public static function seedsThatAreNotUserSeeds(): iterable
+    {
+        yield 'account' => [TestNkeys::seed('not-a-user', TestNkeys::ACCOUNT)];
+        yield 'operator' => [TestNkeys::seed('not-a-user', TestNkeys::OPERATOR)];
+        yield 'server' => [TestNkeys::seed('not-a-user', TestNkeys::SERVER)];
+        yield 'cluster' => [TestNkeys::seed('not-a-user', TestNkeys::CLUSTER)];
+        yield 'curve' => [TestNkeys::seed('not-a-user', TestNkeys::CURVE)];
+    }
+
+    /**
+     * The client takes all of these, and the server refuses them as users, so the error could only come at connect, as
+     * a bare Authorization Violation.
+     */
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('seedsThatAreNotUserSeeds')]
+    public function testBuildRejectsASeedThatIsNotAUserSeed(string $seed): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey_seed' => $seed]);
+            self::fail('A seed that is not a user seed was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The NKey seed cannot be used: it is not a user seed (SU...). A NATS user logs in with a user key, not with an '
+                . 'account, operator, server, cluster or curve key.',
+                $refused->getMessage(),
+            );
+        }
     }
 
     /**

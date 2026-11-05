@@ -833,7 +833,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged option map
      *
-     * @throws InvalidArgumentException When the seed is not a valid NKey seed, or the sodium extension is missing.
+     * @throws InvalidArgumentException When the seed is not a valid NKey user seed, or the sodium extension is missing.
      */
     private function resolveNkeySigner(#[\SensitiveParameter] array $configuration): ?NkeySeedSigner
     {
@@ -850,10 +850,21 @@ final class NatsTransportConfigurationBuilder
         }
 
         try {
-            return new NkeySeedSigner($seed);
+            $signer = new NkeySeedSigner($seed);
         } catch (NatsException $invalid) {
             throw new InvalidArgumentException(sprintf('The NKey seed cannot be used: %s.', $invalid->getMessage()), 0, $invalid);
         }
+
+        // The client takes a seed of any key type. A server only knows users by a user key, and refuses the others in
+        // its config, so such a seed could only ever get a bare Authorization Violation at connect.
+        if (!str_starts_with($signer->publicKey(), 'U')) {
+            throw new InvalidArgumentException(
+                'The NKey seed cannot be used: it is not a user seed (SU...). A NATS user logs in with a user key, not with an '
+                . 'account, operator, server, cluster or curve key.'
+            );
+        }
+
+        return $signer;
     }
 
     /**

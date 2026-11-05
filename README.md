@@ -596,9 +596,10 @@ authorization {
 ```
 
 - `nk -gen user -pubout` creates a key pair: the first line is the seed, the second the public key.
-- Only null, or leaving the option out, means no seed. Any other value that is not a seed is refused when the transport
-  is built, without repeating it: an empty string, a list, a boolean, a mistyped seed. Read as no seed, an empty
-  variable would connect with the other credentials there are, as the server's `no_auth_user`, or anonymously.
+- Only null, or leaving the option out, means no seed. Any other value that is not a user seed is refused when the
+  transport is built, without repeating it: an empty string, a list, a boolean, a mistyped seed, or the seed of an account,
+  operator, server, cluster or curve key. Read as no seed, an empty variable would connect with the other credentials
+  there are, as the server's `no_auth_user`, or anonymously.
 - A username, password or token next to the seed, from the DSN or the options, is refused when the transport is built. A
   server with both kinds of users would log the connection in with the NKey and ignore them, even a wrong password,
   so the DSN could name one user while the connection is another. A server without NKey users would refuse the login
@@ -611,7 +612,7 @@ authorization {
   transport fails when it is built.
 - The seed works in the DSN query too (`?nkey_seed=SU...`)
 
-> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
+> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testBuildRejectsASeedThatIsNotAUserSeed`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
 
 #### JWT Users (Operator Mode)
 
