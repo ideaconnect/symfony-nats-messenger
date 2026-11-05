@@ -193,8 +193,9 @@ vendor/bin/behat --definitions l
 # Start NATS manually, from the repository root: this also generates the test certificates and credentials
 composer nats:start
 
-# Test setup command manually, from tests/functional
+# Test setup command manually, from tests/functional. The transport is in a file the scenarios write and remove
 cd tests/functional
+cp config/packages/test_messenger.yaml.dist config/packages/test_messenger.yaml
 php bin/console messenger:setup-transports test_transport --env=test
 
 # Check NATS logs
@@ -226,10 +227,10 @@ Tests automatically clean up after themselves:
 - Test streams are deleted
 - Temporary configuration files are removed
 
-To manually clean up if tests are interrupted:
+To manually clean up if tests are interrupted, from tests/functional:
 ```bash
-cd nats && docker compose down
 rm -f config/packages/test_messenger.yaml
+cd ../nats && docker compose down
 ```
 
 ## Integration with CI/CD
