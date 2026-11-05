@@ -278,16 +278,36 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(self::TEST_NKEY_PUBLIC, $this->extractNatsOptions($configuration->client)->nkey);
     }
 
-    #[RequiresPhpExtension('sodium')]
-    public function testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey(): void
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function nkeyValuesThatContradictTheSeed(): iterable
     {
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('The nkey option "UOTHERPUBLICKEY" is not the public key of the configured NKey seed.');
+        yield 'another public key' => ['UOTHERPUBLICKEY'];
+        yield 'the seed itself, as when both options read one variable' => [self::TEST_NKEY_SEED];
+    }
 
-        (new NatsTransportConfigurationBuilder())->build(
-            'nats://localhost:4222/test-stream/test-topic',
-            ['nkey_seed' => self::TEST_NKEY_SEED, 'nkey' => 'UOTHERPUBLICKEY']
-        );
+    /**
+     * The error names the key the seed gives, which is public, and never the configured value, which may be a seed.
+     */
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('nkeyValuesThatContradictTheSeed')]
+    public function testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey(string $nkey): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['nkey_seed' => self::TEST_NKEY_SEED, 'nkey' => $nkey]
+            );
+            self::fail('An nkey that contradicts the seed was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The nkey option is not the public key of the configured NKey seed, which is "' . self::TEST_NKEY_PUBLIC . '". '
+                . 'Leave nkey unset: the transport derives the key from the seed.',
+                $refused->getMessage(),
+            );
+            self::assertStringNotContainsString($nkey, $refused->getMessage());
+        }
     }
 
     /**

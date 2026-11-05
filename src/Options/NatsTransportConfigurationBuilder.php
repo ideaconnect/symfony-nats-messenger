@@ -867,9 +867,12 @@ final class NatsTransportConfigurationBuilder
 
         $derived = $signer->publicKey();
         if ($configured !== null && $configured !== $derived) {
+            // The derived key is public. The configured value is not repeated: it may be a seed put here by mistake,
+            // and an exception message reaches logs and consoles whatever zend.exception_ignore_args says.
             throw new InvalidArgumentException(sprintf(
-                'The nkey option "%s" is not the public key of the configured NKey seed.',
-                $configured,
+                'The nkey option is not the public key of the configured NKey seed, which is "%s". Leave nkey unset: the '
+                . 'transport derives the key from the seed.',
+                $derived,
             ));
         }
 
