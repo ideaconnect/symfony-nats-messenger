@@ -691,9 +691,10 @@ framework:
 - The seed must be the one of the JWT's user, unless the JWT is a bearer token. The server checks that when the transport
   connects: a seed without its JWT, or another user's seed, gets a bare `Authorization Violation`.
 - In operator mode JetStream is enabled per account, for example with
-  `nsc edit account --name ACCOUNT --js-mem-storage 256M --js-disk-storage 1G`. Without it `messenger:setup-transports` fails
-  with `JetStream not enabled for account`, and `messenger:stats` shows 0. `tests/nats/auth/generate.sh` has the `nsc`
-  commands for a whole test setup.
+  `nsc edit account --name ACCOUNT --js-mem-storage 256M --js-disk-storage 1G`, and the server needs the account's new JWT
+  afterwards, for example from a new `nsc generate config`. Without it `messenger:setup-transports` fails with
+  `JetStream not enabled for account`, and `messenger:stats` shows 0. `tests/nats/auth/generate.sh` has the `nsc` commands for
+  a whole test setup.
 - The transport keeps the JWT it was built with and never fetches a new one. At the JWT's expiry the server sends
   `User Authentication Expired` and closes the connection, which ends a running worker with that message. After that
   each new connection with the same JWT is refused with `Authorization Violation`, which does not mention the expiry.
