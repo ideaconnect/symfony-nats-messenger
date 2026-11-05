@@ -61,6 +61,7 @@ tests/
 │   ├── UnansweredPullTest.php                  # a pull the server never answered calls for a connection check
 │   ├── Options/
 │   │   ├── NatsTransportConfigurationBuilderTest.php  # DSN parsing, validation, option merging
+│   │   ├── SecretsInExceptionsTest.php                 # a failed build leaves no seed or password in its exception
 │   │   └── NatsTransportConfigurationTest.php          # accessor coercion, defaults
 │   └── Serializer/
 │       ├── AbstractEnveloperSerializerTest.php
