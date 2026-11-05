@@ -239,6 +239,12 @@ the examples do. With the client's `encodeConnect` made to ignore credentials or
 | **Every README ` ```php ` block is valid PHP** | `testReadmePhpExampleIsSyntacticallyValid` (data provider, one case per block), `testReadmeContainsThePhpExamplesWeExpect` |
 | **The README names no NKey to paste** | `testTheReadmeNamesNoUsableNkey` (no public key or seed: a server example gets pasted, so a reader must generate their own pair) |
 
+### Composer Scripts (`tests/unit/ComposerScriptsTest.php`)
+
+| Feature | Tests |
+|---------|-------|
+| **`composer test:functional` runs past Composer's limit of 600 seconds** | `testTheFunctionalSuiteHasNoProcessTimeout` |
+
 ### Mutation Testing Harness (`tests/unit/MutationTestingBootstrapTest.php`, `tests/unit/MutationTestingChecksTest.php`, `tests/unit/MutationTestingCommandsTest.php`)
 
 `MutationTestingBootstrapTest` starts PHP the way a mutant process starts: `vendor/autoload.php`, which PHPUnit

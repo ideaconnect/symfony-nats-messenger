@@ -58,6 +58,7 @@ tests/
 │   ├── MutationTestingBootstrapTest.php        # mutant processes can double final classes and load the mutant
 │   ├── MutationTestingChecksTest.php           # the mutation canary and infection.log checks fail closed
 │   ├── MutationTestingCommandsTest.php         # the Infection runs in composer.json write no GitHub annotations
+│   ├── ComposerScriptsTest.php                 # composer test:functional runs past Composer's process timeout
 │   ├── SubscriptionLimitPullTest.php           # pulls at the subscription limit, real client over a scripted server
 │   ├── UnansweredPullTest.php                  # a pull the server never answered calls for a connection check
 │   ├── LoginCombinationsTest.php               # every combination of credentials: refused when built, or through the real client
