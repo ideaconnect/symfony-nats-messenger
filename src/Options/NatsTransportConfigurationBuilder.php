@@ -914,8 +914,16 @@ final class NatsTransportConfigurationBuilder
             $signer = new NkeySeedSigner($seed);
         } catch (NatsException $invalid) {
             // Only the client's message goes on. Its exception is not chained: its frames hold the whole seed as a string
-            // argument, which the client does not mark, and one wrong character in it is easily repaired.
-            throw new InvalidArgumentException(sprintf('The NKey seed cannot be used: %s.', $invalid->getMessage()));
+            // argument, which the client does not mark, and one wrong character in it is easily repaired. The client says
+            // little about a seed that is not one, such as the public key or a whole .creds file, so the error adds what one
+            // looks like, unless what is missing is the extension, as nothing is wrong with the seed then.
+            throw new InvalidArgumentException(sprintf(
+                'The NKey seed cannot be used: %s.%s',
+                $invalid->getMessage(),
+                function_exists('sodium_crypto_sign_seed_keypair')
+                    ? ' A user seed starts with SU, and a .creds file holds it under its BEGIN USER NKEY SEED line.'
+                    : '',
+            ));
         }
 
         // The client takes a seed of any key type. A server only knows users by a user key, and refuses the others in

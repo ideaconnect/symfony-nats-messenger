@@ -152,7 +152,11 @@ final class SecretsInExceptionsTest extends TestCase
             (new NatsTransportConfigurationBuilder())->build($dsn, $options);
             self::fail('A mistyped seed was accepted.');
         } catch (\InvalidArgumentException $thrown) {
-            self::assertSame('The NKey seed cannot be used: Invalid NKey checksum.', $thrown->getMessage());
+            self::assertSame(
+                'The NKey seed cannot be used: Invalid NKey checksum. A user seed starts with SU, and a .creds file holds it under '
+                . 'its BEGIN USER NKEY SEED line.',
+                $thrown->getMessage(),
+            );
             self::assertNoSecretIn($thrown, $mistyped);
         }
     }

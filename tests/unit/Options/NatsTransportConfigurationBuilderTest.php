@@ -661,6 +661,42 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         }
     }
 
+    /**
+     * The pair prints the public key right under the seed, and a .creds file holds the seed under the JWT, so these are easy
+     * mistakes. The client's own words for them say nothing about what a seed looks like.
+     *
+     * @return iterable<string, array{string, string}>
+     */
+    public static function valuesThatAreNotASeed(): iterable
+    {
+        yield 'the public key' => [TestNkeys::publicKey(), 'Invalid NKey seed encoding'];
+        yield 'a JWT' => ['a.user.jwt', 'Invalid base32 character in NKey encoding'];
+        yield 'the text of a whole .creds file' => [
+            "-----BEGIN NATS USER JWT-----\na.user.jwt\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n"
+            . TestNkeys::seed() . "\n------END USER NKEY SEED------\n",
+            'Invalid base32 character in NKey encoding',
+        ];
+    }
+
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('valuesThatAreNotASeed')]
+    public function testBuildSaysWhatASeedLooksLikeForAValueThatIsNotOne(string $notASeed, string $clientsMessage): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['nkey_seed' => $notASeed]
+            );
+            self::fail('A value that is not a seed was accepted.');
+        } catch (InvalidArgumentException $invalid) {
+            self::assertSame(
+                'The NKey seed cannot be used: ' . $clientsMessage . '. A user seed starts with SU, and a .creds file holds it under '
+                . 'its BEGIN USER NKEY SEED line.',
+                $invalid->getMessage(),
+            );
+        }
+    }
+
     public function testBuildUsesDsnCredentialsAndDefaultPortWhenOverridesAreAbsent(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
