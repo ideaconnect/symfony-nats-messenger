@@ -12,7 +12,8 @@
  *
  * The examples that need a JetStream cluster run against the test cluster `composer nats:start` runs as well
  * (EXAMPLE_CLUSTER below), whatever NATS_DSN says, and the ones that take a server away stop and start its test
- * container with docker. Without the cluster or docker they print SKIP.
+ * container with docker. Without the cluster or docker they print SKIP. The login examples need a server that knows
+ * the credentials they show, so they too run against their own test server, and print SKIP without it.
  */
 
 declare(strict_types=1);
@@ -20,8 +21,11 @@ declare(strict_types=1);
 require __DIR__ . '/../vendor/autoload.php';
 
 use IDCT\NATS\JetStream\JetStreamContext;
+use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use Psr\Log\AbstractLogger;
+use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 
 final class ExampleMessage
 {
@@ -298,4 +302,127 @@ function docker(string ...$arguments): void
     if ($status !== 0) {
         throw new RuntimeException(sprintf('docker %s failed: %s', implode(' ', $arguments), implode("\n", $output)));
     }
+}
+
+/**
+ * The logins of the test servers, as tests/nats/auth/generate.sh wrote them. Exits with SKIP without them: composer
+ * nats:start generates them, and they are not committed.
+ *
+ * @return array<string, array<string, string>>
+ */
+function loginCredentials(string $example): array
+{
+    $file = __DIR__ . '/../tests/nats/auth/credentials.json';
+    if (!is_file($file)) {
+        printf("SKIP %s: needs the test credentials (composer nats:start)\n", $example);
+        exit(0);
+    }
+
+    $credentials = json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+    assert(is_array($credentials));
+
+    return $credentials;
+}
+
+/**
+ * The DSN of a transport on one test server, with no credentials in it: a login example passes them as options, as
+ * the README recommends.
+ */
+function loginDsn(int $port, string $stream): string
+{
+    return sprintf('nats-jetstream://127.0.0.1:%d/%s/%s.messages', $port, $stream, $stream);
+}
+
+/**
+ * Exits with SKIP when the test server a login example needs is not running.
+ */
+function requireLoginServer(string $example, int $port): void
+{
+    $socket = @fsockopen('127.0.0.1', $port, $errno, $error, 1.0);
+    if ($socket === false) {
+        printf("SKIP %s: needs the test server on port %d (composer nats:start)\n", $example, $port);
+        exit(0);
+    }
+    fclose($socket);
+}
+
+/**
+ * What a sender and a worker do, over connections that log in with $options: setup(), a send, the queue depth, a get
+ * and an ack. Fails unless the message made the whole trip, and removes the stream again.
+ *
+ * @param array<string, mixed> $options
+ */
+function assertLoginWorks(int $port, string $stream, array $options): void
+{
+    $dsn = loginDsn($port, $stream);
+    $transport = new NatsTransport($dsn, $options, new PhpSerializer());
+    $transport->setup();
+
+    try {
+        $transport->send(new Envelope(new ExampleMessage('logged in')));
+        $waiting = $transport->getMessageCount();
+
+        $envelopes = iterator_to_array($transport->get(), false);
+        foreach ($envelopes as $envelope) {
+            $transport->ack($envelope);
+        }
+
+        $message = ($envelopes[0] ?? null)?->getMessage();
+        if ($waiting !== 1 || count($envelopes) !== 1 || !$message instanceof ExampleMessage || $message->text !== 'logged in') {
+            throw new RuntimeException(sprintf('expected 1 waiting and 1 received, got %d and %d', $waiting, count($envelopes)));
+        }
+    } finally {
+        $transport->close();
+
+        $client = (new NatsTransportConfigurationBuilder())->build($dsn, $options)->client;
+        $client->connect()->await();
+        $client->jetStream()->deleteStream($stream)->await();
+        $client->disconnect()->await();
+    }
+}
+
+/**
+ * Fails unless the server refuses a login with $options. A server that lets anyone in would pass assertLoginWorks()
+ * too, so this is what shows that the server checked the credentials.
+ *
+ * @param array<string, mixed> $options
+ */
+function assertLoginIsRefused(int $port, array $options): void
+{
+    $transport = new NatsTransport(loginDsn($port, exampleStream('refused')), $options, new PhpSerializer());
+
+    try {
+        $transport->setup();
+    } catch (\RuntimeException $refused) {
+        if (str_contains($refused->getMessage(), 'Authorization Violation')) {
+            return;
+        }
+
+        throw $refused;
+    } finally {
+        $transport->close();
+    }
+
+    throw new RuntimeException('the server accepted a login it should have refused');
+}
+
+/**
+ * Fails unless the transport refuses $options when it is built, with no connection at all, in a message that says
+ * $expected.
+ *
+ * @param array<string, mixed> $options
+ */
+function assertRefusedWhenBuilt(int $port, array $options, string $expected): void
+{
+    try {
+        new NatsTransport(loginDsn($port, exampleStream('refused')), $options, new PhpSerializer());
+    } catch (\InvalidArgumentException $refused) {
+        if (str_contains($refused->getMessage(), $expected)) {
+            return;
+        }
+
+        throw $refused;
+    }
+
+    throw new RuntimeException(sprintf('the transport was built, though it should have said: %s', $expected));
 }

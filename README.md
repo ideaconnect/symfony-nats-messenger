@@ -369,6 +369,7 @@ the test server and print `OK` when what they show held:
 | `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it |
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
+| `nkey-login.php` | `nkey_seed`: a user the server knows by its public key logs in, and a seed it does not know is refused |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, and `auto_setup` recreates the memory stream the restart lost |
 | `cluster-failover.php` | `reconnect: true` on a cluster: a worker carries on through another server when the one it is connected to stops |
 | `handler-failing-during-failover.php` | both retry modes on a cluster: a handler fails while the worker's server stops, and the worker carries on through another server; the message comes back at once as Symfony's retry copy, or `nak_delay` later in nats mode |
