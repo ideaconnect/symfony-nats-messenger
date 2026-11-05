@@ -156,7 +156,7 @@ visible even where nothing uses that transport:
 - A subclass of `NatsTransport` that replaces the protected `$client` with its own signed client must stop passing
   `nkey` or `jwt` here, as its client has them.
 
-> **Tested by:** `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`. The effects on `messenger:stats` and on a worker were measured by hand.
+> **Tested by:** `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, Behat scenario `Credentials that need or exclude a seed are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). A worker on several transports was measured by hand.
 
 ### Logging
 
@@ -369,8 +369,8 @@ the test server and print `OK` when what they show held:
 | `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it |
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
-| `jwt-login.php` | `jwt` with `nkey_seed`: a user of a server in operator mode logs in, and its JWT with another user's seed is refused |
-| `nkey-login.php` | `nkey_seed`: a user the server knows by its public key logs in, and a seed it does not know is refused |
+| `jwt-login.php` | `jwt` with `nkey_seed`: a user of a server in operator mode logs in; its JWT with another user's seed and an expired JWT are refused by the server, and the JWT alone when the transport is built |
+| `nkey-login.php` | `nkey_seed`: a user the server knows by its public key logs in; a seed it does not know is refused by the server, and the public key alone or a seed next to a password when the transport is built |
 | `token-login.php` | `token`: a client logs in with the server's token, and a wrong one is refused |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, and `auto_setup` recreates the memory stream the restart lost |
 | `cluster-failover.php` | `reconnect: true` on a cluster: a worker carries on through another server when the one it is connected to stops |
@@ -582,7 +582,7 @@ framework:
           nkey_seed: null                   # NKey seed (SU...) that signs the server's nonce; see NKey Authentication
 ```
 
-> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`
+> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (everything above but the retry strategy, TLS and authentication options, which the tests after it and the sections below cover), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`
 
 ### NKey Authentication
 
@@ -644,7 +644,7 @@ authorization {
   Keep the variable out of a committed `.env`, and do not log the full DSN. As `token: null` hides `?token=`, an explicit
   `nkey_seed: null` in the options hides a seed in the DSN query, so leave it out rather than copy it from the block above.
 
-> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testAMistypedSeedStaysOutOfTheFailure`, `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure`, `testNoFrameOfAFailedBuildHoldsASecret`, `testNoFrameOfAFailedTransportCreationHoldsASecret`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive`, `testASeedTypedIntoTheDsnPathStaysOutOfTheError`, `testTheConfigurationDoesNotKeepTheTextOfTheSeed`, `testBuildRejectsASeedThatIsNotAUserSeed`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, `testTheReadmeNamesNoUsableNkey`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
+> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testAMistypedSeedStaysOutOfTheFailure`, `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure`, `testNoFrameOfAFailedBuildHoldsASecret`, `testNoFrameOfAFailedTransportCreationHoldsASecret`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive`, `testASeedTypedIntoTheDsnPathStaysOutOfTheError`, `testTheConfigurationDoesNotKeepTheTextOfTheSeed`, `testBuildRejectsASeedThatIsNotAUserSeed`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, `testASeedTypedIntoAnOptionsValueStaysOutOfTheError`, `testTheReadmeNamesNoUsableNkey`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, `testASeedOnAServerThatSendsNoNonceCannotLogIn`, the Behat scenarios of `nats_nkey.feature` (real logins, also over TLS and mTLS and across a server restart, and the refusals through the console), the example `nkey-login.php`
 
 #### JWT Users (Operator Mode)
 
@@ -673,7 +673,7 @@ framework:
   each new connection with the same JWT is refused with `Authorization Violation`, which does not mention the expiry.
   A new JWT needs a new transport, so restart the workers with the new value.
 
-> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `testBuildRejectsAJwtWithoutASeed`. Not covered by the suite, which has no operator-mode server: the login itself, measured by hand on NATS 2.9.25 to 2.15.1 (`setup()`, `send()`, `get()` and `ack()`).
+> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `testBuildRejectsAJwtWithoutASeed`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the Behat scenarios of `nats_jwt.feature` (real logins on a server in operator mode, with a user's JWT and with a bearer JWT, across a server restart, and what the server refuses: another user's seed, a seed with no JWT, an expired JWT), the example `jwt-login.php`. Not in the suite: a JWT that expires under a running worker, which was measured by hand on NATS 2.9.25 and 2.15.1.
 
 ### Retry Handler Behavior
 
@@ -1507,7 +1507,8 @@ The target is to have at least 90% of code coverage.
 **What's tested:**
 - DSN parsing and validation
 - Configuration option handling
-- Authentication support
+- Authentication: every combination of credentials is refused when the transport is built, or goes through the real
+  client as a CONNECT that carries it (the real logins are in the functional tests below)
 - Port configuration
 - Error handling
 - Interface compliance
@@ -1553,8 +1554,9 @@ composer nats:stop
 
 **Manual approach:**
 ```bash
-# Generate the test TLS certificates the TLS and mTLS servers use (never committed)
+# Generate the test TLS certificates, and the NKey and JWT credentials, the servers use (never committed)
 bash tests/nats/certs/generate.sh
+bash tests/nats/auth/generate.sh
 
 # Set up NATS in Docker (optional)
 cd tests/nats
