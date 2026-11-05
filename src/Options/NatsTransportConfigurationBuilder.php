@@ -679,7 +679,7 @@ final class NatsTransportConfigurationBuilder
                 throw new InvalidArgumentException(sprintf(
                     "Invalid %s option%s. Expected a boolean: 'true'/'false', '1'/'0', 'yes'/'no' or 'on'/'off'.",
                     $flag->value,
-                    $this->quotedIfPlain(TypeCoercion::stringValue($value, 'non-scalar')),
+                    $this->quotedIfPlain(TypeCoercion::stringValue($value)),
                 ));
             }
         }

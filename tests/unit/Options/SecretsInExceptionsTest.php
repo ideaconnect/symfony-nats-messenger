@@ -358,6 +358,19 @@ final class SecretsInExceptionsTest extends TestCase
         (new NatsTransportConfigurationBuilder())->build($dsn);
     }
 
+    /**
+     * A list has no text to repeat, and a word in its place would read as if it were the value.
+     */
+    public function testAListWhereABooleanBelongsIsNotShownAsAValue(): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build(self::DSN_WITHOUT_CREDENTIALS, ['stream_deny_delete' => ['x']]);
+            self::fail('A list was accepted as a boolean.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringStartsWith('Invalid stream_deny_delete option. Expected a boolean', $thrown->getMessage());
+        }
+    }
+
     public function testAValueLongerThanTheLimitIsNotRepeated(): void
     {
         $tooLong = str_repeat('x', 51);
