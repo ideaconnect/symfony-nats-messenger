@@ -193,11 +193,12 @@ vendor/bin/behat --definitions l
 # Start NATS manually, from the repository root: this also generates the test certificates and credentials
 composer nats:start
 
-# Test setup command manually
+# Test setup command manually, from tests/functional
+cd tests/functional
 php bin/console messenger:setup-transports test_transport --env=test
 
 # Check NATS logs
-cd nats && docker compose logs nats
+cd ../nats && docker compose logs nats
 ```
 
 ### Check NATS Status
