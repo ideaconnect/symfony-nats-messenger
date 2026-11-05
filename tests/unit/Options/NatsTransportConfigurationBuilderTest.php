@@ -14,6 +14,7 @@ use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Options\StreamCompression;
 use IDCT\NatsMessenger\Options\TransportOption;
+use IDCT\NatsMessenger\Tests\Support\PhpProcess;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -314,6 +315,31 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
             );
             self::assertStringNotContainsString($nkey, $refused->getMessage());
         }
+    }
+
+    /**
+     * The README says the transport fails when it is built without sodium. An extension cannot be unloaded from a running
+     * process, so a child process runs with the function the client looks for disabled.
+     */
+    public function testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt(): void
+    {
+        $script = <<<'PHP'
+            require 'vendor/autoload.php';
+            try {
+                (new IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey_seed' => $argv[1]]);
+                echo 'built';
+            } catch (InvalidArgumentException $refused) {
+                echo $refused->getMessage();
+            }
+            PHP;
+
+        $process = PhpProcess::run(
+            ['-d', 'disable_functions=sodium_crypto_sign_seed_keypair', '-r', $script, '--', self::TEST_NKEY_SEED],
+            dirname(__DIR__, 3),
+        );
+
+        self::assertSame(0, $process['exitCode'], PhpProcess::describe($process));
+        self::assertSame('The NKey seed cannot be used: NkeySeedSigner requires the sodium extension.', $process['stdout'], PhpProcess::describe($process));
     }
 
     /**

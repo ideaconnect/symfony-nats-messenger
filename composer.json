@@ -30,6 +30,7 @@
         "psr/log": "^3.0"
     },
     "require-dev": {
+        "ext-sodium": "*",
         "behat/behat": "^4.0",
         "phpunit/phpunit": "^11.5 || ^12.5 || ^13.4",
         "phpstan/phpstan": "^2.3",
@@ -64,7 +65,8 @@
         "test:mutation:check-log": "@php scripts/check-mutation-log.php"
     },
     "suggest": {
-        "ext-igbinary": "For improved serialization performance when using the default IgbinarySerializer"
+        "ext-igbinary": "For improved serialization performance when using the default IgbinarySerializer",
+        "ext-sodium": "For NKey and JWT authentication: signing the server's nonce with the nkey_seed option needs it"
     },
     "autoload-dev": {
         "psr-4": {

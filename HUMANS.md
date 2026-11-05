@@ -28,6 +28,8 @@ If this saves you time, support is genuinely appreciated:
 - **PHP 8.2+**
 - **Composer**
 - **Docker** (only for the functional/end-to-end tests - they spin up a real NATS server)
+- the **`sodium`** PHP extension, which `composer install` asks for here, as the unit tests of NKey authentication would
+  otherwise skip without a word. An application needs it only to use `nkey_seed`
 - *(optional)* the **`igbinary`** PHP extension for faster serialization; without it the library
   falls back to PHP's serializer and prints a one-time notice.
 
