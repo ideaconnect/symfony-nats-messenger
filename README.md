@@ -61,8 +61,8 @@ return [
 ```
 
 If you leave the bundle out, register the transport factory yourself. Messenger finds it by its tag, and
-nothing else registers it, so without it every `nats-jetstream://` DSN fails with "No transport supports
-Messenger DSN":
+nothing else registers it, so without it every `nats-jetstream://` DSN fails with "No transport supports the
+given Messenger DSN" (before Symfony Messenger 7.4.23 and 8.1.11 the message names the DSN instead):
 
 ```yaml
 # config/services.yaml (only without the bundle)
