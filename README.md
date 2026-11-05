@@ -25,7 +25,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
 - 🌐 **NATS Clusters** - One server in the DSN, the others learned from the cluster; failover, replicated streams
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
-- 🧪 **Thoroughly Tested** - 861 unit tests, ~99.8% coverage, mutation-tested (98.7% MSI)
+- 🧪 **Thoroughly Tested** - 974 unit tests, ~99.8% coverage, mutation-tested (98.7% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -1536,7 +1536,7 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 98.7% (1104 of 1119 mutants killed, with 100% mutation code coverage).
+95%; the suite scores 98.7% (1135 of 1150 mutants killed, with 100% mutation code coverage).
 [docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 15 mutants that survive, with the reason for each:
 13 are equivalent, and two make no difference with the real client. CI runs all three on the PHP 8.5 job and
 every day. Scores published before, 100% among them, were not
