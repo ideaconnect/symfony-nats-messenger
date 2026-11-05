@@ -47,6 +47,18 @@ final class ReadmeExamplesTest extends TestCase
     }
 
     /**
+     * A key in a server example gets pasted, and a seed or public key in this file is one whose seed is, or can be, public:
+     * the test user's seed is in this repository. A reader must generate their own pair.
+     */
+    public function testTheReadmeNamesNoUsableNkey(): void
+    {
+        $readme = (string) file_get_contents(self::README);
+
+        self::assertDoesNotMatchRegularExpression('/\bU[A-Z2-7]{55}\b/', $readme, 'The README names a public NKey.');
+        self::assertDoesNotMatchRegularExpression('/\bSU[A-Z2-7]{56}\b/', $readme, 'The README names an NKey seed.');
+    }
+
+    /**
      * @return iterable<string, array{string}>
      */
     public static function readmePhpBlocksProvider(): iterable

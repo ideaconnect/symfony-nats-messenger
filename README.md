@@ -587,15 +587,15 @@ framework:
                     # nkey_seed: '%env(default::NATS_NKEY_SEED)%'
 ```
 
-On the server, the user is the public key:
+On the server, the user is the public key of a pair you generate yourself. `nk -gen user -pubout` prints one: the first
+line is the seed, the second the public key.
 
 ```
 authorization {
-    users = [ { nkey: UA4XDK2I75UAGJO5XDZBYLLOAJTFMHWHVOV7SQBEX2DZ3XUCRRUCS2DJ } ]
+    users = [ { nkey: U...your public key... } ]
 }
 ```
 
-- `nk -gen user -pubout` creates a key pair: the first line is the seed, the second the public key.
 - Only null, or leaving the option out, means no seed. Any other value that is not a user seed is refused when the
   transport is built, without repeating it: an empty string, a list, a boolean, a mistyped seed, or the seed of an account,
   operator, server, cluster or curve key. Read as no seed, an empty variable would connect with the other credentials
@@ -616,7 +616,7 @@ authorization {
   still hold it. Keep that setting at 1 where stack traces are collected, as `php.ini-production` does.
 - The seed works in the DSN query too (`?nkey_seed=SU...`)
 
-> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testAMistypedSeedStaysOutOfTheFailure`, `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure`, `testNoFrameOfAFailedBuildHoldsASecret`, `testNoFrameOfAFailedTransportCreationHoldsASecret`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive`, `testASeedTypedIntoTheDsnPathStaysOutOfTheError`, `testTheConfigurationDoesNotKeepTheTextOfTheSeed`, `testBuildRejectsASeedThatIsNotAUserSeed`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
+> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testAMistypedSeedStaysOutOfTheFailure`, `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure`, `testNoFrameOfAFailedBuildHoldsASecret`, `testNoFrameOfAFailedTransportCreationHoldsASecret`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive`, `testASeedTypedIntoTheDsnPathStaysOutOfTheError`, `testTheConfigurationDoesNotKeepTheTextOfTheSeed`, `testBuildRejectsASeedThatIsNotAUserSeed`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, `testTheReadmeNamesNoUsableNkey`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
 
 #### JWT Users (Operator Mode)
 

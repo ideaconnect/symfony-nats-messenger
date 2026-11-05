@@ -193,6 +193,7 @@ The functional Behat suite also exercises the bundle end-to-end: the test app en
 | Feature | Tests |
 |---------|-------|
 | **Every README ` ```php ` block is valid PHP** | `testReadmePhpExampleIsSyntacticallyValid` (data provider, one case per block), `testReadmeContainsThePhpExamplesWeExpect` |
+| **The README names no NKey to paste** | `testTheReadmeNamesNoUsableNkey` (no public key or seed, as the test user's seed is in this repository) |
 
 ### Mutation Testing Harness (`tests/unit/MutationTestingBootstrapTest.php`, `tests/unit/MutationTestingChecksTest.php`, `tests/unit/MutationTestingCommandsTest.php`)
 
