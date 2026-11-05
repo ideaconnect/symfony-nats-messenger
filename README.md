@@ -618,6 +618,8 @@ On the server, the user is the public key of a pair you generate yourself. `nsc 
 `nk -gen user -pubout` from [nkeys](https://github.com/nats-io/nkeys): the first line is the seed, the second the public key.
 
 ```
+jetstream {}
+
 authorization {
     users = [ { nkey: U...your public key... } ]
 }
@@ -636,8 +638,10 @@ authorization {
   is built, not on its first connect. So is `nkey` without a seed, which could never log in: the client needs a signer
   for the nonce, and the seed is where the transport gets one.
 - A seed needs a server that has NKey users or runs in operator mode, and in a cluster every server must list the user,
-  as the client can fail over to any of them. Any other server, a password, token or open one, sends no nonce, so the
-  client refuses the login with `NKey authentication requires server nonce from INFO`. The reference CLI refuses it too.
+  as the client can fail over to any of them. A server with NKey users refuses a seed it does not list with a bare
+  `Authorization Violation`. Any other server, a password, token or open one, sends no nonce, so the client refuses the
+  login with `NKey authentication requires server nonce from INFO`, or the same words starting with `JWT` next to a `jwt`.
+  The reference CLI refuses it too.
   So set up the user on the server before you deploy the seed. With `reconnect: true` the client retries that failure,
   and the call takes about 43 seconds at the default attempts to report `Reconnect attempts exhausted`.
 - Signing needs the `sodium` extension, bundled with PHP since 7.2 and included in most builds. Without it the
@@ -1886,6 +1890,10 @@ outage outlasted one recovery cycle: raise `max_reconnect_attempts` for longer o
 10 covers about 109 s against a server that refuses connections), or leave the option off to fail fast and let
 the process supervisor restart the worker. The logger shows the attempts at warning level and, when
 acknowledgements were buffered during the outage, the discard at error level (see [Logging](#logging)).
+
+With a seed on a server that sends no nonce it is not an outage, and raising the option only makes it take longer: the client
+retried a login that cannot work, and the cause is the previous exception, `NKey authentication requires server nonce from
+INFO`. See [NKey Authentication](#nkey-authentication).
 
 > **Tested by:** `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`
 
