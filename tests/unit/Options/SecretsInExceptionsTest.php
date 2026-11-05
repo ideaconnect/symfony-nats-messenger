@@ -359,6 +359,19 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
+     * The end of the pattern must not let a last newline through, as "natz\n" is not a plain value.
+     */
+    public function testAValueEndingInANewlineIsNotRepeated(): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic?retry_handler=natz%0A');
+            self::fail('An unknown retry handler was accepted.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringStartsWith('Invalid retry_handler option. Allowed values are', $thrown->getMessage());
+        }
+    }
+
+    /**
      * A list has no text to repeat, and a word in its place would read as if it were the value.
      */
     public function testAListWhereABooleanBelongsIsNotShownAsAValue(): void

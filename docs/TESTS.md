@@ -166,7 +166,7 @@ test keeps the secret out of its own frames, which PHP records too.
 | **An `nkey` that contradicts the seed** | `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure` (neither the seed nor the signer's secret key) |
 | **A query typed with `&`, `;` or a second `?`** | `testASeedTypedIntoTheDsnPathStaysOutOfTheError` (the stream or topic name error), `testASeedTypedIntoAnOptionsValueStaysOutOfTheError` (the errors that print an option's value) |
 | **A credential after a second `?` or a `;` in the query is refused** | `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt` (all seven credential options, encoded and not, in a file name, a description, a list and a number), `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted` (in the options, after a proper `&`, a name that only ends like one) |
-| **A plain mistake is still repeated** | `testAPlainMistakeIsRepeatedInTheError` (names and values of at most 50 plain characters), `testAValueLongerThanTheLimitIsNotRepeated` |
+| **A plain mistake is still repeated** | `testAPlainMistakeIsRepeatedInTheError` (names and values of at most 50 plain characters), `testAValueLongerThanTheLimitIsNotRepeated`, `testAValueEndingInANewlineIsNotRepeated`, `testAListWhereABooleanBelongsIsNotShownAsAValue` |
 | **After a build that worked** | `testTheConfigurationDoesNotKeepTheTextOfTheSeed` (a dump of the configuration does not print it; the client's signer still holds the raw key) |
 
 ### Login Combinations (`tests/unit/LoginCombinationsTest.php`)
