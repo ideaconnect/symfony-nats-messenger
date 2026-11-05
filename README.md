@@ -614,7 +614,10 @@ authorization {
   out of their stack frames. Symfony Messenger's factory marks its options only from 7.4.23 and 8.1.11, and the client
   marks nothing yet, so with `zend.exception_ignore_args=0`, PHP's default without a php.ini, frames of those two can
   still hold it. Keep that setting at 1 where stack traces are collected, as `php.ini-production` does.
-- The seed works in the DSN query too (`?nkey_seed=SU...`)
+- The seed works in the DSN query too (`?nkey_seed=SU...`), but prefer the option with an environment variable, as the
+  [recommendations](#general-recommendations) say for every credential. A literal seed, in a DSN or in an option, ends
+  up in `debug:config` and in a file of the compiled container, where a DSN or option that reads a variable does not.
+  Keep the variable out of a committed `.env`, and do not log the full DSN.
 
 > **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testAMistypedSeedStaysOutOfTheFailure`, `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure`, `testNoFrameOfAFailedBuildHoldsASecret`, `testNoFrameOfAFailedTransportCreationHoldsASecret`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive`, `testASeedTypedIntoTheDsnPathStaysOutOfTheError`, `testTheConfigurationDoesNotKeepTheTextOfTheSeed`, `testBuildRejectsASeedThatIsNotAUserSeed`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, `testTheReadmeNamesNoUsableNkey`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
 
