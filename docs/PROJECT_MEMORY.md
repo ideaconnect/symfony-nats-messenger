@@ -78,11 +78,18 @@ apply only with the option on.
 ## Behavior to preserve
 
 - **Connections:** construction opens no socket. First use connects; a Closed client is dialled
-  again. An idle connection (strictly longer than `ping_after_idle`) or a failed operation calls
-  for an RTT PING before reuse. An unanswered PING causes replacement. The wait is bounded by
+  again. An idle connection (strictly longer than `ping_after_idle`), a failed operation, or the NAK/TERM of a
+  failed delivery calls for an RTT PING before reuse. An unanswered PING causes replacement. The wait is bounded by
   `connection_timeout`, or the client's shorter `request_timeout`. `ping_after_idle: 0` disables
   idle and post-failure checks, but Closed-state recovery still applies. `close()` resets the
   connection and provisioning state; the same transport remains reusable.
+- **Default mode** (`reconnect: false`; decided in #81, kept in #95 and client #249): Symfony owns
+  recovery. The operation that meets a lost connection fails with the client's exception and the
+  transport sends nothing again; the next operation checks the connection and dials. A worker exits on
+  a failed pull, ACK (`ack_sync` included) or retry copy, its supervisor starts a new one, and the
+  message comes back after `ack_wait`. Do not add a resend of a failed write in this mode: a worker that
+  should outlive the loss of its server is what `reconnect: true` is for (`resend_on_reconnect` requires
+  it). The PING before a failed delivery's NAK/TERM is a check before the write, not a resend.
 - **Reconnect mode** (`reconnect: true`, 5.7.0, #81): the client owns recovery. A Connecting
   client gets no PING and no dial; the operation waits within its own budget. After a failed
   PING, the client's state and reconnect count decide: recovering or recovered is kept, the same
@@ -92,20 +99,41 @@ apply only with the option on.
   The count is read only with the option on; default-mode mocks have no stats stub. An ACK/NAK/
   TERM whose write meets the dead socket is buffered and returns at once from client 2.27.1
   (#244), hence the `^2.27.1` floor since 5.7.1. The factory's optional PSR-3 logger reaches the
-  client; the bundle passes `logger` on Monolog's `messenger` channel.
-  A handler failing while the worker's server goes away still ends the worker in symfony mode:
-  Symfony's retry send is a request whose reply the lost connection cannot bring, so it times out (#95, README
+  client; the bundle passes `logger` on Monolog's `messenger` channel. Since 5.8.0 the floor is `^2.28`:
+  client 2.28.0 asks the socket transport, before a publish or request write, whether the server already
+  closed the connection (`PeerCloseAwareTransportInterface::peerClosed()`, a MSG_PEEK; client #252) and
+  treats a yes as a failed write, so the ACK of a handled message and Symfony's retry copy written after a
+  server stopped during the handler go out on the recovered connection (reconnect on) or fail with
+  "Reconnect is disabled" (off), instead of vanishing. A close behind unread bytes (TLS close_notify,
+  a WebSocket Close frame) is still invisible to it, which is why the PING before a failed delivery's
+  NAK/TERM stays (with reconnect off it also dials another server, where the client would fail the NAK).
+  The transport option `resend_on_reconnect` (5.8.0, off) maps to the client's
+  `resendJetStreamPublishOnReconnect` (#249): a publish with a Nats-Msg-Id is written again once the
+  connection its frame went out on is replaced; the builder requires `reconnect: true` and a configured
+  `stream_duplicate_window` longer than `request_timeout`. Measured 2026-11-04 on the test cluster
+  (nats 2.15.1, client 2.28.0, Messenger 8.1.10, the handler `docker stop`ping the worker's server): with
+  reconnect on, both retry modes carry on and nothing is lost or handled twice (retry copy stored 0.3 s
+  after the first delivery, NAK effective after nak_delay, ACK delivered); with reconnect off an ACK or
+  retry copy ends the worker at once and the message returns after ack_wait, while nats mode's NAK still
+  carries on through another server.
+  History (#95, before 2.28.0):
+  a handler failing while the worker's server goes away ended the worker in symfony mode:
+  Symfony's retry send is a request whose reply the lost connection cannot bring, so it timed out (#95, README
   "A Handler Failing During the Loss"; measured 2026-11-01, nats 2.15.1, client 2.27.2). #95
   analysed a transport re-publish after the timeout (misfires on a slow but connected leader with
   409 err_code 10158, doubles the wait with no server to fail over to) and pointed at the client
-  instead: ideaconnect/php-nats-jetstream-client#249, merged in its #251 (`58106f4`, 2026-11-02, no
-  client release yet), adds the opt-in `NatsOptions::$resendJetStreamPublishOnReconnect` (off by
+  instead: ideaconnect/php-nats-jetstream-client#249, merged in its #251 (`58106f4`, 2026-11-02,
+  released in 2.28.0), adds the opt-in `NatsOptions::$resendJetStreamPublishOnReconnect` (off by
   default): a publish with a `Nats-Msg-Id` goes out again once the connection its frame went out on
   is replaced. On the test cluster (2.15.1) a publish right after the leader's `docker stop` was
-  stored 0.01 s later with it, and timed out after 10 s without it. The transport does not set it:
-  that needs a client release, a raised requirement and an option for sends with a message id; the
-  default configuration (no id) stays as described. In nats mode the NAK at that moment
-  did not take effect (redelivery after `ack_wait`).
+  stored 0.01 s later with it, and timed out after 10 s without it. In nats mode the NAK at that moment did not take effect
+  (redelivery after `ack_wait`) up to 5.7.1. Cause (measured 2026-11-02, nats 2.15.1, client 2.27.2): the
+  client reads the socket only while an operation waits for a reply, so a close the server sent during the handler
+  stays unread (the socket sat in CLOSE-WAIT, the client reported Open 1.5 s after `docker stop`), and a write that
+  waits for no reply (ACK, NAK, TERM, WPI) is taken by the socket and lost; #244's buffer only catches writes that
+  fail. Since 5.8.0 `reject()` and `ack()`'s NAK of a left-out retry arm `checkBeforeNextUse` first, so a PING reads
+  the close and the NAK/TERM goes out on the recovered or newly dialled connection. The ACK of a handled message
+  stays unchecked by the transport (no round trip per message); client 2.28.0 covers it on plain sockets.
 - **Pull status:** 408 is empty; 404 is historically empty. A missing consumer normally gives 503,
   and deletion during a pull can give 409. With `auto_setup`, 404/409/503 cause one provisioning
   attempt and one retried pull; repeated 409/503 propagate. Since 5.7.0, `409 Server Shutdown`
@@ -127,7 +155,9 @@ apply only with the option on.
   and with `ack()` from 7.4.22/8.1.10 on (symfony/symfony#67038). `send()` therefore remembers
   the delivery token of a suppressed copy (a `WeakMap` by message) and `ack()` NAKs that one
   delivery; an ACK there lost the message (#90). Any code path that settles a received message
-  must keep both Messenger lines in mind.
+  must keep both Messenger lines in mind. The first copy left out logs a warning, once per transport object,
+  that Symfony's retry strategy is on (#94), through the logger the transport now keeps besides handing it to
+  the client; it parses no configuration and cannot fire with `max_retries: 0`.
 - **Keepalive:** Symfony invokes it from SIGALRM. It queues `inProgress()->ignore()` without
   awaiting, pinging, or connecting, because a signal handler cannot switch fibers (#48).
   The event loop must run for the queued write to leave. Plain blocking PHP work therefore
@@ -186,6 +216,11 @@ Fixtures expose plain/TLS/mTLS/stale-idle NATS on 4222/4223/4224/4225, and a thr
 server (`servers: [$server]`), so a worker started while that server is down cannot connect. CI runs PHP 8.2 with the lowest
 allowed client and PHP 8.5 with latest, verifies root/app versions match, and also tests NATS 2.10
 without delayed scenarios. README advertises NATS ^2.9; the oldest CI image is actually 2.10.
+Measured on it (2026-11-01, nats 2.10.29): right after a stream update from 2 replicas to 1, consumer requests
+can get err_code 10008 "JetStream system temporarily unavailable", "stream not found" or no answer for a few ms
+while NATS moves the consumer; `setup()` asks again on 10008 and 10059 (up to 5 s) and once more after no answer.
+The example `stream-placement.php`
+hit it in CI (PR #98); a reproduction needs parallel consumer-info probes to load the 2-core test machine.
 
 Transport unit tests use `DG\BypassFinals` for final client mocks, `Future::complete/error`,
 `TestableNatsTransport`, and `RuntimeTestableNatsTransport`. `UnansweredPullTest` exercises the real

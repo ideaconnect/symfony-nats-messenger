@@ -16,7 +16,7 @@ Symfony Messenger  ──dispatch──▶  NatsTransportFactory ──▶ NatsT
 - **Symfony side:** the library implements `TransportInterface`, `MessageCountAwareInterface`,
   and `SetupableTransportInterface`, so it plugs into `messenger:consume`, `messenger:setup-transports`,
   and the failure/retry machinery like any first-party transport.
-- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.27.1`,
+- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.28`,
   amphp-based). Calls return `Amp\Future`; the transport resolves them synchronously with `->await()`
   because Symfony Messenger's transport contract is blocking.
 
@@ -74,8 +74,10 @@ tests/
 
 examples/                                       # Runnable scripts, one per behaviour (composer examples)
 ├── _bootstrap.php                              # shared setup: autoloader, server, stream, test cluster and docker helpers
-└── *.php                                       # send-and-consume, duplicate-protection, request-timeout, keepalive, connection-checks,
-                                                # reconnect, cluster-failover, stream-placement
+└── *.php                                       # send-and-consume, duplicate-protection, nats-retry, request-timeout, keepalive,
+                                                # connection-checks, reconnect, cluster-failover,
+                                                # handler-failing-during-failover, handler-succeeding-during-failover,
+                                                # stream-placement
 
 scripts/
 ├── run-examples.sh                             # runs examples/*.php, strict mode for CI

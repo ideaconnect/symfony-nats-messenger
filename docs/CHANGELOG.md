@@ -11,6 +11,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **NKey authentication: the `nkey_seed` option.** The transport signs the server's nonce with the given seed and
   sends the public key derived from it, so a user the server knows by its NKey can connect with the seed alone.
 
+### Deprecated
+- **The `nkey` option, to be removed in 6.0.** The public key is derived from `nkey_seed`, so only the seed is
+  needed. Setting `nkey` triggers an `E_USER_DEPRECATED`; until 6.0 it may still repeat the seed's public key.
+
+## [5.8.0] - 2026-11-04
+
+A **minor** release. With `retry_handler: nats`, a message whose handler failed is no longer lost on Symfony
+Messenger 7.4.22 / 8.1.10 and later (#90), and its NAK is no longer lost when the worker's server goes away during
+the handler; a transport in that mode warns once when Symfony's retry strategy is still on (#94), which is the new
+behaviour that makes this a minor release, with the new option `resend_on_reconnect`. `setup()` waits for a consumer
+NATS is moving after a change of `stream_replicas` (#98). It requires client 2.28.0: with `reconnect: true`, a
+worker whose server goes away while a handler runs now carries on in both retry modes, the ACK of a
+handled message and Symfony's retry copy of a failed one go out on the recovered connection instead of being lost or
+timing out. The README describes how Symfony Messenger 7.4.22 / 8.1.10 settle a retried message in symfony mode
+(#92) and what a handler failing or succeeding during the loss of a server does (#95), with an upgrade note. The
+mutation score is 98.6%. The public PHP API is unchanged; the one new method, `deliveryTime()`, is protected.
+
+### Added
+- **`resend_on_reconnect` (off by default): a send with a message id is sent again on the recovered connection.**
+  With `reconnect: true`, a `send()` whose server took the message and went away before it answered, as a stream's
+  leader that stops, waited out `request_timeout` on the recovered connection and failed with `TimeoutException`,
+  its outcome unknown. The option turns on the client's `resendJetStreamPublishOnReconnect` (client 2.28.0,
+  ideaconnect/php-nats-jetstream-client#249): a publish that carries a `Nats-Msg-Id` (`deduplicate: true` or a
+  `DeduplicationIdStamp`) is written once more on the recovered connection, within the same `request_timeout`, and
+  JetStream drops it when the first copy was stored. Symfony's retry copy is covered the same way. Only a replaced
+  connection triggers it, at most once per publish; a publish without an id is never sent again. The builder
+  refuses the option without `reconnect: true`, where it would do nothing, and with a `stream_duplicate_window`
+  that is not longer than `request_timeout`, where the copy sent again could be stored twice. Off by default for
+  the client's two limits, which the README lists: the duplicate window, and on a NATS 2.10 cluster a new stream
+  leader that can take the publish before it applied what the old leader replicated.
+- **A transport in nats mode warns, once, when Symfony's retry strategy is on (#94).** With
+  `retry_handler: nats`, Symfony's retry strategy has no effect and the README asks for `max_retries: 0`, but
+  FrameworkBundle gives every transport `max_retries: 3`, and nothing told a user who missed that paragraph:
+  Symfony logged every failure as a retry it never made, dispatched `WorkerMessageRetriedEvent` for it, and never
+  sent the message to a failure transport (and up to 5.7.1, on Symfony Messenger 7.4.22 / 8.1.10 or later, the
+  message was lost, #90). The first time `send()` leaves out the copy Symfony's retry sends, the transport now logs
+  `retry_handler=nats on stream "S", subject "T": Symfony's retry strategy retried a message that NATS redelivers
+  itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").` at warning level, once per
+  transport object. It reads no configuration, so it cannot appear with `max_retries: 0` (no copy is sent then)
+  and it works with a DSN in an environment variable. The transport keeps the PSR-3 logger it is given (by the
+  factory, which the bundle hands the application's `logger`), which until now only went to the NATS client.
+
 ### Fixed
 - **With `retry_handler: nats`, a message whose handler fails is redelivered again on Symfony Messenger 7.4.22,
   8.1.10 and later (#90).** Those releases acknowledge a message they send for retry instead of rejecting it
@@ -22,24 +64,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of earlier Messenger releases rejects it, which NAKs it as before. The transport still passes the worker's ACK
   on for a delivery that was handled, and for every delivery with the default `retry_handler: symfony`. The
   README's warning says that up to 5.7.1 `max_retries: 0` is required in nats mode on those Symfony releases.
+- **`setup()` no longer fails when NATS is still moving the consumer after a change of `stream_replicas` (#98).**
+  A stream update that changes the replica count makes NATS move the stream's durable consumer to the stream's
+  new set of servers, after it has answered the update. A consumer whose leader was on a server the stream left
+  has no leader until a remaining server takes over, and the consumer lookup or create that `setup()` sends next
+  could land in that window and fail with err_code 10008, "JetStream system temporarily unavailable" (seen in CI
+  and reproduced on nats-server 2.10.29 going from 2 replicas to 1; running the setup again passed). `setup()`
+  now sends those two consumer requests again while the server answers 10008, every 100 ms for up to 5 seconds.
+  In the same window a consumer request could also be told that the stream `setup()` had just updated was not
+  found (err_code 10059), which the lookup read as "no consumer", or get no answer within `request_timeout`:
+  `setup()` asks again on 10059 as on 10008, and once more after a request without an answer, whatever the
+  5 seconds say. Any other error fails the setup at once, as before, and so do a stream still not found after
+  the 5 seconds and a second request without an answer.
+- **With `retry_handler: nats`, the NAK of a message whose handler failed while its server went away is no longer
+  lost.** The server closes the connection on its way out (a restart, a rolling upgrade, a failover in a
+  cluster), and the client reads the socket only while an operation waits for a reply, so the close is still
+  unread when the handler fails: the NAK, a write that waits for no reply, was taken by the socket, reached no
+  server, and the message came back only after `ack_wait` instead of `nak_delay` (#95 left the cause open; with
+  `reconnect: false` the next pull then ended the worker). The NAK or TERM of a failed delivery, from `reject()`
+  and from the `ack()` that NAKs a delivery whose retry copy was left out, now checks the connection first with
+  one PING, as after a failed operation: the PING's wait reads the close, the client recovers the connection
+  (with `reconnect: false` the transport dials another server), and the acknowledgement goes out there. Measured
+  on the test cluster (nats-server 2.15.1, client 2.27.2), the handler stopping the worker's server with
+  `docker stop`: none of 7 NAKs took effect before (each message came back 30.0 s after its first delivery, also
+  when the event loop ran for 1.5 s between the stop and the NAK), 12 of 12 after (1.0 s later, `nak_delay` 1),
+  in both `reconnect` modes, through `reject()` and through `ack()`. It costs one round
+  trip per failed message; `ping_after_idle: 0` turns it off with the other checks. The ACK of a handled message
+  stays a plain write for the transport, with no round trip; client 2.28.0 (below) keeps it from being lost on a
+  plain connection. The check stays with that client too: a close behind data not read yet, as a TLS server's
+  `close_notify`, is one the client cannot see, and with `reconnect: false` the check dials another server where
+  the client would fail the NAK.
 
 ### Changed
+- **Requires `idct/php-nats-jetstream-client` `^2.28` (was `^2.27.1`), so that a write after the server closed the
+  connection unread no longer vanishes (client #252).** The client reads the socket only while an operation waits
+  for a reply, so the close of a server that stops while a handler runs stayed unread, and the next write went into
+  the closed socket: the ACK of a handled message was lost, and the message came back after `ack_wait` to be
+  handled again; Symfony's retry copy of a failed one waited out `request_timeout` and its `TimeoutException`
+  stopped the worker (with `reconnect: true`). Client 2.28.0 asks the socket, before a publish or request write,
+  whether the server has closed it, and handles a yes as a failed write. Measured on the test cluster (nats-server
+  2.15.1, Symfony Messenger 8.1.10), the handler stopping the worker's server with `docker stop`: with
+  `reconnect: true` the worker carries on in both retry modes, the retry copy is stored through another server and
+  handled 0.3 s after the first delivery, and the ACK reaches the cluster; with `reconnect: false` the ACK or retry
+  copy fails at once with `Reconnect is disabled` and the worker exits, as the next pull used to, and the message
+  comes back after `ack_wait`. A first `send()` right after the stop is stored at once through another server
+  with `reconnect: true`, where it took 10 s and a `TimeoutException`. `composer update` installs it; the root and the
+  functional test app require the same version, and CI tests 2.28.0 as both the lowest and the latest release.
 - **README: with the default `retry_handler: symfony`, a message that Symfony Messenger 7.4.22, 8.1.10 and later
   send for retry is ACKed, not TERMed (#92).** Since symfony/symfony#67038 the worker acknowledges a failed
   message once its retry copy is sent instead of rejecting it, and the transport passes that ACK on. The "Retry
   Handler Behavior" section now says so: a `TERM`, and its JetStream `MSG_TERMINATED` advisory, marks only a
   failure Symfony treats as final or a message that could not be decoded, so counts or alerts built on those
   advisories drop after such a Symfony upgrade, with no message lost. The transport's behaviour is unchanged.
-- **README: a handler that fails while the worker's server goes away stops the worker with the default
-  `retry_handler: symfony`, also with `reconnect: true` (#95).** Symfony's retry listener sends the retry copy
-  right after the failure, and that publish runs into the lost connection: it fails after `request_timeout`
-  with `TimeoutException` (at once with `reconnect: false`), the exception leaves the worker before the failed
-  delivery is settled, and NATS delivers the message again after `ack_wait`. The "Losing a Server" section
-  said a worker polls on with `reconnect: true`; a new part of it, "A Handler Failing During the Loss", now
-  describes this case, with the measurements on the test cluster for both retry modes and both `reconnect`
-  modes, and recommends `deduplicate: true` with a `stream_duplicate_window` longer than `ack_wait` plus the
-  handler's run, and idempotent handlers. "Automatic Reconnect" points to it. The transport's behaviour is
-  unchanged.
+- **README: what a handler failing or succeeding while the worker's server goes away does (#95).** The "Losing a
+  Server" section said a worker polls on with `reconnect: true`; a new part of it, "A Handler Failing During the
+  Loss", describes the moment a handler runs into the loss: with client 2.28.0 and `reconnect: true` the worker
+  carries on in both retry modes, and with `reconnect: false` an ACK or Symfony's retry copy ends it, while a NAK in
+  nats mode goes out through another server. It names what the client still cannot see (a close behind unread
+  data, as over TLS) and a copy the server took and could not answer, which only `resend_on_reconnect` sends again,
+  gives the measurements on the test cluster for both retry modes and both `reconnect` modes, and recommends
+  `deduplicate: true` with a `stream_duplicate_window` longer than `ack_wait` plus the handler's run, and idempotent
+  handlers. "Automatic Reconnect" and "Losing the Connection" point to it, and the "Losing a Server" table is
+  measured again with client 2.28.0.
 
 ### Testing & CI
 - A Behat scenario, "A message that fails once is redelivered with Symfony's default retry strategy", sends a
@@ -51,10 +137,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strategy against the test server, in nats mode, over a message whose handler fails once: NATS redelivers it
   `nak_delay` later and it is handled, with Symfony's retry left unpublished. `composer examples` runs it in CI
   on the latest and the oldest supported NATS, and it fails without the fix on Symfony Messenger 8.1.10.
-
-### Deprecated
-- **The `nkey` option, to be removed in 6.0.** The public key is derived from `nkey_seed`, so only the seed is
-  needed. Setting `nkey` triggers an `E_USER_DEPRECATED`; until 6.0 it may still repeat the seed's public key.
+- The warning about Symfony's retry strategy in nats mode (#94): unit tests check that it is logged once for two
+  left-out copies through Symfony's Worker, once per transport object with its own stream and subject, and not
+  at all in symfony mode, with `max_retries: 0`, or for a copy that is not a retry (failure transport, message not
+  received in this process, plain dispatch). The Behat scenario "Symfony's retry strategy is ignored with the NATS
+  retry handler" checks that the consumer warned once, and "NATS stops redelivering a poison message after
+  max_deliver attempts" (`max_retries: 0`) that it did not.
+- The consumer requests `setup()` sends again while the cluster answers 10008: unit tests cover the lookup and
+  the create asked again after a pause of 100 ms, the real pause, the setup failing with the server's message
+  once 5 seconds have passed, and no second request after another JetStream error. The example
+  `stream-placement.php`, whose staged step from 2 replicas to 1 failed this way on NATS 2.10 in CI, covers it on
+  the three-server test cluster. Further unit tests cover 10059 asked again (the lookup no longer reading it as
+  "no consumer"), giving up on it after 5 seconds, 10014 still read as "no consumer" at once, an unanswered
+  lookup and create each asked once more, and a second unanswered request ending the setup. The test doubles'
+  `pause()` fails a test once it ran more often than `setup()` ever pauses, so a loop that never ends fails in
+  seconds instead of hanging the run (the mutant that drops `return $request();` used to time out after 60 s).
+- The NAK of a failed delivery after the server closed the connection during the handler: a real-client test
+  (`ReconnectModeTest`, against a connection the scripted server closed without the client reading it,
+  `FaultInjectingNatsServer::closeUnread()`) checks that the NAK of `reject()`, and of `ack()` after the retry
+  copy was left out, reaches the server on the recovered connection, and fails without the check. Unit tests check
+  the PING before the TERM and the NAK (with and without `nak_delay`) and none with `ping_after_idle: 0`. A new
+  example, `handler-failing-during-failover.php`, runs Symfony's Worker on the test cluster with `reconnect: true`;
+  its handler stops the worker's server and fails, and the message has to come back to the same worker. It fails
+  on 5.7.1.
+- Client 2.28.0: the scripted connection answers the client's new `peerClosed()` question, for a close on a plain
+  socket and for one behind unread bytes, which the client cannot see (as over TLS). Real-client tests check that
+  after such a close the ACK of a handled message goes out on the recovered connection with no PING first, that
+  Symfony's retry copy does, that the NAK's PING still saves the NAK behind unread bytes, where the ACK is still
+  lost (a guard), and that a send whose server went down right after it took the frame is written again on the
+  recovered connection only with `resend_on_reconnect` and a `Nats-Msg-Id`, and otherwise times out. Builder tests
+  cover the option's default, its mapping from options and DSN, and both refusals. The example
+  `handler-failing-during-failover.php` now runs in both retry modes, and a new one,
+  `handler-succeeding-during-failover.php`, has the handler succeed in both: its ACK has to reach the cluster
+  through another server. Both fail with client 2.27.2: the retry copy's publish ended the worker with
+  `TimeoutException`, and the ACK stayed pending until `ack_wait`.
+- Mutation testing: 17 of the 32 surviving mutants are gone. Two are killed by tests that give `send()` the
+  delivery time of a delayed message (a new protected `deliveryTime()`, the only seam), so a whole second is
+  checked not to be rounded up. The others were equivalent, and the code they mutated said the same thing twice:
+  a guard that a later check covers (`get()`'s check for no headers, the early returns of
+  `assertStreamDescriptionLength()`, `assertDuplicateWindowNotExceedingMaxAge()` and `toNullableString()`, the
+  type checks before `is_numeric()` in `assertBackoff()`, the empty-segment check after `trim()` in
+  `parseStreamAndTopic()`), a comparison that is always true (`streamReplicas() > 0`, `streamMaxAgeSeconds() > 0`
+  around a product that is 0 then), a cast PHP makes anyway, and a second source for the same value (the stream's
+  subjects). These spots now say it once; the behaviour is the same, and the unit suite passes unchanged.
 
 ## [5.7.1] - 2026-10-19
 

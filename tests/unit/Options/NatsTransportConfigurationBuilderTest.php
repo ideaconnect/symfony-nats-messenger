@@ -1339,6 +1339,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'request_timeout' => 10,
                 'reconnect' => false,
                 'max_reconnect_attempts' => 10,
+                'resend_on_reconnect' => false,
                 'deduplicate' => false,
                 'stream_max_age' => 86400,
                 'stream_max_bytes' => 1073741824,
@@ -1384,6 +1385,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(['cluster' => 'east', 'tags' => ['ssd', 'eu-west']], $configuration->streamPlacement());
         self::assertFalse($configuration->isReconnectEnabled());
         self::assertSame(10, $configuration->maxReconnectAttempts());
+        self::assertFalse($this->extractNatsOptions($configuration->client)->resendJetStreamPublishOnReconnect);
         self::assertSame('limits', $configuration->streamRetention()?->value);
         self::assertSame('old', $configuration->streamDiscard()?->value);
         self::assertSame(120, $configuration->streamDuplicateWindowSeconds());
@@ -2002,6 +2004,84 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         self::assertTrue($options->reconnectEnabled);
         self::assertSame((new NatsOptions())->maxReconnectAttempts, $options->maxReconnectAttempts);
+    }
+
+    public function testResendOnReconnectIsOffByDefault(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['reconnect' => true]);
+
+        self::assertFalse($this->extractNatsOptions($configuration->client)->resendJetStreamPublishOnReconnect);
+    }
+
+    /**
+     * The client sends a publish with a Nats-Msg-Id again on the connection its recovery made (client 2.28.0, #249).
+     */
+    public function testBuildWithResendOnReconnectPropagatesToNatsOptions(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+        $fromOptions = $builder->build(self::VALID_DSN, ['reconnect' => true, 'resend_on_reconnect' => true]);
+        $fromDsn = $builder->build('nats://localhost:4222/test-stream/test-topic?reconnect=true&resend_on_reconnect=true');
+        $overriddenByOptions = $builder->build('nats://localhost:4222/test-stream/test-topic?reconnect=true&resend_on_reconnect=true', ['resend_on_reconnect' => 'false']);
+
+        self::assertTrue($this->extractNatsOptions($fromOptions->client)->resendJetStreamPublishOnReconnect);
+        self::assertTrue($this->extractNatsOptions($fromDsn->client)->resendJetStreamPublishOnReconnect);
+        self::assertFalse($this->extractNatsOptions($overriddenByOptions->client)->resendJetStreamPublishOnReconnect);
+    }
+
+    /**
+     * Without reconnect the client never replaces the connection a send went out on, so the option would do nothing.
+     */
+    public function testBuildWithResendOnReconnectWithoutReconnectThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The resend_on_reconnect option needs reconnect: true: only the NATS client\'s own recovery sends a publish again on the new connection.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['resend_on_reconnect' => true]);
+    }
+
+    /**
+     * The copy sent again goes out up to request_timeout after the first, and JetStream drops it only within the
+     * stream's duplicate window.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('duplicateWindowsNotLongerThanTheRequestTimeout')]
+    public function testBuildWithResendOnReconnectAndADuplicateWindowNotLongerThanTheRequestTimeoutThrowsException(array $options, string $message): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage($message);
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['reconnect' => true, 'resend_on_reconnect' => true] + $options);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function duplicateWindowsNotLongerThanTheRequestTimeout(): iterable
+    {
+        yield 'as long as the default request_timeout' => [
+            ['stream_duplicate_window' => 10],
+            'The stream_duplicate_window option (10s) must be longer than request_timeout (10s) with resend_on_reconnect: a publish sent again after the window could be stored twice.',
+        ];
+        yield 'shorter than a configured request_timeout' => [
+            ['stream_duplicate_window' => '20', 'request_timeout' => '30.5'],
+            'The stream_duplicate_window option (20s) must be longer than request_timeout (30.5s) with resend_on_reconnect: a publish sent again after the window could be stored twice.',
+        ];
+    }
+
+    public function testBuildWithResendOnReconnectAcceptsALongerOrAnUnsetDuplicateWindow(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+        $longer = $builder->build(self::VALID_DSN, ['reconnect' => true, 'resend_on_reconnect' => true, 'stream_duplicate_window' => 11]);
+        $unset = $builder->build(self::VALID_DSN, ['reconnect' => true, 'resend_on_reconnect' => true]);
+        // Without the option a short window is no concern of it.
+        $withoutTheOption = $builder->build(self::VALID_DSN, ['reconnect' => true, 'stream_duplicate_window' => 5]);
+
+        self::assertSame(11, $longer->streamDuplicateWindowSeconds());
+        self::assertTrue($this->extractNatsOptions($longer->client)->resendJetStreamPublishOnReconnect);
+        self::assertNull($unset->streamDuplicateWindowSeconds());
+        self::assertTrue($this->extractNatsOptions($unset->client)->resendJetStreamPublishOnReconnect);
+        self::assertSame(5, $withoutTheOption->streamDuplicateWindowSeconds());
     }
 
     #[DataProvider('invalidMaxReconnectAttemptsProvider')]

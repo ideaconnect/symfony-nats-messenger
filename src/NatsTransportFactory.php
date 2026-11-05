@@ -15,9 +15,9 @@ use Symfony\Component\Messenger\Transport\TransportInterface;
  * Implements TransportFactoryInterface so Symfony Messenger's transport registry discovers and
  * instantiates {@see NatsTransport} for the recognized DSN schemes (see supports()).
  *
- * The factory hands its logger, when it has one, to every transport it creates, for the NATS client (see
- * the constructor). The factory always passes Symfony's resolved serializer into the transport (the
- * interface signature is non-nullable). When a transport configures no serializer,
+ * The factory hands its logger, when it has one, to every transport it creates, for the NATS client and for the
+ * transport's own warning in nats mode (see the constructor). The factory always passes Symfony's resolved
+ * serializer into the transport (the interface signature is non-nullable). When a transport configures no serializer,
  * Symfony injects its default serializer service - the native PhpSerializer unless
  * reconfigured - never null, so the transport's built-in igbinary auto-default only
  * applies when {@see NatsTransport} is constructed directly with a null serializer.
@@ -32,6 +32,8 @@ class NatsTransportFactory implements TransportFactoryInterface
      * @param LoggerInterface|null $logger Handed to every transport this factory creates, for the NATS client: the
      *                                     connection's lifecycle at info level, its errors at error level, among them a
      *                                     reconnect that gave up and discarded the acknowledgements buffered meanwhile.
+     *                                     The transport also warns through it, once, when Symfony's retry strategy is
+     *                                     on in nats mode (max_retries > 0 with retry_handler=nats).
      *                                     The bundle passes the application's `logger` service when there is one.
      */
     public function __construct(private readonly ?LoggerInterface $logger = null)

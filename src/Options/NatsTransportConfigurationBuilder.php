@@ -54,6 +54,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::REQUEST_TIMEOUT->value => 10,
         TransportOption::RECONNECT->value => false,
         TransportOption::MAX_RECONNECT_ATTEMPTS->value => null,
+        TransportOption::RESEND_ON_RECONNECT->value => false,
         TransportOption::MAX_ACK_PENDING->value => null,
         TransportOption::INACTIVE_THRESHOLD->value => null,
         TransportOption::REPLAY_POLICY->value => null,
@@ -126,7 +127,13 @@ final class NatsTransportConfigurationBuilder
 
         // max_reconnect_attempts is forwarded only when configured so that the client's own default
         // applies otherwise; repeating that default here would silently diverge from the client over time.
-        $reconnectArguments = ['reconnectEnabled' => $this->toBool($configuration[TransportOption::RECONNECT->value])];
+        $reconnectArguments = [
+            'reconnectEnabled' => $this->toBool($configuration[TransportOption::RECONNECT->value]),
+            // A send() with a Nats-Msg-Id writes its frame once more on the connection the client's recovery made
+            // when the server that took it went away before its PubAck (client 2.28.0, #249). Validated to come
+            // with reconnect: true.
+            'resendJetStreamPublishOnReconnect' => $this->toBool($configuration[TransportOption::RESEND_ON_RECONNECT->value]),
+        ];
         $maxReconnectAttempts = $configuration[TransportOption::MAX_RECONNECT_ATTEMPTS->value] ?? null;
         if ($maxReconnectAttempts !== null) {
             $reconnectArguments['maxReconnectAttempts'] = TypeCoercion::intValue($maxReconnectAttempts);
@@ -208,10 +215,11 @@ final class NatsTransportConfigurationBuilder
 
         // A valid path is exactly two non-empty slash-separated tokens (/stream/topic). Coercing a
         // non-string/empty path to '' lets this single check reject every malformed path - missing,
-        // too few or too many segments, or an empty token.
+        // too few or too many segments, or an empty token: trim() takes the slashes off both ends, so
+        // an empty token can only sit between two slashes, which makes a third segment.
         $path = is_string($components['path']) ? $components['path'] : '';
         $pathParts = explode('/', trim($path, '/'));
-        if (count($pathParts) !== 2 || $pathParts[0] === '' || $pathParts[1] === '') {
+        if (count($pathParts) !== 2) {
             throw new InvalidArgumentException('NATS DSN must contain both stream name and topic name (format: /stream/topic).');
         }
 
@@ -325,6 +333,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertBackoff($configuration);
         $this->assertMaxDeliverExceedsBackoff($configuration);
         $this->assertDuplicateWindowNotExceedingMaxAge($configuration);
+        $this->assertResendOnReconnect($configuration);
         $this->normalizeStorageBackend($configuration);
         $this->normalizeStreamRetention($configuration);
         $this->normalizeStreamDiscard($configuration);
@@ -529,12 +538,8 @@ final class NatsTransportConfigurationBuilder
      */
     private function assertStreamDescriptionLength(array $configuration): void
     {
-        $value = $configuration[TransportOption::STREAM_DESCRIPTION->value] ?? null;
-        if ($value === null) {
-            return;
-        }
-
-        $description = TypeCoercion::stringValue($value);
+        // An unset description reads as '', which is within the limit.
+        $description = TypeCoercion::stringValue($configuration[TransportOption::STREAM_DESCRIPTION->value] ?? null);
         if (strlen($description) > self::MAX_STREAM_DESCRIPTION_LENGTH) {
             throw new InvalidArgumentException(sprintf(
                 'The %s option must not exceed %d characters (got %d): NATS rejects longer descriptions.',
@@ -653,7 +658,9 @@ final class NatsTransportConfigurationBuilder
         }
 
         foreach ($backoff as $value) {
-            if ((!is_int($value) && !is_float($value) && !is_string($value)) || !is_numeric($value) || (float) $value < 0) {
+            // is_numeric() is false for anything but an int, a float or a numeric string, and PHP compares a
+            // numeric string with 0 as a number.
+            if (!is_numeric($value) || $value < 0) {
                 throw new InvalidArgumentException('The backoff option must be a list of non-negative numbers (seconds).');
             }
         }
@@ -690,6 +697,38 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
+     * Validates the two conditions under which resend_on_reconnect does what it says.
+     *
+     * Only the NATS client's own recovery replaces the connection under a send in flight, so without reconnect: true
+     * the option would do nothing, silently. And the copy sent again goes out up to request_timeout after the first:
+     * JetStream drops it only while the first is inside the stream's duplicate window, so a configured window that
+     * is not longer than request_timeout could store the message twice. An unset window leaves the stream's own (2
+     * minutes for a new stream), which cannot be checked here.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function assertResendOnReconnect(array $configuration): void
+    {
+        if (!$this->toBool($configuration[TransportOption::RESEND_ON_RECONNECT->value])) {
+            return;
+        }
+
+        if (!$this->toBool($configuration[TransportOption::RECONNECT->value])) {
+            throw new InvalidArgumentException('The resend_on_reconnect option needs reconnect: true: only the NATS client\'s own recovery sends a publish again on the new connection.');
+        }
+
+        $duplicateWindow = $configuration[TransportOption::STREAM_DUPLICATE_WINDOW->value];
+        $requestTimeout = TypeCoercion::floatValue($configuration[TransportOption::REQUEST_TIMEOUT->value]);
+        if ($duplicateWindow !== null && TypeCoercion::floatValue($duplicateWindow) <= $requestTimeout) {
+            throw new InvalidArgumentException(sprintf(
+                'The stream_duplicate_window option (%ss) must be longer than request_timeout (%ss) with resend_on_reconnect: a publish sent again after the window could be stored twice.',
+                TypeCoercion::stringValue($duplicateWindow),
+                TypeCoercion::stringValue($configuration[TransportOption::REQUEST_TIMEOUT->value]),
+            ));
+        }
+    }
+
+    /**
      * Validates that the de-duplication window does not exceed the stream's max age.
      *
      * NATS rejects a stream whose duplicate_window is larger than a finite max_age
@@ -701,17 +740,13 @@ final class NatsTransportConfigurationBuilder
      */
     private function assertDuplicateWindowNotExceedingMaxAge(array $configuration): void
     {
-        $duplicateWindow = $configuration[TransportOption::STREAM_DUPLICATE_WINDOW->value] ?? null;
-        if ($duplicateWindow === null) {
-            return;
-        }
-
         $maxAge = TypeCoercion::intValue($configuration[TransportOption::STREAM_MAX_AGE->value] ?? 0);
         if ($maxAge <= 0) {
             return;
         }
 
-        $duplicateWindowValue = TypeCoercion::intValue($duplicateWindow);
+        // An unset window reads as 0, which never exceeds a positive max age.
+        $duplicateWindowValue = TypeCoercion::intValue($configuration[TransportOption::STREAM_DUPLICATE_WINDOW->value] ?? null);
         if ($duplicateWindowValue > $maxAge) {
             throw new InvalidArgumentException(sprintf(
                 'The stream_duplicate_window option (%ds) must not exceed stream_max_age (%ds): NATS rejects a duplicate window larger than the stream max age.',
@@ -775,10 +810,7 @@ final class NatsTransportConfigurationBuilder
      */
     private function toNullableString(mixed $value): ?string
     {
-        if ($value === null) {
-            return null;
-        }
-
+        // null is not a scalar either.
         if (!is_string($value) && !is_int($value) && !is_float($value) && !is_bool($value)) {
             return null;
         }
