@@ -149,14 +149,19 @@ as the client needs the seed to sign the server's nonce, but it could be built. 
 `InvalidArgumentException` naming `nkey_seed`. Add the seed or remove the option. Until you do, the earlier error is
 visible even where nothing uses that transport:
 
-- `messenger:stats` showed 0 for it and exited 0. It now exits 1, for all transports.
+- `messenger:stats` showed 0 for it and exited 0. A plain `messenger:stats` now exits 1 and shows no transport; naming the
+  other transports still works.
 - A worker consuming from it and from other transports handled the others. It now stops when it starts.
 - A `catch (\RuntimeException)` around a dispatch to it caught the connection error, and does not catch this one.
 - A service or smoke test that builds the transport fails.
 - A subclass of `NatsTransport` that replaces the protected `$client` with its own signed client must stop passing
   `nkey` or `jwt` here, as its client has them.
 
-> **Tested by:** `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, Behat scenario `Credentials that need or exclude a seed are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). A worker on several transports was measured by hand.
+Two other values that were built before are refused now, in the same way: a `max_reconnect_attempts` over 2147483647, and a
+credential option after a second `?` or a `;` in the DSN query, which was a part of the option before it. A value that
+really holds such text goes in the options, where nothing splits it.
+
+> **Tested by:** `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, Behat scenario `Credentials that need or exclude a seed are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). `messenger:stats` naming a transport, and a worker on several transports, were measured by hand.
 
 ### Logging
 
