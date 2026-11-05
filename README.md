@@ -611,8 +611,8 @@ framework:
                     # nkey_seed: '%env(default::NATS_NKEY_SEED)%'
 ```
 
-On the server, the user is the public key of a pair you generate yourself. `nk -gen user -pubout` prints one: the first
-line is the seed, the second the public key.
+On the server, the user is the public key of a pair you generate yourself. `nsc generate nkey --user` prints one, as does
+`nk -gen user -pubout` from [nkeys](https://github.com/nats-io/nkeys): the first line is the seed, the second the public key.
 
 ```
 authorization {
