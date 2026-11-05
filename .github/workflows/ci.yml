@@ -148,7 +148,7 @@ jobs:
         [ "$APP" = "$ROOT" ] || { echo "::error::The functional test app runs client $APP, the unit tests ran $ROOT"; exit 1; }
 
     - name: Run functional tests
-      timeout-minutes: 25  # Behat suite runs the full matrix (plain/TLS/mTLS) incl. high-volume, large-message and scheduled scenarios
+      timeout-minutes: 25  # Behat suite runs the full matrix (plain/TLS/mTLS/operator mode/token) incl. high-volume, large-message and scheduled scenarios
       run: composer test:functional
 
     # Every examples/*.php must run and pass against the servers started above, the three-server cluster

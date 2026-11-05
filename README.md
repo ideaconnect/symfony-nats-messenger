@@ -1552,7 +1552,7 @@ Functional tests require a running NATS server with JetStream enabled:
 composer test:functional:setup
 
 # Start the NATS test servers in Docker, with the three-server cluster the examples use (generates the test
-# TLS certificates first, which needs openssl)
+# TLS certificates first, which needs openssl, and the test NKey and JWT credentials)
 composer nats:start
 
 # Run functional tests

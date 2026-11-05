@@ -67,7 +67,10 @@ tests/
 │   │   ├── nats_term.feature                   # TERM failure handler
 │   │   ├── nats_delayed.feature                # Scheduled/delayed messages
 │   │   ├── nats_tls.feature                    # TLS connections
-│   │   └── nats_mtls.feature                   # mTLS with client certificates
+│   │   ├── nats_mtls.feature                   # mTLS with client certificates
+│   │   ├── nats_nkey.feature                   # Logins with an NKey seed, and credentials refused when built
+│   │   ├── nats_jwt.feature                    # Logins with a JWT and its seed on a server in operator mode
+│   │   └── nats_token.feature                  # Logins with a token
 │   └── tests/Behat/NatsSetupContext.php        # All step definitions
 └── nats/                                       # Docker Compose + NATS configs for testing
     ├── docker-compose.yaml

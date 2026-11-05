@@ -149,4 +149,4 @@ composer nats:stop               # stop NATS
 
 - Default branch: `main`. Author commits as the repository owner, never as the agent.
 - Tasks and findings are tracked as **GitHub issues** (`gh issue …`).
-- CI matrix: PHP `8.2` and `8.5`; functional suite runs against plain / TLS / mTLS NATS in Docker.
+- CI matrix: PHP `8.2` and `8.5`; functional suite runs against plain / TLS / mTLS / operator-mode / token NATS in Docker.

@@ -47,7 +47,8 @@ tests/
 │   ├── PhpProcess.php                          # runs a PHP script in a child process
 │   ├── RttCountingNatsClient.php               # the real client, counting the transport's connection checks
 │   ├── StrictHeaderNameSerializer.php          # a serializer that reads header names as strings under strict types
-│   └── SubscriptionLimitNatsServer.php         # a scripted server with a stream, a pull consumer and a subscription limit
+│   ├── SubscriptionLimitNatsServer.php         # a scripted server with a stream, a pull consumer and a subscription limit
+│   └── TestNkeys.php                           # NKeys built when the tests run, so that no private key is committed
 ├── unit/                                       # PHPUnit 11 to 13 - fast, no live NATS required
 │   ├── IDCTNatsMessengerBundleTest.php         # the bundle in a compiled kernel: factory discovery, the README serializer
 │   ├── FunctionalSuiteConfigTest.php           # the Behat config fails the functional suite on undefined steps
@@ -69,7 +70,7 @@ tests/
 │       ├── AbstractEnveloperSerializerTest.php
 │       └── IgbinarySerializerTest.php
 ├── functional/                                 # Behat - requires a running NATS server (Docker)
-│   ├── features/*.feature                      # setup, batching, consumer, nak, term, delayed, tls, mtls, stream_limits
+│   ├── features/*.feature                      # setup, batching, consumer, nak, term, delayed, tls, mtls, stream_limits, nkey, jwt, token
 │   ├── tests/Behat/NatsSetupContext.php        # all step definitions
 │   └── src/, config/, bin/, public/            # a minimal Symfony app exercising the transport end-to-end
 └── nats/                                       # Docker Compose + NATS configs + test TLS certificate generator
