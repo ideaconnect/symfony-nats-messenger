@@ -61,8 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the value of the option before it and went where that goes: into the TLS library's error for a file name, or to
   the server, which stores it, for a consumer name, a stream description or a placement. Only the DSN query is checked,
   for `nkey_seed`, `nkey`, `jwt`, `token`, `username`, `password` and `tls_key_passphrase`, also with a space next to the
-  name or in another case, as nothing splits a value in the options. An encoded `&` or a double encoding stays a part of the
-  value.
+  name or in another case, as nothing splits a value in the options. An encoded `&`, a double encoding, a name with brackets
+  or a dot, a literal control character and a space outside ASCII stay a part of the value.
 
 ### Testing & CI
 - The bundle test expects the wording of Symfony Messenger 7.4.23 and 8.1.11, whose change had turned `composer test` red.

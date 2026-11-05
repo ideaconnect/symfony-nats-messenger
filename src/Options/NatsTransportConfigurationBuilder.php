@@ -287,8 +287,9 @@ final class NatsTransportConfigurationBuilder
      * is not repeated. An option in the options map is not checked, as nothing splits it.
      *
      * The query is read as parse_str() reads it, with + as a space, and a name may have a space next to it or be in another
-     * case, as a mistake does not keep to the spelling. An encoded & or a double encoding is not checked: nobody types those
-     * by mistake, and they stay a part of the value.
+     * case, as a mistake does not keep to the spelling. An encoded & or a double encoding, a name with brackets or a dot, a
+     * literal control character, which parse_url() has already turned into _, and a space outside ASCII are not checked:
+     * nobody types those by mistake, and they stay a part of the value.
      *
      * @throws InvalidArgumentException When the query holds such a credential.
      */
