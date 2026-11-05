@@ -3,9 +3,10 @@ Feature: JWT authentication
   in operator mode, which has no list of users. It trusts an operator, and
   with it the accounts the operator signed. Verification: the stream is set
   up, and messages are sent and consumed over connections logged in that way,
-  also with a bearer JWT and across a server restart. The server refuses a JWT
-  with a seed that is not its user's, a seed with no JWT and an expired JWT,
-  and an account without JetStream gets the server's own error from setup.
+  with the values read from the environment too, with a bearer JWT and across
+  a server restart. The server refuses a JWT with a seed that is not its
+  user's, a seed with no JWT and an expired JWT, and an account without
+  JetStream gets the server's own error from setup.
 
   Background:
     Given the NATS server in operator mode is running
@@ -13,6 +14,17 @@ Feature: JWT authentication
   @jwt
   Scenario: Messages are sent and consumed by a user that logs in with a JWT and its seed
     Given I have a messenger transport on that server with the user's JWT and seed
+    And the NATS stream is set up
+    And the test files directory is clean
+    When I send 5 messages to the transport
+    Then the messenger stats should show 5 messages waiting
+    When I start a messenger consumer
+    And I wait for messages to be consumed
+    Then all 5 messages should be consumed
+
+  @jwt
+  Scenario: A JWT and its seed read from the environment log in, in the form the README's configuration shows
+    Given I have a messenger transport on that server with the user's JWT and seed read from the environment
     And the NATS stream is set up
     And the test files directory is clean
     When I send 5 messages to the transport

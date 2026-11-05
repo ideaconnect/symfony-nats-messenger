@@ -71,6 +71,9 @@ class NatsSetupContext implements Context
     private bool $useJwtServer = false;
     private bool $useTokenServer = false;
     private ?Process $idleSendProcess = null;
+    /** @var list<string> The variables of the commands' environment this scenario set. */
+    private array $commandEnvironment = [];
+    private ?string $seedFile = null;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
     private string $testFilesDir;
@@ -1758,6 +1761,21 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * A form the README's configuration shows: the seed read from a variable of the commands' environment, or from a file
+     * that variable names, ending in a line end as a mounted secret may.
+     */
+    #[Given('I have a messenger transport configured with the NKey seed through :form')]
+    public function iHaveAMessengerTransportConfiguredWithTheNkeySeedThrough(string $form): void
+    {
+        $seed = $this->credentials()['nkey_user']['seed'];
+        $this->seedFile = (string) tempnam(sys_get_temp_dir(), 'nats-messenger-seed-');
+        file_put_contents($this->seedFile, $seed . "\n");
+        $this->setCommandEnvironment('NATS_NKEY_SEED', $seed);
+        $this->setCommandEnvironment('NATS_NKEY_SEED_FILE', $this->seedFile);
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $form]);
+    }
+
+    /**
      * A query typed with a second ?, which leaves the seed in the value of the option before it: there, in the transport's
      * DSN, stream_max_age.
      */
@@ -2177,6 +2195,18 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * The form the README's configuration shows.
+     */
+    #[Given('I have a messenger transport on that server with the user\'s JWT and seed read from the environment')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersJwtAndSeedReadFromTheEnvironment(): void
+    {
+        $user = $this->credentials()['jwt_user'];
+        $this->setCommandEnvironment('NATS_USER_JWT', $user['jwt']);
+        $this->setCommandEnvironment('NATS_NKEY_SEED', $user['seed']);
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => '%env(NATS_USER_JWT)%', 'nkey_seed' => '%env(NATS_NKEY_SEED)%']);
+    }
+
+    /**
      * The other seed is a valid one, of a user no server lists, so the only thing wrong with this login is that the JWT
      * is not that user's.
      */
@@ -2553,6 +2583,16 @@ class NatsSetupContext implements Context
             }
         }
 
+        foreach ($this->commandEnvironment as $name) {
+            unset($_ENV[$name]);
+        }
+        $this->commandEnvironment = [];
+
+        if ($this->seedFile !== null) {
+            unlink($this->seedFile);
+            $this->seedFile = null;
+        }
+
         // Remove temporary config file and clear cache
         $configFile = __DIR__ . '/../../config/packages/test_messenger.yaml';
         if (file_exists($configFile)) {
@@ -2884,6 +2924,15 @@ class NatsSetupContext implements Context
                 usleep(500000);
             }
         }
+    }
+
+    /**
+     * Sets a variable of the environment the scenario's commands run in: Process passes $_ENV on to them. cleanup() removes it.
+     */
+    private function setCommandEnvironment(string $name, string $value): void
+    {
+        $_ENV[$name] = $value;
+        $this->commandEnvironment[] = $name;
     }
 
     /**

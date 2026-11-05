@@ -48,6 +48,9 @@ final class IDCTNatsMessengerBundleTest extends TestCase
     /** The environment variable the tests of the README's nkey_seed forms set. */
     private const SEED_VARIABLE = 'NATS_MESSENGER_TEST_NKEY_SEED';
 
+    /** The environment variable the test of the README's jwt form sets. */
+    private const JWT_VARIABLE = 'NATS_MESSENGER_TEST_USER_JWT';
+
 
     /** Makes SignedMessage a message type Messenger signs, as `sign: true` on a handler does. */
     private const SIGNED_MESSAGE_HANDLER = <<<'YAML'
@@ -351,6 +354,60 @@ final class IDCTNatsMessengerBundleTest extends TestCase
     {
         $options = $this->clientOptionsOfATransportWithTheSeed('%env(default::' . self::SEED_VARIABLE . ')%', TestNkeys::seed());
 
+        $this->assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function theReadmesRequiredSeedFormGivesASignerWhenTheVariableHasASeed(): void
+    {
+        $options = $this->clientOptionsOfATransportWithTheSeed('%env(' . self::SEED_VARIABLE . ')%', TestNkeys::seed());
+
+        $this->assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+    }
+
+    /**
+     * A mounted secret may end in a line end, which is why the README's form has the `trim` processor.
+     */
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function theReadmesSeedFileFormGivesASignerWhenTheFileHasASeed(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'nats-messenger-seed-');
+        $this->assertIsString($file);
+        file_put_contents($file, TestNkeys::seed() . "\n");
+
+        try {
+            $options = $this->clientOptionsOfATransportWithTheSeed('%env(trim:file:' . self::SEED_VARIABLE . ')%', $file);
+        } finally {
+            unlink($file);
+        }
+
+        $this->assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function theReadmesJwtFormGivesTheClientTheJwtAndASigner(): void
+    {
+        $kernel = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => ['dsn' => self::NATS_DSN, 'options' => [
+                'jwt' => '%env(' . self::JWT_VARIABLE . ')%',
+                'nkey_seed' => '%env(' . self::SEED_VARIABLE . ')%',
+            ]]]],
+        );
+
+        $_ENV[self::JWT_VARIABLE] = 'a.user.jwt';
+        $_ENV[self::SEED_VARIABLE] = TestNkeys::seed();
+
+        try {
+            $options = self::clientOptionsOf($kernel->testContainer()->get('messenger.transport.nats'));
+        } finally {
+            unset($_ENV[self::JWT_VARIABLE], $_ENV[self::SEED_VARIABLE]);
+        }
+
+        $this->assertSame('a.user.jwt', $options->jwt);
         $this->assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
     }
 

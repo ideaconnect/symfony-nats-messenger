@@ -34,6 +34,23 @@ Feature: NKey authentication
     Then all 5 messages should be consumed
 
   @nkey
+  Scenario Outline: A seed read from the environment logs in, in each form the README's configuration shows
+    Given I have a messenger transport configured with the NKey seed through "<form>"
+    And the NATS stream is set up
+    And the test files directory is clean
+    When I send 5 messages to the transport
+    Then the messenger stats should show 5 messages waiting
+    When I start a messenger consumer
+    And I wait for messages to be consumed
+    Then all 5 messages should be consumed
+
+    Examples:
+      | form                                 |
+      | %env(NATS_NKEY_SEED)%                |
+      | %env(trim:file:NATS_NKEY_SEED_FILE)% |
+      | %env(default::NATS_NKEY_SEED)%       |
+
+  @nkey
   Scenario: An nkey option that repeats the seed's public key logs in
     Given I have a messenger transport configured with an NKey seed and its public key
     And the NATS stream is set up

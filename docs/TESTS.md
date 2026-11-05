@@ -107,7 +107,8 @@ transport's serializer. Building a NATS transport opens no connection, so no ser
 | **The README's setup without the bundle** | `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` (its two "only without the bundle" services.yaml snippets and its igbinary example, in an application without the bundle) |
 | **One id for the serializer: Messenger wraps it for signing once, so a signed message decodes** | `aSignedMessageSurvivesTheSerializerUnderEveryIdTheBundleGivesIt` (one transport per id the bundle gives the serializer; Symfony 7.4+, needs igbinary) |
 | **The application's `logger` service reaches the NATS client of every transport, and the client gets none without it** | `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel` |
-| **The README's `nkey_seed` forms: `default::` means no seed for an unset or empty variable, and the required forms are refused when empty** | `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile` |
+| **The README's `nkey_seed` forms: each gives a signer for a seed, `default::` means no seed for an unset or empty variable, and the required forms are refused when empty** | `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesSeedFileFormGivesASignerWhenTheFileHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile` |
+| **The README's `jwt` form** | `theReadmesJwtFormGivesTheClientTheJwtAndASigner` |
 
 The functional Behat suite also exercises the bundle end-to-end: the test app enables it in
 `config/bundles.php` and every scenario relies on its service registration.
@@ -359,7 +360,7 @@ see `tests/nats/auth/README.md`.
 | Feature | Scenarios |
 |---------|-----------|
 | **NKey seed, no user or password** | Messages are sent and consumed by a user that authenticates with an NKey seed |
-| **The other forms the README shows** | A seed in the DSN query logs in as well; An nkey option that repeats the seed's public key logs in |
+| **The other forms the README shows** | A seed read from the environment logs in, in each form the README's configuration shows (`%env(NATS_NKEY_SEED)%`, `%env(trim:file:NATS_NKEY_SEED_FILE)%`, `%env(default::NATS_NKEY_SEED)%`); A seed in the DSN query logs in as well; An nkey option that repeats the seed's public key logs in |
 | **TLS and mTLS** | A seed logs in over TLS; A seed logs in over mTLS, next to the client certificate |
 | **Every new connection signs a new nonce** | A worker that logs in with a seed keeps consuming across a server restart (the worker holds a connection before the restart, and the scenario checks that it reconnected) |
 | **The server checks the seed** | A seed the server does not know is refused by the server (the server's `Authorization Violation`) |
@@ -374,7 +375,7 @@ at `composer nats:start`, see `tests/nats/auth/README.md`.
 
 | Feature | Scenarios |
 |---------|-----------|
-| **`jwt` with `nkey_seed`** | Messages are sent and consumed by a user that logs in with a JWT and its seed |
+| **`jwt` with `nkey_seed`** | Messages are sent and consumed by a user that logs in with a JWT and its seed; A JWT and its seed read from the environment log in, in the form the README's configuration shows |
 | **A bearer JWT** | A bearer JWT logs in with its seed |
 | **Every new connection signs a new nonce** | A worker that logs in with a JWT keeps consuming across a server restart (the worker holds a connection before the restart, and the scenario checks that it reconnected) |
 | **A value that is not a JWT** | A value that is not a JWT is refused when the transport is built, and no seed is printed (the seed, and the text of a `.creds` file, in the `jwt` option) |

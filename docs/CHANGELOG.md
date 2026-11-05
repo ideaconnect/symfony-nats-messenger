@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and generates the NKey and JWT credentials with `tests/nats/auth/generate.sh`, which needs docker. None of them is
   committed, for the reason the test TLS keys are not (#9). New Behat scenarios and the examples `nkey-login.php`,
   `jwt-login.php` and `token-login.php` send and consume through each login and expect the server's
-  `Authorization Violation` for a wrong credential, in both CI jobs. They also cover a seed over TLS and mTLS, a bearer JWT,
+  `Authorization Violation` for a wrong credential, in both CI jobs. They also cover a seed and a JWT read from the
+  environment in the README's `%env()%` forms, a seed over TLS and mTLS, a bearer JWT,
   an expired JWT and an account without JetStream, a server restart under the NKey and JWT logins, and credentials refused when the
   transport is built, through `messenger:setup-transports`, `messenger:stats` and `messenger:consume`.
   `LoginCombinationsTest` adds the check to `composer test`, with no Docker: all 32 combinations of credentials are refused
