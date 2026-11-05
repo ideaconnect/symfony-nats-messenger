@@ -110,8 +110,8 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
-     * A parameter under one of these names holds the DSN or its query, the merged options, a signer, or one value or name
-     * that may contain them, whatever the method does with it. A new method that takes one and can throw must not bring the secrets
+     * A parameter under one of these names holds the DSN or its query, the merged options, a credential or its signer, or one
+     * value or name that may contain them, whatever the method does with it. A new method that takes one and can throw must not bring the secrets
      * back into the frames.
      */
     public function testEveryParameterThatCanHoldASecretIsMarkedSensitive(): void
@@ -126,7 +126,7 @@ final class SecretsInExceptionsTest extends TestCase
         foreach ($methods as $method) {
             foreach ($method->getParameters() as $parameter) {
                 if (
-                    in_array($parameter->getName(), ['dsn', 'query', 'options', 'configuration', 'components', 'signer', 'name', 'value'], true)
+                    in_array($parameter->getName(), ['dsn', 'query', 'options', 'configuration', 'components', 'signer', 'name', 'value', 'seed', 'jwt', 'username', 'password', 'token'], true)
                     && $parameter->getAttributes(\SensitiveParameter::class) === []
                 ) {
                     $unmarked[] = $method->getDeclaringClass()->getShortName() . '::' . $method->getName() . '($' . $parameter->getName() . ')';
