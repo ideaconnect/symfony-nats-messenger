@@ -140,7 +140,7 @@ The functional Behat suite also exercises the bundle end-to-end: the test app en
 | **Authentication** | `testBuildUsesDsnCredentialsAndDefaultPortWhenOverridesAreAbsent`, `testBuildNormalizesStringBooleanAndNullableStringOptions`, `testBuildNormalizesIntegerBooleanOptions`, `testBuildPassesScalarCredentialOptionsAsStrings` (int, float, true), `testBuildFallsBackToTheDsnCredentialsForNonScalarOptions` |
 | **NKey authentication (`nkey_seed`)** | `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey` (a signer and the derived public key reach the client, no user or password), `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery`, `testBuildWithANullNkeySeedHasNoSigner`; refused when the transport is built: `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt` (the message never contains the seed, and no previous exception holds it), `testBuildRejectsASeedThatIsNotAUserSeed` (account, operator, server, cluster, curve), `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString` (empty, blank, boolean, number, list, object), `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken` (from the DSN or the options; the error repeats no value), `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt` (a child process with the client's sodium function disabled); without a seed no signer is passed: `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`. The README's `%env()%` forms are under Bundle, and what a failed build leaves in its exception under Secrets in Exceptions |
 | **The `nkey` option** | `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey` (the signer stays), `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey` (the error names the seed's key and never repeats the value, which may be a seed), `testBuildRejectsAnNkeyWithoutASeed` (the same), `testTheNkeyOptionIsNotDeprecated` (the seed alone, and `nkey` repeating its key) |
-| **The `jwt` option** | `testBuildPassesAJwtWithItsSeedToTheClient` (the JWT, the seed's public key and the signer reach the client; the suite has no operator-mode server), `testBuildRejectsAJwtWithoutASeed` |
+| **The `jwt` option** | `testBuildPassesAJwtWithItsSeedToTheClient` (the JWT, the seed's public key and the signer reach the client; the login itself is in the functional suite), `testBuildRejectsAJwtWithoutASeed` |
 | **Option coercion edge cases** | `testBuildWithNonScalarOptionsCoerceToSafeDefaults`, `testBuildCoercesNonZeroIntegerBooleanOptionToTrue`, `testBuildCoercesUppercaseBooleanStringToTrue`, `testBuildWithPathMissingTopicThrowsException` |
 | **Scheduled messages** | `testBuildWithScheduledMessagesEnabledSetsFlag`, `testBuildWithScheduledMessagesDisabledByDefault`, `testBuildWithScheduledMessagesFromDsnQueryString` |
 | **Acknowledgement (ack_sync)** | `testBuildWithAckSyncEnabledSetsFlag`, `testBuildWithAckSyncDisabledByDefault`, `testBuildWithAckSyncFromDsnQueryString` |
@@ -164,8 +164,32 @@ test keeps the secret out of its own frames, which PHP records too.
 | **A new method cannot bring them back** | `testEveryParameterThatCanHoldASecretIsMarkedSensitive` (reflection over the builder, the factory and the constructor) |
 | **A mistyped seed** | `testAMistypedSeedStaysOutOfTheFailure` (the client's exception, whose frames hold the value, is not chained) |
 | **An `nkey` that contradicts the seed** | `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure` (neither the seed nor the signer's secret key) |
-| **A query typed with `&` instead of `?`** | `testASeedTypedIntoTheDsnPathStaysOutOfTheError` (the error does not repeat a stream or topic name) |
+| **A query typed with `&`, `;` or a second `?`** | `testASeedTypedIntoTheDsnPathStaysOutOfTheError` (the stream or topic name error), `testASeedTypedIntoAnOptionsValueStaysOutOfTheError` (the errors that print an option's value) |
+| **A plain mistake is still repeated** | `testAPlainMistakeIsRepeatedInTheError` (names and values of at most 50 plain characters), `testAValueLongerThanTheLimitIsNotRepeated` |
 | **After a build that worked** | `testTheConfigurationDoesNotKeepTheTextOfTheSeed` (a dump of the configuration does not print it; the client's signer still holds the raw key) |
+
+### Login Combinations (`tests/unit/LoginCombinationsTest.php`)
+
+The boundary between the transport and the client, on every `composer test`: the options the builder really builds, taken by
+the real client to the scripted server, with no Docker. The other unit tests stop at the values reaching `NatsOptions`, which
+is how `jwt` and `nkey` shipped unable to log in. This cannot show that a server accepts a login: the functional suite and
+the examples do. With the client's `encodeConnect` made to ignore credentials or to throw on JWT and NKey, these tests fail.
+
+| Feature | Tests |
+|---------|-------|
+| **All 32 combinations of a user in the DSN, a token, `jwt`, `nkey` and `nkey_seed`** | `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect` (refused when built, by the rule the test states, or a CONNECT carrying exactly those credentials, with a signature that verifies against the seed's public key) |
+| **A username and password as options** | `testAUsernameAndPasswordAsOptionsReachTheServerInTheConnect` |
+| **A seed on a server that sends no nonce** | `testASeedOnAServerThatSendsNoNonceCannotLogIn` |
+
+### Test NKeys (`tests/unit/TestNkeysTest.php`)
+
+`tests/Support/TestNkeys.php` builds the NKeys of the unit tests when they run, so that no private key sits in the repository
+(#9). A mistake in it would make a transport test pass or fail for the wrong reason.
+
+| Feature | Tests |
+|---------|-------|
+| **They are real NKeys** | `testTheClientReadsTheKeysAndDerivesTheSamePublicKey` (all six key types) |
+| **A name gives one key** | `testANameAlwaysGivesTheSameKeyAndAnotherNameAnother` |
 
 ### Configuration (`tests/unit/Options/NatsTransportConfigurationTest.php`)
 
@@ -328,9 +352,41 @@ processes through `tests/Support/PhpProcess.php`, and the bootstrap tests are sk
 
 ### NKey Authentication (`tests/functional/features/nats_nkey.feature`)
 
+The NKey user is in `tests/nats/nats.conf`, `nats-tls.conf` and `nats-mtls.conf`. Its key is generated at `composer nats:start`,
+see `tests/nats/auth/README.md`.
+
 | Feature | Scenarios |
 |---------|-----------|
-| **NKey seed, no user or password** | Messages are sent and consumed by a user that authenticates with an NKey seed (the NKey user in `tests/nats/nats.conf`) |
+| **NKey seed, no user or password** | Messages are sent and consumed by a user that authenticates with an NKey seed |
+| **The other forms the README shows** | A seed in the DSN query logs in as well; An nkey option that repeats the seed's public key logs in |
+| **TLS and mTLS** | A seed logs in over TLS; A seed logs in over mTLS, next to the client certificate |
+| **Every new connection signs a new nonce** | A worker that logs in with a seed keeps consuming across a server restart |
+| **The server checks the seed** | A seed the server does not know is refused by the server (the server's `Authorization Violation`) |
+| **A server with no NKey users** | A seed on a server without NKey users is refused by the client, as there is no nonce to sign |
+| **Refusals when the transport is built, seen from the console** | Credentials that need or exclude a seed are refused when the transport is built, on every command (`messenger:setup-transports`, `messenger:stats` and `messenger:consume` each exit non-zero with the error, for a JWT and no seed, a public NKey and no seed, and a seed next to a password) |
+| **Values that cannot log in, and no seed in the output** | A value that cannot log in is refused when the transport is built, and no seed is printed (an empty seed, a mistyped one, an account's seed, a seed in `nkey`, another user's public key) |
+
+### JWT Authentication (`tests/functional/features/nats_jwt.feature`)
+
+Runs against `nats-jwt` (port 4229, `tests/nats/nats-jwt.conf`), a test server in operator mode. Its credentials are generated
+at `composer nats:start`, see `tests/nats/auth/README.md`.
+
+| Feature | Scenarios |
+|---------|-----------|
+| **`jwt` with `nkey_seed`** | Messages are sent and consumed by a user that logs in with a JWT and its seed |
+| **A bearer JWT** | A bearer JWT logs in with its seed |
+| **Every new connection signs a new nonce** | A worker that logs in with a JWT keeps consuming across a server restart |
+| **What the server refuses** | A JWT with another user's seed is refused by the server; A seed with no JWT is refused by the server; An expired JWT is refused by the server (each the server's `Authorization Violation`) |
+| **An account without JetStream** | A user of an account without JetStream gets the server's error from setup |
+
+### Token Authentication (`tests/functional/features/nats_token.feature`)
+
+Runs against `nats-token` (port 4230, `tests/nats/nats-token.conf`), which has a server of its own because `nats-server` refuses a token next to a list of users.
+
+| Feature | Scenarios |
+|---------|-----------|
+| **`token`** | Messages are sent and consumed by a client that logs in with a token |
+| **The server checks the token** | A wrong token is refused by the server (the server's `Authorization Violation`) |
 
 ### Type Coercion (`tests/functional/features/nats_type_coercion.feature`)
 
@@ -387,6 +443,9 @@ supported NATS. Each prints `OK ...` when what it shows held, and fails otherwis
 | `request-timeout.php` | against a `no_ack` stream, a send with `request_timeout: 1` gives up after about 1 s although the message is stored, and sending it again with the same deduplication id stores nothing more |
 | `keepalive.php` | with `keepalive()` called from a SIGALRM handler every second, a message handled for 5 s on `ack_wait: 2` is not redelivered to a second worker (on 5.2.1 the first alarm broke the worker) |
 | `connection-checks.php` | sends after idling past `ping_after_idle` and after `close()` both succeed |
+| `jwt-login.php` | on the operator-mode server, the user's JWT and seed run `setup()`, a send, the queue depth, a get and an ack; the JWT with another user's seed and an expired JWT get `Authorization Violation`; the JWT alone is refused when the transport is built |
+| `nkey-login.php` | on the plain server, the seed alone runs the same; a seed the server does not list gets `Authorization Violation`; the public key alone and a seed next to a password are refused when the transport is built. Prints `SKIP` when `NATS_DSN` is set, as the examples then run elsewhere and the NKey user exists only on the test server |
+| `token-login.php` | on the token server, the token runs the same; a wrong token gets `Authorization Violation` |
 | `reconnect.php` | with `reconnect: true`, `auto_setup` and a memory stream, `docker restart nats_test` during a pull: that pull and every pull until the restart is over end empty without an exception (`409 Server Shutdown`, then the client's recovery), the message sent once the server is back is stored in the recreated stream and received, and the logger the transport was given received the client's `Reconnected` |
 | `cluster-failover.php` | on the three-server test cluster, an R3 stream; a worker with `reconnect: true` whose DSN names only the stream's leader receives 2 of 4 messages, `docker stop` stops that server, and the worker receives the other 2 and one it sends afterwards without an exception, through a server it learned from the cluster; another server leads the stream; the logger received `Reconnected` |
 | `handler-failing-during-failover.php` | on the three-server test cluster, once per retry mode: an R3 stream with `nak_delay: 1` and `ack_wait: 30`; Symfony's Worker and retry listener with FrameworkBundle's default strategy, the worker's DSN naming only the stream's leader with `reconnect: true`; the handler stops that server with `docker stop` and fails on its first attempt: it runs again on the same worker within 10 s of the failure (in nats mode not before 0.9 s), nothing is pending or undelivered and the logger received `Reconnected`. Fails on 5.7.1 in nats mode, where the NAK went into the connection the server had closed and the message came back only after `ack_wait` (1 attempt within the worker's 15 s), and with client 2.27.2 in symfony mode, where the retry copy went into that connection and its publish ended the worker with `TimeoutException` |
@@ -394,7 +453,9 @@ supported NATS. Each prints `OK ...` when what it shows held, and fails otherwis
 | `stream-placement.php` | on the three-server test cluster (two servers tagged `disk:ssd`, one `disk:hdd`): `stream_replicas: 2` with `stream_placement_tags: disk:ssd` puts the replicas on the two ssd servers; `stream_placement_cluster` set alone stores `{cluster, tags}` with the live tags and the replicas stay; one replica on `disk:hdd` in one update fails `setup()` with "can not move and scale" and the staging advice, leaving the stream as it was; staged (replicas first, then the tags) the stream moves to the hdd server with its 3 messages. The staged step from 2 replicas to 1 is where NATS moves the consumer, and on NATS 2.10 a consumer request of that `setup()` could meet the moment without a consumer leader (err_code 10008), which failed the example in CI before `setup()` asked again |
 
 The cluster examples run against the cluster `composer nats:start` starts next to the single servers
-(`tests/nats/nats-cluster*.conf`, ports 4226 to 4228, see `examples/README.md`), in both CI jobs.
+(`tests/nats/nats-cluster*.conf`, ports 4226 to 4228, see `examples/README.md`), in both CI jobs. The login examples
+run against the server that knows their credentials, and print `SKIP` when it is not running or the credentials
+`composer nats:start` generates are missing. CI runs them with no `NATS_DSN`, and strict mode turns a `SKIP` into a failure.
 
 ### Automatic Reconnect (`tests/functional/features/nats_reconnect.feature`)
 
@@ -565,9 +626,9 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 | `deduplicate: false / true` | `testReadmeConfigurationOptionsAreAccepted`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, Behat scenario `Distinct messages are all stored with the deduplicate option` |
 | `scheduled_messages: false / true` | `testReadmeConfigurationOptionsAreAccepted`, `testReadmeScheduledMessagesDsnEnablesFeature`, `testBuildWithScheduledMessagesEnabledSetsFlag` |
 | TLS options (all) | `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, functional TLS/mTLS scenarios |
-| Auth options (token, username, password) | `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions` |
-| NKey Authentication (`nkey_seed`) | `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed` |
-| JWT Users (`jwt` with `nkey_seed`) | `testBuildPassesAJwtWithItsSeedToTheClient`, `testBuildRejectsAJwtWithoutASeed` |
+| Auth options (token, username, password) | `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, for the token also Behat scenario `Messages are sent and consumed by a client that logs in with a token` and the example `token-login.php` |
+| NKey Authentication (`nkey_seed`) | `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, the NKey scenarios above (real logins on plain, TLS and mTLS servers), `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the example `nkey-login.php` |
+| JWT Users (`jwt` with `nkey_seed`) | `testBuildPassesAJwtWithItsSeedToTheClient`, `testBuildRejectsAJwtWithoutASeed`, the JWT scenarios above (real logins on an operator-mode server), `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the example `jwt-login.php` |
 | Multi-subject example (shared stream, per-transport options) | `testReadmeMultiSubjectOptionsAreAccepted` |
 | `stream_max_age: 2592000` (audit, 30 days) | `testReadmeAuditTransportOptionsAreAccepted` |
 | Cluster example (`stream_replicas: 3`, `reconnect: true`, `max_reconnect_attempts: 20`, `tls_required: true`, `tls_ca_file`) | `testReadmeClusterOptionsAreAccepted`, the examples `cluster-failover.php` and `stream-placement.php` |
