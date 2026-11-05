@@ -87,7 +87,7 @@ tests/
 - **Retry handling**: `retry_handler` - `symfony` (TERM, default) or `nats` (NAK)
 - **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers
 - **TLS/mTLS**: full TLS config options including client certificates
-- **Authentication**: username/password, token, JWT, NKey
+- **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`)
 - **Serialization**: igbinary (default with fallback) or custom via `AbstractEnveloperSerializer`
 - **Publish validation**: JetStream publish responses are parsed and validated
 - **Connection checks**: a lost connection is dialled again; `ping_after_idle` PINGs a connection that sat idle, or that an operation failed on, before reuse, and before the NAK or TERM of a failed delivery

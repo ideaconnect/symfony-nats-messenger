@@ -184,6 +184,18 @@ apply only with the option on.
   contains a closure. A custom serializer takes precedence; otherwise choose igbinary if installed
   or `PhpSerializer` with a warning. Both defaults deserialize PHP objects and require trusted
   subjects. Keep the documented security guidance intact.
+- **NKey and JWT (#89):** `nkey_seed` builds the client's `NkeySeedSigner`, and the public key sent is derived from
+  it. Only null means no seed. A blank or non-string value, an invalid seed and a seed that is not a user key are refused
+  at build, as are a username, password or token next to it (a server with both kinds of users ignores them without a
+  word) and `jwt` or `nkey` without it (the client throws before the CONNECT without a signer, on every server, and for
+  a bearer JWT too, though the server would not check the signature). `nkey` stays as an optional check: it must equal
+  the derived key, its error prints the derived key and never the value. The seed is unset from the option map once the
+  signer exists. Keep the client's exception out of `previous`: its frames hold the seed, and the client marks nothing.
+  Every `$dsn`, `$options`, `$configuration` and `$components` parameter on the build path is `#[\SensitiveParameter]`,
+  guarded by reflection in `SecretsInExceptionsTest`. Not fixed, in the client: `NkeySeedSigner`'s `secretKey` prints in a
+  dump and its first 32 bytes are the seed; its frames and `encodeConnect`'s are unmarked; the wording of a seed on a
+  server with no nonce, which `reconnect: true` retries for about 43 s. Measured by hand, not in the suite: JWT logins on
+  an operator-mode server, NATS 2.9.25 to 2.15.1, and failover, TLS and mTLS with a seed.
 - **Stats:** consumer `num_pending + num_ack_pending`, falling back to stream messages and then 0.
   Stream count can include already acknowledged messages; outage and empty queue both read as 0.
   A failed initial connection gets one dial attempt, not a second for the fallback (#54).
