@@ -488,6 +488,20 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic?' . $query);
     }
 
+    /**
+     * The merge keeps an explicit null, as for every option. The README warns about it, as its options block lists
+     * nkey_seed: null.
+     */
+    public function testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?nkey_seed=' . self::TEST_NKEY_SEED,
+            ['nkey_seed' => null]
+        );
+
+        self::assertNull($this->extractNatsOptions($configuration->client)->nonceSigner);
+    }
+
     public function testBuildWithANullNkeySeedHasNoSigner(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
