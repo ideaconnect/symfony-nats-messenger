@@ -27,7 +27,7 @@ namespace IDCT\NatsMessenger\Options;
  * **Provisioning:** AUTO_SETUP
  * **TLS:** TLS_REQUIRED, TLS_HANDSHAKE_FIRST, TLS_CA_FILE, TLS_CERT_FILE, TLS_KEY_FILE,
  *          TLS_KEY_PASSPHRASE, TLS_PEER_NAME, TLS_VERIFY_PEER
- * **Authentication:** TOKEN, JWT, NKEY, USERNAME, PASSWORD
+ * **Authentication:** TOKEN, JWT, NKEY, NKEY_SEED, USERNAME, PASSWORD
  */
 enum TransportOption: string
 {
