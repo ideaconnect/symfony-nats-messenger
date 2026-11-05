@@ -220,6 +220,73 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
+     * @return iterable<string, array{string}>
+     */
+    public static function optionsAMistypedQueryCanEndUpIn(): iterable
+    {
+        $dsn = 'nats://localhost:4222/test-stream/test-topic';
+
+        yield 'a second ? after a list of allowed values' => [$dsn . '?retry_handler=nats?nkey_seed=' . self::PLACEHOLDER];
+        yield 'a ; after a list of allowed values' => [$dsn . '?replay_policy=instant;nkey_seed=' . self::PLACEHOLDER];
+        yield 'a ; after stream_storage' => [$dsn . '?stream_storage=file;nkey_seed=' . self::PLACEHOLDER];
+        yield 'a ; after a boolean' => [$dsn . '?stream_deny_delete=true;nkey_seed=' . self::PLACEHOLDER];
+    }
+
+    /**
+     * Typed with a second ? or a ; the seed stays in the value of the option before it, and those errors print the value.
+     */
+    #[DataProvider('optionsAMistypedQueryCanEndUpIn')]
+    public function testASeedTypedIntoAnOptionsValueStaysOutOfTheError(string $dsnWithAPlaceholder): void
+    {
+        $dsn = str_replace(self::PLACEHOLDER, TestNkeys::seed(), $dsnWithAPlaceholder);
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build($dsn);
+            self::fail('A value with a query in it was accepted.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringContainsString('Invalid ', $thrown->getMessage());
+            self::assertNoSecretIn($thrown, TestNkeys::seed());
+        }
+    }
+
+    /**
+     * A plain mistake is what these errors are for, so it is still repeated. A password is no longer than the limit, but
+     * the characters of a query cannot be in a value repeated here.
+     *
+     * @return iterable<string, array{string, string}>
+     */
+    public static function plainMistakes(): iterable
+    {
+        yield 'a stream name' => ['nats://localhost:4222/test*stream/test-topic', 'NATS stream name "test*stream" contains invalid characters.'];
+        yield 'a topic name' => ['nats://localhost:4222/test-stream/orders.*', 'NATS topic name "orders.*" contains invalid characters.'];
+        yield 'an allowed value' => ['nats://localhost:4222/test-stream/test-topic?retry_handler=natz', "Invalid retry_handler option 'natz'."];
+        yield 'stream_storage' => ['nats://localhost:4222/test-stream/test-topic?stream_storage=disk', "Invalid stream_storage option 'disk'."];
+        yield 'a boolean' => ['nats://localhost:4222/test-stream/test-topic?stream_deny_delete=perhaps', "Invalid stream_deny_delete option 'perhaps'."];
+        yield '50 characters, the longest repeated' => ['nats://localhost:4222/test-stream/test-topic?retry_handler=' . str_repeat('x', 50), "'" . str_repeat('x', 50) . "'"];
+    }
+
+    #[DataProvider('plainMistakes')]
+    public function testAPlainMistakeIsRepeatedInTheError(string $dsn, string $expected): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage($expected);
+
+        (new NatsTransportConfigurationBuilder())->build($dsn);
+    }
+
+    public function testAValueLongerThanTheLimitIsNotRepeated(): void
+    {
+        $tooLong = str_repeat('x', 51);
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic?retry_handler=' . $tooLong);
+            self::fail('An unknown retry handler was accepted.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringStartsWith('Invalid retry_handler option. Allowed values are', $thrown->getMessage());
+        }
+    }
+
+    /**
      * @return array<string, array{string, array<string, mixed>}> The DSN and the options of a build that fails at the
      *                                                            place in the key.
      */

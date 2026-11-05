@@ -258,13 +258,24 @@ final class NatsTransportConfigurationBuilder
                 ? 'Only dot-separated subject tokens containing alphanumeric characters, hyphens, and underscores are allowed.'
                 : 'Only alphanumeric characters, hyphens, and underscores are allowed.';
 
-            // The name is not repeated: a query typed with & instead of ? stays in the path, credentials included.
             throw new InvalidArgumentException(sprintf(
-                'NATS %s name contains invalid characters. %s',
+                'NATS %s name%s contains invalid characters. %s',
                 $label,
+                $this->quotedIfPlain($name, '"'),
                 $allowedCharacters,
             ));
         }
+    }
+
+    /**
+     * A name or value for an error message, in quotes and with a space before it, or nothing when it may hold more than a
+     * plain mistake. A DSN query typed with & or ; instead of ?, or with a second ?, stays in the path or in the option
+     * before it, credentials included, and a message reaches logs and consoles whatever zend.exception_ignore_args says.
+     * None of those characters is allowed here, and a seed is longer than the limit.
+     */
+    private function quotedIfPlain(#[\SensitiveParameter] string $value, string $quote = "'"): string
+    {
+        return preg_match('/^[\w.*> -]{1,50}$/D', $value) === 1 ? ' ' . $quote . $value . $quote : '';
     }
 
     /**
@@ -291,8 +302,10 @@ final class NatsTransportConfigurationBuilder
 
         $retryHandler = RetryHandler::tryFrom(TypeCoercion::stringValue($configuration[TransportOption::RETRY_HANDLER->value] ?? RetryHandler::SYMFONY->value));
         if ($retryHandler === null) {
-            $invalidRetryHandler = TypeCoercion::stringValue($configuration[TransportOption::RETRY_HANDLER->value] ?? null);
-            throw new InvalidArgumentException("Invalid retry_handler option '{$invalidRetryHandler}'. Allowed values are 'symfony' or 'nats'.");
+            throw new InvalidArgumentException(sprintf(
+                "Invalid retry_handler option%s. Allowed values are 'symfony' or 'nats'.",
+                $this->quotedIfPlain(TypeCoercion::stringValue($configuration[TransportOption::RETRY_HANDLER->value] ?? null)),
+            ));
         }
 
         $configuration[TransportOption::RETRY_HANDLER->value] = $retryHandler->value;
@@ -365,8 +378,8 @@ final class NatsTransportConfigurationBuilder
         $storageBackend = StorageBackend::tryFrom(strtolower($storage));
         if ($storageBackend === null) {
             throw new InvalidArgumentException(sprintf(
-                "Invalid stream_storage option '%s'. Allowed values are 'file' or 'memory'.",
-                $storage,
+                "Invalid stream_storage option%s. Allowed values are 'file' or 'memory'.",
+                $this->quotedIfPlain($storage),
             ));
         }
 
@@ -441,9 +454,9 @@ final class NatsTransportConfigurationBuilder
         $enum = $tryFrom(strtolower($raw));
         if ($enum === null) {
             throw new InvalidArgumentException(sprintf(
-                "Invalid %s option '%s'. Allowed values are '%s'.",
+                "Invalid %s option%s. Allowed values are '%s'.",
                 $option->value,
-                $raw,
+                $this->quotedIfPlain($raw),
                 implode("', '", $allowed),
             ));
         }
@@ -640,9 +653,9 @@ final class NatsTransportConfigurationBuilder
             // the same answer either way, an unrecognized one does not.
             if (TypeCoercion::boolValue($value, false) !== TypeCoercion::boolValue($value, true)) {
                 throw new InvalidArgumentException(sprintf(
-                    "Invalid %s option '%s'. Expected a boolean: 'true'/'false', '1'/'0', 'yes'/'no' or 'on'/'off'.",
+                    "Invalid %s option%s. Expected a boolean: 'true'/'false', '1'/'0', 'yes'/'no' or 'on'/'off'.",
                     $flag->value,
-                    TypeCoercion::stringValue($value, '(non-scalar)'),
+                    $this->quotedIfPlain(TypeCoercion::stringValue($value, 'non-scalar')),
                 ));
             }
         }
