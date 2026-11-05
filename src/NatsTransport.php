@@ -731,8 +731,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * retains already-acknowledged messages, so the count can stay above 0 even when nothing is left
      * to process. The consumer-info path does not have this limitation.
      *
-     * When NATS cannot be reached it returns 0, the same as for an empty queue, so `messenger:stats`
-     * shows 0 during an outage. It gives up after a single connection attempt.
+     * When NATS cannot be reached or refuses the login it returns 0, the same as for an empty queue, so
+     * `messenger:stats` shows 0 then. Without reconnect: true it gives up after a single connection attempt.
+     * With it the client's attempt loop runs first, unless the server itself refused the login.
      */
     public function getMessageCount(): int
     {

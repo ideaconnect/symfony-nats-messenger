@@ -9,6 +9,7 @@ use IDCT\NATS\Connection\Enum\ConnectionState;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
+use IDCT\NATS\Exception\AuthenticationException;
 use IDCT\NATS\Exception\ConnectionException;
 use IDCT\NATS\Exception\JetStreamException;
 use IDCT\NATS\Exception\SubscriptionLimitException;
@@ -1946,6 +1947,21 @@ final class NatsTransportTest extends TestCase
     {
         $state = ConnectionState::Idle;
         $client = $this->clientReportingState($state, [Future::error(new ConnectionException('Connection refused'))]);
+        $client->expects(self::never())->method('jetStream');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, []);
+        $transport->setClient($client);
+
+        self::assertSame(0, $transport->getMessageCount());
+    }
+
+    /**
+     * A login the server refuses reads like an outage: 0, after one attempt. send() and get() raise the error.
+     */
+    public function testMessageCountOfALoginTheServerRefusesDialsOnceAndReturnsZero(): void
+    {
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::error(new AuthenticationException("Server rejected authentication during connect: 'Authorization Violation'"))]);
         $client->expects(self::never())->method('jetStream');
 
         $transport = new ClockedNatsTransport(self::VALID_DSN, []);

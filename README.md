@@ -1823,11 +1823,13 @@ if ($count > 0) {
 
 `getMessageCount()`, which `messenger:stats` shows, returns 0 when NATS cannot be reached or refuses the login, the
 same as for an empty queue, so during an outage, or with a wrong password or seed, the queue reads as empty there, where
-`send()` and `get()` raise the error. It gives up after a single connection attempt (about 6 seconds for a refused
-connection, see [Connection Timeout](#connection-timeout)). Monitor the connection itself, or the stream with the `nats`
-CLI, rather than reading a 0 as "nothing to do".
+`send()` and `get()` raise the error. Without `reconnect: true` it gives up after a single connection attempt (about 6
+seconds for a refused connection, see [Connection Timeout](#connection-timeout)). With it the client's attempt loop runs
+first: about 109 seconds for a refused connection at the default attempts, and about 43 seconds for a seed on a server that
+sends no nonce. A login the server itself refuses returns at once in both modes. Monitor the connection itself, or the
+stream with the `nats` CLI, rather than reading a 0 as "nothing to do".
 
-> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`
+> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`, `testMessageCountOfALoginTheServerRefusesDialsOnceAndReturnsZero`, the Behat scenarios `A seed the server does not know is refused by the server` and `A JWT with another user's seed is refused by the server`. The timings were measured by hand.
 
 ## Troubleshooting
 

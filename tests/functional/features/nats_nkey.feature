@@ -82,6 +82,7 @@ Feature: NKey authentication
     Given I have a messenger transport configured with an NKey seed the server does not know
     When I run the messenger setup command
     Then the setup should fail with the server's authorization error
+    And the messenger stats should show exactly 0 messages waiting
 
   @nkey
   Scenario: A seed on a server without NKey users is refused by the client, as there is no nonce to sign

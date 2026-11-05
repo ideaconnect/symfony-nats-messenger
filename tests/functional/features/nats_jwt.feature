@@ -49,6 +49,7 @@ Feature: JWT authentication
     Given I have a messenger transport on that server with the user's JWT and another user's seed
     When I run the messenger setup command
     Then the setup should fail with the server's authorization error
+    And the messenger stats should show exactly 0 messages waiting
 
   @jwt
   Scenario: A seed with no JWT is refused by the server
