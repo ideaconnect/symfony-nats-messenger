@@ -268,6 +268,7 @@ final class SecretsInExceptionsTest extends TestCase
             yield $credential . ' after a ;' => [$credential, 'consumer=workers;'];
             yield $credential . ' after an encoded ?' => [$credential, 'consumer=workers%3F'];
             yield $credential . ' after an encoded ;' => [$credential, 'consumer=workers%3B'];
+            yield strtoupper($credential) . ' in capitals' => [strtoupper($credential), 'consumer=workers;'];
         }
 
         yield 'in a file name, whose error would print it' => ['nkey_seed', 'tls_ca_file=/no/such/ca.pem?'];
@@ -279,8 +280,14 @@ final class SecretsInExceptionsTest extends TestCase
         yield 'after a ; and a space' => ['token', 'consumer=workers; '];
         yield 'after a ; and an encoded space' => ['token', 'consumer=workers;%20'];
         yield 'after a ; and a +, which parse_str() reads as a space' => ['token', 'consumer=workers;+'];
+        yield 'after a ; and two +' => ['token', 'consumer=workers;++'];
+        yield 'after a ; and an encoded tab' => ['token', 'consumer=workers;%09'];
+        yield 'after a ; and an encoded line end' => ['token', 'consumer=workers;%0A'];
         yield 'with a space before its =' => ['token ', 'consumer=workers;'];
         yield 'with a +, which parse_str() reads as a space, before its =' => ['token+', 'consumer=workers;'];
+        yield 'with two + before its =' => ['token++', 'consumer=workers;'];
+        yield 'with an encoded tab before its =' => ['token%09', 'consumer=workers;'];
+        yield 'with an encoded line end before its =' => ['token%0A', 'consumer=workers;'];
         yield 'in capitals' => ['TOKEN', 'consumer=workers;'];
         yield 'with a first capital' => ['Nkey_seed', 'consumer=workers?'];
     }
@@ -319,6 +326,9 @@ final class SecretsInExceptionsTest extends TestCase
 
         yield 'a description given as an option' => [$dsn, ['stream_description' => 'orders?token=none']];
         yield 'a credential after a proper &' => [$dsn . '?consumer=workers&token=abc', []];
+        yield 'a credential after a proper &, with a ? ending the value before it' => [$dsn . '?stream_description=why?&token=abc', []];
+        yield 'a credential after a proper &, with a ; ending the value before it' => [$dsn . '?stream_description=why;&token=abc', []];
+        yield 'an option that only starts like a credential' => [$dsn . '?stream_description=why;tokens=2', []];
         yield 'an option that only ends like a credential' => [$dsn . '?stream_description=why;mytoken=abc', []];
         yield 'a ; with no option name after it' => [$dsn . '?stream_description=a;b', []];
         yield 'a name with no = after it' => [$dsn . '?stream_description=what?token', []];
