@@ -2430,20 +2430,24 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
-     * A float past the range of an int does not survive the cast to an int, which on PHP 8.5 also warns.
+     * A float past the range of an int does not survive the cast to an int, which on PHP 8.5 also warns. A numeric string
+     * past the largest float becomes 0 in the cast, with no warning.
      *
-     * @return iterable<string, array{float}>
+     * @return iterable<string, array{float|string}>
      */
-    public static function floatsPastTheRangeOfAnInt(): iterable
+    public static function numbersThatDoNotSurviveTheCastToAnInt(): iterable
     {
-        yield 'the first one, which wrapped around to the smallest int' => [(float) PHP_INT_MAX];
-        yield 'one that wrapped around to a negative number' => [1e19];
-        yield 'one that became 0' => [1e300];
+        yield 'the first float, which wrapped around to the smallest int' => [(float) PHP_INT_MAX];
+        yield 'a float that wrapped around to a negative number' => [1e19];
+        yield 'a float that became 0' => [1e300];
         yield 'infinity, which became 0' => [INF];
+        yield 'a string past the largest float, with an exponent' => ['1e400'];
+        yield 'a string just past the largest float' => ['1.8e308'];
+        yield 'a string past the largest float, in digits' => [str_repeat('9', 400)];
     }
 
-    #[DataProvider('floatsPastTheRangeOfAnInt')]
-    public function testBuildRejectsAFloatMaxReconnectAttemptsPastTheRangeOfAnInt(float $value): void
+    #[DataProvider('numbersThatDoNotSurviveTheCastToAnInt')]
+    public function testBuildRejectsAMaxReconnectAttemptsThatDoesNotSurviveTheCastToAnInt(float|string $value): void
     {
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('The max_reconnect_attempts option is too large to be an integer.');
@@ -2453,7 +2457,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
     /**
      * 0 and -1 are refused, so a huge number is how to ask for attempts without an end, and these all worked before there
-     * was any check. A numeric string stops at the largest int.
+     * was any check. A numeric string up to the largest float stops at the largest int.
      *
      * @return iterable<string, array{mixed, int}>
      */
@@ -2464,6 +2468,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'the largest float that fits' => [9223372036854774784.0, 9223372036854774784];
         yield 'a string past the range of an int' => ['99999999999999999999', PHP_INT_MAX];
         yield 'a string with an exponent, past the range of an int' => ['1e19', PHP_INT_MAX];
+        yield 'a string with an exponent, just below the largest float' => ['1.7e308', PHP_INT_MAX];
     }
 
     #[DataProvider('largeMaxReconnectAttempts')]
@@ -2481,6 +2486,14 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         );
 
         self::assertSame(PHP_INT_MAX, $this->extractNatsOptions($configuration->client)->maxReconnectAttempts);
+    }
+
+    public function testBuildRejectsAMaxReconnectAttemptsInTheDsnThatDoesNotSurviveTheCastToAnInt(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The max_reconnect_attempts option is too large to be an integer.');
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic?reconnect=1&max_reconnect_attempts=1e400');
     }
 
     /**

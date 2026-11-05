@@ -350,7 +350,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertNonNegativeNumber($configuration, TransportOption::PING_AFTER_IDLE);
         // null defers to the client's default; 0 would only spell "reconnect disabled" a second way.
         $this->assertPositiveNumber($configuration, TransportOption::MAX_RECONNECT_ATTEMPTS, true);
-        $this->assertFloatFitsAnInt($configuration, TransportOption::MAX_RECONNECT_ATTEMPTS);
+        $this->assertNumberFitsAnInt($configuration, TransportOption::MAX_RECONNECT_ATTEMPTS);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_AGE, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_BYTES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES, true);
@@ -576,21 +576,21 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
-     * Validates that a float option can be cast to an int.
+     * Validates that a number survives the cast to an int.
      *
-     * A float past the range of an int does not survive the cast: 1e19 wraps around to a negative number, which the
-     * client's constructor refuses with every credential in its frame, and 1e300 or INF become 0. An int of any size stays
-     * as it is, and a numeric string stops at the largest int, which is a fair reading of a huge number, so neither is
-     * refused here.
+     * A float past the range of an int does not: 1e19 wraps around to a negative number, which the client's constructor
+     * refuses with every credential in its frame, 2e19 to an unrelated huge number, and 1e300 or INF become 0. A numeric
+     * string past the largest float, such as "1e400", becomes 0 too. An int of any size stays as it is, and any other numeric
+     * string stops at the largest int, which is a fair reading of a huge number, so neither is refused here.
      *
      * @param array<string, mixed> $configuration Merged configuration array
      * @param TransportOption      $option        The option key to validate
      */
-    private function assertFloatFitsAnInt(#[\SensitiveParameter] array $configuration, TransportOption $option): void
+    private function assertNumberFitsAnInt(#[\SensitiveParameter] array $configuration, TransportOption $option): void
     {
         $value = $configuration[$option->value] ?? null;
         // Next to a float PHP_INT_MAX reads as 2^63, the first float that does not fit.
-        if (is_float($value) && $value >= PHP_INT_MAX) {
+        if ((is_float($value) && $value >= PHP_INT_MAX) || (is_string($value) && is_infinite((float) $value))) {
             throw new InvalidArgumentException(sprintf('The %s option is too large to be an integer.', $option->value));
         }
     }

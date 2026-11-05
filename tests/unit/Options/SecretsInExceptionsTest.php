@@ -482,7 +482,7 @@ final class SecretsInExceptionsTest extends TestCase
             'assertNotExceedingInt32' => [$dsn, ['stream_max_message_size' => 2147483648]],
             // Past the range of an int this used to wrap around to a negative number and fail in the client's constructor,
             // whose frame holds every credential.
-            'assertFloatFitsAnInt' => [$dsn, ['max_reconnect_attempts' => 1e19]],
+            'assertNumberFitsAnInt' => [$dsn, ['max_reconnect_attempts' => 1e19]],
             'assertStreamDescriptionLength' => [$dsn, ['stream_description' => str_repeat('x', 4097)]],
             'assertTriStateBooleans' => [$dsn, ['stream_deny_delete' => 'maybe']],
             'normalizeStreamPlacement' => [$dsn, ['stream_placement_cluster' => ' ']],
