@@ -42,23 +42,51 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
+     * The seed in the DSN makes resolveNkey() the only frame that could hold it. The signer in that frame's arguments would
+     * also print the raw secret key, whose first 32 bytes are the seed itself.
+     */
+    #[RequiresPhpExtension('sodium')]
+    public function testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure(): void
+    {
+        $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build(self::DSN_WITHOUT_CREDENTIALS . '?nkey=UOTHERPUBLICKEY&nkey_seed=' . TestNkeys::seed());
+            self::fail('An nkey that contradicts the seed was accepted.');
+        } catch (\InvalidArgumentException $failure) {
+            self::assertStringStartsWith('The nkey option is not the public key', $failure->getMessage());
+            self::assertNoSecretIn($failure, TestNkeys::seed());
+            self::assertStringNotContainsString('secretKey', self::printedFrames($failure));
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
+        }
+    }
+
+    /**
      * Fails if the secret, or the start of it that the string form of an exception shows, is in the message or the string
      * form of the exception, or in the frames of this package and the client, in the whole chain of previous exceptions.
-     * The other frames are left out of that last check: printed in full they reach the test runner's whole test suite,
-     * with the seeds in other tests' data.
      */
     private static function assertNoSecretIn(Throwable $failure, string $secret): void
     {
         for ($exception = $failure; $exception !== null; $exception = $exception->getPrevious()) {
-            $frames = array_filter(
-                $exception->getTrace(),
-                static fn (array $frame): bool => str_starts_with($frame['class'] ?? '', 'IDCT\\') && !str_contains($frame['class'] ?? '', '\\Tests\\'),
-            );
-            self::assertNotSame([], $frames, 'The test looks at no frame: are exception arguments off?');
-
-            $printed = $exception->getMessage() . "\n" . $exception . "\n" . print_r($frames, true);
+            $printed = $exception->getMessage() . "\n" . $exception . "\n" . self::printedFrames($exception);
             self::assertStringNotContainsString($secret, $printed);
             self::assertStringNotContainsString(substr($secret, 0, 15), $printed);
         }
+    }
+
+    /**
+     * The frames of this package and the client, printed with their arguments. The other frames are left out: printed in
+     * full they reach the test runner's whole test suite, with the seeds in other tests' data.
+     */
+    private static function printedFrames(Throwable $exception): string
+    {
+        $frames = array_filter(
+            $exception->getTrace(),
+            static fn (array $frame): bool => str_starts_with($frame['class'] ?? '', 'IDCT\\') && !str_contains($frame['class'] ?? '', '\\Tests\\'),
+        );
+        self::assertNotSame([], $frames, 'The test looks at no frame.');
+
+        return print_r($frames, true);
     }
 }

@@ -904,7 +904,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @throws InvalidArgumentException When nkey is set without a seed, or is not the public key of the seed.
      */
-    private function resolveNkey(array $configuration, ?NkeySeedSigner $signer): ?string
+    private function resolveNkey(#[\SensitiveParameter] array $configuration, #[\SensitiveParameter] ?NkeySeedSigner $signer): ?string
     {
         $configured = $this->toNullableString($configuration[TransportOption::NKEY->value]);
         if ($signer === null) {
@@ -941,7 +941,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @throws InvalidArgumentException When jwt is set without a seed.
      */
-    private function resolveJwt(array $configuration, ?NkeySeedSigner $signer): ?string
+    private function resolveJwt(#[\SensitiveParameter] array $configuration, #[\SensitiveParameter] ?NkeySeedSigner $signer): ?string
     {
         $jwt = $this->toNullableString($configuration[TransportOption::JWT->value]);
         if ($jwt !== null && $signer === null) {
