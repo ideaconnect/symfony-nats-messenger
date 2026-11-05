@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or fail late. `%env(default::NATS_NKEY_SEED)%` gives null for an optional seed. A username, password or token next to
   the seed, from the DSN or the options, is refused too: a server with both kinds of users would log the connection in
   with the NKey and ignore them, even a wrong password. The seed does not stay in the transport's options.
+- **Real logins with a JWT, an NKey and a token in the tests and in CI (#89).** The JWT and NKey logins never worked and
+  nothing noticed, because the unit tests stop at what the client is given. `composer nats:start` now also runs
+  `nats-jwt` on port 4229, in operator mode, and `nats-token` on port 4230, as a token cannot sit next to a list of users,
+  and generates the NKey and JWT credentials with `tests/nats/auth/generate.sh`, which needs docker. None of them is
+  committed, for the reason the test TLS keys are not (#9). New Behat scenarios and the examples `nkey-login.php`,
+  `jwt-login.php` and `token-login.php` send and consume through each login and expect the server's
+  `Authorization Violation` for a wrong credential, in both CI jobs. They also cover a seed over TLS and mTLS, a bearer JWT,
+  an expired JWT and an account without JetStream, a server restart under each login, and credentials refused when the
+  transport is built, through `messenger:setup-transports`, `messenger:stats` and `messenger:consume`.
+  `LoginCombinationsTest` adds the check to `composer test`, with no Docker: all 32 combinations of credentials are refused
+  when built, or go through the real client as a CONNECT that carries them.
 
 ### Fixed
 - **`jwt` and `nkey` could never connect (#89).** The transport passed them to the client without a signer, and the
@@ -30,8 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mistyped seed no longer chains the client's exception, whose frames hold the value. Symfony Messenger's factory marks
   its options only from 7.4.23 and 8.1.11, and the client marks nothing yet, so the README recommends turning those
   arguments off in production.
-- **A stream or topic name error no longer repeats the name (#89).** A DSN query typed with `&` instead of `?` stays in
-  the path, so the error printed a seed or token in it. The message still says which name is wrong and what it may hold.
+- **An error no longer prints a seed or token typed into the DSN by mistake (#89).** A query typed with `&` or `;` instead of
+  `?`, or with a second `?`, stays in the stream or topic name or in the value of the option before it, and the errors for
+  those printed it. They now repeat a name or value only if it is at most 50 plain characters, and still say what is
+  allowed.
 
 ## [5.8.0] - 2026-11-04
 
