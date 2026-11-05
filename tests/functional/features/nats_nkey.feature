@@ -75,6 +75,7 @@ Feature: NKey authentication
     And I send 5 messages to the transport
     And I wait for messages to be consumed
     Then all 5 messages should be consumed
+    And the consumer should have reconnected
 
   @nkey
   Scenario: A seed the server does not know is refused by the server

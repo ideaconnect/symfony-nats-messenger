@@ -42,6 +42,7 @@ Feature: JWT authentication
     And I send 5 messages to the transport
     And I wait for messages to be consumed
     Then all 5 messages should be consumed
+    And the consumer should have reconnected
 
   @jwt
   Scenario: A JWT with another user's seed is refused by the server

@@ -360,7 +360,7 @@ see `tests/nats/auth/README.md`.
 | **NKey seed, no user or password** | Messages are sent and consumed by a user that authenticates with an NKey seed |
 | **The other forms the README shows** | A seed in the DSN query logs in as well; An nkey option that repeats the seed's public key logs in |
 | **TLS and mTLS** | A seed logs in over TLS; A seed logs in over mTLS, next to the client certificate |
-| **Every new connection signs a new nonce** | A worker that logs in with a seed keeps consuming across a server restart |
+| **Every new connection signs a new nonce** | A worker that logs in with a seed keeps consuming across a server restart (the worker holds a connection before the restart, and the scenario checks that it reconnected) |
 | **The server checks the seed** | A seed the server does not know is refused by the server (the server's `Authorization Violation`) |
 | **A server with no NKey users** | A seed on a server without NKey users is refused by the client, as there is no nonce to sign |
 | **Refusals when the transport is built, seen from the console** | Credentials that need or exclude a seed are refused when the transport is built, on every command (`messenger:setup-transports`, `messenger:stats` and `messenger:consume` each exit non-zero with the error, for a JWT and no seed, a public NKey and no seed, and a seed next to a password) |
@@ -375,7 +375,7 @@ at `composer nats:start`, see `tests/nats/auth/README.md`.
 |---------|-----------|
 | **`jwt` with `nkey_seed`** | Messages are sent and consumed by a user that logs in with a JWT and its seed |
 | **A bearer JWT** | A bearer JWT logs in with its seed |
-| **Every new connection signs a new nonce** | A worker that logs in with a JWT keeps consuming across a server restart |
+| **Every new connection signs a new nonce** | A worker that logs in with a JWT keeps consuming across a server restart (the worker holds a connection before the restart, and the scenario checks that it reconnected) |
 | **What the server refuses** | A JWT with another user's seed is refused by the server; A seed with no JWT is refused by the server; An expired JWT is refused by the server (each the server's `Authorization Violation`) |
 | **An account without JetStream** | A user of an account without JetStream gets the server's error from setup |
 
@@ -465,7 +465,7 @@ does not survive it.
 
 | Feature | Scenarios |
 |---------|-----------|
-| **A worker polls through a server restart without exiting** | A worker keeps consuming across a server restart (the consumer is started before the restart and consumes the five messages sent after it) |
+| **A worker polls through a server restart without exiting** | A worker keeps consuming across a server restart (the consumer holds a connection before the restart, reconnects, and consumes the five messages sent after it) |
 | **The client's own reconnect is used by the next send, and auto_setup recreates the memory stream the restart lost** | A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated (`ping_after_idle` 2 s, so the send after the quiet period checks the connection first and finds the client recovering it; the stats show the one message the recreated stream holds) |
 
 ### Stream Placement (`tests/functional/features/nats_stream_placement.feature`)

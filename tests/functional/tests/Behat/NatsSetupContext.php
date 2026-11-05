@@ -2338,12 +2338,42 @@ class NatsSetupContext implements Context
         $this->resetSymfonyCache();
     }
 
-    /** Starts a consumer that stops after the given number of messages, before any of them is sent. */
+    /**
+     * Starts a consumer that stops after the given number of messages, before any of them is sent, and returns once it
+     * holds a connection. The scenarios that use this restart the server next. A worker whose first connection came after
+     * the restart would have nothing to recover, and those scenarios would pass with recovery broken: on a slow machine
+     * the console command takes longer to boot than the restart takes to begin, which is what CI's logs showed.
+     */
     #[When('I start a messenger consumer expecting :count messages')]
     public function iStartAMessengerConsumerExpectingMessages(int $count): void
     {
         $this->messagesSent = $count;
         $this->iStartAMessengerConsumer();
+
+        $deadline = microtime(true) + 30;
+        while (!str_contains($this->consumerProcess->getErrorOutput(), 'NATS connection Connected')) {
+            if (!$this->consumerProcess->isRunning() || microtime(true) > $deadline) {
+                throw new \RuntimeException("The consumer did not connect.\nOutput: " . $this->consumerProcess->getOutput() . "\nError: " . $this->consumerProcess->getErrorOutput());
+            }
+            usleep(100000);
+        }
+    }
+
+    /**
+     * The client logs this once it has a new connection. With a seed that takes a new signature, as the new server sends
+     * a nonce of its own.
+     */
+    #[Then('the consumer should have reconnected')]
+    public function theConsumerShouldHaveReconnected(): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $this->consumerProcess->wait();
+        if (!str_contains($this->consumerProcess->getErrorOutput(), 'NATS connection Reconnected')) {
+            throw new \RuntimeException("The consumer did not reconnect.\nError output: " . $this->consumerProcess->getErrorOutput());
+        }
     }
 
     /**
