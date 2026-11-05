@@ -781,7 +781,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @throws InvalidArgumentException If the value is not numeric
      */
-    private function toNumber(mixed $value, TransportOption $option): float
+    private function toNumber(#[\SensitiveParameter] mixed $value, TransportOption $option): float
     {
         // is_numeric() is the single sufficient gate: it returns false for every non-numeric input -
         // arrays, bools, null and objects included - so a separate is_int/is_float/is_string guard
@@ -817,7 +817,7 @@ final class NatsTransportConfigurationBuilder
      * Thin wrapper over {@see TypeCoercion::boolValue()} - kept so the numerous call sites in this
      * builder read fluently, while the coercion policy itself lives in one shared place.
      */
-    private function toBool(mixed $value): bool
+    private function toBool(#[\SensitiveParameter] mixed $value): bool
     {
         return TypeCoercion::boolValue($value);
     }
@@ -828,7 +828,7 @@ final class NatsTransportConfigurationBuilder
      * Returns null for actual nulls, non-scalar types, and empty/whitespace-only strings.
      * Trims whitespace from valid string values.
      */
-    private function toNullableString(mixed $value): ?string
+    private function toNullableString(#[\SensitiveParameter] mixed $value): ?string
     {
         // null is not a scalar either.
         if (!is_string($value) && !is_int($value) && !is_float($value) && !is_bool($value)) {
@@ -1001,7 +1001,7 @@ final class NatsTransportConfigurationBuilder
      * Unlike toNullableString() this does NOT trim, because leading or trailing whitespace can be a
      * significant part of a username or password and trimming it would silently corrupt the credential.
      */
-    private function normalizeCredential(mixed $value): ?string
+    private function normalizeCredential(#[\SensitiveParameter] mixed $value): ?string
     {
         if (!is_string($value) && !is_int($value) && !is_float($value) && !is_bool($value)) {
             return null;

@@ -110,8 +110,9 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
-     * A parameter under one of these names holds the DSN or the merged options, whatever the method does with them. A new
-     * method that takes one and can throw must not bring the secrets back into the frames.
+     * A parameter under one of these names holds the DSN, the merged options, a signer, or one value or name that may
+     * contain them, whatever the method does with it. A new method that takes one and can throw must not bring the secrets
+     * back into the frames.
      */
     public function testEveryParameterThatCanHoldASecretIsMarkedSensitive(): void
     {
@@ -125,7 +126,7 @@ final class SecretsInExceptionsTest extends TestCase
         foreach ($methods as $method) {
             foreach ($method->getParameters() as $parameter) {
                 if (
-                    in_array($parameter->getName(), ['dsn', 'options', 'configuration', 'components', 'signer', 'name'], true)
+                    in_array($parameter->getName(), ['dsn', 'options', 'configuration', 'components', 'signer', 'name', 'value'], true)
                     && $parameter->getAttributes(\SensitiveParameter::class) === []
                 ) {
                     $unmarked[] = $method->getDeclaringClass()->getShortName() . '::' . $method->getName() . '($' . $parameter->getName() . ')';
@@ -230,6 +231,8 @@ final class SecretsInExceptionsTest extends TestCase
         yield 'a ; after a list of allowed values' => [$dsn . '?replay_policy=instant;nkey_seed=' . self::PLACEHOLDER];
         yield 'a ; after stream_storage' => [$dsn . '?stream_storage=file;nkey_seed=' . self::PLACEHOLDER];
         yield 'a ; after a boolean' => [$dsn . '?stream_deny_delete=true;nkey_seed=' . self::PLACEHOLDER];
+        yield 'a second ? after a number' => [$dsn . '?batching=5?nkey_seed=' . self::PLACEHOLDER];
+        yield 'a ; after a number' => [$dsn . '?stream_max_age=900;nkey_seed=' . self::PLACEHOLDER];
     }
 
     /**
@@ -244,13 +247,27 @@ final class SecretsInExceptionsTest extends TestCase
             (new NatsTransportConfigurationBuilder())->build($dsn);
             self::fail('A value with a query in it was accepted.');
         } catch (\InvalidArgumentException $thrown) {
-            self::assertStringContainsString('Invalid ', $thrown->getMessage());
+            self::assertMatchesRegularExpression('/^Invalid |must be numeric/', $thrown->getMessage());
             self::assertNoSecretIn($thrown, TestNkeys::seed());
         }
     }
 
     /**
-     * A plain mistake is what these errors are for, so it is still repeated. A password is no longer than the limit, but
+     * The same value in an option, which nothing splits: the frame of the numeric check must not keep it either.
+     */
+    public function testASeedInTheValueOfANumericOptionStaysOutOfTheFrames(): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build(self::DSN_WITHOUT_CREDENTIALS, ['batching' => '5?nkey_seed=' . TestNkeys::seed()]);
+            self::fail('A value that is not a number was accepted.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertSame('The batching option must be numeric.', $thrown->getMessage());
+            self::assertNoSecretIn($thrown, TestNkeys::seed());
+        }
+    }
+
+    /**
+     * A plain mistake is what these errors are for, so it is still repeated. A password can be shorter than the limit, but
      * the characters of a query cannot be in a value repeated here.
      *
      * @return iterable<string, array{string, string}>
