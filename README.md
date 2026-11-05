@@ -625,8 +625,8 @@ authorization {
   outright, though the password alone would have worked.
 - For a user the server knows by its NKey, the seed is all the transport needs: the public key it sends is derived from
   it, so leave the `nkey` option unset. It may repeat the derived key, but a different one is refused when the transport
-  is built, not on its first connect. So is `nkey` without a seed, which could never log in: the client needs the seed
-  to sign the nonce.
+  is built, not on its first connect. So is `nkey` without a seed, which could never log in: the client needs a signer
+  for the nonce, and the seed is where the transport gets one.
 - A seed needs a server that has NKey users or runs in operator mode, and in a cluster every server must list the user,
   as the client can fail over to any of them. Any other server, a password, token or open one, sends no nonce, so the
   client refuses the login with `NKey authentication requires server nonce from INFO`. The reference CLI refuses it too.
@@ -665,8 +665,8 @@ framework:
                     nkey_seed: '%env(NATS_NKEY_SEED)%'
 ```
 
-- `jwt` without `nkey_seed` is refused when the transport is built: the client signs the server's nonce with the seed
-  and cannot connect without one. For a bearer JWT (`nsc add user --bearer`) the server does not check that
+- `jwt` without `nkey_seed` is refused when the transport is built: the client needs a signer for the server's nonce and
+  cannot connect without one, and the seed is where the transport gets one. For a bearer JWT (`nsc add user --bearer`) the server does not check that
   signature, so there the seed is only what the client asks for, but it is required all the same.
 - `jwt` must be the JWT alone, which has three parts separated by dots. A seed or the whole text of a `.creds` file there
   is refused when the transport is built, without repeating it, as the CONNECT would carry it to the server, in clear

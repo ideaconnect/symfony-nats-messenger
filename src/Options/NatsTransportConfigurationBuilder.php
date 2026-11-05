@@ -936,9 +936,9 @@ final class NatsTransportConfigurationBuilder
 
     /**
      * The public NKey the CONNECT carries next to the signature. With a seed it is the seed's own, derived from it, which
-     * the nkey option may repeat but not contradict. Without a seed nkey is refused: the client signs the server's nonce
-     * with the seed and throws before it writes the CONNECT when it has none, on every server, so that configuration
-     * can never connect, and with reconnect: true it took 43 seconds to say so.
+     * the nkey option may repeat but not contradict. Without a signer nkey is refused: the client throws before it writes
+     * the CONNECT when it has none, on every server, so that configuration can never connect, and with reconnect: true it
+     * took 43 seconds to say so. The seed is the one source of a signer here.
      *
      * @param array<string, mixed> $configuration Merged option map
      *
@@ -973,9 +973,10 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
-     * The user JWT the CONNECT carries. It needs a seed: the client signs the server's nonce with it and throws before
-     * it writes the CONNECT when it has none, on every server, so a JWT alone can never connect. For a bearer JWT the
-     * server does not check that signature, but the client asks for the signer all the same.
+     * The user JWT the CONNECT carries. It needs a signer: the client signs the server's nonce with it and throws before
+     * it writes the CONNECT when it has none, on every server, so a JWT alone can never connect. The seed is the one
+     * source of a signer here. For a bearer JWT the server does not check that signature, but the client asks for the
+     * signer all the same.
      *
      * The CONNECT carries the value as it is, and a tracing server logs it, so one that cannot be a JWT stops here: a .creds
      * file holds a JWT and a seed, which makes the seed, or the whole file, an easy mistake. The value is not repeated.
