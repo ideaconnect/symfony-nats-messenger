@@ -63,6 +63,18 @@ Feature: JWT authentication
     Then the setup should fail with the server's authorization error
 
   @jwt
+  Scenario Outline: A value that is not a JWT is refused when the transport is built, and no seed is printed
+    Given I have a messenger transport on that server with <value> in the jwt option
+    When I run the messenger setup command
+    Then the setup should fail saying "The jwt option is not a JWT"
+    And the setup output should show no seed
+
+    Examples:
+      | value                     |
+      | the seed                  |
+      | the text of a .creds file |
+
+  @jwt
   Scenario: A user of an account without JetStream gets the server's error from setup
     Given I have a messenger transport on that server with the JWT and seed of an account without JetStream
     When I run the messenger setup command

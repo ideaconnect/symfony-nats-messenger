@@ -31,7 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`jwt` and `nkey` could never connect (#89).** The transport passed them to the client without a signer, and the
   client throws before it writes the CONNECT then, on every server: `requires a nonce signer`, after 43 seconds and as
   `Reconnect attempts exhausted` with `reconnect: true`. `jwt` now works next to `nkey_seed`, its user's seed: a `.creds`
-  file holds both. Each one without a seed is refused when the transport is built, naming `nkey_seed`. `nkey` stays
+  file holds both. Each one without a seed is refused when the transport is built, naming `nkey_seed`, and so is a `jwt`
+  that does not have the three parts of a JWT, such as a seed or a whole `.creds` file, which the CONNECT would otherwise
+  carry to the server. `nkey` stays
   optional and is best left unset, as the key is derived from the seed; with a seed it must be that key, and the error
   names the seed's key and does not repeat the value. No login that worked is lost, but the error comes earlier, so see
   the README's "Upgrading from 5.8" for `messenger:stats` and for workers on several transports.

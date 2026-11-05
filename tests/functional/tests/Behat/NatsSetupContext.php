@@ -2205,6 +2205,26 @@ class NatsSetupContext implements Context
         );
     }
 
+    /**
+     * A .creds file holds both values, which makes these two mistakes easy.
+     */
+    #[Given('I have a messenger transport on that server with the seed in the jwt option')]
+    public function iHaveAMessengerTransportOnThatServerWithTheSeedInTheJwtOption(): void
+    {
+        $seed = $this->credentials()['jwt_user']['seed'];
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $seed, 'nkey_seed' => $seed]);
+    }
+
+    #[Given('I have a messenger transport on that server with the text of a .creds file in the jwt option')]
+    public function iHaveAMessengerTransportOnThatServerWithTheTextOfACredsFileInTheJwtOption(): void
+    {
+        $user = $this->credentials()['jwt_user'];
+        $this->writeTransportThatLogsInWith(4229, [
+            'jwt' => sprintf('-----BEGIN NATS USER JWT----- %s ------END NATS USER JWT------ -----BEGIN USER NKEY SEED----- %s ------END USER NKEY SEED------', $user['jwt'], $user['seed']),
+            'nkey_seed' => $user['seed'],
+        ]);
+    }
+
     #[Given('I have a messenger transport on that server with the user\'s seed and no JWT')]
     public function iHaveAMessengerTransportOnThatServerWithTheUsersSeedAndNoJwt(): void
     {

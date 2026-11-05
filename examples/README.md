@@ -12,7 +12,7 @@ behaviour still works. In an application the same DSN and options go under `fram
 | `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it (needs pcntl) |
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
-| `jwt-login.php` | `jwt` with `nkey_seed` logs in as a user of a server in operator mode, for `setup()`, sending and receiving; the JWT with another user's seed and an expired JWT are refused by the server, and the JWT alone when the transport is built |
+| `jwt-login.php` | `jwt` with `nkey_seed` logs in as a user of a server in operator mode, for `setup()`, sending and receiving; the JWT with another user's seed and an expired JWT are refused by the server, and the JWT alone or a seed in the `jwt` option when the transport is built |
 | `nkey-login.php` | `nkey_seed` alone logs in as a user the server knows by its public key, for `setup()`, sending and receiving; a seed the server does not know is refused by the server, and the public key alone or a seed next to a password when the transport is built |
 | `token-login.php` | `token` logs in to a server whose clients share one token, for `setup()`, sending and receiving; a wrong token is refused |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, the pull in flight ends empty (`409 Server Shutdown`), `auto_setup` recreates the memory stream the restart lost, and the client logs through the transport's logger (needs docker) |

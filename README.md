@@ -668,6 +668,9 @@ framework:
 - `jwt` without `nkey_seed` is refused when the transport is built: the client signs the server's nonce with the seed
   and cannot connect without one. For a bearer JWT (`nsc add user --bearer`) the server does not check that
   signature, so there the seed is only what the client asks for, but it is required all the same.
+- `jwt` must be the JWT alone, which has three parts separated by dots. A seed or the whole text of a `.creds` file there
+  is refused when the transport is built, without repeating it, as the CONNECT would carry it to the server, in clear
+  on a connection without TLS, and a server that traces logs it.
 - The seed must be the one of the JWT's user. The server checks that when the transport connects: a seed without its JWT,
   or another user's seed, gets a bare `Authorization Violation`.
 - The transport keeps the JWT it was built with and never fetches a new one. At the JWT's expiry the server sends
@@ -675,7 +678,7 @@ framework:
   each new connection with the same JWT is refused with `Authorization Violation`, which does not mention the expiry.
   A new JWT needs a new transport, so restart the workers with the new value.
 
-> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `testBuildRejectsAJwtWithoutASeed`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the Behat scenarios of `nats_jwt.feature` (real logins on a server in operator mode, with a user's JWT and with a bearer JWT, across a server restart, and what the server refuses: another user's seed, a seed with no JWT, an expired JWT), the example `jwt-login.php`. Not in the suite: a JWT that expires under a running worker, which was measured by hand on NATS 2.9.25 and 2.15.1.
+> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt`, `testBuildAcceptsAJwtWithSpaceAroundItAndBase64UrlCharacters`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the Behat scenarios of `nats_jwt.feature` (real logins on a server in operator mode, with a user's JWT and with a bearer JWT, across a server restart, and what is refused: a value that is not a JWT when the transport is built, and by the server another user's seed, a seed with no JWT, an expired JWT), the example `jwt-login.php`. Not in the suite: a JWT that expires under a running worker, which was measured by hand on NATS 2.9.25 and 2.15.1.
 
 ### Retry Handler Behavior
 

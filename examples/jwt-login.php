@@ -8,7 +8,8 @@
  * nonce the server sends with the user's seed, which is how the server knows the JWT is the client's own. So a JWT
  * with another user's seed is refused, as is a JWT past its expiry.
  *
- * The transport refuses a JWT with no seed when it is built, with no connection, as it could never log in.
+ * The transport refuses a JWT with no seed when it is built, with no connection, as it could never log in, and a value
+ * that is not a JWT, as a seed or a whole .creds file would otherwise go to the server.
  *
  * Both values are in the user's .creds file. In an application they go in the jwt and nkey_seed options, from
  * environment variables. Here they come from the credentials composer nats:start generates, which
@@ -35,5 +36,6 @@ assertLoginIsRefused(OPERATOR_MODE_PORT, ['jwt' => $user['jwt'], 'nkey_seed' => 
 assertLoginIsRefused(OPERATOR_MODE_PORT, ['jwt' => $credentials['expired_user']['jwt'], 'nkey_seed' => $credentials['expired_user']['seed']]);
 
 assertRefusedWhenBuilt(OPERATOR_MODE_PORT, ['jwt' => $user['jwt']], 'The jwt option needs nkey_seed');
+assertRefusedWhenBuilt(OPERATOR_MODE_PORT, ['jwt' => $user['seed'], 'nkey_seed' => $user['seed']], 'The jwt option is not a JWT');
 
-echo "OK jwt-login: the JWT and its seed set up a stream, sent and received a message; the JWT with another user's seed and an expired JWT got Authorization Violation; the JWT alone was refused when the transport was built\n";
+echo "OK jwt-login: the JWT and its seed set up a stream, sent and received a message; the JWT with another user's seed and an expired JWT got Authorization Violation; the JWT alone and a seed in the jwt option were refused when the transport was built\n";

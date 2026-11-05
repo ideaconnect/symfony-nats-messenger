@@ -974,9 +974,12 @@ final class NatsTransportConfigurationBuilder
      * it writes the CONNECT when it has none, on every server, so a JWT alone can never connect. For a bearer JWT the
      * server does not check that signature, but the client asks for the signer all the same.
      *
+     * The CONNECT carries the value as it is, and a tracing server logs it, so one that cannot be a JWT stops here: a .creds
+     * file holds a JWT and a seed, which makes the seed, or the whole file, an easy mistake. The value is not repeated.
+     *
      * @param array<string, mixed> $configuration Merged option map
      *
-     * @throws InvalidArgumentException When jwt is set without a seed.
+     * @throws InvalidArgumentException When jwt is set without a seed, or does not have the three parts of a JWT.
      */
     private function resolveJwt(#[\SensitiveParameter] array $configuration, #[\SensitiveParameter] ?NkeySeedSigner $signer): ?string
     {
@@ -985,6 +988,14 @@ final class NatsTransportConfigurationBuilder
             throw new InvalidArgumentException(
                 'The jwt option needs nkey_seed: the client signs the server\'s nonce with the seed of the JWT\'s user and cannot '
                 . 'connect without one. Put that seed (SU...) in nkey_seed; a .creds file holds both values.'
+            );
+        }
+
+        // The value is trimmed, so the end of the pattern cannot be fooled by a last newline.
+        if ($jwt !== null && preg_match('/^[\w-]+\.[\w-]+\.[\w-]+$/', $jwt) !== 1) {
+            throw new InvalidArgumentException(
+                'The jwt option is not a JWT, which has three parts separated by dots. A .creds file holds the JWT under its '
+                . 'BEGIN NATS USER JWT line, and the seed, for nkey_seed, under its BEGIN USER NKEY SEED line.'
             );
         }
 

@@ -392,15 +392,65 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(
             'nats://localhost:4222/test-stream/test-topic',
-            ['jwt' => 'user-jwt', 'nkey_seed' => TestNkeys::seed()]
+            ['jwt' => 'a.user.jwt', 'nkey_seed' => TestNkeys::seed()]
         );
 
         $options = $this->extractNatsOptions($configuration->client);
 
-        self::assertSame('user-jwt', $options->jwt);
+        self::assertSame('a.user.jwt', $options->jwt);
         self::assertSame(TestNkeys::publicKey(), $options->nkey);
         self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
         self::assertSame(TestNkeys::publicKey(), $options->nonceSigner->publicKey());
+    }
+
+    /**
+     * Both values sit in a .creds file, so the seed or the whole file in this option is an easy mistake. Unlike a wrong
+     * value in nkey_seed it would leave the process: the CONNECT carries the option as it is, and a tracing server logs it.
+     *
+     * @return iterable<string, array{string}>
+     */
+    public static function valuesThatAreNotAJwt(): iterable
+    {
+        yield 'the seed' => [TestNkeys::seed()];
+        yield 'the text of a whole .creds file' => [
+            "-----BEGIN NATS USER JWT-----\na.user.jwt\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n"
+            . TestNkeys::seed() . "\n------END USER NKEY SEED------\n",
+        ];
+        yield 'two parts' => ['a.user'];
+        yield 'four parts' => ['a.user.jwt.more'];
+        yield 'an empty part' => ['a..jwt'];
+        yield 'something before a JWT' => ['some a.user.jwt'];
+        yield 'something after a JWT' => ['a.user.jwt more'];
+    }
+
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('valuesThatAreNotAJwt')]
+    public function testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt(string $notAJwt): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['jwt' => $notAJwt, 'nkey_seed' => TestNkeys::seed()]
+            );
+            self::fail('A value that is not a JWT was accepted.');
+        } catch (InvalidArgumentException $thrown) {
+            self::assertStringStartsWith('The jwt option is not a JWT', $thrown->getMessage());
+            self::assertStringNotContainsString($notAJwt, $thrown->getMessage());
+        }
+    }
+
+    /**
+     * A JWT read from a file ends in a newline, and a real one has the - and _ of base64url in its parts.
+     */
+    #[RequiresPhpExtension('sodium')]
+    public function testBuildAcceptsAJwtWithSpaceAroundItAndBase64UrlCharacters(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['jwt' => "a-1_b.c-2_d.e-3_f\n", 'nkey_seed' => TestNkeys::seed()]
+        );
+
+        self::assertSame('a-1_b.c-2_d.e-3_f', $this->extractNatsOptions($configuration->client)->jwt);
     }
 
     /**
