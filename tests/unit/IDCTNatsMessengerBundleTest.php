@@ -106,7 +106,10 @@ final class IDCTNatsMessengerBundleTest extends TestCase
         $kernel = $this->kernel([], ['transports' => ['nats' => self::NATS_DSN]]);
 
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('No transport supports Messenger DSN');
+        // Symfony Messenger 7.4.23 and 8.1.11 stopped naming the DSN in this message: it reads "No transport supports
+        // the given Messenger DSN." there and "No transport supports Messenger DSN "..."." before. Only the start
+        // holds on every release this package allows.
+        $this->expectExceptionMessage('No transport supports');
 
         $kernel->testContainer()->get('messenger.transport.nats');
     }
@@ -251,7 +254,7 @@ final class IDCTNatsMessengerBundleTest extends TestCase
      * SymfonyBundle::getClassNames()). For `IDCT\NatsMessenger\` it tries `NatsMessengerBundle` and
      * `IDCTNatsMessengerBundle` in `src/`. Renaming or moving the bundle class, or naming its base class
      * another way, would make Flex install the package without enabling it, and every NATS DSN would fail
-     * with "No transport supports Messenger DSN" while the rest of this suite stays green.
+     * with "No transport supports the given Messenger DSN" while the rest of this suite stays green.
      */
     #[Test]
     public function flexFindsTheBundleTheWayItGuessesBundleClasses(): void
