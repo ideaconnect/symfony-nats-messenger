@@ -620,15 +620,15 @@ authorization {
   server with both kinds of users would log the connection in with the NKey and ignore them, even a wrong password,
   so the DSN could name one user while the connection is another. A server without NKey users would refuse the login
   outright, though the password alone would have worked.
-- For a user the server knows by its NKey, the seed is all the transport needs: the public key it sends is derived
-  from it, so leave the `nkey` option unset.
-  It may repeat the derived key, but a different one is refused when the transport is built, not on its first
-  connect. So is `nkey` without a seed, which could never log in: the client needs the seed to sign the nonce.
-- A seed needs a server that has NKey users or runs in operator mode. Any other server, a password, token or open one,
-  sends no nonce, so the client refuses the login with `NKey authentication requires server nonce from INFO`. The reference
-  CLI refuses it too. So set up the user on the server before you deploy the seed. With `reconnect: true` the client
-  retries that failure, and the call takes about 43 seconds at the default attempts to report `Reconnect attempts
-  exhausted`.
+- For a user the server knows by its NKey, the seed is all the transport needs: the public key it sends is derived from
+  it, so leave the `nkey` option unset. It may repeat the derived key, but a different one is refused when the transport
+  is built, not on its first connect. So is `nkey` without a seed, which could never log in: the client needs the seed
+  to sign the nonce.
+- A seed needs a server that has NKey users or runs in operator mode, and in a cluster every server must list the user,
+  as the client can fail over to any of them. Any other server, a password, token or open one, sends no nonce, so the
+  client refuses the login with `NKey authentication requires server nonce from INFO`. The reference CLI refuses it too.
+  So set up the user on the server before you deploy the seed. With `reconnect: true` the client retries that failure,
+  and the call takes about 43 seconds at the default attempts to report `Reconnect attempts exhausted`.
 - Signing needs the `sodium` extension, bundled with PHP since 7.2 and included in most builds. Without it the
   transport fails when it is built.
 - The transport's own parameters that can hold the seed are marked `#[\SensitiveParameter]`, so a failed build leaves it
