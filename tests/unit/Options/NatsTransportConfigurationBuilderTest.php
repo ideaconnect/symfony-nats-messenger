@@ -353,6 +353,26 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
+     * How a user logs in on an operator-mode server: the JWT goes in the CONNECT with the seed's public key, and the
+     * seed signs the nonce. This also protects the jwt exception of the rule that a seed stands alone.
+     */
+    #[RequiresPhpExtension('sodium')]
+    public function testBuildPassesAJwtWithItsSeedToTheClient(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['jwt' => 'user-jwt', 'nkey_seed' => self::TEST_NKEY_SEED]
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertSame('user-jwt', $options->jwt);
+        self::assertSame(self::TEST_NKEY_PUBLIC, $options->nkey);
+        self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+        self::assertSame(self::TEST_NKEY_PUBLIC, $options->nonceSigner->publicKey());
+    }
+
+    /**
      * @return iterable<string, array{array<string, mixed>}>
      */
     public static function optionsThatConfigureASeed(): iterable

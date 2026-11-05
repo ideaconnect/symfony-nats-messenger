@@ -594,7 +594,8 @@ authorization {
 ```
 
 - `nk -gen user -pubout` creates a key pair: the first line is the seed, the second the public key.
-- The seed is all the transport needs: the public key it sends is derived from it, so leave the `nkey` option unset.
+- For a user the server knows by its NKey, the seed is all the transport needs: the public key it sends is derived
+  from it, so leave the `nkey` option unset.
   It may repeat the derived key, but a different one is refused when the transport is built, not on its first
   connect. So is `nkey` without a seed, which could never log in: the client needs the seed to sign the nonce.
 - Signing needs the `sodium` extension, bundled with PHP since 7.2 and included in most builds. Without it the
@@ -602,6 +603,35 @@ authorization {
 - The seed works in the DSN query too (`?nkey_seed=SU...`)
 
 > **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
+
+#### JWT Users (Operator Mode)
+
+On a server in operator mode a user has a JWT as well as an NKey. Give the transport both: `jwt` is the user's JWT, and
+`nkey_seed` is that user's seed. Both values are in the user's `.creds` file, under its `BEGIN NATS USER JWT` and
+`BEGIN USER NKEY SEED` lines. The transport does not read the file itself, so pass the two values:
+
+```yaml
+framework:
+    messenger:
+        transports:
+            orders:
+                dsn: 'nats-jetstream://nats.example.com:4222/orders/orders.created'
+                options:
+                    jwt: '%env(NATS_USER_JWT)%'
+                    nkey_seed: '%env(NATS_NKEY_SEED)%'
+```
+
+- `jwt` without `nkey_seed` is refused when the transport is built: the client signs the server's nonce with the seed
+  and cannot connect without one. For a bearer JWT (`nsc add user --bearer`) the server does not check that
+  signature, so there the seed is only what the client asks for, but it is required all the same.
+- The seed must be the one of the JWT's user. The server checks that when the transport connects: a seed without its JWT,
+  or another user's seed, gets a bare `Authorization Violation`.
+- The transport keeps the JWT it was built with and never fetches a new one. At the JWT's expiry the server sends
+  `User Authentication Expired` and closes the connection, which ends a running worker with that message. After that
+  each new connection with the same JWT is refused with `Authorization Violation`, which does not mention the expiry.
+  A new JWT needs a new transport, so restart the workers with the new value.
+
+> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `testBuildRejectsAJwtWithoutASeed`. Not covered by the suite, which has no operator-mode server: the login itself, measured by hand on NATS 2.9.25 to 2.15.1 (`setup()`, `send()`, `get()` and `ack()`).
 
 ### Retry Handler Behavior
 
