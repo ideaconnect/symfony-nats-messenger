@@ -288,7 +288,11 @@ final class SecretsInExceptionsTest extends TestCase
             (new NatsTransportConfigurationBuilder())->build($dsn);
             self::fail('A credential typed into the value of another option was accepted.');
         } catch (\InvalidArgumentException $thrown) {
-            self::assertStringStartsWith('The NATS DSN holds a credential after a second "?" or a ";"', $thrown->getMessage());
+            self::assertSame(
+                'The NATS DSN holds a credential after a second "?" or a ";" in its query, where it would be read as a part '
+                . 'of the option before it. Separate the options with "&".',
+                $thrown->getMessage(),
+            );
             self::assertNoSecretIn($thrown, TestNkeys::seed());
         }
     }

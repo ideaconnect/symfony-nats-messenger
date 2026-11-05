@@ -434,8 +434,11 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
             );
             self::fail('A value that is not a JWT was accepted.');
         } catch (InvalidArgumentException $thrown) {
-            self::assertStringStartsWith('The jwt option is not a JWT', $thrown->getMessage());
-            self::assertStringNotContainsString($notAJwt, $thrown->getMessage());
+            self::assertSame(
+                'The jwt option is not a JWT, which has three parts separated by dots. A .creds file holds the JWT under its '
+                . 'BEGIN NATS USER JWT line, and the seed, for nkey_seed, under its BEGIN USER NKEY SEED line.',
+                $thrown->getMessage(),
+            );
         }
     }
 
