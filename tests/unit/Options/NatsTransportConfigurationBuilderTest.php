@@ -2385,6 +2385,9 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'negative' => [-1];
         yield 'fractional' => [1.5];
         yield 'non-numeric' => ['many'];
+        yield 'past the range of an int' => [1e19];
+        yield 'a string past the range of an int' => ['99999999999999999999'];
+        yield 'one past the limit' => [2147483648];
     }
 
     /**

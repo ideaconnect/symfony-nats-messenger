@@ -346,6 +346,9 @@ final class NatsTransportConfigurationBuilder
         $this->assertNonNegativeNumber($configuration, TransportOption::PING_AFTER_IDLE);
         // null defers to the client's default; 0 would only spell "reconnect disabled" a second way.
         $this->assertPositiveNumber($configuration, TransportOption::MAX_RECONNECT_ATTEMPTS, true);
+        // Past the range of an int a number wraps around on its way to the client, whose constructor refuses a negative one
+        // with every credential in its frame.
+        $this->assertNotExceedingInt32($configuration, TransportOption::MAX_RECONNECT_ATTEMPTS);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_AGE, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_BYTES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES, true);
@@ -564,7 +567,7 @@ final class NatsTransportConfigurationBuilder
         $number = $this->toNumber($value, $option);
         if ($number > 2147483647) {
             throw new InvalidArgumentException(sprintf(
-                'The %s option must not exceed 2147483647: NATS stores it as a 32-bit integer.',
+                'The %s option must not exceed 2147483647.',
                 $option->value,
             ));
         }
