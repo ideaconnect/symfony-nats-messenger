@@ -11,6 +11,7 @@ use Behat\Step\Then;
 use Behat\Step\When;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Process\Exception\ProcessFailedException;
+use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NatsMessenger\NatsTransport;
@@ -35,9 +36,10 @@ use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
  *   the NATS client to verify configuration (max_age, storage, subjects, etc.).
  *
  * Infrastructure:
- * - Docker Compose manages three NATS containers: plain (4222), TLS (4223), mTLS (4224).
- * - Connection helpers (`createNatsClient`, `createNatsTlsClient`, `createNatsMtlsClient`)
- *   route to the correct server based on `$useTls`/`$useMtls` flags.
+ * - Docker Compose manages the NATS containers: plain (4222), TLS (4223), mTLS (4224), a server that drops
+ *   idle clients (4225) and one in operator mode (4229).
+ * - Connection helpers (`createNatsClient`, `createNatsTlsClient`, `createNatsMtlsClient`, and so on)
+ *   route to the correct server based on the `$useTls`/`$useMtls`/... flags.
  *
  * Cleanup (#[AfterScenario]):
  * - Stops consumer processes, deletes NATS streams, clears marker and retry-state files,
@@ -63,6 +65,7 @@ class NatsSetupContext implements Context
     private bool $useTls = false;
     private bool $useMtls = false;
     private bool $useStaleServer = false;
+    private bool $useJwtServer = false;
     private ?Process $idleSendProcess = null;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
@@ -1948,28 +1951,48 @@ class NatsSetupContext implements Context
         $this->useStaleServer = true;
 
         $this->startNatsServer();
-        // On a stack started before this server was added, port 4222 is up, so startNatsServer() returned at
-        // once, and port 4225 is closed: start that one service.
-        $socket = @fsockopen('localhost', 4225, $errno, $errstr, 2);
-        if ($socket === false) {
-            (new Process(['docker', 'compose', 'up', '-d', 'nats-stale'], __DIR__ . '/../../../nats'))->run();
-        } else {
-            fclose($socket);
-        }
+        $this->waitForTestServer('nats-stale', 4225, $this->createNatsStaleClient(...));
+    }
 
-        $deadline = microtime(true) + 60;
-        while (true) {
-            try {
-                $this->createNatsStaleClient()->jetStream()->accountInfo()->await();
+    /**
+     * The test server in operator mode (tests/nats/nats-jwt.conf), on port 4229. It has no list of users: a user
+     * logs in with a JWT its account signed and a signature made with the user's seed.
+     */
+    #[Given('the NATS server in operator mode is running')]
+    public function theNatsServerInOperatorModeIsRunning(): void
+    {
+        $this->shouldNatsBeRunning = true;
+        $this->useJwtServer = true;
 
-                return;
-            } catch (\Throwable $e) {
-                if (microtime(true) > $deadline) {
-                    throw new \RuntimeException('The NATS server that drops idle clients (port 4225) did not become ready: ' . $e->getMessage());
-                }
-                usleep(500000);
-            }
-        }
+        $this->startNatsServer();
+        $this->waitForTestServer('nats-jwt', 4229, $this->createNatsJwtClient(...));
+    }
+
+    #[Given('I have a messenger transport on that server with the user\'s JWT and seed')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersJwtAndSeed(): void
+    {
+        $user = $this->credentials()['jwt_user'];
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed']]);
+    }
+
+    /**
+     * The other seed is a valid one, of a user no server lists, so the only thing wrong with this login is that the JWT
+     * is not that user's.
+     */
+    #[Given('I have a messenger transport on that server with the user\'s JWT and another user\'s seed')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersJwtAndAnotherUsersSeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $this->credentials()['jwt_user']['jwt'], 'nkey_seed' => $this->credentials()['unknown_user']['seed']]);
+    }
+
+    /**
+     * Only a message the server itself sends says this, so a transport that failed before it reached the server, or
+     * for another reason, does not pass.
+     */
+    #[Then('the setup should fail with the server\'s authorization error')]
+    public function theSetupShouldFailWithTheServersAuthorizationError(): void
+    {
+        $this->assertCommandFailedSaying($this->setupProcess, 'Authorization Violation');
     }
 
     #[Given('I have a messenger transport on that server with ping_after_idle of :seconds second')]
@@ -2224,6 +2247,7 @@ class NatsSetupContext implements Context
         $this->useTls = false;
         $this->useMtls = false;
         $this->useStaleServer = false;
+        $this->useJwtServer = false;
         $this->idleSendProcess = null;
         $this->testStreamName = 'stream';
         $this->testSubject = 'test.messages';
@@ -2482,6 +2506,98 @@ class NatsSetupContext implements Context
         return json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
     }
 
+    private function createNatsJwtClient(): NatsClient
+    {
+        $user = $this->credentials()['jwt_user'];
+        $signer = new NkeySeedSigner($user['seed']);
+
+        $client = new NatsClient(new NatsOptions(
+            servers: ['nats://127.0.0.1:4229'],
+            connectTimeoutMs: 5000,
+            jwt: $user['jwt'],
+            nkey: $signer->publicKey(),
+            nonceSigner: $signer,
+        ));
+        $client->connect()->await();
+
+        return $client;
+    }
+
+    /**
+     * Waits until a test server of its own answers JetStream requests. On a stack started before that server was
+     * added, port 4222 is up, so startNatsServer() returned at once, and this port is closed: starts that one service.
+     *
+     * @param \Closure(): NatsClient $createClient
+     */
+    private function waitForTestServer(string $service, int $port, \Closure $createClient): void
+    {
+        $socket = @fsockopen('127.0.0.1', $port, $errno, $errstr, 2);
+        if ($socket === false) {
+            (new Process(['docker', 'compose', 'up', '-d', $service], __DIR__ . '/../../../nats'))->run();
+        } else {
+            fclose($socket);
+        }
+
+        $deadline = microtime(true) + 60;
+        while (true) {
+            try {
+                $createClient()->jetStream()->accountInfo()->await();
+
+                return;
+            } catch (\Throwable $e) {
+                if (microtime(true) > $deadline) {
+                    throw new \RuntimeException(sprintf('The test server %s (port %d) did not become ready: %s', $service, $port, $e->getMessage()));
+                }
+                usleep(500000);
+            }
+        }
+    }
+
+    /**
+     * Writes a transport on one test server whose DSN holds no credentials, so that it logs in with these options
+     * alone.
+     *
+     * @param array<string, string> $options
+     */
+    private function writeTransportThatLogsInWith(int $port, array $options): void
+    {
+        $optionLines = '';
+        foreach ($options as $name => $value) {
+            $optionLines .= sprintf("                    %s: '%s'\n", $name, $value);
+        }
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://127.0.0.1:%d/%s/%s?stream_max_age=900'\n                options:\n%s                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $port,
+            $this->testStreamName,
+            $this->testSubject,
+            $optionLines
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * A console command must have failed, and its output must say $expected. The console wraps a long message at any
+     * character, so the two are compared without their whitespace.
+     */
+    private function assertCommandFailedSaying(?Process $process, string $expected): void
+    {
+        if ($process === null) {
+            throw new \RuntimeException('The command was not run');
+        }
+
+        $output = $process->getOutput() . $process->getErrorOutput();
+        if ($process->isSuccessful()) {
+            throw new \RuntimeException(sprintf("Expected the command to fail saying \"%s\", but it succeeded.\nOutput: %s", $expected, $output));
+        }
+
+        if (!str_contains((string) preg_replace('/\s+/', '', $output), (string) preg_replace('/\s+/', '', $expected))) {
+            throw new \RuntimeException(sprintf("Expected the command to fail saying \"%s\".\nOutput: %s", $expected, $output));
+        }
+    }
+
     /**
      * Selects the correct NATS client (plain, TLS, or mTLS) based on the current
      * scenario's connection flags. This ensures stream verification queries use
@@ -2491,6 +2607,9 @@ class NatsSetupContext implements Context
     {
         if ($this->useStaleServer) {
             return $this->createNatsStaleClient();
+        }
+        if ($this->useJwtServer) {
+            return $this->createNatsJwtClient();
         }
         if ($this->useMtls) {
             return $this->createNatsMtlsClient();
