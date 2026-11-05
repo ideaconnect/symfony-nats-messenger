@@ -163,7 +163,7 @@ final class NatsTransportConfigurationBuilder
             token: $this->toNullableString($configuration[TransportOption::TOKEN->value]),
             username: $this->resolveCredential($components, $configuration, TransportOption::USERNAME, 'user'),
             password: $this->resolveCredential($components, $configuration, TransportOption::PASSWORD, 'pass'),
-            jwt: $this->toNullableString($configuration[TransportOption::JWT->value]),
+            jwt: $this->resolveJwt($configuration, $nkeySigner),
             nkey: $this->resolveNkey($configuration, $nkeySigner),
             nonceSigner: $nkeySigner,
             logger: $logger,
@@ -877,6 +877,28 @@ final class NatsTransportConfigurationBuilder
         }
 
         return $derived;
+    }
+
+    /**
+     * The user JWT the CONNECT carries. It needs a seed: the client signs the server's nonce with it and throws before
+     * it writes the CONNECT when it has none, on every server, so a JWT alone can never connect. For a bearer JWT the
+     * server does not check that signature, but the client asks for the signer all the same.
+     *
+     * @param array<string, mixed> $configuration Merged option map
+     *
+     * @throws InvalidArgumentException When jwt is set without a seed.
+     */
+    private function resolveJwt(array $configuration, ?NkeySeedSigner $signer): ?string
+    {
+        $jwt = $this->toNullableString($configuration[TransportOption::JWT->value]);
+        if ($jwt !== null && $signer === null) {
+            throw new InvalidArgumentException(
+                'The jwt option needs nkey_seed: the client signs the server\'s nonce with the seed of the JWT\'s user and cannot '
+                . 'connect without one. Put that seed (SU...) in nkey_seed; a .creds file holds both values.'
+            );
+        }
+
+        return $jwt;
     }
 
     /**

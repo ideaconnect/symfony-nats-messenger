@@ -558,7 +558,7 @@ framework:
           token: null                       # NATS token authentication
           username: null                    # Overrides DSN username if provided
           password: null                    # Overrides DSN password if provided
-          jwt: null                         # JWT authentication value
+          jwt: null                         # User JWT; needs nkey_seed, see NKey Authentication
           nkey: null                        # Leave unset: the public key is derived from nkey_seed
           nkey_seed: null                   # NKey seed (SU...) that signs the server's nonce; see NKey Authentication
 ```
@@ -601,7 +601,7 @@ authorization {
   transport fails when it is built.
 - The seed works in the DSN query too (`?nkey_seed=SU...`)
 
-> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
+> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
 
 ### Retry Handler Behavior
 

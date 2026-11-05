@@ -212,7 +212,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'tls_peer_name' => 'nats.example.internal',
                 'tls_verify_peer' => false,
                 'token' => 'api-token',
-                'jwt' => 'jwt-value',
                 'username' => 'override-user',
                 'password' => 'override-password',
             ]
@@ -229,7 +228,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame('nats.example.internal', $options->tlsPeerName);
         self::assertFalse($options->tlsVerifyPeer);
         self::assertSame('api-token', $options->token);
-        self::assertSame('jwt-value', $options->jwt);
+        self::assertNull($options->jwt);
         self::assertNull($options->nkey);
         self::assertNull($options->nonceSigner);
         self::assertSame('override-user', $options->username);
@@ -336,6 +335,21 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 $refused->getMessage(),
             );
         }
+    }
+
+    /**
+     * Without a signer the client throws before it writes the CONNECT, on every server, so a JWT alone could never
+     * connect. The error names the option to set.
+     */
+    public function testBuildRejectsAJwtWithoutASeed(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'The jwt option needs nkey_seed: the client signs the server\'s nonce with the seed of the JWT\'s user and cannot '
+            . 'connect without one. Put that seed (SU...) in nkey_seed; a .creds file holds both values.'
+        );
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['jwt' => 'user-jwt']);
     }
 
     /**
