@@ -852,7 +852,9 @@ final class NatsTransportConfigurationBuilder
         try {
             $signer = new NkeySeedSigner($seed);
         } catch (NatsException $invalid) {
-            throw new InvalidArgumentException(sprintf('The NKey seed cannot be used: %s.', $invalid->getMessage()), 0, $invalid);
+            // Only the client's message goes on. Its exception is not chained: its frames hold the whole seed as a string
+            // argument, which the client does not mark, and one wrong character in it is easily repaired.
+            throw new InvalidArgumentException(sprintf('The NKey seed cannot be used: %s.', $invalid->getMessage()));
         }
 
         // The client takes a seed of any key type. A server only knows users by a user key, and refuses the others in

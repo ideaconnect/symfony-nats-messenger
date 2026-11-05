@@ -5,7 +5,6 @@ namespace IDCT\NatsMessenger\Tests\Unit\Options;
 use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
-use IDCT\NATS\Exception\NatsException;
 use IDCT\NATS\JetStream\Enum\DiscardPolicy;
 use IDCT\NATS\JetStream\Enum\ReplayPolicy;
 use IDCT\NATS\JetStream\Enum\RetentionPolicy;
@@ -560,7 +559,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         } catch (InvalidArgumentException $invalid) {
             self::assertStringStartsWith('The NKey seed cannot be used: ', $invalid->getMessage());
             self::assertStringNotContainsString($invalidSeed, $invalid->getMessage());
-            self::assertInstanceOf(NatsException::class, $invalid->getPrevious());
+            self::assertNull($invalid->getPrevious(), 'The frames of the client\'s exception hold the whole seed.');
         }
     }
 
