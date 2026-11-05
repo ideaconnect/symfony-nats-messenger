@@ -827,15 +827,26 @@ final class NatsTransportConfigurationBuilder
     /**
      * Builds the signer that answers the server's nonce challenge from the nkey_seed option.
      *
+     * Only null means "no seed". Any other value that is not a seed is refused, an empty one included: reading it as no
+     * seed would connect with whatever other credentials exist, as the server's no_auth_user or anonymously, without a word,
+     * because a variable happens to be empty. %env(default::NATS_NKEY_SEED)% gives null for an optional seed.
+     *
      * @param array<string, mixed> $configuration Merged option map
      *
      * @throws InvalidArgumentException When the seed is not a valid NKey seed, or the sodium extension is missing.
      */
     private function resolveNkeySigner(#[\SensitiveParameter] array $configuration): ?NkeySeedSigner
     {
-        $seed = $this->toNullableString($configuration[TransportOption::NKEY_SEED->value]);
+        $seed = $configuration[TransportOption::NKEY_SEED->value];
         if ($seed === null) {
             return null;
+        }
+
+        if (!is_string($seed) || trim($seed) === '') {
+            throw new InvalidArgumentException(
+                'The nkey_seed option must be a non-empty string, or null for no seed. For an optional seed from an environment '
+                . 'variable use the default processor, as in %env(default::NATS_NKEY_SEED)%.'
+            );
         }
 
         try {

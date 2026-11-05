@@ -24,6 +24,9 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 {
     private const VALID_DSN = 'nats://admin:password@localhost:4222/test-stream/test-topic';
 
+    private const NKEY_SEED_MUST_BE_A_STRING = 'The nkey_seed option must be a non-empty string, or null for no seed. For an optional '
+        . 'seed from an environment variable use the default processor, as in %env(default::NATS_NKEY_SEED)%.';
+
     private const TEST_NKEY_SEED = 'SUAANUDRLXQXVVCRIMOAGGDTAYN2CGCU737QZ2MKOLEVBR6RPDZKNGXT6A';
     private const TEST_NKEY_PUBLIC = 'UA4XDK2I75UAGJO5XDZBYLLOAJTFMHWHVOV7SQBEX2DZ3XUCRRUCS2DJ';
 
@@ -370,6 +373,68 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(self::TEST_NKEY_PUBLIC, $options->nkey);
         self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
         self::assertSame(self::TEST_NKEY_PUBLIC, $options->nonceSigner->publicKey());
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function nkeySeedsThatAreNotANonEmptyString(): iterable
+    {
+        yield 'an empty string' => [''];
+        yield 'spaces' => ['   '];
+        yield 'a newline' => ["\n"];
+        yield 'false' => [false];
+        yield 'true' => [true];
+        yield 'an integer' => [0];
+        yield 'a float' => [1.5];
+        yield 'an empty list' => [[]];
+        yield 'a list holding the seed' => [[self::TEST_NKEY_SEED]];
+        yield 'an object' => [new \stdClass()];
+    }
+
+    /**
+     * Only null means "no seed": read as no seed, an empty variable connected with the other credentials there were, as the
+     * server's no_auth_user, or anonymously, without a word.
+     */
+    #[DataProvider('nkeySeedsThatAreNotANonEmptyString')]
+    public function testBuildRejectsAnNkeySeedThatIsNotANonEmptyString(mixed $seed): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(self::NKEY_SEED_MUST_BE_A_STRING);
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey_seed' => $seed]);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function dsnQueriesWhoseNkeySeedIsNotANonEmptyString(): iterable
+    {
+        yield 'empty' => ['nkey_seed='];
+        yield 'an encoded space' => ['nkey_seed=%20'];
+        yield 'a list holding the seed' => ['nkey_seed[]=' . self::TEST_NKEY_SEED];
+    }
+
+    #[DataProvider('dsnQueriesWhoseNkeySeedIsNotANonEmptyString')]
+    public function testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString(string $query): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(self::NKEY_SEED_MUST_BE_A_STRING);
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic?' . $query);
+    }
+
+    public function testBuildWithANullNkeySeedHasNoSigner(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nkey_seed' => null]
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertNull($options->nonceSigner);
+        self::assertNull($options->nkey);
     }
 
     /**
