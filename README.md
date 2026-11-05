@@ -671,8 +671,8 @@ framework:
 - `jwt` must be the JWT alone, which has three parts separated by dots. A seed or the whole text of a `.creds` file there
   is refused when the transport is built, without repeating it, as the CONNECT would carry it to the server, in clear
   on a connection without TLS, and a server that traces logs it.
-- The seed must be the one of the JWT's user. The server checks that when the transport connects: a seed without its JWT,
-  or another user's seed, gets a bare `Authorization Violation`.
+- The seed must be the one of the JWT's user, unless the JWT is a bearer token. The server checks that when the transport
+  connects: a seed without its JWT, or another user's seed, gets a bare `Authorization Violation`.
 - The transport keeps the JWT it was built with and never fetches a new one. At the JWT's expiry the server sends
   `User Authentication Expired` and closes the connection, which ends a running worker with that message. After that
   each new connection with the same JWT is refused with `Authorization Violation`, which does not mention the expiry.

@@ -469,7 +469,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
     /**
      * The client takes all of these, and the server refuses them as users, so the error could only come at connect, as
-     * a bare Authorization Violation.
+     * a bare Authorization Violation, but for a bearer JWT, whose signature the server does not check.
      */
     #[RequiresPhpExtension('sodium')]
     #[DataProvider('seedsThatAreNotUserSeeds')]

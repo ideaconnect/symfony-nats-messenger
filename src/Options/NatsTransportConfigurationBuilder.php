@@ -898,7 +898,8 @@ final class NatsTransportConfigurationBuilder
         }
 
         // The client takes a seed of any key type. A server only knows users by a user key, and refuses the others in
-        // its config, so such a seed could only ever get a bare Authorization Violation at connect.
+        // its config, so such a seed could only ever get a bare Authorization Violation at connect, but for a bearer JWT,
+        // whose signature the server does not check and which has no reason to come with such a seed.
         if (!str_starts_with($signer->publicKey(), 'U')) {
             throw new InvalidArgumentException(
                 'The NKey seed cannot be used: it is not a user seed (SU...). A NATS user logs in with a user key, not with an '
