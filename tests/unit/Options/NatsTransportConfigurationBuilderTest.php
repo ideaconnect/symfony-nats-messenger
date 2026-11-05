@@ -213,7 +213,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'tls_verify_peer' => false,
                 'token' => 'api-token',
                 'jwt' => 'jwt-value',
-                'nkey' => 'nkey-value',
                 'username' => 'override-user',
                 'password' => 'override-password',
             ]
@@ -231,7 +230,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertFalse($options->tlsVerifyPeer);
         self::assertSame('api-token', $options->token);
         self::assertSame('jwt-value', $options->jwt);
-        self::assertSame('nkey-value', $options->nkey);
+        self::assertNull($options->nkey);
         self::assertNull($options->nonceSigner);
         self::assertSame('override-user', $options->username);
         self::assertSame('override-password', $options->password);
@@ -289,6 +288,34 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
             'nats://localhost:4222/test-stream/test-topic',
             ['nkey_seed' => self::TEST_NKEY_SEED, 'nkey' => 'UOTHERPUBLICKEY']
         );
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function nkeyValuesWithoutASeed(): iterable
+    {
+        yield 'the public key' => [self::TEST_NKEY_PUBLIC];
+        yield 'a seed put in the wrong option' => [self::TEST_NKEY_SEED];
+    }
+
+    /**
+     * Without a signer the client throws before it writes the CONNECT, on every server, so nkey alone could never
+     * connect. The error names what to configure, and does not repeat the value, which may be a seed.
+     */
+    #[DataProvider('nkeyValuesWithoutASeed')]
+    public function testBuildRejectsAnNkeyWithoutASeed(string $nkey): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey' => $nkey]);
+            self::fail('An nkey without a seed was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The nkey option needs nkey_seed: the client must sign the server\'s nonce with the seed, so nkey alone can '
+                . 'never connect. Put the seed (SU...) in nkey_seed and leave nkey unset: the public key is derived from it.',
+                $refused->getMessage(),
+            );
+        }
     }
 
     /**

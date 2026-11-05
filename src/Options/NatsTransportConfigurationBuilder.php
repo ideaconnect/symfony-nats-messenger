@@ -843,17 +843,26 @@ final class NatsTransportConfigurationBuilder
 
     /**
      * The public NKey the CONNECT carries next to the signature. With a seed it is the seed's own, derived from it, which
-     * the nkey option may repeat but not contradict.
+     * the nkey option may repeat but not contradict. Without a seed nkey is refused: the client signs the server's nonce
+     * with the seed and throws before it writes the CONNECT when it has none, on every server, so that configuration
+     * can never connect, and with reconnect: true it took 43 seconds to say so.
      *
      * @param array<string, mixed> $configuration Merged option map
      *
-     * @throws InvalidArgumentException When nkey is set and is not the public key of the seed.
+     * @throws InvalidArgumentException When nkey is set without a seed, or is not the public key of the seed.
      */
     private function resolveNkey(array $configuration, ?NkeySeedSigner $signer): ?string
     {
         $configured = $this->toNullableString($configuration[TransportOption::NKEY->value]);
         if ($signer === null) {
-            return $configured;
+            if ($configured !== null) {
+                throw new InvalidArgumentException(
+                    'The nkey option needs nkey_seed: the client must sign the server\'s nonce with the seed, so nkey alone can '
+                    . 'never connect. Put the seed (SU...) in nkey_seed and leave nkey unset: the public key is derived from it.'
+                );
+            }
+
+            return null;
         }
 
         $derived = $signer->publicKey();

@@ -596,12 +596,12 @@ authorization {
 - `nk -gen user -pubout` creates a key pair: the first line is the seed, the second the public key.
 - The seed is all the transport needs: the public key it sends is derived from it, so leave the `nkey` option unset.
   It may repeat the derived key, but a different one is refused when the transport is built, not on its first
-  connect.
+  connect. So is `nkey` without a seed, which could never log in: the client needs the seed to sign the nonce.
 - Signing needs the `sodium` extension, bundled with PHP since 7.2 and included in most builds. Without it the
   transport fails when it is built.
 - The seed works in the DSN query too (`?nkey_seed=SU...`)
 
-> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
+> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, Behat scenario `Messages are sent and consumed by a user that authenticates with an NKey seed`
 
 ### Retry Handler Behavior
 
