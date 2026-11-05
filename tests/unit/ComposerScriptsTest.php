@@ -14,7 +14,8 @@ final class ComposerScriptsTest extends TestCase
     /**
      * The scenarios take about as long as Composer's limit of 600 seconds for a script. Past it Composer fails the script and
      * leaves Behat running, with the worker it started and the transport's config file behind, in the way of the next run.
-     * CI does not notice: setup-php sets COMPOSER_PROCESS_TIMEOUT to 0.
+     * CI does not notice: setup-php sets COMPOSER_PROCESS_TIMEOUT to 0. CI's two test jobs run this script, so with the Behat
+     * command gone they would stay green with no scenario run.
      */
     public function testTheFunctionalSuiteHasNoProcessTimeout(): void
     {
@@ -24,5 +25,6 @@ final class ComposerScriptsTest extends TestCase
 
         self::assertIsArray($script);
         self::assertSame('Composer\\Config::disableProcessTimeout', $script[0] ?? null);
+        self::assertContains('cd tests/functional && vendor/bin/behat', $script);
     }
 }
