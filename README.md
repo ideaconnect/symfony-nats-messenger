@@ -667,8 +667,8 @@ On a server in operator mode a user has a JWT as well as an NKey. Give the trans
 `BEGIN USER NKEY SEED` lines. The transport does not read the file itself, so pass the two values:
 
 ```bash
-NATS_USER_JWT=$(awk '/BEGIN NATS USER JWT/ { getline; print }' user.creds)
-NATS_NKEY_SEED=$(awk '/BEGIN USER NKEY SEED/ { getline; print }' user.creds)
+export NATS_USER_JWT=$(awk '/BEGIN NATS USER JWT/ { getline; print }' user.creds)
+export NATS_NKEY_SEED=$(awk '/BEGIN USER NKEY SEED/ { getline; print }' user.creds)
 ```
 
 ```yaml
