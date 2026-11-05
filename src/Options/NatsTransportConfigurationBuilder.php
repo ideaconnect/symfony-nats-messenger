@@ -589,7 +589,8 @@ final class NatsTransportConfigurationBuilder
     private function assertFloatFitsAnInt(#[\SensitiveParameter] array $configuration, TransportOption $option): void
     {
         $value = $configuration[$option->value] ?? null;
-        if (is_float($value) && $value >= (float) PHP_INT_MAX) {
+        // Next to a float PHP_INT_MAX reads as 2^63, the first float that does not fit.
+        if (is_float($value) && $value >= PHP_INT_MAX) {
             throw new InvalidArgumentException(sprintf('The %s option is too large to be an integer.', $option->value));
         }
     }
