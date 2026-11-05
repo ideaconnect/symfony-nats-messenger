@@ -74,6 +74,17 @@ services:
       - ./nats-jwt.conf:/etc/nats/nats.conf
       - ./auth:/etc/nats/auth:ro
 
+  # A server whose clients log in with a token (see nats-token.conf).
+  nats-token:
+    image: ${NATS_IMAGE:-nats:alpine}
+    container_name: nats_test_token
+    restart: always
+    command: -c /etc/nats/nats.conf
+    ports:
+      - "127.0.0.1:4230:4222" # client port
+    volumes:
+      - ./nats-token.conf:/etc/nats/nats.conf
+
   # A JetStream cluster of three servers ("east", see nats-cluster.conf), for the examples that need one:
   # stream placement on tagged servers, and a worker that fails over when the server it is connected to
   # stops. Each server advertises its published port on 127.0.0.1, so a client on the host can fail over to
