@@ -44,7 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`zend.exception_ignore_args=0`, PHP's default without a php.ini), the frames of the factory, the transport's
   constructor and the builder held the options and the DSN. Every such parameter is now `#[\SensitiveParameter]`, and so
   are those of the builder's helpers that take one value of them. A
-  mistyped seed no longer chains the client's exception, whose frames hold the value. Symfony Messenger's factory marks
+  mistyped seed no longer chains the client's exception, whose frames hold the value, and neither does a sodium function
+  the client cannot call. Symfony Messenger's factory marks
   its options only from 7.4.23 and 8.1.11, and the client marks nothing yet, so the README recommends turning those
   arguments off in production.
 - **An error no longer repeats a name or value that may hold a credential (#89).** A query typed with `&` or `;` instead of

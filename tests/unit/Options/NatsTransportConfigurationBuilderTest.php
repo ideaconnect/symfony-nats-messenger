@@ -340,6 +340,60 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
+     * A sodium function the client calls can be disabled while the one it checks for is not. That is an \Error, not the client's
+     * exception, and its frames hold the seed. Nothing is wrong with the seed, so the error says nothing about its form.
+     */
+    #[RequiresPhpExtension('sodium')]
+    public function testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError(): void
+    {
+        $process = PhpProcess::run(
+            ['-d', 'disable_functions=sodium_memzero', '-d', 'zend.exception_ignore_args=0', '-r', self::scriptBuildingWithTheSeedInItsArguments(), '--', TestNkeys::seed()],
+            dirname(__DIR__, 3),
+        );
+
+        self::assertSame(0, $process['exitCode'], PhpProcess::describe($process));
+        self::assertSame(
+            'The NKey seed cannot be used: Call to undefined function IDCT\NATS\Auth\sodium_memzero().|not chained',
+            $process['stdout'],
+            PhpProcess::describe($process),
+        );
+    }
+
+    /**
+     * The polyfill, sodium_compat, has the function the client checks for, and its sodium_memzero() always throws, which the
+     * client reports as a failed derivation. The stand-in below does the same in the client's namespace, as the polyfill is not
+     * a dependency. Nothing is wrong with the seed here either.
+     */
+    #[RequiresPhpExtension('sodium')]
+    public function testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike(): void
+    {
+        $script = 'namespace IDCT\NATS\Auth { function sodium_memzero(string &$value): void { throw new \SodiumException("not implemented"); } } '
+            . 'namespace { ' . self::scriptBuildingWithTheSeedInItsArguments() . ' }';
+
+        $process = PhpProcess::run(['-r', $script, '--', TestNkeys::seed()], dirname(__DIR__, 3));
+
+        self::assertSame(0, $process['exitCode'], PhpProcess::describe($process));
+        self::assertSame(
+            'The NKey seed cannot be used: Failed to derive Ed25519 key pair from NKey seed.|not chained',
+            $process['stdout'],
+            PhpProcess::describe($process),
+        );
+    }
+
+    private static function scriptBuildingWithTheSeedInItsArguments(): string
+    {
+        return <<<'PHP'
+            require 'vendor/autoload.php';
+            try {
+                (new IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey_seed' => $argv[1]]);
+                echo 'built';
+            } catch (InvalidArgumentException $refused) {
+                echo $refused->getMessage(), $refused->getPrevious() === null ? '|not chained' : '|chained';
+            }
+            PHP;
+    }
+
+    /**
      * @return iterable<string, array{string}>
      */
     public static function nkeyValuesWithoutASeed(): iterable

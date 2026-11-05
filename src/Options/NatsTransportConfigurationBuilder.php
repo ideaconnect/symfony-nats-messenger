@@ -913,15 +913,18 @@ final class NatsTransportConfigurationBuilder
 
         try {
             $signer = new NkeySeedSigner($seed);
-        } catch (NatsException $invalid) {
-            // Only the client's message goes on. Its exception is not chained: its frames hold the whole seed as a string
-            // argument, which the client does not mark, and one wrong character in it is easily repaired. The client says
-            // little about a seed that is not one, such as the public key or a whole .creds file, so the error adds what one
-            // looks like, unless what is missing is the extension, as nothing is wrong with the seed then.
+        } catch (NatsException|\Error $invalid) {
+            // Only the message goes on. The exception is not chained: its frames hold the whole seed as a string argument,
+            // which the client does not mark, and one wrong character in it is easily repaired. An \Error comes from a sodium
+            // function the client cannot call, such as a disabled one, and holds the seed in the same frames.
+            //
+            // The client says little about a seed that is not one, such as the public key or a whole .creds file, so the error
+            // adds what one looks like. It does not when the fault is in sodium, as nothing is wrong with the seed then: the
+            // extension is missing, a function is disabled, or sodium failed, as the polyfill's sodium_memzero() always does.
             throw new InvalidArgumentException(sprintf(
                 'The NKey seed cannot be used: %s.%s',
                 $invalid->getMessage(),
-                function_exists('sodium_crypto_sign_seed_keypair')
+                $invalid instanceof NatsException && $invalid->getPrevious() === null && function_exists('sodium_crypto_sign_seed_keypair')
                     ? ' A user seed starts with SU, and a .creds file holds it under its BEGIN USER NKEY SEED line.'
                     : '',
             ));
