@@ -28,7 +28,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     private const NKEY_SEED_MUST_BE_A_STRING = 'The nkey_seed option must be a non-empty string, or null for no seed. For an optional '
         . 'seed from an environment variable use the default processor, as in %env(default::NATS_NKEY_SEED)%.';
 
-
     public function testBuildWithValidDsnReturnsConfiguration(): void
     {
         $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);

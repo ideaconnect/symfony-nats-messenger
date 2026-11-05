@@ -51,7 +51,6 @@ final class IDCTNatsMessengerBundleTest extends TestCase
     /** The environment variable the test of the README's jwt form sets. */
     private const JWT_VARIABLE = 'NATS_MESSENGER_TEST_USER_JWT';
 
-
     /** Makes SignedMessage a message type Messenger signs, as `sign: true` on a handler does. */
     private const SIGNED_MESSAGE_HANDLER = <<<'YAML'
         services:
