@@ -25,6 +25,9 @@ final class SecretsInExceptionsTest extends TestCase
 
     private const DSN_WITHOUT_CREDENTIALS = 'nats://localhost:4222/test-stream/test-topic';
 
+    /** Stands for the seed in data provider values, which the frames of a test method hold. */
+    private const PLACEHOLDER = 'SEED';
+
     /** Set while a test runs with exception arguments on; restored after it. */
     private string|false $ignoreArgs = false;
 
@@ -119,7 +122,7 @@ final class SecretsInExceptionsTest extends TestCase
         foreach ($methods as $method) {
             foreach ($method->getParameters() as $parameter) {
                 if (
-                    in_array($parameter->getName(), ['dsn', 'options', 'configuration', 'components', 'signer'], true)
+                    in_array($parameter->getName(), ['dsn', 'options', 'configuration', 'components', 'signer', 'name'], true)
                     && $parameter->getAttributes(\SensitiveParameter::class) === []
                 ) {
                     $unmarked[] = $method->getDeclaringClass()->getShortName() . '::' . $method->getName() . '($' . $parameter->getName() . ')';
@@ -167,6 +170,33 @@ final class SecretsInExceptionsTest extends TestCase
             self::assertStringStartsWith('The nkey option is not the public key', $thrown->getMessage());
             self::assertNoSecretIn($thrown, TestNkeys::seed());
             self::assertStringNotContainsString('secretKey', self::printedFrames($thrown));
+        }
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function placesInTheDsnPathForAMistypedQuery(): iterable
+    {
+        yield 'the topic' => ['nats://localhost:4222/test-stream/test-topic&nkey_seed=' . self::PLACEHOLDER];
+        yield 'the stream' => ['nats://localhost:4222/test-stream&nkey_seed=' . self::PLACEHOLDER . '/test-topic'];
+    }
+
+    /**
+     * A query typed with & instead of ? stays in the path, so the seed is part of the stream or topic name. The error must
+     * not print that name, whatever exception arguments are set to.
+     */
+    #[DataProvider('placesInTheDsnPathForAMistypedQuery')]
+    public function testASeedTypedIntoTheDsnPathStaysOutOfTheError(string $dsnWithAPlaceholder): void
+    {
+        $dsn = str_replace(self::PLACEHOLDER, TestNkeys::seed(), $dsnWithAPlaceholder);
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build($dsn);
+            self::fail('A stream or topic name with invalid characters was accepted.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringContainsString('contains invalid characters', $thrown->getMessage());
+            self::assertNoSecretIn($thrown, TestNkeys::seed());
         }
     }
 

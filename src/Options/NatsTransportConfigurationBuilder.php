@@ -244,7 +244,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @throws InvalidArgumentException If the name contains disallowed characters
      */
-    private function validateNatsName(string $name, string $label): void
+    private function validateNatsName(#[\SensitiveParameter] string $name, string $label): void
     {
         $pattern = $label === 'topic'
             ? '/^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*$/'
@@ -255,10 +255,10 @@ final class NatsTransportConfigurationBuilder
                 ? 'Only dot-separated subject tokens containing alphanumeric characters, hyphens, and underscores are allowed.'
                 : 'Only alphanumeric characters, hyphens, and underscores are allowed.';
 
+            // The name is not repeated: a query typed with & instead of ? stays in the path, credentials included.
             throw new InvalidArgumentException(sprintf(
-                'NATS %s name "%s" contains invalid characters. %s',
+                'NATS %s name contains invalid characters. %s',
                 $label,
-                $name,
                 $allowedCharacters,
             ));
         }
