@@ -37,7 +37,7 @@ use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
  *
  * Infrastructure:
  * - Docker Compose manages the NATS containers: plain (4222), TLS (4223), mTLS (4224), a server that drops
- *   idle clients (4225) and one in operator mode (4229).
+ *   idle clients (4225), one in operator mode (4229) and one with a token (4230).
  * - Connection helpers (`createNatsClient`, `createNatsTlsClient`, `createNatsMtlsClient`, and so on)
  *   route to the correct server based on the `$useTls`/`$useMtls`/... flags.
  *
@@ -50,6 +50,9 @@ class NatsSetupContext implements Context
 {
     /** The serializer service the igbinary steps give a transport's `serializer:` key: the README's value. */
     private const IGBINARY_SERIALIZER = IgbinarySerializer::class;
+
+    /** The token of the server in tests/nats/nats-token.conf, for the tests only. */
+    private const TEST_TOKEN = 'test-only-token';
 
     private ?Process $natsProcess = null;
     private ?Process $setupProcess = null;
@@ -66,6 +69,7 @@ class NatsSetupContext implements Context
     private bool $useMtls = false;
     private bool $useStaleServer = false;
     private bool $useJwtServer = false;
+    private bool $useTokenServer = false;
     private ?Process $idleSendProcess = null;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
@@ -1986,6 +1990,31 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * The test server whose clients log in with a token (tests/nats/nats-token.conf), on port 4230.
+     */
+    #[Given('the NATS server that logs clients in with a token is running')]
+    public function theNatsServerThatLogsClientsInWithATokenIsRunning(): void
+    {
+        $this->shouldNatsBeRunning = true;
+        $this->useTokenServer = true;
+
+        $this->startNatsServer();
+        $this->waitForTestServer('nats-token', 4230, $this->createNatsTokenClient(...));
+    }
+
+    #[Given('I have a messenger transport on that server with its token')]
+    public function iHaveAMessengerTransportOnThatServerWithItsToken(): void
+    {
+        $this->writeTransportThatLogsInWith(4230, ['token' => self::TEST_TOKEN]);
+    }
+
+    #[Given('I have a messenger transport on that server with a wrong token')]
+    public function iHaveAMessengerTransportOnThatServerWithAWrongToken(): void
+    {
+        $this->writeTransportThatLogsInWith(4230, ['token' => 'not-the-token']);
+    }
+
+    /**
      * Only a message the server itself sends says this, so a transport that failed before it reached the server, or
      * for another reason, does not pass.
      */
@@ -2248,6 +2277,7 @@ class NatsSetupContext implements Context
         $this->useMtls = false;
         $this->useStaleServer = false;
         $this->useJwtServer = false;
+        $this->useTokenServer = false;
         $this->idleSendProcess = null;
         $this->testStreamName = 'stream';
         $this->testSubject = 'test.messages';
@@ -2523,6 +2553,18 @@ class NatsSetupContext implements Context
         return $client;
     }
 
+    private function createNatsTokenClient(): NatsClient
+    {
+        $client = new NatsClient(new NatsOptions(
+            servers: ['nats://127.0.0.1:4230'],
+            connectTimeoutMs: 5000,
+            token: self::TEST_TOKEN,
+        ));
+        $client->connect()->await();
+
+        return $client;
+    }
+
     /**
      * Waits until a test server of its own answers JetStream requests. On a stack started before that server was
      * added, port 4222 is up, so startNatsServer() returned at once, and this port is closed: starts that one service.
@@ -2610,6 +2652,9 @@ class NatsSetupContext implements Context
         }
         if ($this->useJwtServer) {
             return $this->createNatsJwtClient();
+        }
+        if ($this->useTokenServer) {
+            return $this->createNatsTokenClient();
         }
         if ($this->useMtls) {
             return $this->createNatsMtlsClient();
