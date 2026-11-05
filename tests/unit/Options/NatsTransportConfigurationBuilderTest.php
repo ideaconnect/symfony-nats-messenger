@@ -294,18 +294,20 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     /**
      * @return iterable<string, array{array<string, mixed>}>
      */
-    public static function optionsWithAnNkey(): iterable
+    public static function optionsThatConfigureASeed(): iterable
     {
-        yield 'nkey alone' => [['nkey' => self::TEST_NKEY_PUBLIC]];
+        yield 'the seed alone' => [['nkey_seed' => self::TEST_NKEY_SEED]];
         yield 'nkey repeating the seed\'s public key' => [['nkey' => self::TEST_NKEY_PUBLIC, 'nkey_seed' => self::TEST_NKEY_SEED]];
     }
 
     /**
+     * The nkey option stays as an optional check of the seed: nothing in it is deprecated.
+     *
      * @param array<string, mixed> $options
      */
     #[RequiresPhpExtension('sodium')]
-    #[DataProvider('optionsWithAnNkey')]
-    public function testTheNkeyOptionIsDeprecated(array $options): void
+    #[DataProvider('optionsThatConfigureASeed')]
+    public function testTheNkeyOptionIsNotDeprecated(array $options): void
     {
         $deprecations = [];
         set_error_handler(static function (int $severity, string $message) use (&$deprecations): bool {
@@ -318,33 +320,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         try {
             (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', $options);
-        } finally {
-            restore_error_handler();
-        }
-
-        self::assertSame([
-            'Since idct/symfony-nats-messenger 5.8: The "nkey" option is deprecated and will be removed in 6.0. '
-            . 'The public key is derived from "nkey_seed": configure only the seed.',
-        ], $deprecations);
-    }
-
-    #[RequiresPhpExtension('sodium')]
-    public function testBuildWithNkeySeedAloneTriggersNoDeprecation(): void
-    {
-        $deprecations = [];
-        set_error_handler(static function (int $severity, string $message) use (&$deprecations): bool {
-            if ($severity === E_USER_DEPRECATED) {
-                $deprecations[] = $message;
-            }
-
-            return true;
-        });
-
-        try {
-            (new NatsTransportConfigurationBuilder())->build(
-                'nats://localhost:4222/test-stream/test-topic',
-                ['nkey_seed' => self::TEST_NKEY_SEED]
-            );
         } finally {
             restore_error_handler();
         }

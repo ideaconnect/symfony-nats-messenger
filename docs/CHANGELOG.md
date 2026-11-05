@@ -11,10 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **NKey authentication: the `nkey_seed` option.** The transport signs the server's nonce with the given seed and
   sends the public key derived from it, so a user the server knows by its NKey can connect with the seed alone.
 
-### Deprecated
-- **The `nkey` option, to be removed in 6.0.** The public key is derived from `nkey_seed`, so only the seed is
-  needed. Setting `nkey` triggers an `E_USER_DEPRECATED`; until 6.0 it may still repeat the seed's public key.
-
 ## [5.8.0] - 2026-11-04
 
 A **minor** release. With `retry_handler: nats`, a message whose handler failed is no longer lost on Symfony

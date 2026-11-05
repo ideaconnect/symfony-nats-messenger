@@ -852,14 +852,6 @@ final class NatsTransportConfigurationBuilder
     private function resolveNkey(array $configuration, ?NkeySeedSigner $signer): ?string
     {
         $configured = $this->toNullableString($configuration[TransportOption::NKEY->value]);
-        if ($configured !== null) {
-            @trigger_error(
-                'Since idct/symfony-nats-messenger 5.8: The "nkey" option is deprecated and will be removed in 6.0. '
-                . 'The public key is derived from "nkey_seed": configure only the seed.',
-                E_USER_DEPRECATED,
-            );
-        }
-
         if ($signer === null) {
             return $configured;
         }
