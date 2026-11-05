@@ -54,9 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allowed.
 - **A `max_reconnect_attempts` float past the range of an int is refused (#89).** It did not survive the cast on its way to
   the client: `1e19` became a negative number, which the client's constructor refused with every credential in its frame,
-  naming no option the user set, and `1e300` or `.inf` became 0. So did a numeric string past the largest float, such as
-  `1e400`. Each is now refused when the transport is built, naming the option. An int of any size, and any other numeric
-  string, which stops at the largest int, still work.
+  naming no option the user set, `2e19` an unrelated huge number, which worked, and `1e300` or `.inf` became 0. So did a
+  numeric string past the largest float, such as `1e400`. Each is now refused when the transport is built, naming the option.
+  An int of any size, and any other numeric string, which stops at the largest int, still work.
 - **A credential typed after a second `?` or a `;` in the DSN query is refused when the transport is built (#89).** It stayed
   in the value of the option before it and went where that goes: into the TLS library's error for a file name, or to
   the server, which stores it, for a consumer name, a stream description or a placement. Only the DSN query is checked,
