@@ -2173,6 +2173,49 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * The server does not check the signature of a bearer JWT, but the client asks for a signer all the same.
+     */
+    #[Given('I have a messenger transport on that server with a bearer JWT and its seed')]
+    public function iHaveAMessengerTransportOnThatServerWithABearerJwtAndItsSeed(): void
+    {
+        $user = $this->credentials()['bearer_user'];
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed']]);
+    }
+
+    /**
+     * Every connection after the restart has to sign the new server's nonce with the seed again.
+     */
+    #[Given('I have a messenger transport on that server with the user\'s JWT and seed and reconnect enabled')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersJwtAndSeedAndReconnectEnabled(): void
+    {
+        $user = $this->credentials()['jwt_user'];
+        $this->writeTransportThatLogsInWith(
+            4229,
+            ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed'], 'reconnect' => 'true', 'max_reconnect_attempts' => '30']
+        );
+    }
+
+    #[Given('I have a messenger transport on that server with the user\'s seed and no JWT')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersSeedAndNoJwt(): void
+    {
+        $this->writeTransportThatLogsInWith(4229, ['nkey_seed' => $this->credentials()['jwt_user']['seed']]);
+    }
+
+    #[Given('I have a messenger transport on that server with an expired JWT and its seed')]
+    public function iHaveAMessengerTransportOnThatServerWithAnExpiredJwtAndItsSeed(): void
+    {
+        $user = $this->credentials()['expired_user'];
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed']]);
+    }
+
+    #[Given('I have a messenger transport on that server with the JWT and seed of an account without JetStream')]
+    public function iHaveAMessengerTransportOnThatServerWithTheJwtAndSeedOfAnAccountWithoutJetStream(): void
+    {
+        $user = $this->credentials()['no_jetstream_user'];
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed']]);
+    }
+
+    /**
      * The test server whose clients log in with a token (tests/nats/nats-token.conf), on port 4230.
      */
     #[Given('the NATS server that logs clients in with a token is running')]
@@ -2311,17 +2354,18 @@ class NatsSetupContext implements Context
     #[When('I restart the NATS server')]
     public function iRestartTheNatsServer(): void
     {
-        $restart = new Process(['docker', 'restart', 'nats_test']);
+        $container = $this->useJwtServer ? 'nats_test_jwt' : 'nats_test';
+        $restart = new Process(['docker', 'restart', $container]);
         $restart->setTimeout(90);
         $restart->run();
         if (!$restart->isSuccessful()) {
-            throw new \RuntimeException('docker restart nats_test failed: ' . $restart->getErrorOutput());
+            throw new \RuntimeException(sprintf('docker restart %s failed: %s', $container, $restart->getErrorOutput()));
         }
 
         $deadline = microtime(true) + 60;
         while (true) {
             try {
-                $this->createNatsClient()->jetStream()->accountInfo()->await();
+                $this->createAppropriateNatsClient()->jetStream()->accountInfo()->await();
 
                 return;
             } catch (\Throwable $e) {
