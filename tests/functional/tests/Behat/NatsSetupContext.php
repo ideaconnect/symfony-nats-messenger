@@ -1642,6 +1642,61 @@ class NatsSetupContext implements Context
         $this->resetSymfonyCache();
     }
 
+    /**
+     * A valid seed, of a user no server lists.
+     */
+    #[Given('I have a messenger transport configured with an NKey seed the server does not know')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeedTheServerDoesNotKnow(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $this->credentials()['unknown_user']['seed']]);
+    }
+
+    #[Given('I have a messenger transport configured with a JWT and no NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithAJwtAndNoNkeySeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['jwt' => $this->credentials()['jwt_user']['jwt']]);
+    }
+
+    #[Given('I have a messenger transport configured with a public NKey and no seed')]
+    public function iHaveAMessengerTransportConfiguredWithAPublicNkeyAndNoSeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nkey' => $this->credentials()['nkey_user']['public']]);
+    }
+
+    #[Given('I have a messenger transport configured with an NKey seed next to a password')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeedNextToAPassword(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $this->credentials()['nkey_user']['seed'], 'username' => 'admin', 'password' => 'password']);
+    }
+
+    #[Then('the setup should fail saying :message')]
+    public function theSetupShouldFailSaying(string $message): void
+    {
+        $this->assertCommandFailedSaying($this->setupProcess, $message);
+    }
+
+    #[Then('the messenger stats command should fail saying :message')]
+    public function theMessengerStatsCommandShouldFailSaying(string $message): void
+    {
+        $process = new Process(['php', 'bin/console', 'messenger:stats', '--env=test'], __DIR__ . '/../..');
+        $process->run();
+
+        $this->assertCommandFailedSaying($process, $message);
+    }
+
+    #[Then('a messenger consumer should fail saying :message')]
+    public function aMessengerConsumerShouldFailSaying(string $message): void
+    {
+        $process = new Process(
+            ['php', 'bin/console', 'messenger:consume', 'test_transport', '--limit=1', '--time-limit=10', '--sleep=0.1', '--env=test'],
+            __DIR__ . '/../..'
+        );
+        $process->setTimeout(30);
+        $process->run();
+
+        $this->assertCommandFailedSaying($process, $message);
+    }
+
     #[Given('I have a messenger transport configured with batching of :batching')]
     public function iHaveAMessengerTransportConfiguredWithBatching(int $batching): void
     {
