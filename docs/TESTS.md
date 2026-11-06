@@ -662,7 +662,7 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 | Troubleshooting consume/setup command snippets | Manual diagnosis commands; related transport behavior is covered by the setup, consumer, and message-flow scenarios listed above |
 | `composer require idct/symfony-nats-messenger` | Package installation step; the installed library is exercised by the unit and functional suites rather than by a separate installation test |
 | Contributor verification command blocks (`composer test`, `composer test:unit`, `composer test:functional`) | Repository workflow commands used directly to validate changes rather than library runtime behavior |
-| Reading a `.creds` file with `awk`, and the `nsc` commands of the JWT section | Run by hand on `nsc` 2.12.0 and NATS 2.15, on a real file, through to `messenger:setup-transports`. `tests/nats/auth/generate.sh` runs the same kind of `nsc` commands on every `composer nats:start` |
+| Reading a `.creds` file with `awk`, and the `nsc` commands of the JWT section | Run by hand on `nsc` 2.12.0 and NATS 2.15, on a real file, through to `messenger:setup-transports`. `tests/nats/auth/generate.sh` runs the same kind of `nsc` commands whenever `composer nats:start` finds no complete set, so on every CI run |
 | Using a NATS Cluster: the failover table, the first dial knowing only the DSN's server, TLS on a cluster | Measured by hand on the test cluster (nats-server 2.15.1, client 2.27.2) and on a throwaway two-server TLS cluster (#86); `cluster-failover.php` covers the failover with `reconnect: true` in CI. TLS for learned servers, the certificate name and `tls_peer_name` are client behaviour |
 
 ### Not Testable by Transport (Symfony / NATS responsibility)
