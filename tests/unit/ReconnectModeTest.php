@@ -13,6 +13,7 @@ use IDCT\NatsMessenger\Tests\Support\RttCountingNatsClient;
 use IDCT\NatsMessenger\Tests\Support\SubscriptionLimitNatsServer;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Revolt\EventLoop;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
@@ -30,20 +31,33 @@ use function Amp\delay;
  * The transport's PINGs are counted through rtt(); the client's own, the one behind each inbox's SUB, does not go
  * through it, and its heartbeat is off.
  *
- * Budgets are short on purpose: request_timeout 0.1 s, connection_timeout 0.02 s, the client's reconnect delay 1 ms.
+ * The client's reconnect delay is 1 ms, but nothing here may depend on how fast this process runs: a machine short of
+ * CPU pauses it, for hundreds of milliseconds at times, and a budget that ends during a pause ends the operation.
+ * So an operation that has to succeed gets BUDGET_MS, which is never used up, and only the send a test wants to run out
+ * of its budget gets a short one ({@see failureWithinAShortBudget()}), where a pause just ends it sooner. A recovery
+ * the test looks at while it is in flight is held until the test releases it, not for a time.
  */
 final class ReconnectModeTest extends TestCase
 {
     private const DSN = 'nats://localhost:4222/orders/orders.created';
 
+    private const BUDGET_MS = 5000;
+
+    private const SHORT_BUDGET_MS = 50;
+
+    private const PING_AFTER_IDLE = 30;
+
+    /** What a test adds to the transport's clock to have the next operation PING first, without waiting that long. */
+    private const PAST_PING_AFTER_IDLE = self::PING_AFTER_IDLE + 1;
+
     /**
      * How the client's recovery comes to be in flight when an operation starts: a PHP process runs the event loop
      * only inside a transport call, so the client notices a lost connection when an operation writes to it. That
-     * operation starts the recovery and waits for it within its own budget; here the dial is held longer than
-     * request_timeout, so the send fails with the client's timeout and leaves the client Connecting. The next send
-     * finds it so: the transport sends no PING and dials nothing, and the send waits for the recovery and goes out
-     * on the connection the client made. Without the option the transport would PING, give up at
-     * connection_timeout and dial itself, which stops the client's recovery.
+     * operation starts the recovery and waits for it within its own budget; here the dial is held past that budget,
+     * so the send fails with the client's timeout and leaves the client Connecting. The next send finds it so: the
+     * transport sends no PING and dials nothing, and the send waits for the recovery, which ends only once that send
+     * is under way, and goes out on the connection the client made. Without the option the transport would PING, give
+     * up at connection_timeout and dial itself, which stops the client's recovery.
      */
     public function testAnOperationThatRunsIntoTheLostConnectionStartsTheRecoveryAndTheNextOneWaitsForIt(): void
     {
@@ -53,16 +67,16 @@ final class ReconnectModeTest extends TestCase
 
         try {
             $transport->send(new Envelope(self::message('m-1')));
-            $faults->holdNextDial(150);
+            $faults->holdNextDialUntilReleased();
             $faults->dropConnection();
 
-            $failure = self::failureOf(static fn () => $transport->send(new Envelope(self::message('m-2'))));
+            $failure = self::failureWithinAShortBudget($client, static fn () => $transport->send(new Envelope(self::message('m-2'))));
             $stateAfterTheFailure = $client->state();
 
-            $start = hrtime(true);
+            EventLoop::delay(0.01, $faults->releaseHeldDial(...));
             $transport->send(new Envelope(self::message('m-3')));
-            $elapsed = (hrtime(true) - $start) / 1e9;
         } finally {
+            $faults->releaseHeldDial();
             $transport->close();
         }
 
@@ -72,7 +86,6 @@ final class ReconnectModeTest extends TestCase
         self::assertSame(2, $server->sessions(), 'one connection from the client\'s recovery, none from the transport');
         self::assertSame(2, $faults->dialAttempts);
         self::assertSame(1, $client->statistics()->reconnects);
-        self::assertGreaterThan(0.02, $elapsed, sprintf('the send waited for the held dial, it took %.3f s', $elapsed));
         self::assertSame(['PING', 'SUB _INBOX', 'PUBLISH orders.created'], $server->received(session: 1), 'the third send went out on the recovered connection; the second was never written to it');
     }
 
@@ -116,12 +129,12 @@ final class ReconnectModeTest extends TestCase
     {
         $server = self::server();
         $faults = new FaultInjectingNatsServer($server);
-        [$transport, $client] = self::transportOver($faults);
+        [$transport, $client] = self::transportOver($faults, connectionTimeout: 0.02);
 
         try {
             $transport->send(new Envelope(self::message('m-1')));
             $faults->goSilent();
-            $failure = self::failureOf(static fn () => $transport->send(new Envelope(self::message('m-2'))));
+            $failure = self::failureWithinAShortBudget($client, static fn () => $transport->send(new Envelope(self::message('m-2'))));
             $transport->send(new Envelope(self::message('m-3')));
         } finally {
             $transport->close();
@@ -144,11 +157,11 @@ final class ReconnectModeTest extends TestCase
     {
         $server = self::server();
         $faults = new FaultInjectingNatsServer($server);
-        [$transport, $client] = self::transportOver($faults, pingAfterIdle: 0.05);
+        [$transport, $client] = self::transportOver($faults);
 
         try {
             $transport->send(new Envelope(self::message('m-1')));
-            delay(0.06);
+            $transport->clockOffset += self::PAST_PING_AFTER_IDLE;
             $faults->failNextWriteContaining('PING');
             $transport->send(new Envelope(self::message('m-2')));
         } finally {
@@ -162,19 +175,19 @@ final class ReconnectModeTest extends TestCase
     }
 
     /**
-     * As above, with the client's dial held: the PING's failure leaves the client Connecting. The transport leaves
-     * the recovery to run, and the send waits for it within request_timeout. Without the option the transport
-     * would have stopped the recovery and dialled itself.
+     * As above, with the client's dial held past connection_timeout: the wait for the PING gives up with the client
+     * Connecting. The transport leaves the recovery to run, and the send waits for it within request_timeout. Without
+     * the option the transport would have stopped the recovery and dialled itself.
      */
     public function testARecoveryStartedByAFailedPingIsLeftToRunAndTheOperationWaitsForIt(): void
     {
         $server = self::server();
         $faults = new FaultInjectingNatsServer($server);
-        [$transport, $client] = self::transportOver($faults, pingAfterIdle: 0.05);
+        [$transport, $client] = self::transportOver($faults, connectionTimeout: 0.02);
 
         try {
             $transport->send(new Envelope(self::message('m-1')));
-            delay(0.06);
+            $transport->clockOffset += self::PAST_PING_AFTER_IDLE;
             $faults->holdNextDial(60);
             $faults->failNextWriteContaining('PING');
             $start = hrtime(true);
@@ -200,7 +213,7 @@ final class ReconnectModeTest extends TestCase
     {
         $server = self::server();
         $faults = new FaultInjectingNatsServer($server);
-        [$transport, $client] = self::transportOver($faults);
+        [$transport, $client] = self::transportOver($faults, options: ['max_batch_timeout' => 5]);
 
         try {
             $transport->send(new Envelope(self::message('m-1')));
@@ -220,7 +233,7 @@ final class ReconnectModeTest extends TestCase
         self::assertCount(1, $first);
         self::assertSame([], $duringRecovery, 'the pull that ran into the lost connection ended empty');
         self::assertGreaterThan(0.1, $elapsed, sprintf('after waiting for the held dial, it took %.3f s', $elapsed));
-        self::assertLessThan(1.6, $elapsed, sprintf('within the pull\'s own budget, it took %.3f s', $elapsed));
+        self::assertLessThan(6.1, $elapsed, sprintf('within the pull\'s own budget, max_batch_timeout and a second, it took %.3f s', $elapsed));
         self::assertCount(1, $afterRecovery, 'the pull after the recovery delivered the message sent meanwhile');
         self::assertSame(0, $client->rtts, 'no PING: the client recovered, and a pull the server ended is no failure');
         self::assertSame(2, $server->sessions());
@@ -247,20 +260,19 @@ final class ReconnectModeTest extends TestCase
         try {
             $transport->send(new Envelope(self::message('m-1')));
             [$received] = iterator_to_array($transport->get(), false);
-            $faults->holdNextDial(300);
+            $faults->holdNextDialUntilReleased();
             $faults->failNextWriteContaining('$JS.ACK.');
 
-            $start = hrtime(true);
             $acknowledge($transport, $received);
-            $elapsed = (hrtime(true) - $start) / 1e9;
             $stateAfterTheCall = $client->state();
+            $faults->releaseHeldDial();
             self::waitUntil(static fn (): bool => $server->acks() !== []);
         } finally {
+            $faults->releaseHeldDial();
             $transport->close();
         }
 
-        self::assertLessThan(0.1, $elapsed, sprintf('the call did not wait for the held dial, it took %.3f s', $elapsed));
-        self::assertSame(ConnectionState::Connecting, $stateAfterTheCall, 'the call returned while the client was recovering: the frame was buffered');
+        self::assertSame(ConnectionState::Connecting, $stateAfterTheCall, 'the call returned while the dial was held, so it did not wait for the recovery: the frame was buffered');
         self::assertSame($pings, $client->rtts, 'the client noticed the loss on its own write, after the PING reject() checks the connection with');
         self::assertSame(2, $server->sessions());
         self::assertSame(1, $client->statistics()->reconnects);
@@ -437,11 +449,14 @@ final class ReconnectModeTest extends TestCase
         try {
             $transport->send(new Envelope(self::message('m-1')));
             $faults->dropConnectionAfterNextWriteContaining('PUB orders.created');
-            try {
-                $transport->send(new Envelope(self::message('m-2')));
-            } catch (\Throwable $caught) {
-                $failure = $caught;
+            $send = static fn () => $transport->send(new Envelope(self::message('m-2')));
+            if ($writtenAgain) {
+                $send();
+            } else {
+                $failure = self::failureWithinAShortBudget($client, $send);
             }
+            // The recovery goes on behind a send whose budget ran out first, as this process can be paused at any moment.
+            self::waitUntil(static fn (): bool => $client->statistics()->reconnects === 1);
         } finally {
             $transport->close();
         }
@@ -452,13 +467,11 @@ final class ReconnectModeTest extends TestCase
         self::assertSame(2, $server->sessions());
         self::assertSame(1, $client->statistics()->reconnects);
         if ($writtenAgain) {
-            self::assertNull($failure, 'the send succeeded on the recovered connection: ' . ($failure?->getMessage() ?? ''));
             self::assertContains('PUBLISH orders.created', $server->received(session: 1), 'the same frame went out on the new connection');
 
             return;
         }
 
-        self::assertNotNull($failure);
         self::assertStringContainsString('timed out', strtolower($failure->getMessage()), $failure::class . ': ' . $failure->getMessage());
         self::assertNotContains('PUBLISH orders.created', $server->received(session: 1), 'nothing was written again');
     }
@@ -486,29 +499,29 @@ final class ReconnectModeTest extends TestCase
         $server = self::server();
         $faults = new FaultInjectingNatsServer($server);
         $logger = new RecordingLogger();
-        [$transport, $client] = self::transportOver($faults, pingAfterIdle: 0.05, logger: $logger);
+        [$transport, $client] = self::transportOver($faults, logger: $logger, connectionTimeout: 0.02);
 
         try {
             $transport->send(new Envelope(self::message('m-1')));
             [$received] = iterator_to_array($transport->get(), false);
-            delay(0.06);
-            $faults->holdNextDial(100);
+            $transport->clockOffset += self::PAST_PING_AFTER_IDLE;
+            $faults->holdNextDialUntilReleased();
             $faults->refuseDials = true;
             $faults->failNextWriteContaining('PING');
 
             $transport->ack($received);
             $acknowledgedAtOnce = $client->state();
-            delay(0.3);
-            $stateAfterTheRecoveryGaveUp = $client->state();
+            $faults->releaseHeldDial();
+            self::waitUntil(static fn (): bool => $client->state() === ConnectionState::Closed);
             $dialsAfterTheRecoveryGaveUp = $faults->dialAttempts;
 
             $failure = self::failureOf(static fn () => $transport->send(new Envelope(self::message('m-2'))));
         } finally {
+            $faults->releaseHeldDial();
             $transport->close();
         }
 
         self::assertSame(ConnectionState::Connecting, $acknowledgedAtOnce, 'ack() returned while the client was recovering: the frame was buffered');
-        self::assertSame(ConnectionState::Closed, $stateAfterTheRecoveryGaveUp);
         self::assertSame(4, $dialsAfterTheRecoveryGaveUp, 'the first dial and the three attempts of the recovery');
         self::assertSame([], $server->acks(), 'the buffered acknowledgement never reached the server');
         $discards = array_values(array_filter($logger->messagesAt('error'), static fn (string $message): bool => str_contains($message, 'buffered publishes were discarded')));
@@ -527,11 +540,11 @@ final class ReconnectModeTest extends TestCase
      * @param array<string, mixed> $options Merged over the transport options below.
      * @return array{ClientInjectedNatsTransport, RttCountingNatsClient}
      */
-    private static function transportOver(FaultInjectingNatsServer $connection, float $pingAfterIdle = 30, ?RecordingLogger $logger = null, array $options = [], bool $resend = false): array
+    private static function transportOver(FaultInjectingNatsServer $connection, ?RecordingLogger $logger = null, array $options = [], bool $resend = false, float $connectionTimeout = self::BUDGET_MS / 1000): array
     {
         $client = new RttCountingNatsClient(new NatsOptions(
-            connectTimeoutMs: 100,
-            requestTimeoutMs: 100,
+            connectTimeoutMs: self::BUDGET_MS,
+            requestTimeoutMs: self::BUDGET_MS,
             reconnectEnabled: true,
             maxReconnectAttempts: 3,
             reconnectDelayMs: 1,
@@ -544,12 +557,12 @@ final class ReconnectModeTest extends TestCase
         $transport = new ClientInjectedNatsTransport(self::DSN, [
             'consumer' => 'worker',
             'max_batch_timeout' => 0.5,
-            'ping_after_idle' => $pingAfterIdle,
+            'ping_after_idle' => self::PING_AFTER_IDLE,
             'reconnect' => true,
             'max_reconnect_attempts' => 3,
             'resend_on_reconnect' => $resend,
-            'request_timeout' => 0.1,
-            'connection_timeout' => 0.02,
+            'request_timeout' => self::BUDGET_MS / 1000,
+            'connection_timeout' => $connectionTimeout,
         ] + $options, new PhpSerializer());
         $transport->setClient($client);
 
@@ -575,12 +588,27 @@ final class ReconnectModeTest extends TestCase
         self::fail('expected the operation to fail');
     }
 
+    /**
+     * What a send that has to run out of its budget failed with.
+     *
+     * @param \Closure(): mixed $send
+     */
+    private static function failureWithinAShortBudget(RttCountingNatsClient $client, \Closure $send): \Throwable
+    {
+        $client->requestBudgetMs = self::SHORT_BUDGET_MS;
+        try {
+            return self::failureOf($send);
+        } finally {
+            $client->requestBudgetMs = null;
+        }
+    }
+
     private static function waitUntil(\Closure $condition): void
     {
-        $deadline = hrtime(true) + 2_000_000_000;
+        $deadline = hrtime(true) + self::BUDGET_MS * 1_000_000;
         while (!$condition()) {
             if (hrtime(true) > $deadline) {
-                self::fail('condition not reached within 2 s');
+                self::fail(sprintf('condition not reached within %d ms', self::BUDGET_MS));
             }
 
             delay(0.001);

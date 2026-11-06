@@ -228,6 +228,17 @@ client with an in-memory scripted server. It distinguishes a client's SUB-fence 
 transport's connection-check PING (PR #75). Changing client wire behavior can require adapting
 this harness even when transport behavior stays the same.
 
+Unit tests that run the real client over the scripted server use real timers, and a machine short of CPU pauses the process
+for longer than a short budget: `ReconnectModeTest` failed that way at load 7 and above. Reproduce such a failure with
+`composer test:unit:paused` rather than with busy loops, which slow the rest of the machine as well and fail far less often
+(see `docs/TESTS.md`, "Unit Tests With Pauses").
+
+Two findings from the examples, measured on NATS 2.10.29. A plain ACK is not applied when `ack()` returns: the count read right
+after it still included the message in 102 of 400 tries in a tight loop, for at most 3 ms, and in none of 400 with `ack_sync`.
+After a server rejoins a cluster and answers JetStream requests, creating a stream with three replicas can still fail for a
+moment with `no suitable peers for placement, peer offline`, while the meta leader's `/jsz` shows every peer online and
+current, so `waitForClusterServer()` tries a real placement. That was not seen on 2.15.
+
 Mutation testing has a specific harness trap: Infection's file interceptor can displace
 BypassFinals and make final-class mock failures look like killed mutants. `tests/bootstrap.php`
 handles this. Run `composer test:mutation:canary` before `composer test:mutation`, and

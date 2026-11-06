@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Testing & CI
+- **The unit tests no longer depend on how fast their process runs.** `ReconnectModeTest` gave every operation 20 to 100 ms,
+  so a machine short of CPU failed it, with `the send waited for the held dial` or a request that timed out. An operation that
+  has to succeed now gets a budget it never uses up, only the send a test runs out of its budget gets a short one, and a
+  recovery a test looks at waits for the test instead of for a time. The class also runs faster, 0.9 s instead of 2.2 s.
+- `SubscriptionLimitPullTest` and a connection check test bounded how long a failure took too tightly for a process that was
+  paused. Their bounds now sit far from what the failure normally takes.
+- **`composer test:unit:paused`, also in CI,** runs the unit tests and stops their process at random moments, so that a test
+  that depends on how fast its process runs fails every time, not just now and then on a busy machine.
+- **The `keepalive` example no longer fails now and then.** It read the queue depth right after a plain ACK, which nothing
+  waits for. It now waits for the count to reach 0, and a lost ACK still fails it.
+- **The failover examples no longer fail now and then on NATS 2.10,** with `no suitable peers for placement, peer offline`.
+  After a server rejoins the cluster, the examples now wait until a stream with three replicas can really be created. A server
+  answering JetStream requests did not show that.
+
 ## [5.8.0] - 2026-11-04
 
 A **minor** release. With `retry_handler: nats`, a message whose handler failed is no longer lost on Symfony

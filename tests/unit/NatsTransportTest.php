@@ -1388,7 +1388,9 @@ final class NatsTransportTest extends TestCase
             EventLoop::cancel($socketWatcher);
         }
 
-        self::assertLessThan(1.0, (hrtime(true) - $start) / 1e9, 'gave up the PING at connection_timeout');
+        // A wait that ignored connection_timeout would end with the watcher, at 5 s. Only far from that does the time say
+        // anything, as this process can be paused.
+        self::assertLessThan(4.0, (hrtime(true) - $start) / 1e9, 'gave up the PING at connection_timeout');
     }
 
     /**

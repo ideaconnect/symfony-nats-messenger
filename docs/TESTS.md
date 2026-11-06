@@ -72,9 +72,11 @@ the client reading or not, and, not read, seen or not by the client's `peerClose
 right after it took a write, hold the next dial or refuse every dial. A PHP process runs the event loop only inside a
 transport call, so the client notices a
 lost connection when an operation writes to it; that operation starts the recovery, and whether it waits for it or
-times out and leaves the client Connecting depends on how long the dial is held against `request_timeout` (0.1 s here,
-`connection_timeout` 0.02 s, the client's reconnect delay 1 ms). The transport's PINGs are counted through `rtt()`; the
-client's heartbeat is off (#81).
+times out and leaves the client Connecting depends on whether the dial ends within its budget. An operation that has to
+succeed gets 5 s, which it never uses up, only the send a test runs out of its budget gets 50 ms, and a recovery a test
+looks at while it is in flight is held until the test releases it, so nothing here depends on how fast the process runs
+(see [Unit Tests With Pauses](#unit-tests-with-pauses-testsunitruntestswithpausestestphp)). The client's reconnect delay is
+1 ms. The transport's PINGs are counted through `rtt()`; the client's heartbeat is off (#81).
 
 | Feature | Tests |
 |---------|-------|
@@ -192,6 +194,27 @@ The functional Behat suite also exercises the bundle end-to-end: the test app en
 | Feature | Tests |
 |---------|-------|
 | **Every README ` ```php ` block is valid PHP** | `testReadmePhpExampleIsSyntacticallyValid` (data provider, one case per block), `testReadmeContainsThePhpExamplesWeExpect` |
+
+### Unit Tests With Pauses (`tests/unit/RunTestsWithPausesTest.php`)
+
+`composer test:unit:paused` (`scripts/run-tests-with-pauses.php`, in CI on the PHP 8.5 job) runs the unit tests and stops
+their process at random moments, for 250 ms each time and with 20 to 120 ms between two stops, as a machine short of CPU
+does. It loads nothing, as a stopped process uses no CPU. `TEST_PAUSE_MS` sets the length of a stop.
+
+A test that needs this process to keep up fails there nearly every time, where it fails only now and then on a busy
+machine, so a unit test must not depend on it. An operation that has to succeed gets a budget far longer than a pause. Only
+an operation that has to run out of its budget gets a short one, as a pause then just ends it sooner. A recovery a test looks
+at while it is in flight waits for the test instead of for a time. A bound on how long something took stays far from what it
+normally takes: a lower bound comes from a timer the operation has to wait for, and an upper bound from the time the
+wrong behaviour would take.
+
+Before these rules, of 8 runs of the whole suite at each length, 2 failed at 60 ms, 8 at 120 ms and 8 at 250 ms. After them
+none did, and none of 4 runs at 500 ms or of 3 at 1 s.
+
+| Feature | Tests |
+|---------|-------|
+| **The tests are really paused, and arguments reach PHPUnit** | `testTheTestsArePausedAndTheirArgumentsReachPhpunit` |
+| **A failed run fails the CI step** | `testThePhpunitExitCodeIsTheScripts` |
 
 ### Mutation Testing Harness (`tests/unit/MutationTestingBootstrapTest.php`, `tests/unit/MutationTestingChecksTest.php`, `tests/unit/MutationTestingCommandsTest.php`)
 
@@ -351,7 +374,9 @@ Runs against `nats-stale` (port 4225, `tests/nats/nats-stale.conf`), a test serv
 ## Examples (`examples/`, `composer examples`)
 
 Runnable scripts against a live server, run in CI after the functional suite, on the latest and the oldest
-supported NATS. Each prints `OK ...` when what it shows held, and fails otherwise.
+supported NATS. Each prints `OK ...` when what it shows held, and fails otherwise. The ones on the test cluster first wait
+until a stream with three replicas can be created through each server (`waitForClusterServer()`), as a server that just
+rejoined can still refuse one on NATS 2.10 after it answers JetStream requests.
 
 | Example | Verifies |
 |---|---|
@@ -359,7 +384,7 @@ supported NATS. Each prints `OK ...` when what it shows held, and fails otherwis
 | `duplicate-protection.php` | an application id sent twice is stored once; the envelope `send()` returned, sent again, is dropped; its retry (`RedeliveryStamp` 1) is stored |
 | `nats-retry.php` | with `retry_handler: nats`, `nak_delay: 1` and `max_deliver: 3`, Symfony's Worker and retry listener with FrameworkBundle's default strategy (3 retries) over a message whose handler fails once: the handler runs exactly twice, at least 0.9 s apart, the stream holds the one message (the retry was not published) and the consumer has nothing pending; fails on 5.7.1 with Symfony Messenger 7.4.22 / 8.1.10 or later, where the message was acknowledged after its first failure (#90) |
 | `request-timeout.php` | against a `no_ack` stream, a send with `request_timeout: 1` gives up after about 1 s although the message is stored, and sending it again with the same deduplication id stores nothing more |
-| `keepalive.php` | with `keepalive()` called from a SIGALRM handler every second, a message handled for 5 s on `ack_wait: 2` is not redelivered to a second worker (on 5.2.1 the first alarm broke the worker) |
+| `keepalive.php` | with `keepalive()` called from a SIGALRM handler every second, a message handled for 5 s on `ack_wait: 2` is not redelivered to a second worker (on 5.2.1 the first alarm broke the worker), and the count reaches 0 after the plain ACK |
 | `connection-checks.php` | sends after idling past `ping_after_idle` and after `close()` both succeed |
 | `reconnect.php` | with `reconnect: true`, `auto_setup` and a memory stream, `docker restart nats_test` during a pull: that pull and every pull until the restart is over end empty without an exception (`409 Server Shutdown`, then the client's recovery), the message sent once the server is back is stored in the recreated stream and received, and the logger the transport was given received the client's `Reconnected` |
 | `cluster-failover.php` | on the three-server test cluster, an R3 stream; a worker with `reconnect: true` whose DSN names only the stream's leader receives 2 of 4 messages, `docker stop` stops that server, and the worker receives the other 2 and one it sends afterwards without an exception, through a server it learned from the cluster; another server leads the stream; the logger received `Reconnected` |

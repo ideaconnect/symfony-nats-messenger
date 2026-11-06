@@ -137,6 +137,8 @@ final class UnansweredPullTest extends TestCase
         $transport = new ClientInjectedNatsTransport('nats://localhost:4222/stream/topic', [
             'max_batch_timeout' => 0.001,
             'ping_after_idle' => 30,
+            // So that a PING the server answers cannot look unanswered when this process is paused.
+            'connection_timeout' => 5,
         ]);
         $transport->setClient($client);
 

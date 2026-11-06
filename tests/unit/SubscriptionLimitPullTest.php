@@ -42,6 +42,13 @@ final class SubscriptionLimitPullTest extends TestCase
     private const SERVER_ERR = "Server sent error frame: 'maximum subscriptions exceeded'";
 
     /**
+     * Seconds. No test waits this out, as the server answers every pull. It only has to be far longer than a machine
+     * short of CPU can pause this process, so that a pull that fails at once cannot look like one that waited, and a PING
+     * the server answers cannot look unanswered.
+     */
+    private const MAX_BATCH_TIMEOUT = 5;
+
+    /**
      * The common shape: at a limit of one, after a send() whose request inbox took the slot, the pull's own read meets
      * the -ERR. get() fails at once, well within max_batch_timeout, with the TransportException naming the limit and
      * the client's SubscriptionLimitException as its previous one. The next operation checks the connection first;
@@ -68,7 +75,7 @@ final class SubscriptionLimitPullTest extends TestCase
         self::assertSame(self::LIMIT_MESSAGE, $failure->getMessage());
         self::assertInstanceOf(SubscriptionLimitException::class, $failure->getPrevious());
         self::assertSame(self::SERVER_ERR, $failure->getPrevious()->getMessage());
-        self::assertLessThan(0.5, $elapsed, sprintf('get() failed after %.3f s, with max_batch_timeout 0.5 s', $elapsed));
+        self::assertLessThan(self::MAX_BATCH_TIMEOUT, $elapsed, sprintf('get() failed after %.3f s, with max_batch_timeout %d s', $elapsed, self::MAX_BATCH_TIMEOUT));
         self::assertSame(0, $checksAfterThePull);
         self::assertSame(1, $client->rtts, 'the send after the refused pull checked the connection');
         self::assertSame(1, $server->sessions(), 'and kept it, since the server answered');
@@ -117,7 +124,7 @@ final class SubscriptionLimitPullTest extends TestCase
         self::assertNotSame([], $limitReports, "the heartbeat's read met the -ERR");
         self::assertInstanceOf(SubscriptionLimitException::class, $limitReports[0]);
         self::assertSame([], $server->pullInboxes(), 'no pull request went out for the refused inbox');
-        self::assertLessThan(0.5, $elapsed, sprintf('get() failed after %.3f s, with max_batch_timeout 0.5 s', $elapsed));
+        self::assertLessThan(self::MAX_BATCH_TIMEOUT, $elapsed, sprintf('get() failed after %.3f s, with max_batch_timeout %d s', $elapsed, self::MAX_BATCH_TIMEOUT));
         self::assertSame(0, $checksAfterThePull);
         self::assertSame(1, $client->rtts, 'the send after the refused pull checked the connection');
         self::assertSame(1, $server->sessions(), 'and kept it, since the server answered');
@@ -252,8 +259,9 @@ final class SubscriptionLimitPullTest extends TestCase
         ), $server);
         $transport = new ClientInjectedNatsTransport(self::DSN, [
             'consumer' => 'worker',
-            'max_batch_timeout' => 0.5,
+            'max_batch_timeout' => self::MAX_BATCH_TIMEOUT,
             'ping_after_idle' => 30,
+            'connection_timeout' => self::MAX_BATCH_TIMEOUT,
         ], new PhpSerializer());
         $transport->setClient($client);
 
@@ -282,10 +290,10 @@ final class SubscriptionLimitPullTest extends TestCase
 
     private static function waitUntil(\Closure $condition): void
     {
-        $deadline = hrtime(true) + 2_000_000_000;
+        $deadline = hrtime(true) + self::MAX_BATCH_TIMEOUT * 1_000_000_000;
         while (!$condition()) {
             if (hrtime(true) > $deadline) {
-                self::fail('condition not reached within 2 s');
+                self::fail(sprintf('condition not reached within %d s', self::MAX_BATCH_TIMEOUT));
             }
 
             delay(0.001);

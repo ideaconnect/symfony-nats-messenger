@@ -55,6 +55,7 @@
         "test:functional:setup": "cd tests/functional && composer install --prefer-dist --no-progress",
         "test:unit": "XDEBUG_MODE=coverage ./vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-clover clover.xml --coverage-text --colors=never --coverage-html coverage",
         "test:unit:fast": "./vendor/bin/phpunit --configuration phpunit.xml.dist",
+        "test:unit:paused": "@php scripts/run-tests-with-pauses.php",
         "test:mutation": "XDEBUG_MODE=coverage ./vendor/bin/infection --threads=max --no-interaction --log-verbosity=all --show-mutations=max --logger-github=false",
         "test:mutation:canary": [
             "@php -r \"@unlink('.infection/noop-summary.json');\" --",

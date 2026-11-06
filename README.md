@@ -25,7 +25,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
 - 🌐 **NATS Clusters** - One server in the DSN, the others learned from the cluster; failover, replicated streams
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
-- 🧪 **Thoroughly Tested** - 726 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 728 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -61,8 +61,8 @@ return [
 ```
 
 If you leave the bundle out, register the transport factory yourself. Messenger finds it by its tag, and
-nothing else registers it, so without it every `nats-jetstream://` DSN fails with "No transport supports
-Messenger DSN":
+nothing else registers it, so without it every `nats-jetstream://` DSN fails with "No transport supports the
+given Messenger DSN" (before Symfony Messenger 7.4.23 and 8.1.11 the message names the DSN instead):
 
 ```yaml
 # config/services.yaml (only without the bundle)
@@ -1389,6 +1389,9 @@ composer test:unit
 
 # Or run tests manually
 ./vendor/bin/phpunit
+
+# Stopped at random moments, which fails a test that depends on how fast its process runs
+composer test:unit:paused
 ```
 
 The target is to have at least 90% of code coverage.
@@ -1707,6 +1710,9 @@ if ($count > 0) {
 empty queue, so during an outage the queue reads as empty there. It gives up after a single connection attempt
 (about 6 seconds for a refused connection, see [Connection Timeout](#connection-timeout)). Monitor the
 connection itself, or the stream with the `nats` CLI, rather than reading a 0 as "nothing to do".
+
+Nothing waits for a plain ACK, so for a moment after `ack()` returned the count can still include that message. With
+`ack_sync` the server has applied the acknowledgement when `ack()` returns.
 
 > **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`
 
