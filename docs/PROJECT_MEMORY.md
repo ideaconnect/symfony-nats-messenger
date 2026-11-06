@@ -265,6 +265,11 @@ After a server rejoins a cluster and answers JetStream requests, creating a stre
 moment with `no suitable peers for placement, peer offline`, while the meta leader's `/jsz` shows every peer online and
 current, so `waitForClusterServer()` tries a real placement. That was not seen on 2.15.
 
+Two traps when reading results. `nats:alpine` is whatever this machine last pulled (2.14.2 here on 2026-11-06), so name the
+version when it matters: `NATS_IMAGE=nats:2.15.2-alpine composer nats:start`. `gh run view --log` stops at the Large Messages
+feature, probably on its 131 KB lines, which hides every later feature and Behat's summary, so read a CI job's whole log with
+`gh api --allow-escape-sequences repos/ideaconnect/symfony-nats-messenger/actions/jobs/<id>/logs` into a file.
+
 Mutation testing has a specific harness trap: Infection's file interceptor can displace
 BypassFinals and make final-class mock failures look like killed mutants. `tests/bootstrap.php`
 handles this. Run `composer test:mutation:canary` before `composer test:mutation`, and
@@ -428,3 +433,20 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   2.27.2 is the latest release; root and functional app both require `^2.27.1`.
 - `composer test` passed with client 2.27.1 (the lowest allowed) and 2.27.2 on PHP 8.5.11:
   PHPStan clean; 673 tests, 1941 assertions; coverage 99.78 % (893/895).
+
+## Dated snapshot: 2026-11-06
+
+- `main` has #102 (the flaky tests, `59a60cc`) and #101 (NKey and JWT logins, `3760c1c`), which also lands #89: GitHub marked it
+  as merged. Both are under `[Unreleased]` in the changelog.
+- **The next release has a decision to make first.** The latest tag is `v5.7.1`. `[5.8.0]`, dated 2026-11-04, was merged as #98
+  (`5cd9ffa`) and never tagged, and the README's "Upgrading from 5.8" assumes that it ships before `[Unreleased]`. Either tag 5.8.0 on
+  `5cd9ffa`, or fold the entries and the note into 5.8.0, as `docs/PRs/PR-089-nkey-authentication.md` describes.
+- No open transport issues. The one open PR is #100, per-message subjects, by a contributor: it conflicts with `main` in `README.md`,
+  `docs/CHANGELOG.md` and `docs/TESTS.md`, the same three files as before #101 and #102, and its code has not been run on top of them.
+- Known and not filed yet: `.creds` files and rotation, external signers, and the smaller findings under "Left for the maintainer"
+  in `docs/PRs/PR-089-nkey-authentication.md`.
+- Still able to fail on CI: the 503 of a graceful stop on NATS 2.15, under "Behavior to preserve". The examples and unit tests
+  that failed now and then are fixed (`docs/PRs/PR-102-flaky-tests.md`), so treat a new failure of one of them as real.
+- Both manifests require client `^2.28`, and 2.28.0 is the version tested. CI on the tree of `3760c1c`: PHPStan clean; 1038 tests,
+  2962 assertions, also stopped at random moments; coverage 99.80 % (1016/1018); Infection killed 1158 of 1176 mutants, with the 18
+  survivors `docs/TESTS.md` lists; Behat 93 of 93 on each PHP job and 89 of 89 on NATS 2.10.29; 14 of 14 examples in each job.
