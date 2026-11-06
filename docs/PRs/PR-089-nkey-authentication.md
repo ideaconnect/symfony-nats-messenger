@@ -226,10 +226,10 @@ about 20 ms in CI's logs, on NATS 2.15.2, which `nats:alpine` is at this time, a
 
 ### Left for the maintainer
 
-- **Follow-ups,** left for separate issues: `.creds` files and rotation, external signers, and the smaller findings, among
-  them the client's dumps and frames, a raw `StreamException` on a send after a restart, a pull in the last moments of a
-  graceful stop on NATS 2.15, the `^7.2` constraint that cannot
-  load `NatsTransport` (the real floor is 7.3.0, since 5.0.0), and a rule that a new option must reach a real server in a test.
+- **Follow-ups:** `.creds` files and rotation (#104), external signers (#105), a pull in the last moments of a graceful stop on
+  NATS 2.15 (#106), and smaller findings not filed yet, among them the client's dumps and frames, a raw `StreamException` on a send
+  after a restart, the `^7.2` constraint that cannot load `NatsTransport` (the real floor is 7.3.0, since 5.0.0), and a rule that a
+  new option must reach a real server in a test.
 - **The least permissions of a restricted user,** measured on client 2.28.0 and not in the README:
   - Subscribe: `_INBOX.>`.
   - To send: the topic, plus `{topic}.delayed.*` with `scheduled_messages`.
