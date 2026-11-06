@@ -437,10 +437,10 @@ These are posted recommendations; the tests and proposed issue-summary edits are
 ## Dated snapshot: 2026-11-06
 
 - `main` has #102 (the flaky tests, `59a60cc`) and #101 (NKey and JWT logins, `3760c1c`), which also lands #89: GitHub marked it
-  as merged. Both are under `[Unreleased]` in the changelog.
-- **The next release has a decision to make first.** The latest tag is `v5.7.1`. `[5.8.0]`, dated 2026-11-04, was merged as #98
-  (`5cd9ffa`) and never tagged, and the README's "Upgrading from 5.8" assumes that it ships before `[Unreleased]`. Either tag 5.8.0 on
-  `5cd9ffa`, or fold the entries and the note into 5.8.0, as `docs/PRs/PR-089-nkey-authentication.md` describes.
+  as merged.
+- **5.8.0 ships all of it.** `[5.8.0]`, first dated 2026-11-04, was merged as #98 (`5cd9ffa`) and never tagged. The maintainer chose
+  not to tag that commit on its own, so what was under `[Unreleased]` went into 5.8.0 and the upgrade notes became one. The tag
+  goes on the merge of the PR that did this.
 - No open transport issues. The one open PR is #100, per-message subjects, by a contributor: it conflicts with `main` in `README.md`,
   `docs/CHANGELOG.md` and `docs/TESTS.md`, the same three files as before #101 and #102, and its code has not been run on top of them.
 - Known and not filed yet: `.creds` files and rotation, external signers, and the smaller findings under "Left for the maintainer"

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.8.0] - 2026-11-06
+
+A **minor** release. NKey and JWT logins work for the first time: the new option `nkey_seed` signs the server's nonce, and a
+transport with `jwt` or `nkey` and no seed, which could never connect, is now refused when it is built (#89, #101). With
+`retry_handler: nats`, a message whose handler failed is no longer lost on Symfony Messenger 7.4.22 / 8.1.10 and later (#90),
+and its NAK is no longer lost when the worker's server goes away during the handler; a transport in that mode warns once when
+Symfony's retry strategy is still on (#94). The new option `resend_on_reconnect` sends a publish with a message id again on the
+recovered connection. `setup()` waits for a consumer NATS is moving after a change of `stream_replicas` (#98). It requires
+client 2.28.0: with `reconnect: true`, a worker whose server goes away while a handler runs now carries on in both retry modes,
+the ACK of a handled message and Symfony's retry copy of a failed one go out on the recovered connection instead of being lost or
+timing out. The README describes how Symfony Messenger 7.4.22 / 8.1.10 settle a retried message in symfony mode (#92) and what a
+handler failing or succeeding during the loss of a server does (#95), with an upgrade note. The mutation score is 98.5%, and the
+unit tests and examples that failed now and then are fixed (#102). The public PHP API gains only the `TransportOption` cases of
+the two new options; the new methods, `deliveryTime()` and `pause()`, are protected.
+
 ### Added
 - **NKey authentication: the `nkey_seed` option (#89).** The transport signs the server's nonce with the given seed and
   sends the public key derived from it, so a user the server knows by its NKey can connect with the seed alone. Signing
@@ -27,82 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transport is built, through `messenger:setup-transports`, `messenger:stats` and `messenger:consume`.
   `LoginCombinationsTest` adds the check to `composer test`, with no Docker: all 32 combinations of credentials are refused
   when built, or go through the real client as a CONNECT that carries them.
-
-### Fixed
-- **`jwt` and `nkey` could never connect (#89).** The transport passed them to the client without a signer, and the
-  client throws before it writes the CONNECT then, on every server: `requires a nonce signer`, after 43 seconds and as
-  `Reconnect attempts exhausted` with `reconnect: true`. `jwt` now works next to `nkey_seed`, its user's seed: a `.creds`
-  file holds both. Each one with no signer, which means no seed today, is refused when the transport is built, naming
-  `nkey_seed`, and so is a `jwt`
-  that does not have the three parts of a JWT, such as a seed or a whole `.creds` file, which the CONNECT would otherwise
-  carry to the server. `nkey` stays
-  optional and is best left unset, as the key is derived from the seed; with a seed it must be that key, and the error
-  names the seed's key and does not repeat the value. No login that worked is lost, unless a subclass that replaces
-  `$client` still passes these options, and the error comes earlier, so see the README's "Upgrading from 5.8" for
-  `messenger:stats`, for workers on several transports and for such a subclass.
-- **A failed build no longer keeps a seed, password or token in its stack frames (#89).** With exception arguments on
-  (`zend.exception_ignore_args=0`, PHP's default without a php.ini), the frames of the factory, the transport's
-  constructor and the builder held the options and the DSN. Every such parameter is now `#[\SensitiveParameter]`, and so
-  are those of the builder's helpers that take one value of them. A
-  mistyped seed no longer chains the client's exception, whose frames hold the value, and neither does a sodium function
-  the client cannot call. Symfony Messenger's factory marks
-  its options only from 7.4.23 and 8.1.11, and the client marks nothing yet, so the README recommends turning those
-  arguments off in production.
-- **An error no longer repeats a name or value that may hold a credential (#89).** A query typed with `&` or `;` instead of
-  `?`, or with a second `?`, stays in the stream or topic name or in the value of the option before it, and the errors for
-  those printed it. They now repeat a name or value only if it is at most 50 plain characters, and still say what is
-  allowed.
-- **A `max_reconnect_attempts` float past the range of an int is refused (#89).** It did not survive the cast on its way to
-  the client: `1e19` became a negative number, which the client's constructor refused with every credential in its frame,
-  naming no option the user set, `2e19` an unrelated huge number, which worked, and `1e300` or `.inf` became 0. So did a
-  numeric string past the largest float, such as `1e400`. Each is now refused when the transport is built, naming the option.
-  An int of any size, and any other numeric string, which stops at the largest int, still work.
-- **A credential typed after a second `?` or a `;` in the DSN query is refused when the transport is built (#89).** It stayed
-  in the value of the option before it and went where that goes: into the TLS library's error for a file name, or to
-  the server, which stores it, for a consumer name, a stream description or a placement. Only the DSN query is checked,
-  for `nkey_seed`, `nkey`, `jwt`, `token`, `username`, `password` and `tls_key_passphrase`, also with a space next to the
-  name or in another case, as nothing splits a value in the options. An encoded `&`, a double encoding, a name with brackets
-  or a dot, a literal control character and a space outside ASCII stay a part of the value.
-
-### Testing & CI
-- The bundle test expects the wording of Symfony Messenger 7.4.23 and 8.1.11, whose change had turned `composer test` red.
-  It still passes on the earlier versions.
-- `ext-sodium` is in `require-dev`, so `composer install` asks contributors for it, and every CI job has it: losing it
-  now fails instead of skipping the tests of NKey authentication.
-- `composer test:functional` runs without Composer's process timeout, as the scenarios take about as long as its limit of
-  600 seconds, and past it Composer left Behat running.
-- The worker restart scenarios wait for the worker's connection, as on CI's runners it used to come after the restart, so
-  they now prove the reconnect. They then pause 300 ms to stay out of a gap the README now names: a graceful stop of NATS 2.15
-  leaves a moment, about 10 ms for each durable consumer on a file stream, in which a pull can get 503, and that ends a
-  worker. The gap is not new, and it stays for now.
-- **The unit tests no longer depend on how fast their process runs (#102).** `ReconnectModeTest` gave every operation 20 to 100 ms,
-  so a machine short of CPU failed it, with `the send waited for the held dial` or a request that timed out. An operation that
-  has to succeed now gets a budget it never uses up, only the send a test runs out of its budget gets a short one, and a
-  recovery a test looks at waits for the test instead of for a time. The class also runs faster, 0.9 s instead of 2.2 s.
-- `SubscriptionLimitPullTest` and a connection check test bounded how long a failure took too tightly for a process that was
-  paused. Their bounds now sit far from what the failure normally takes (#102).
-- **`composer test:unit:paused`, also in CI (#102),** runs the unit tests and stops their process at random moments, so that a test
-  that depends on how fast its process runs fails every time, not just now and then on a busy machine.
-- **The `keepalive` example no longer fails now and then (#102).** It read the queue depth right after a plain ACK, which nothing
-  waits for. It now waits for the count to reach 0, and a lost ACK still fails it.
-- **The failover examples no longer fail now and then on NATS 2.10 (#102),** with `no suitable peers for placement, peer offline`.
-  After a server rejoins the cluster, the examples now wait until a stream with three replicas can really be created. A server
-  answering JetStream requests did not show that.
-
-## [5.8.0] - 2026-11-04
-
-A **minor** release. With `retry_handler: nats`, a message whose handler failed is no longer lost on Symfony
-Messenger 7.4.22 / 8.1.10 and later (#90), and its NAK is no longer lost when the worker's server goes away during
-the handler; a transport in that mode warns once when Symfony's retry strategy is still on (#94), which is the new
-behaviour that makes this a minor release, with the new option `resend_on_reconnect`. `setup()` waits for a consumer
-NATS is moving after a change of `stream_replicas` (#98). It requires client 2.28.0: with `reconnect: true`, a
-worker whose server goes away while a handler runs now carries on in both retry modes, the ACK of a
-handled message and Symfony's retry copy of a failed one go out on the recovered connection instead of being lost or
-timing out. The README describes how Symfony Messenger 7.4.22 / 8.1.10 settle a retried message in symfony mode
-(#92) and what a handler failing or succeeding during the loss of a server does (#95), with an upgrade note. The
-mutation score is 98.6%. The public PHP API is unchanged; the one new method, `deliveryTime()`, is protected.
-
-### Added
 - **`resend_on_reconnect` (off by default): a send with a message id is sent again on the recovered connection.**
   With `reconnect: true`, a `send()` whose server took the message and went away before it answered, as a stream's
   leader that stops, waited out `request_timeout` on the recovered connection and failed with `TimeoutException`,
@@ -168,6 +107,40 @@ mutation score is 98.6%. The public PHP API is unchanged; the one new method, `d
   plain connection. The check stays with that client too: a close behind data not read yet, as a TLS server's
   `close_notify`, is one the client cannot see, and with `reconnect: false` the check dials another server where
   the client would fail the NAK.
+- **`jwt` and `nkey` could never connect (#89).** The transport passed them to the client without a signer, and the
+  client throws before it writes the CONNECT then, on every server: `requires a nonce signer`, after 43 seconds and as
+  `Reconnect attempts exhausted` with `reconnect: true`. `jwt` now works next to `nkey_seed`, its user's seed: a `.creds`
+  file holds both. Each one with no signer, which means no seed today, is refused when the transport is built, naming
+  `nkey_seed`, and so is a `jwt`
+  that does not have the three parts of a JWT, such as a seed or a whole `.creds` file, which the CONNECT would otherwise
+  carry to the server. `nkey` stays
+  optional and is best left unset, as the key is derived from the seed; with a seed it must be that key, and the error
+  names the seed's key and does not repeat the value. No login that worked is lost, unless a subclass that replaces
+  `$client` still passes these options, and the error comes earlier, so see the README's "Upgrading from 5.7.1" for
+  `messenger:stats`, for workers on several transports and for such a subclass.
+- **A failed build no longer keeps a seed, password or token in its stack frames (#89).** With exception arguments on
+  (`zend.exception_ignore_args=0`, PHP's default without a php.ini), the frames of the factory, the transport's
+  constructor and the builder held the options and the DSN. Every such parameter is now `#[\SensitiveParameter]`, and so
+  are those of the builder's helpers that take one value of them. A
+  mistyped seed no longer chains the client's exception, whose frames hold the value, and neither does a sodium function
+  the client cannot call. Symfony Messenger's factory marks
+  its options only from 7.4.23 and 8.1.11, and the client marks nothing yet, so the README recommends turning those
+  arguments off in production.
+- **An error no longer repeats a name or value that may hold a credential (#89).** A query typed with `&` or `;` instead of
+  `?`, or with a second `?`, stays in the stream or topic name or in the value of the option before it, and the errors for
+  those printed it. They now repeat a name or value only if it is at most 50 plain characters, and still say what is
+  allowed.
+- **A `max_reconnect_attempts` float past the range of an int is refused (#89).** It did not survive the cast on its way to
+  the client: `1e19` became a negative number, which the client's constructor refused with every credential in its frame,
+  naming no option the user set, `2e19` an unrelated huge number, which worked, and `1e300` or `.inf` became 0. So did a
+  numeric string past the largest float, such as `1e400`. Each is now refused when the transport is built, naming the option.
+  An int of any size, and any other numeric string, which stops at the largest int, still work.
+- **A credential typed after a second `?` or a `;` in the DSN query is refused when the transport is built (#89).** It stayed
+  in the value of the option before it and went where that goes: into the TLS library's error for a file name, or to
+  the server, which stores it, for a consumer name, a stream description or a placement. Only the DSN query is checked,
+  for `nkey_seed`, `nkey`, `jwt`, `token`, `username`, `password` and `tls_key_passphrase`, also with a space next to the
+  name or in another case, as nothing splits a value in the options. An encoded `&`, a double encoding, a name with brackets
+  or a dot, a literal control character and a space outside ASCII stay a part of the value.
 
 ### Changed
 - **Requires `idct/php-nats-jetstream-client` `^2.28` (was `^2.27.1`), so that a write after the server closed the
@@ -254,6 +227,29 @@ mutation score is 98.6%. The public PHP API is unchanged; the one new method, `d
   `parseStreamAndTopic()`), a comparison that is always true (`streamReplicas() > 0`, `streamMaxAgeSeconds() > 0`
   around a product that is 0 then), a cast PHP makes anyway, and a second source for the same value (the stream's
   subjects). These spots now say it once; the behaviour is the same, and the unit suite passes unchanged.
+- The bundle test expects the wording of Symfony Messenger 7.4.23 and 8.1.11, whose change had turned `composer test` red.
+  It still passes on the earlier versions.
+- `ext-sodium` is in `require-dev`, so `composer install` asks contributors for it, and every CI job has it: losing it
+  now fails instead of skipping the tests of NKey authentication.
+- `composer test:functional` runs without Composer's process timeout, as the scenarios take about as long as its limit of
+  600 seconds, and past it Composer left Behat running.
+- The worker restart scenarios wait for the worker's connection, as on CI's runners it used to come after the restart, so
+  they now prove the reconnect. They then pause 300 ms to stay out of a gap the README now names: a graceful stop of NATS 2.15
+  leaves a moment, about 10 ms for each durable consumer on a file stream, in which a pull can get 503, and that ends a
+  worker. The gap is not new, and it stays for now.
+- **The unit tests no longer depend on how fast their process runs (#102).** `ReconnectModeTest` gave every operation 20 to 100 ms,
+  so a machine short of CPU failed it, with `the send waited for the held dial` or a request that timed out. An operation that
+  has to succeed now gets a budget it never uses up, only the send a test runs out of its budget gets a short one, and a
+  recovery a test looks at waits for the test instead of for a time. The class also runs faster, 0.9 s instead of 2.2 s.
+- `SubscriptionLimitPullTest` and a connection check test bounded how long a failure took too tightly for a process that was
+  paused. Their bounds now sit far from what the failure normally takes (#102).
+- **`composer test:unit:paused`, also in CI (#102),** runs the unit tests and stops their process at random moments, so that a test
+  that depends on how fast its process runs fails every time, not just now and then on a busy machine.
+- **The `keepalive` example no longer fails now and then (#102).** It read the queue depth right after a plain ACK, which nothing
+  waits for. It now waits for the count to reach 0, and a lost ACK still fails it.
+- **The failover examples no longer fail now and then on NATS 2.10 (#102),** with `no suitable peers for placement, peer offline`.
+  After a server rejoins the cluster, the examples now wait until a stream with three replicas can really be created. A server
+  answering JetStream requests did not show that.
 
 ## [5.7.1] - 2026-10-19
 
