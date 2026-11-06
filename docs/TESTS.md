@@ -374,7 +374,9 @@ Runs against `nats-stale` (port 4225, `tests/nats/nats-stale.conf`), a test serv
 ## Examples (`examples/`, `composer examples`)
 
 Runnable scripts against a live server, run in CI after the functional suite, on the latest and the oldest
-supported NATS. Each prints `OK ...` when what it shows held, and fails otherwise.
+supported NATS. Each prints `OK ...` when what it shows held, and fails otherwise. The ones on the test cluster first wait
+until a stream with three replicas can be created through each server (`waitForClusterServer()`), as a server that just
+rejoined can still refuse one on NATS 2.10 after it answers JetStream requests.
 
 | Example | Verifies |
 |---|---|

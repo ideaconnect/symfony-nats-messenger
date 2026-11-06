@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that depends on how fast its process runs fails every time, not just now and then on a busy machine.
 - **The `keepalive` example no longer fails now and then.** It read the queue depth right after a plain ACK, which nothing
   waits for. It now waits for the count to reach 0, and a lost ACK still fails it.
+- **The failover examples no longer fail now and then on NATS 2.10,** with `no suitable peers for placement, peer offline`.
+  After a server rejoins the cluster, the examples now wait until a stream with three replicas can really be created. A server
+  answering JetStream requests did not show that.
 
 ## [5.8.0] - 2026-11-04
 

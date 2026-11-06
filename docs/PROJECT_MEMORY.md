@@ -233,8 +233,11 @@ for longer than a short budget: `ReconnectModeTest` failed that way at load 7 an
 `composer test:unit:paused` rather than with busy loops, which slow the rest of the machine as well and fail far less often
 (see `docs/TESTS.md`, "Unit Tests With Pauses").
 
-Found through the examples, on NATS 2.10.29: a plain ACK is not applied when `ack()` returns. The count read right after
-it still included the message in 102 of 400 tries in a tight loop, for at most 3 ms, and in none of 400 with `ack_sync`.
+Two findings from the examples, measured on NATS 2.10.29. A plain ACK is not applied when `ack()` returns: the count read right
+after it still included the message in 102 of 400 tries in a tight loop, for at most 3 ms, and in none of 400 with `ack_sync`.
+After a server rejoins a cluster and answers JetStream requests, creating a stream with three replicas can still fail for a
+moment with `no suitable peers for placement, peer offline`, while the meta leader's `/jsz` shows every peer online and
+current, so `waitForClusterServer()` tries a real placement. That was not seen on 2.15.
 
 Mutation testing has a specific harness trap: Infection's file interceptor can displace
 BypassFinals and make final-class mock failures look like killed mutants. `tests/bootstrap.php`
