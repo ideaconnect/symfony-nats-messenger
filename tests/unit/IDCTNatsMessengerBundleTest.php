@@ -9,14 +9,17 @@ use IDCT\NatsMessenger\NatsTransport;
 use Psr\Log\LoggerInterface;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
+use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NatsMessenger\NatsTransportFactory;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Tests\Support\MessengerTestKernel;
 use IDCT\NatsMessenger\Tests\Support\SignedMessage;
+use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use IDCT\NatsMessenger\Tests\Support\TransportFactoryUser;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresMethod;
+use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use ReflectionObject;
@@ -41,6 +44,12 @@ final class IDCTNatsMessengerBundleTest extends TestCase
     private const COMPOSER_JSON = __DIR__ . '/../../composer.json';
 
     private const NATS_DSN = 'nats-jetstream://localhost:4222/stream/topic';
+
+    /** The environment variable the tests of the README's nkey_seed forms set. */
+    private const SEED_VARIABLE = 'NATS_MESSENGER_TEST_NKEY_SEED';
+
+    /** The environment variable the test of the README's jwt form sets. */
+    private const JWT_VARIABLE = 'NATS_MESSENGER_TEST_USER_JWT';
 
     /** Makes SignedMessage a message type Messenger signs, as `sign: true` on a handler does. */
     private const SIGNED_MESSAGE_HANDLER = <<<'YAML'
@@ -299,8 +308,14 @@ final class IDCTNatsMessengerBundleTest extends TestCase
         );
     }
 
-    /** The logger of the NATS client inside a transport, read the way the builder test reads the client's options. */
+    /** The logger of the NATS client inside a transport. */
     private static function clientLoggerOf(mixed $transport): ?LoggerInterface
+    {
+        return self::clientOptionsOf($transport)->logger;
+    }
+
+    /** The options of the NATS client inside a transport, read the way the builder test reads them. */
+    private static function clientOptionsOf(mixed $transport): NatsOptions
     {
         \assert($transport instanceof NatsTransport);
         $configuration = (new \ReflectionClass($transport))->getProperty('configuration')->getValue($transport);
@@ -310,7 +325,137 @@ final class IDCTNatsMessengerBundleTest extends TestCase
         $options = (new \ReflectionClass($connection))->getProperty('options')->getValue($connection);
         \assert($options instanceof NatsOptions);
 
-        return $options->logger;
+        return $options;
+    }
+
+    /**
+     * The form the README gives for an optional seed: the `default` processor turns an unset or empty variable into null,
+     * which means no seed.
+     *
+     * @return iterable<string, array{string|null}>
+     */
+    public static function valuesOfAnOptionalSeedVariableThatMeanNoSeed(): iterable
+    {
+        yield 'unset' => [null];
+        yield 'empty' => [''];
+    }
+
+    #[Test]
+    #[DataProvider('valuesOfAnOptionalSeedVariableThatMeanNoSeed')]
+    public function theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable(?string $value): void
+    {
+        $this->assertNull($this->clientOptionsOfATransportWithTheSeed('%env(default::' . self::SEED_VARIABLE . ')%', $value)->nonceSigner);
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed(): void
+    {
+        $options = $this->clientOptionsOfATransportWithTheSeed('%env(default::' . self::SEED_VARIABLE . ')%', TestNkeys::seed());
+
+        $this->assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function theReadmesRequiredSeedFormGivesASignerWhenTheVariableHasASeed(): void
+    {
+        $options = $this->clientOptionsOfATransportWithTheSeed('%env(' . self::SEED_VARIABLE . ')%', TestNkeys::seed());
+
+        $this->assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+    }
+
+    /**
+     * A mounted secret may end in a line end, which is why the README's form has the `trim` processor.
+     */
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function theReadmesSeedFileFormGivesASignerWhenTheFileHasASeed(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'nats-messenger-seed-');
+        $this->assertIsString($file);
+        file_put_contents($file, TestNkeys::seed() . "\n");
+
+        try {
+            $options = $this->clientOptionsOfATransportWithTheSeed('%env(trim:file:' . self::SEED_VARIABLE . ')%', $file);
+        } finally {
+            unlink($file);
+        }
+
+        $this->assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function theReadmesJwtFormGivesTheClientTheJwtAndASigner(): void
+    {
+        $kernel = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => ['dsn' => self::NATS_DSN, 'options' => [
+                'jwt' => '%env(' . self::JWT_VARIABLE . ')%',
+                'nkey_seed' => '%env(' . self::SEED_VARIABLE . ')%',
+            ]]]],
+        );
+
+        $_ENV[self::JWT_VARIABLE] = 'a.user.jwt';
+        $_ENV[self::SEED_VARIABLE] = TestNkeys::seed();
+
+        try {
+            $options = self::clientOptionsOf($kernel->testContainer()->get('messenger.transport.nats'));
+        } finally {
+            unset($_ENV[self::JWT_VARIABLE], $_ENV[self::SEED_VARIABLE]);
+        }
+
+        $this->assertSame('a.user.jwt', $options->jwt);
+        $this->assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+    }
+
+    /**
+     * The README's required forms: unlike the `default` processor these pass the empty value on, and an empty variable or
+     * file must fail loudly instead of connecting without the seed.
+     */
+    #[Test]
+    public function theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('The nkey_seed option must be a non-empty string');
+
+        $this->clientOptionsOfATransportWithTheSeed('%env(' . self::SEED_VARIABLE . ')%', '');
+    }
+
+    #[Test]
+    public function theReadmesSeedFileFormIsRefusedForAnEmptyFile(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'nats-messenger-seed-');
+        $this->assertIsString($file);
+
+        try {
+            $this->expectException(\InvalidArgumentException::class);
+            $this->expectExceptionMessage('The nkey_seed option must be a non-empty string');
+
+            $this->clientOptionsOfATransportWithTheSeed('%env(trim:file:' . self::SEED_VARIABLE . ')%', $file);
+        } finally {
+            unlink($file);
+        }
+    }
+
+    /** Takes a transport with the given nkey_seed value from a compiled container, with the variable set to the value. */
+    private function clientOptionsOfATransportWithTheSeed(string $nkeySeed, ?string $variable): NatsOptions
+    {
+        $kernel = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => ['dsn' => self::NATS_DSN, 'options' => ['nkey_seed' => $nkeySeed]]]],
+        );
+
+        if ($variable !== null) {
+            $_ENV[self::SEED_VARIABLE] = $variable;
+        }
+
+        try {
+            return self::clientOptionsOf($kernel->testContainer()->get('messenger.transport.nats'));
+        } finally {
+            unset($_ENV[self::SEED_VARIABLE]);
+        }
     }
 
     /**

@@ -67,11 +67,16 @@ tests/
 │   │   ├── nats_term.feature                   # TERM failure handler
 │   │   ├── nats_delayed.feature                # Scheduled/delayed messages
 │   │   ├── nats_tls.feature                    # TLS connections
-│   │   └── nats_mtls.feature                   # mTLS with client certificates
+│   │   ├── nats_mtls.feature                   # mTLS with client certificates
+│   │   ├── nats_nkey.feature                   # Logins with an NKey seed, and credentials refused when built
+│   │   ├── nats_jwt.feature                    # Logins with a JWT and its seed on a server in operator mode
+│   │   └── nats_token.feature                  # Logins with a token
 │   └── tests/Behat/NatsSetupContext.php        # All step definitions
 └── nats/                                       # Docker Compose + NATS configs for testing
     ├── docker-compose.yaml
     ├── nats.conf / nats-tls.conf / nats-mtls.conf
+    ├── nats-jwt.conf / nats-token.conf         # operator mode and token logins
+    ├── auth/                                   # generate.sh for the test NKey and JWT credentials (generated, not committed)
     └── certs/                                  # generate.sh for the test TLS certificates (generated, not committed)
 ```
 
@@ -87,7 +92,7 @@ tests/
 - **Retry handling**: `retry_handler` - `symfony` (TERM, default) or `nats` (NAK)
 - **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers
 - **TLS/mTLS**: full TLS config options including client certificates
-- **Authentication**: username/password, token, JWT, NKey
+- **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`)
 - **Serialization**: igbinary (default with fallback) or custom via `AbstractEnveloperSerializer`
 - **Publish validation**: JetStream publish responses are parsed and validated
 - **Connection checks**: a lost connection is dialled again; `ping_after_idle` PINGs a connection that sat idle, or that an operation failed on, before reuse, and before the NAK or TERM of a failed delivery
@@ -116,7 +121,7 @@ composer test:unit:paused        # Fails a test that depends on how fast its pro
 ### Functional tests (require Docker)
 ```bash
 composer test:functional:setup   # Install Behat dependencies (first time)
-composer nats:start              # Generate the test TLS certs, then start NATS in Docker
+composer nats:start              # Generate the test TLS certs and NKey/JWT credentials, then start NATS in Docker
 composer test:functional         # Run Behat scenarios
 composer examples                # Run examples/*.php against the test NATS (needs nats:start)
 composer nats:stop               # Stop NATS

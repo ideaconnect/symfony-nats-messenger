@@ -29,7 +29,7 @@ This document maps each feature of the Symfony NATS Messenger Bridge to the test
 | **Consumer requests of setup() while the cluster moves the consumer (err_code 10008 or 10059, or no answer, after a change of `stream_replicas`)** | `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable` (the lookup, the second answer's replay policy is used), `testSetupCreatesTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable` (the create, twice), `testSetupWaitsBeforeAskingTheTemporarilyUnavailableClusterAgain` (a real pause, checked as at least 50 ms: with ext-event a 100 ms delay can end a little early), `testSetupGivesUpOnATemporarilyUnavailableClusterAfterFiveSeconds` (six requests at 0 to 5 s, then the server's message), `testSetupDoesNotAskForTheConsumerAgainAfterAnotherJetStreamError`, `testSetupAsksForTheConsumerAgainWhileTheMovedStreamIsReportedAsNotFound` (10059 on the lookup is not read as "no consumer": the live consumer's replay policy is sent, not the configured one), `testSetupCreatesTheConsumerAgainWhileTheMovedStreamIsReportedAsNotFound`, `testSetupGivesUpOnAStreamStillReportedAsNotFoundAfterFiveSeconds`, `testSetupReadsAMissingConsumerAsNoConsumerWithoutAskingAgain` (guard: 10014 is still "no consumer", at once), `testSetupAsksForTheConsumerOnceMoreAfterARequestTheClusterDidNotAnswer` (the lookup; asked again although the unanswered request took longer than the 5 s), `testSetupCreatesTheConsumerOnceMoreAfterARequestTheClusterDidNotAnswer`, `testSetupGivesUpOnASecondConsumerRequestTheClusterDidNotAnswer`, `testEachConsumerRequestGetsItsOwnSecondTryAfterAnUnansweredOne`, `testSetupGivesUpOnATemporarilyUnavailableClusterAfterAnUnansweredRequestPastFiveSeconds`; the test doubles' `pause()` fails a test after 60 real pauses (or 1000 recorded ones), so that a loop which never ends fails within seconds; the example `stream-placement.php` (from 2 replicas to 1 on the test cluster) |
 | **Unsupported server feature** | `testSetupGivesClearErrorWhenScheduledMessagesUnsupported`, `testSetupWrapsUnsupportedFeatureGenericallyWhenNotScheduledMessages`, `testSetupNamesTheRejectedFeatureWhenItIsNotTheOneScheduledMessagesNeed` |
 | **Consumer validation** | `testSetupRejectsUnexpectedConsumerConfiguration`, `testAssertConsumerMatchesConfigurationRejectsUnexpectedConfig`, `testAssertConsumerMatchesConfigurationRejectsWrongDeliverPolicy`, `testAssertConsumerMatchesConfigurationRejectsWrongFilterSubject`, `testAssertConsumerMatchesConfigurationRejectsWrongStreamOrConsumerName` |
-| **Message count** | `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountFallbackRunsOnANewConnectionAfterTheLookupFailedOnTheOldOne`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`, `testGetMessageCountReadsAStreamStateWithoutAMessageCountAsZero` |
+| **Message count** | `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountFallbackRunsOnANewConnectionAfterTheLookupFailedOnTheOldOne`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`, `testMessageCountOfALoginTheServerRefusesDialsOnceAndReturnsZero`, `testGetMessageCountReadsAStreamStateWithoutAMessageCountAsZero` |
 | **Connection check (`ping_after_idle`: after idling, after a failure, and before the NAK or TERM of a failed delivery)** | `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testAnsweredPingAfterAFailureKeepsTheConnectionAndEndsTheCheck`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff`, `testCloseEndsTheCheckAFailureCalledFor`, `testMessageCountFallbackRunsOnANewConnectionAfterTheLookupFailedOnTheOldOne`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testFailedCloseOfTheIdleConnectionDoesNotStopItsReplacement`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testIdleTimeCountsFromTheEndOfAPull`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testAutoSetupVerifiesTheConnectionThatReplacedAnIdleOne`, `testAnsweredPingCountsAsUseSoOneOperationPingsOnce`, `testKeepaliveNeitherPingsNorDials`, `testConnectionUnusedForExactlyPingAfterIdleIsNotPinged`, `testPullRefusedAtTheSubscriptionLimitFailsWithATransportExceptionAndTheNextOperationChecksTheConnection` (a pull refused at the subscription limit still calls for the check, since the server may close the connection behind the error, #76), `testSettlingAFailedDeliveryChecksTheConnectionFirst` (`reject()` in symfony mode (TERM) and nats mode (NAK, with and without `nak_delay`), and the NAK `ack()` sends for a delivery whose retry copy was left out: one PING, then the acknowledgement, on a connection used a moment ago; the next ACK pings nothing), `testPingAfterIdleZeroTurnsTheCheckBeforeSettlingAFailedDeliveryOff` |
 | **Reconnect mode (`reconnect: true`: the client owns recovery)** | `testReconnectModeLeavesAClientInTheMiddleOfItsRecoveryAlone`, `testReconnectModeReadsAFailedPingAgainstTheClientsRecovery` (a client that is recovering keeps the connection, one that already recovered keeps it, the same connection silent is replaced, a client that gave up is dialled again), `testReconnectModeTakesARecoveredConnectionAsChecked`, `testWithoutReconnectAFailedPingReplacesTheConnectionAndTheReconnectCountIsNeverRead` |
 | **Reconnect mode: provisioning after the client's own reconnect** | `testReconnectModeVerifiesProvisioningAgainAfterTheClientReconnected` (send, get), `testReconnectModeReprovisionsOnceWhenTheFirstPublishAfterTheReconnectFindsNoResponder` (plain, deduplicate on, application-supplied id, delayed message), `testReconnectModeReprovisionsOnlyOnceForAPublishWithoutAResponder`, `testReconnectModeDoesNotRetryAPublishOutsideTheNoResponderCase` (count unchanged, no auto_setup, another reply), `testWithoutReconnectAPublishWithoutAResponderPropagatesAndTheReconnectCountIsNeverRead` |
@@ -109,6 +109,8 @@ transport's serializer. Building a NATS transport opens no connection, so no ser
 | **The README's setup without the bundle** | `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` (its two "only without the bundle" services.yaml snippets and its igbinary example, in an application without the bundle) |
 | **One id for the serializer: Messenger wraps it for signing once, so a signed message decodes** | `aSignedMessageSurvivesTheSerializerUnderEveryIdTheBundleGivesIt` (one transport per id the bundle gives the serializer; Symfony 7.4+, needs igbinary) |
 | **The application's `logger` service reaches the NATS client of every transport, and the client gets none without it** | `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel` |
+| **The README's `nkey_seed` forms: each gives a signer for a seed, `default::` means no seed for an unset or empty variable, and the required forms are refused when empty** | `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesSeedFileFormGivesASignerWhenTheFileHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile` |
+| **The README's `jwt` form** | `theReadmesJwtFormGivesTheClientTheJwtAndASigner` |
 
 The functional Behat suite also exercises the bundle end-to-end: the test app enables it in
 `config/bundles.php` and every scenario relies on its service registration.
@@ -139,6 +141,9 @@ The functional Behat suite also exercises the bundle end-to-end: the test app en
 | **TLS configuration** | `testBuildWithTlsSchemeUsesTlsServerProtocol`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testBuildRecognizesTheTlsSchemeInAnyCase`, `testReadmeClusterOptionsAreAccepted` (the `+tls` scheme with `tls_required`, as a cluster needs) |
 | **TLS peer verification stays on unless explicitly disabled** | `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled` (data provider: false/0/no/off disable it; recognized truthy, unrecognized, empty, null and non-scalar values keep it on), `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled` (DSN query: left out, empty, unrecognized, false, off) |
 | **Authentication** | `testBuildUsesDsnCredentialsAndDefaultPortWhenOverridesAreAbsent`, `testBuildNormalizesStringBooleanAndNullableStringOptions`, `testBuildNormalizesIntegerBooleanOptions`, `testBuildPassesScalarCredentialOptionsAsStrings` (int, float, true), `testBuildFallsBackToTheDsnCredentialsForNonScalarOptions` |
+| **NKey authentication (`nkey_seed`)** | `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey` (a signer and the derived public key reach the client, no user or password), `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery`, `testBuildWithANullNkeySeedHasNoSigner`; refused when the transport is built: `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt` (the message never contains the seed, and no previous exception holds it), `testBuildSaysWhatASeedLooksLikeForAValueThatIsNotOne` (the public key, a JWT, a whole `.creds` file), `testBuildRejectsASeedThatIsNotAUserSeed` (account, operator, server, cluster, curve), `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString` (empty, blank, boolean, number, list, object), `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken` (from the DSN or the options; the error repeats no value), `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt` (a child process with the client's sodium function disabled), `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError` (another sodium function disabled, whose error holds the seed in its frames), `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike` (the polyfill's failure, by a stand-in in the client's namespace); without a seed no signer is passed: `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`. The README's `%env()%` forms are under Bundle, and what a failed build leaves in its exception under Secrets in Exceptions |
+| **The `nkey` option** | `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey` (the signer stays), `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey` (the error names the seed's key and never repeats the value, which may be a seed), `testBuildRejectsAnNkeyWithoutASeed` (the same), `testTheNkeyOptionIsNotDeprecated` (the seed alone, and `nkey` repeating its key) |
+| **The `jwt` option** | `testBuildPassesAJwtWithItsSeedToTheClient` (the JWT, the seed's public key and the signer reach the client; the login itself is in the functional suite), `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt` (a seed, a whole `.creds` file, the wrong number of parts), `testBuildAcceptsAJwtWithSpaceAroundItAndBase64UrlCharacters` |
 | **Option coercion edge cases** | `testBuildWithNonScalarOptionsCoerceToSafeDefaults`, `testBuildCoercesNonZeroIntegerBooleanOptionToTrue`, `testBuildCoercesUppercaseBooleanStringToTrue`, `testBuildWithPathMissingTopicThrowsException` |
 | **Scheduled messages** | `testBuildWithScheduledMessagesEnabledSetsFlag`, `testBuildWithScheduledMessagesDisabledByDefault`, `testBuildWithScheduledMessagesFromDsnQueryString` |
 | **Acknowledgement (ack_sync)** | `testBuildWithAckSyncEnabledSetsFlag`, `testBuildWithAckSyncDisabledByDefault`, `testBuildWithAckSyncFromDsnQueryString` |
@@ -146,9 +151,49 @@ The functional Behat suite also exercises the bundle end-to-end: the test app en
 | **Extended stream/consumer options + auto_setup** | `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testBuildLeavesNewOptionsUnsetByDefault`, `testBuildParsesNewOptionsFromDsnQuery`, `testBuildWithInvalidRetentionThrowsException`, `testBuildWithInvalidDiscardThrowsException`, `testBuildWithInvalidCompressionThrowsException`, `testBuildWithInvalidReplayPolicyThrowsException`, `testBuildWithDuplicateWindowExceedingMaxAgeThrowsException`, `testBuildAllowsDuplicateWindowWhenMaxAgeIsUnlimited`, `testBuildAllowsDuplicateWindowEqualToMaxAge`, `testBuildWithInvalidMaxAckPendingThrowsException`, `testBuildWithInvalidStreamMaxConsumersThrowsException`, `testBuildWithZeroStreamMaxMessageSizeThrowsException`, `testBuildWithStreamMaxMessageSizeExceedingInt32ThrowsException`, `testBuildAcceptsStreamMaxMessageSizeAtTheInt32Boundary`, `testBuildWithZeroDuplicateWindowThrowsException`, `testBuildWithOverlongStreamDescriptionThrowsException`, `testBuildAcceptsStreamDescriptionAtTheLengthLimit`, `testBuildWithUnrecognizedTriStateBooleanThrowsException`, `testBuildAcceptsEveryRecognizedBooleanTokenForTriStateFlags`, `testBuildTreatsANullMaxAgeAsUnlimitedForTheDuplicateWindow`, `testBuildWithInvalidInactiveThresholdThrowsException` (zero, negative, non-numeric), `testBuildRejectsAnUnrecognizedValueInAnyTriStateFlag` (each later flag, after a boolean `stream_deny_delete`) |
 | **NATS-native retry tuning** | `testBuildRetryTuningDefaults`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildWithNegativeNakDelayThrowsException`, `testBuildWithNonPositiveAckWaitThrowsException`, `testBuildWithNonIntegerMaxDeliverThrowsException`, `testBuildWithNonListBackoffThrowsException`, `testBuildWithNonNumericBackoffElementThrowsException`, `testBuildWithMaxDeliverNotExceedingBackoffThrowsException`, `testBuildWithBackoffFromDsnQueryString`, `testBuildAcceptsZeroAndFractionalBackoffEntries`, `testBuildAcceptsMaxDeliverWithoutBackoff` |
 | **Stream placement** | `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testBuildLeavesStreamPlacementUnsetByDefault`, `testBuildWithInvalidStreamPlacementClusterThrowsException`, `testBuildWithInvalidStreamPlacementTagsThrowsException` |
-| **Reconnect** | `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault` |
+| **Reconnect** | `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testBuildRejectsAMaxReconnectAttemptsThatDoesNotSurviveTheCastToAnInt`, `testBuildRejectsAMaxReconnectAttemptsInTheDsnThatDoesNotSurviveTheCastToAnInt`, `testBuildPassesALargeMaxReconnectAttemptsToTheClient`, `testBuildPassesALargeMaxReconnectAttemptsFromTheDsnToTheClient`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault` |
 | **Sending again on the recovered connection (`resend_on_reconnect`)** | `testResendOnReconnectIsOffByDefault`, `testBuildWithResendOnReconnectPropagatesToNatsOptions` (options, DSN, options over DSN), `testBuildWithResendOnReconnectWithoutReconnectThrowsException`, `testBuildWithResendOnReconnectAndADuplicateWindowNotLongerThanTheRequestTimeoutThrowsException` (equal, and shorter), `testBuildWithResendOnReconnectAcceptsALongerOrAnUnsetDuplicateWindow` |
 | **Option completeness** | `testDefaultOptionsCoversAllTransportOptionCases` |
+
+### Secrets in Exceptions (`tests/unit/Options/SecretsInExceptionsTest.php`)
+
+What a failed build leaves in its exception with exception arguments on (`zend.exception_ignore_args=0`), read from its
+message, its string form, and the frames of this package and the client, along the chain of previous exceptions. Each
+test keeps the secret out of its own frames, which PHP records too.
+
+| Feature | Tests |
+|---------|-------|
+| **Every place in the build that throws** | `testNoFrameOfAFailedBuildHoldsASecret` (a seed or a password, in the options or the DSN), `testNoFrameOfAFailedTransportCreationHoldsASecret` (the factory and the constructor above the build) |
+| **A new method cannot bring them back** | `testEveryParameterThatCanHoldASecretIsMarkedSensitive` (reflection over the builder, the factory and the constructor) |
+| **A mistyped seed** | `testAMistypedSeedStaysOutOfTheFailure` (the client's exception, whose frames hold the value, is not chained) |
+| **An `nkey` that contradicts the seed** | `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure` (neither the seed nor the signer's secret key) |
+| **A query typed with `&`, `;` or a second `?`** | `testASeedTypedIntoTheDsnPathStaysOutOfTheError` (the stream or topic name error), `testASeedTypedIntoAnOptionsValueStaysOutOfTheError` (the errors that print an option's value), `testASeedInTheValueOfANumericOptionStaysOutOfTheFrames` (the numeric check's frame) |
+| **A credential after a second `?` or a `;` in the query is refused** | `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt` (all seven credential options, encoded and not and in capitals, in a file name, a description, a list and a number, also with a space, a tab or a line end next to the name), `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted` (in the options, after a proper `&`, a name that only starts or ends like one, an encoded `&` or a double encoding, which stay in the value) |
+| **A plain mistake is still repeated** | `testAPlainMistakeIsRepeatedInTheError` (names and values of at most 50 plain characters), `testAValueLongerThanTheLimitIsNotRepeated`, `testAValueEndingInANewlineIsNotRepeated`, `testAShortValueWithACharacterOfAQueryIsNotRepeated`, `testAShortNameWithACharacterOfAQueryIsNotRepeated` (a short credential typed into a value or a name), `testAListWhereABooleanBelongsIsNotShownAsAValue` |
+| **After a build that worked** | `testTheConfigurationDoesNotKeepTheTextOfTheSeed` (a dump of the configuration does not print it; the client's signer still holds the raw key) |
+
+### Login Combinations (`tests/unit/LoginCombinationsTest.php`)
+
+The boundary between the transport and the client, on every `composer test`: the options the builder really builds, taken by
+the real client to the scripted server, with no Docker. The other unit tests stop at the values reaching `NatsOptions`, which
+is how `jwt` and `nkey` shipped unable to log in. This cannot show that a server accepts a login: the functional suite and
+the examples do. With the client's `encodeConnect` made to ignore credentials or to throw on JWT and NKey, these tests fail.
+
+| Feature | Tests |
+|---------|-------|
+| **All 32 combinations of a user in the DSN, a token, `jwt`, `nkey` and `nkey_seed`** | `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect` (refused when built, by the rule the test states, or a CONNECT carrying exactly those credentials, with a signature that verifies against the seed's public key) |
+| **A username and password as options** | `testAUsernameAndPasswordAsOptionsReachTheServerInTheConnect` |
+| **A seed on a server that sends no nonce** | `testASeedOnAServerThatSendsNoNonceCannotLogIn` |
+
+### Test NKeys (`tests/unit/TestNkeysTest.php`)
+
+`tests/Support/TestNkeys.php` builds the NKeys of the unit tests when they run, so that no private key sits in the repository
+(#9). A mistake in it would make a transport test pass or fail for the wrong reason.
+
+| Feature | Tests |
+|---------|-------|
+| **They are real NKeys** | `testTheClientReadsTheKeysAndDerivesTheSamePublicKey` (all six key types) |
+| **A name gives one key** | `testANameAlwaysGivesTheSameKeyAndAnotherNameAnother` |
 
 ### Configuration (`tests/unit/Options/NatsTransportConfigurationTest.php`)
 
@@ -194,6 +239,13 @@ The functional Behat suite also exercises the bundle end-to-end: the test app en
 | Feature | Tests |
 |---------|-------|
 | **Every README ` ```php ` block is valid PHP** | `testReadmePhpExampleIsSyntacticallyValid` (data provider, one case per block), `testReadmeContainsThePhpExamplesWeExpect` |
+| **The README names no NKey to paste** | `testTheReadmeNamesNoUsableNkey` (no public key or seed: a server example gets pasted, so a reader must generate their own pair) |
+
+### Composer Scripts (`tests/unit/ComposerScriptsTest.php`)
+
+| Feature | Tests |
+|---------|-------|
+| **`composer test:functional` runs Behat, and runs past Composer's limit of 600 seconds** | `testTheFunctionalSuiteHasNoProcessTimeout` |
 
 ### Unit Tests With Pauses (`tests/unit/RunTestsWithPausesTest.php`)
 
@@ -329,6 +381,45 @@ processes through `tests/Support/PhpProcess.php`, and the bootstrap tests are sk
 | **TLS connection** | TLS server connection with native PHP serializer, TLS server connection with igbinary serializer |
 | **mTLS connection** | mTLS server connection with client certificate |
 
+### NKey Authentication (`tests/functional/features/nats_nkey.feature`)
+
+The NKey user is in `tests/nats/nats.conf`, `nats-tls.conf` and `nats-mtls.conf`. Its key is generated at `composer nats:start`,
+see `tests/nats/auth/README.md`.
+
+| Feature | Scenarios |
+|---------|-----------|
+| **NKey seed, no user or password** | Messages are sent and consumed by a user that authenticates with an NKey seed |
+| **The other forms the README shows** | A seed read from the environment logs in, in each form the README's configuration shows (`%env(NATS_NKEY_SEED)%`, `%env(trim:file:NATS_NKEY_SEED_FILE)%`, `%env(default::NATS_NKEY_SEED)%`); A seed in the DSN query logs in as well; An nkey option that repeats the seed's public key logs in |
+| **TLS and mTLS** | A seed logs in over TLS; A seed logs in over mTLS, next to the client certificate |
+| **Every new connection signs a new nonce** | A worker that logs in with a seed keeps consuming across a server restart (the worker holds a connection before the restart, and the scenario checks that it reconnected) |
+| **The server checks the seed** | A seed the server does not know is refused by the server (the server's `Authorization Violation`) |
+| **A server that sends no nonce** | A seed on a server that sends no nonce is refused by the client |
+| **Refusals when the transport is built, seen from the console** | Credentials that need or exclude a seed are refused when the transport is built, on every command (`messenger:setup-transports`, `messenger:stats` and `messenger:consume` each exit non-zero with the error, for a JWT and no seed, a public NKey and no seed, and a seed next to a password) |
+| **Values that cannot log in, and no seed in the output** | A value that cannot log in is refused when the transport is built, and no seed is printed (an empty seed, a mistyped one, an account's seed, a seed in `nkey`, another user's public key, a seed after a second `?` in the DSN) |
+
+### JWT Authentication (`tests/functional/features/nats_jwt.feature`)
+
+Runs against `nats-jwt` (port 4229, `tests/nats/nats-jwt.conf`), a test server in operator mode. Its credentials are generated
+at `composer nats:start`, see `tests/nats/auth/README.md`.
+
+| Feature | Scenarios |
+|---------|-----------|
+| **`jwt` with `nkey_seed`** | Messages are sent and consumed by a user that logs in with a JWT and its seed; A JWT and its seed read from the environment log in, in the form the README's configuration shows |
+| **A bearer JWT** | A bearer JWT logs in with its seed |
+| **Every new connection signs a new nonce** | A worker that logs in with a JWT keeps consuming across a server restart (the worker holds a connection before the restart, and the scenario checks that it reconnected) |
+| **A value that is not a JWT** | A value that is not a JWT is refused when the transport is built, and no seed is printed (the seed, and the text of a `.creds` file, in the `jwt` option) |
+| **What the server refuses** | A JWT with another user's seed is refused by the server; A seed with no JWT is refused by the server; An expired JWT is refused by the server (each the server's `Authorization Violation`) |
+| **An account without JetStream** | A user of an account without JetStream gets the server's error from setup |
+
+### Token Authentication (`tests/functional/features/nats_token.feature`)
+
+Runs against `nats-token` (port 4230, `tests/nats/nats-token.conf`), which has a server of its own because `nats-server` refuses a token next to a list of users.
+
+| Feature | Scenarios |
+|---------|-----------|
+| **`token`** | Messages are sent and consumed by a client that logs in with a token |
+| **The server checks the token** | A wrong token is refused by the server (the server's `Authorization Violation`) |
+
 ### Type Coercion (`tests/functional/features/nats_type_coercion.feature`)
 
 | Feature | Scenarios |
@@ -386,6 +477,9 @@ rejoined can still refuse one on NATS 2.10 after it answers JetStream requests.
 | `request-timeout.php` | against a `no_ack` stream, a send with `request_timeout: 1` gives up after about 1 s although the message is stored, and sending it again with the same deduplication id stores nothing more |
 | `keepalive.php` | with `keepalive()` called from a SIGALRM handler every second, a message handled for 5 s on `ack_wait: 2` is not redelivered to a second worker (on 5.2.1 the first alarm broke the worker), and the count reaches 0 after the plain ACK |
 | `connection-checks.php` | sends after idling past `ping_after_idle` and after `close()` both succeed |
+| `jwt-login.php` | on the operator-mode server, the user's JWT and seed run `setup()`, a send, the queue depth, a get and an ack; the JWT with another user's seed and an expired JWT get `Authorization Violation`; the JWT alone and a seed in the `jwt` option are refused when the transport is built |
+| `nkey-login.php` | on the plain server, the seed alone runs the same; a seed the server does not list gets `Authorization Violation`; the public key alone and a seed next to a password are refused when the transport is built. Prints `SKIP` when `NATS_DSN` is set, as the examples then run elsewhere and the NKey user exists only on the test server |
+| `token-login.php` | on the token server, the token runs the same; a wrong token gets `Authorization Violation` |
 | `reconnect.php` | with `reconnect: true`, `auto_setup` and a memory stream, `docker restart nats_test` during a pull: that pull and every pull until the restart is over end empty without an exception (`409 Server Shutdown`, then the client's recovery), the message sent once the server is back is stored in the recreated stream and received, and the logger the transport was given received the client's `Reconnected` |
 | `cluster-failover.php` | on the three-server test cluster, an R3 stream; a worker with `reconnect: true` whose DSN names only the stream's leader receives 2 of 4 messages, `docker stop` stops that server, and the worker receives the other 2 and one it sends afterwards without an exception, through a server it learned from the cluster; another server leads the stream; the logger received `Reconnected` |
 | `handler-failing-during-failover.php` | on the three-server test cluster, once per retry mode: an R3 stream with `nak_delay: 1` and `ack_wait: 30`; Symfony's Worker and retry listener with FrameworkBundle's default strategy, the worker's DSN naming only the stream's leader with `reconnect: true`; the handler stops that server with `docker stop` and fails on its first attempt: it runs again on the same worker within 10 s of the failure (in nats mode not before 0.9 s), nothing is pending or undelivered and the logger received `Reconnected`. Fails on 5.7.1 in nats mode, where the NAK went into the connection the server had closed and the message came back only after `ack_wait` (1 attempt within the worker's 15 s), and with client 2.27.2 in symfony mode, where the retry copy went into that connection and its publish ended the worker with `TimeoutException` |
@@ -393,7 +487,9 @@ rejoined can still refuse one on NATS 2.10 after it answers JetStream requests.
 | `stream-placement.php` | on the three-server test cluster (two servers tagged `disk:ssd`, one `disk:hdd`): `stream_replicas: 2` with `stream_placement_tags: disk:ssd` puts the replicas on the two ssd servers; `stream_placement_cluster` set alone stores `{cluster, tags}` with the live tags and the replicas stay; one replica on `disk:hdd` in one update fails `setup()` with "can not move and scale" and the staging advice, leaving the stream as it was; staged (replicas first, then the tags) the stream moves to the hdd server with its 3 messages. The staged step from 2 replicas to 1 is where NATS moves the consumer, and on NATS 2.10 a consumer request of that `setup()` could meet the moment without a consumer leader (err_code 10008), which failed the example in CI before `setup()` asked again |
 
 The cluster examples run against the cluster `composer nats:start` starts next to the single servers
-(`tests/nats/nats-cluster*.conf`, ports 4226 to 4228, see `examples/README.md`), in both CI jobs.
+(`tests/nats/nats-cluster*.conf`, ports 4226 to 4228, see `examples/README.md`), in both CI jobs. The login examples
+run against the server that knows their credentials, and print `SKIP` when it is not running or the credentials
+`composer nats:start` generates are missing. CI runs them with no `NATS_DSN`, and strict mode turns a `SKIP` into a failure.
 
 ### Automatic Reconnect (`tests/functional/features/nats_reconnect.feature`)
 
@@ -403,7 +499,7 @@ does not survive it.
 
 | Feature | Scenarios |
 |---------|-----------|
-| **A worker polls through a server restart without exiting** | A worker keeps consuming across a server restart (the consumer is started before the restart and consumes the five messages sent after it) |
+| **A worker polls through a server restart without exiting** | A worker keeps consuming across a server restart (the consumer holds a connection before the restart, reconnects, and consumes the five messages sent after it; the step pauses 300 ms after the connection, which keeps the scenario out of the gap the README names, a pull in the last moments of a graceful stop on NATS 2.15) |
 | **The client's own reconnect is used by the next send, and auto_setup recreates the memory stream the restart lost** | A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated (`ping_after_idle` 2 s, so the send after the quiet period checks the connection first and finds the client recovering it; the stats show the one message the recreated stream holds) |
 
 ### Stream Placement (`tests/functional/features/nats_stream_placement.feature`)
@@ -420,8 +516,8 @@ does not survive it.
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
-on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.6% MSI and covered
-MSI: 1043 of 1058 mutants killed, none timed out, with 100% mutation code coverage.
+on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.5% MSI and covered
+MSI: 1158 of 1176 mutants killed, none timed out, with 100% mutation code coverage.
 
 Scores reported before, 100% among them, were not real. Infection runs each mutant in a PHPUnit process
 whose bootstrap puts its include interceptor on `file://`; the interceptor dropped the wrapper BypassFinals
@@ -450,12 +546,15 @@ mutation step fails.
 
 ### Surviving mutants
 
-Of the 15 mutants that survive:
+Of the 18 mutants that survive:
 
 - **13 are equivalent**: no input makes them behave differently.
 - **2 make no difference with the real client**: its acknowledgement calls do not read the `sid` of the
   message `buildAckMessage()` gives them. A test could kill them only by asserting on the `sid` its client
   double receives, which would pin a detail rather than behaviour.
+- **3 are caught by the suite where Infection cannot see it**: only a child process can disable or replace a sodium
+  function, and Infection applies a mutant in the test's own process, so the child loads the original class. Made by
+  hand, each fails a plain `composer test`.
 
 | Mutant | Why it survives |
 |---|---|
@@ -467,6 +566,7 @@ Of the 15 mutants that survive:
 | `assertPositiveNumber()`, `assertNonNegativeNumber()`: `ceil()` or `round()` instead of `floor()` (4 mutants) | All three return the number itself exactly when it is whole |
 | `assertDuplicateWindowNotExceedingMaxAge()`: a null max age read as -1 instead of 0 | Both mean no age limit there |
 | `requiredString()`: `&&` instead of `\|\|` | `parseDsn()` already requires a host, and `parse_url()` never gives an empty one |
+| `resolveNkeySigner()`: `\Error` removed from the catch, and `\|\|` for either `&&` of the condition on the seed advice (3 mutants) | Between them `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError` and `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike` fail on each, but they run in a child process, which the mutant does not reach |
 
 Before PR #98 dealt with them, 32 survived. Two of those, the round-up of a delayed message's delivery time
 compared with -1 or without its cast, are killed now: `send()` takes the delivery time from `deliveryTime()`, which
@@ -564,7 +664,9 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 | `deduplicate: false / true` | `testReadmeConfigurationOptionsAreAccepted`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, Behat scenario `Distinct messages are all stored with the deduplicate option` |
 | `scheduled_messages: false / true` | `testReadmeConfigurationOptionsAreAccepted`, `testReadmeScheduledMessagesDsnEnablesFeature`, `testBuildWithScheduledMessagesEnabledSetsFlag` |
 | TLS options (all) | `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, functional TLS/mTLS scenarios |
-| Auth options (token, username, password, jwt, nkey) | `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions` |
+| Auth options (token, username, password) | `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, for the token also Behat scenario `Messages are sent and consumed by a client that logs in with a token` and the example `token-login.php` |
+| NKey Authentication (`nkey_seed`) | `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, the NKey scenarios above (real logins on plain, TLS and mTLS servers), `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the example `nkey-login.php` |
+| JWT Users (`jwt` with `nkey_seed`) | `testBuildPassesAJwtWithItsSeedToTheClient`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt`, the JWT scenarios above (real logins on an operator-mode server), `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the example `jwt-login.php` |
 | Multi-subject example (shared stream, per-transport options) | `testReadmeMultiSubjectOptionsAreAccepted` |
 | `stream_max_age: 2592000` (audit, 30 days) | `testReadmeAuditTransportOptionsAreAccepted` |
 | Cluster example (`stream_replicas: 3`, `reconnect: true`, `max_reconnect_attempts: 20`, `tls_required: true`, `tls_ca_file`) | `testReadmeClusterOptionsAreAccepted`, the examples `cluster-failover.php` and `stream-placement.php` |
@@ -585,6 +687,7 @@ Every fenced ` ```php ` block in `README.md` is additionally syntax-checked by
 | Troubleshooting consume/setup command snippets | Manual diagnosis commands; related transport behavior is covered by the setup, consumer, and message-flow scenarios listed above |
 | `composer require idct/symfony-nats-messenger` | Package installation step; the installed library is exercised by the unit and functional suites rather than by a separate installation test |
 | Contributor verification command blocks (`composer test`, `composer test:unit`, `composer test:functional`) | Repository workflow commands used directly to validate changes rather than library runtime behavior |
+| Reading a `.creds` file with `awk`, and the `nsc` commands of the JWT section | Run by hand on `nsc` 2.12.0 and NATS 2.15, on a real file, through to `messenger:setup-transports`. `tests/nats/auth/generate.sh` runs the same kind of `nsc` commands whenever `composer nats:start` finds no complete set, so on every CI run |
 | Using a NATS Cluster: the failover table, the first dial knowing only the DSN's server, TLS on a cluster | Measured by hand on the test cluster (nats-server 2.15.1, client 2.27.2) and on a throwaway two-server TLS cluster (#86); `cluster-failover.php` covers the failover with `reconnect: true` in CI. TLS for learned servers, the certificate name and `tls_peer_name` are client behaviour |
 
 ### Not Testable by Transport (Symfony / NATS responsibility)

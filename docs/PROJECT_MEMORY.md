@@ -184,6 +184,30 @@ apply only with the option on.
   contains a closure. A custom serializer takes precedence; otherwise choose igbinary if installed
   or `PhpSerializer` with a warning. Both defaults deserialize PHP objects and require trusted
   subjects. Keep the documented security guidance intact.
+- **NKey and JWT (#89):** `nkey_seed` builds the client's `NkeySeedSigner`, and the public key sent is derived from
+  it. Only null means no seed. A blank or non-string value, an invalid seed and a seed that is not a user key are refused
+  at build, as are a username, password or token next to it (a server with both kinds of users ignores them without a
+  word) and `jwt` or `nkey` without it (the client throws before the CONNECT without a signer, on every server, and for
+  a bearer JWT too, though the server would not check the signature). So are a `jwt` without a JWT's three parts, which the
+  CONNECT would carry to the server, and a credential after a second `?` or a `;` in the DSN query, which `parse_str()`
+  leaves in the value of the option before it. `nkey` stays as an optional check: it must equal
+  the derived key, its error prints the derived key and never the value. The seed is unset from the option map once the
+  signer exists. Keep the client's exception out of `previous`: its frames hold the seed, and the client marks nothing.
+  Every parameter on the build path that holds the DSN, the options, a credential or one value of them is
+  `#[\SensitiveParameter]`, guarded by reflection in `SecretsInExceptionsTest`. Not fixed, in the client: `NkeySeedSigner`'s `secretKey` prints in a
+  dump and its first 32 bytes are the seed; its frames and `encodeConnect`'s are unmarked; the wording of a seed on a
+  server with no nonce, which `reconnect: true` retries for about 43 s. Real logins run in the functional suite and
+  the examples: NKey on `nats`, `nats-tls` and `nats-mtls`, JWT on `nats-jwt`, token on `nats-token`, also across a restart
+  for NKey and JWT. On every `composer test` the 32 combinations in `LoginCombinationsTest` are refused when built, or go
+  through the real client as a CONNECT that carries them. Measured by hand, not in the suite: cluster failover with a seed, a JWT that expires under a worker.
+  A scenario that restarts a server must wait for the worker's connection first, as `I start a messenger consumer expecting
+  :count messages` does: on CI's runners the console boots after the restart begins, so without the wait nothing reconnects
+  and the scenario proves nothing, while a local run looks fine. That step then pauses 300 ms: a graceful stop of NATS 2.15
+  leaves a moment, about 10 ms for each durable consumer on a file stream, starting at once or, with a pull waiting, about
+  50 ms after the signal, in which a pull can get 503 and end the worker, and a worker whose pull ended
+  less than `--sleep` into its iteration waits right into it. The gap is the transport's, on `main` too, and left for a
+  follow-up. Docker's CLI takes about 180 ms to reach the server here, through this machine's long PATH, and about 20 ms on
+  CI, which hides this: to rehearse, call Docker's API directly and boot the worker at a random phase of the step's poll.
 - **Stats:** consumer `num_pending + num_ack_pending`, falling back to stream messages and then 0.
   Stream count can include already acknowledged messages; outage and empty queue both read as 0.
   A failed initial connection gets one dial attempt, not a second for the fallback (#54).
@@ -206,10 +230,12 @@ apply only with the option on.
 Transport checks: `composer test` (PHPStan max on `src` plus fast unit tests) after code changes.
 Coverage: `composer test:unit`, then `composer coverage:check` (>= 90%). Live transport changes:
 `composer test:functional:setup`, `composer nats:start`, `composer test:functional`, and relevant
-`composer examples`; stop the fixtures afterwards. TLS certificates are generated, not committed.
-Fixtures expose plain/TLS/mTLS/stale-idle NATS on 4222/4223/4224/4225, and a three-server JetStream cluster
+`composer examples`; stop the fixtures afterwards. TLS certificates, NKeys and JWTs are generated, not committed (#9):
+`tests/nats/auth/generate.sh` makes the credentials with `nsc` from `natsio/nats-box`, and the unit tests use `TestNkeys`.
+Fixtures expose plain/TLS/mTLS/stale-idle NATS on 4222/4223/4224/4225, a three-server JetStream cluster
 `east` for the examples on 4226-4228 (containers and server names `nats_cluster_1..3`; two servers tagged
-`disk:ssd`, one `disk:hdd`). Examples that stop or restart a server with docker start it again. Measured on it
+`disk:ssd`, one `disk:hdd`), a server in operator mode on 4229 and one with a token on 4230, these two on the loopback
+address only. Examples that stop or restart a server with docker start it again. Measured on it
 (2026-10-19, client 2.27.0): after a graceful `docker stop` of a stream's leader (nats 2.15.1 and 2.10.29) a
 `reconnect: true` worker failed over with no empty pull; after `docker kill` (2.15.1) the first send timed out after
 `request_timeout`, or failed with 503 "No JetStream responder" while the stream had no leader. The DSN names one

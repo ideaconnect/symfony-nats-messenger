@@ -28,6 +28,8 @@ If this saves you time, support is genuinely appreciated:
 - **PHP 8.2+**
 - **Composer**
 - **Docker** (only for the functional/end-to-end tests - they spin up a real NATS server)
+- the **`sodium`** PHP extension, which `composer install` asks for here, as the unit tests of NKey authentication would
+  otherwise skip or fail. An application needs it only to use `nkey_seed`
 - *(optional)* the **`igbinary`** PHP extension for faster serialization; without it the library
   falls back to PHP's serializer and prints a one-time notice.
 
@@ -50,7 +52,7 @@ These exercise the transport against an actual NATS server in Docker:
 
 ```bash
 composer test:functional:setup   # one-time: install the test app's dependencies
-composer nats:start              # generate the test TLS certs, then start NATS (plain + TLS + mTLS) in Docker
+composer nats:start              # generate the test TLS certs and NKey/JWT credentials, then start NATS in Docker
 composer test:functional         # run the Behat scenarios
 composer examples                # run the examples in examples/ against that NATS
 composer nats:stop               # tear NATS back down

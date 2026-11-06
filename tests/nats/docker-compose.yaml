@@ -14,6 +14,7 @@ services:
       - "8223:8222" # monitoring port (changed to avoid conflict)
     volumes:
       - ./nats.conf:/etc/nats/nats.conf
+      - ./auth:/etc/nats/auth:ro
       - ./data:/data
 
   nats-tls:
@@ -28,6 +29,7 @@ services:
     volumes:
       - ./nats-tls.conf:/etc/nats/nats.conf
       - ./certs:/etc/nats/certs:ro
+      - ./auth:/etc/nats/auth:ro
       - ./data-tls:/data
 
   nats-mtls:
@@ -42,6 +44,7 @@ services:
     volumes:
       - ./nats-mtls.conf:/etc/nats/nats.conf
       - ./certs:/etc/nats/certs:ro
+      - ./auth:/etc/nats/auth:ro
       - ./data-mtls:/data
 
   # Drops a client that stops answering its pings within seconds (see nats-stale.conf), for the scenarios
@@ -58,6 +61,29 @@ services:
     volumes:
       - ./nats-stale.conf:/etc/nats/nats.conf
       - ./data-stale:/data
+
+  # A server in operator mode (see nats-jwt.conf), for the login with a user JWT and its seed.
+  nats-jwt:
+    image: ${NATS_IMAGE:-nats:alpine}
+    container_name: nats_test_jwt
+    restart: always
+    command: -c /etc/nats/nats.conf
+    ports:
+      - "127.0.0.1:4229:4222" # client port
+    volumes:
+      - ./nats-jwt.conf:/etc/nats/nats.conf
+      - ./auth:/etc/nats/auth:ro
+
+  # A server whose clients log in with a token (see nats-token.conf).
+  nats-token:
+    image: ${NATS_IMAGE:-nats:alpine}
+    container_name: nats_test_token
+    restart: always
+    command: -c /etc/nats/nats.conf
+    ports:
+      - "127.0.0.1:4230:4222" # client port
+    volumes:
+      - ./nats-token.conf:/etc/nats/nats.conf
 
   # A JetStream cluster of three servers ("east", see nats-cluster.conf), for the examples that need one:
   # stream placement on tagged servers, and a worker that fails over when the server it is connected to

@@ -2,8 +2,8 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.79%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
-[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-98.6%25-brightgreen)](https://infection.github.io/)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.80%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-98.5%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -25,7 +25,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
 - 🌐 **NATS Clusters** - One server in the DSN, the others learned from the cluster; failover, replicated streams
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
-- 🧪 **Thoroughly Tested** - 728 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1038 unit tests, ~99.8% coverage, mutation-tested (98.5% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -141,6 +141,31 @@ Nothing to change in the configuration, but look at your logs and your retry set
   [Automatic Reconnect](#automatic-reconnect)).
 
 > **Tested by:** `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testTheAckOfAHandledMessageReachesTheServerOnTheRecoveredConnectionWithNoCheckFirst`, `testSymfonysRetryCopyAfterTheServerClosedTheConnectionDuringTheHandlerGoesOutOnTheRecoveredConnection`, `testBuildWithResendOnReconnectPropagatesToNatsOptions`, the examples `nats-retry.php`, `handler-failing-during-failover.php` and `handler-succeeding-during-failover.php`
+
+### Upgrading from 5.8
+
+Nothing to change unless a transport has `nkey` or `jwt` set and no `nkey_seed`. Such a transport could never connect,
+as the client needs the seed to sign the server's nonce, but it could be built. It now fails when it is built, with an
+`InvalidArgumentException` naming `nkey_seed`. Add the seed or remove the option. Until you do, the earlier error is
+visible even where nothing uses that transport:
+
+- `messenger:stats` showed 0 for it and exited 0. A plain `messenger:stats` now exits 1 and shows no transport; naming the
+  other transports still works.
+- A worker consuming from it and from other transports stopped with the client's `requires a nonce signer` once it reached
+  this one: at once if it comes first, otherwise when the transports before it had nothing to do. Under a supervisor it
+  still handled their messages between restarts. It now stops when it starts and handles none.
+- A `catch (\RuntimeException)` around a dispatch to it caught the connection error, and does not catch this one.
+- A service or smoke test that builds the transport fails.
+- A subclass of `NatsTransport` that replaces the protected `$client` with its own signed client must stop passing
+  `nkey` or `jwt` here, as its client has them.
+
+Two other values are refused now, in the same way: a `max_reconnect_attempts` float past the range of an int, such as
+`1e20`, `1e300` or `.inf`, or a numeric string past the largest float, such as `'1e400'`, which became an unrelated huge
+number, 0, or a negative number that the client refused, and a credential option after a second `?` or a `;` in the DSN
+query, which was a part of the option before it. So a huge number of attempts is now written as an int or a numeric string
+up to the largest float, and a value that really holds such text goes in the options, where nothing splits it.
+
+> **Tested by:** `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAMaxReconnectAttemptsThatDoesNotSurviveTheCastToAnInt`, `testBuildRejectsAMaxReconnectAttemptsInTheDsnThatDoesNotSurviveTheCastToAnInt`, `testBuildPassesALargeMaxReconnectAttemptsToTheClient`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, Behat scenario `Credentials that need or exclude a seed are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). `messenger:stats` naming a transport, and a worker on several transports, were measured by hand.
 
 ### Logging
 
@@ -353,6 +378,9 @@ the test server and print `OK` when what they show held:
 | `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it |
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
+| `jwt-login.php` | `jwt` with `nkey_seed`: a user of a server in operator mode logs in; its JWT with another user's seed and an expired JWT are refused by the server, and the JWT alone when the transport is built |
+| `nkey-login.php` | `nkey_seed`: a user the server knows by its public key logs in; a seed it does not know is refused by the server, and the public key alone or a seed next to a password when the transport is built |
+| `token-login.php` | `token`: a client logs in with the server's token, and a wrong one is refused |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, and `auto_setup` recreates the memory stream the restart lost |
 | `cluster-failover.php` | `reconnect: true` on a cluster: a worker carries on through another server when the one it is connected to stops |
 | `handler-failing-during-failover.php` | both retry modes on a cluster: a handler fails while the worker's server stops, and the worker carries on through another server; the message comes back at once as Symfony's retry copy, or `nak_delay` later in nats mode |
@@ -558,11 +586,125 @@ framework:
           token: null                       # NATS token authentication
           username: null                    # Overrides DSN username if provided
           password: null                    # Overrides DSN password if provided
-          jwt: null                         # JWT authentication value
-          nkey: null                        # NKey public value
+          jwt: null                         # User JWT; needs nkey_seed, see NKey Authentication
+          nkey: null                        # Leave unset: the public key is derived from nkey_seed
+          nkey_seed: null                   # NKey seed (SU...) that signs the server's nonce; see NKey Authentication
 ```
 
-> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`
+> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (everything above but the redelivery tuning, TLS and authentication options, which the tests after it and the sections below cover), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`
+
+### NKey Authentication
+
+A NATS user can authenticate with an NKey instead of a password. The server keeps only the user's public key
+(`U...`), and the client proves it holds the matching seed (`SU...`) by signing a nonce the server sends in its
+`INFO`.
+
+Give the transport the seed in `nkey_seed`, with no user, password or token in the DSN or the options:
+
+```yaml
+framework:
+    messenger:
+        transports:
+            orders:
+                dsn: 'nats-jetstream://nats.example.com:4222/orders/orders.created'
+                options:
+                    nkey_seed: '%env(NATS_NKEY_SEED)%'
+                    # a seed kept in a file (e.g. a mounted secret), its path in NATS_NKEY_SEED_FILE:
+                    # nkey_seed: '%env(trim:file:NATS_NKEY_SEED_FILE)%'
+                    # a seed that is optional, none for an unset or empty variable:
+                    # nkey_seed: '%env(default::NATS_NKEY_SEED)%'
+```
+
+On the server, the user is the public key of a pair you generate yourself. `nsc generate nkey --user` prints one, as does
+`nk -gen user -pubout` from [nkeys](https://github.com/nats-io/nkeys): the first line is the seed, the second the public key.
+
+```
+jetstream {}
+
+authorization {
+    users = [ { nkey: U...your public key... } ]
+}
+```
+
+- Only null, or leaving the option out, means no seed. Any other value that is not a user seed is refused when the
+  transport is built, without repeating it: an empty string, a list, a boolean, a mistyped seed, or the seed of an account,
+  operator, server, cluster or curve key. Read as no seed, an empty variable would connect with the other credentials
+  there are, as the server's `no_auth_user`, or anonymously.
+- A username, password or token next to the seed, from the DSN or the options, is refused when the transport is built. A
+  server with both kinds of users would log the connection in with the NKey and ignore them, even a wrong password,
+  so the DSN could name one user while the connection is another. On a server that sends no nonce the client would refuse
+  the login, as there is nothing to sign, though the password alone would have worked.
+- For a user the server knows by its NKey, the seed is all the transport needs: the public key it sends is derived from
+  it, so leave the `nkey` option unset. It may repeat the derived key, but a different one is refused when the transport
+  is built, not on its first connect. So is `nkey` without a seed, which could never log in: the client needs a signer
+  for the nonce, and the seed is where the transport gets one.
+- A seed needs a server that has NKey users or runs in operator mode, and in a cluster every server must list the user,
+  as the client can fail over to any of them. A server with NKey users refuses a seed it does not list with a bare
+  `Authorization Violation`. Any other server, a password, token or open one, sends no nonce, so the client refuses the
+  login with `NKey authentication requires server nonce from INFO`, or the same words starting with `JWT` next to a `jwt`.
+  The reference CLI refuses it too.
+  So set up the user on the server before you deploy the seed. With `reconnect: true` the client retries that failure,
+  and the call takes about 43 seconds at the default attempts to report `Reconnect attempts exhausted`.
+- Signing needs the `sodium` extension, bundled with PHP since 7.2 and included in most builds. Without it the
+  transport fails when it is built. The polyfill `paragonie/sodium_compat` does not replace it: the build then fails with
+  `Failed to derive Ed25519 key pair from NKey seed`.
+- The transport's own parameters that can hold the seed are marked `#[\SensitiveParameter]`, so a failed build leaves it
+  out of their stack frames. Symfony Messenger's factory marks its options only from 7.4.23 and 8.1.11, and the client
+  marks nothing yet, so with `zend.exception_ignore_args=0`, PHP's default without a php.ini, frames of those two can
+  still hold it. Keep that setting at 1 where stack traces are collected, as `php.ini-production` does.
+- The seed works in the DSN query too (`?nkey_seed=SU...`), but prefer the option with an environment variable, as the
+  [recommendations](#general-recommendations) say for every credential. A literal seed, in a DSN or in an option, ends
+  up in `debug:config` and in a file of the compiled container, where a DSN or option that reads a variable does not.
+  Keep the variable out of a committed `.env`, and do not log the full DSN. As `token: null` hides `?token=`, an explicit
+  `nkey_seed: null` in the options hides a seed in the DSN query, so leave it out rather than copy it from the block above.
+  A credential typed after a second `?` or a `;` in the query is refused when the transport is built, without repeating
+  it, as it would be read as a part of the option before it: separate the options with `&`.
+
+> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt`, `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError`, `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testBuildSaysWhatASeedLooksLikeForAValueThatIsNotOne`, `testAMistypedSeedStaysOutOfTheFailure`, `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure`, `testNoFrameOfAFailedBuildHoldsASecret`, `testNoFrameOfAFailedTransportCreationHoldsASecret`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive`, `testASeedTypedIntoTheDsnPathStaysOutOfTheError`, `testTheConfigurationDoesNotKeepTheTextOfTheSeed`, `testBuildRejectsASeedThatIsNotAUserSeed`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesSeedFileFormGivesASignerWhenTheFileHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, `testASeedTypedIntoAnOptionsValueStaysOutOfTheError`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, `testTheReadmeNamesNoUsableNkey`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, `testASeedOnAServerThatSendsNoNonceCannotLogIn`, the Behat scenarios of `nats_nkey.feature` (real logins, in each form of the configuration above, also over TLS and mTLS and across a server restart, and the refusals through the console), the example `nkey-login.php`. Not in the suite: a cluster failover with a seed, and the 43 seconds on a server that sends no nonce, which were measured by hand.
+
+#### JWT Users (Operator Mode)
+
+On a server in operator mode a user has a JWT as well as an NKey. Give the transport both: `jwt` is the user's JWT, and
+`nkey_seed` is that user's seed. Both values are in the user's `.creds` file, under its `BEGIN NATS USER JWT` and
+`BEGIN USER NKEY SEED` lines. The transport does not read the file itself, so pass the two values:
+
+```bash
+export NATS_USER_JWT=$(awk '/BEGIN NATS USER JWT/ { getline; print }' user.creds)
+export NATS_NKEY_SEED=$(awk '/BEGIN USER NKEY SEED/ { getline; print }' user.creds)
+```
+
+```yaml
+framework:
+    messenger:
+        transports:
+            orders:
+                dsn: 'nats-jetstream://nats.example.com:4222/orders/orders.created'
+                options:
+                    jwt: '%env(NATS_USER_JWT)%'
+                    nkey_seed: '%env(NATS_NKEY_SEED)%'
+```
+
+- `jwt` without `nkey_seed` is refused when the transport is built: the client needs a signer for the server's nonce and
+  cannot connect without one, and the seed is where the transport gets one. For a bearer JWT (`nsc add user --bearer`) the server does not check that
+  signature, so there the seed is only what the client asks for, but it is required all the same.
+- `jwt` must be the JWT alone, which has three parts separated by dots. A seed or the whole text of a `.creds` file there
+  is refused when the transport is built, without repeating it, as the CONNECT would carry it to the server, in clear
+  on a connection without TLS, and a server that traces logs it.
+- The seed must be the one of the JWT's user, unless the JWT is a bearer token. The server checks that when the transport
+  connects: a seed without its JWT, or another user's seed, gets a bare `Authorization Violation`.
+- In operator mode JetStream is enabled per account, for example with
+  `nsc edit account --name ACCOUNT --js-mem-storage 256M --js-disk-storage 1G`, and the server needs the account's new JWT
+  afterwards, for example from a new `nsc generate config --mem-resolver`. Without it `messenger:setup-transports` fails with
+  `JetStream not enabled for account`, and `messenger:stats` shows 0. That file has no `jetstream` block, and a server
+  needs one as well, so add `jetstream {}` next to it, as `tests/nats/nats-jwt.conf` does: without it setup fails with
+  `No responders for subject $JS.API.STREAM.CREATE.orders`. `tests/nats/auth/generate.sh` has the `nsc` commands for a whole
+  test setup.
+- The transport keeps the JWT it was built with and never fetches a new one. At the JWT's expiry the server sends
+  `User Authentication Expired` and closes the connection, which ends a running worker with that message. After that
+  each new connection with the same JWT is refused with `Authorization Violation`, which does not mention the expiry.
+  A new JWT needs a new transport, so restart the workers with the new value.
+
+> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `theReadmesJwtFormGivesTheClientTheJwtAndASigner`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt`, `testBuildAcceptsAJwtWithSpaceAroundItAndBase64UrlCharacters`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the Behat scenarios of `nats_jwt.feature` (real logins on a server in operator mode, with a user's JWT and seed as in the configuration above and with a bearer JWT, across a server restart, and what is refused: a value that is not a JWT when the transport is built, and by the server another user's seed, a seed with no JWT, an expired JWT, an account without JetStream), the example `jwt-login.php`. Not in the suite: a JWT that expires under a running worker, which was measured by hand on NATS 2.9.25 and 2.15.1.
 
 ### Retry Handler Behavior
 
@@ -982,7 +1124,12 @@ In a DSN: `?reconnect=true&max_reconnect_attempts=20`.
   empty queue, so a worker ends and its supervisor restarts it. The same loop runs for a failed first dial, so
   `messenger:setup-transports` against a server that is down fails only after it.
 - What a worker gets: it polls through an outage shorter than one recovery cycle without exiting, every pull
-  ending empty after `max_batch_timeout` plus a second. `max_reconnect_attempts` sizes the cycle in attempts,
+  ending empty after `max_batch_timeout` plus a second. One gap, seen on NATS 2.15 and not on 2.14.7 or 2.10.29: a graceful
+  stop leaves a moment in which JetStream no longer answers and the connection is still open. It lasts about 10 ms for each
+  durable consumer on a file stream, and starts at once, or about 50 ms after the signal when a pull is waiting. A pull
+  written then can get 503, which reads as a missing consumer, and ends the run, with
+  `JetStream pull request ended with status 503` or, with `auto_setup`, `Failed to setup NATS stream`. Under a supervisor
+  the worker starts again. `max_reconnect_attempts` sizes the cycle in attempts,
   not in seconds: the client's default of 10 gives about 109 s against a server that refuses connections,
   where a refused dial costs about 6 s. An `ack_sync` acknowledgement that runs into the outage still fails
   after `request_timeout`, which ends the worker's run as any exception from `ack()` does: synchronous
@@ -1399,7 +1546,8 @@ The target is to have at least 90% of code coverage.
 **What's tested:**
 - DSN parsing and validation
 - Configuration option handling
-- Authentication support
+- Authentication: every combination of credentials is refused when the transport is built, or goes through the real
+  client as a CONNECT that carries it (the real logins are in the functional tests below)
 - Port configuration
 - Error handling
 - Interface compliance
@@ -1417,9 +1565,10 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 98.6% (1043 of 1058 mutants killed, with 100% mutation code coverage).
-[docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 15 mutants that survive, with the reason for each:
-13 are equivalent, and two make no difference with the real client. CI runs all three on the PHP 8.5 job and
+95%; the suite scores 98.5% (1158 of 1176 mutants killed, with 100% mutation code coverage).
+[docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 18 mutants that survive, with the reason for each:
+13 are equivalent, two make no difference with the real client, and three are caught by tests in a child process,
+which a mutant does not reach. CI runs all three commands on the PHP 8.5 job and
 every day. Scores published before, 100% among them, were not
 real: in Infection's mutant processes the client's final classes could not be doubled, so every mutant their
 tests covered counted as killed.
@@ -1433,7 +1582,7 @@ Functional tests require a running NATS server with JetStream enabled:
 composer test:functional:setup
 
 # Start the NATS test servers in Docker, with the three-server cluster the examples use (generates the test
-# TLS certificates first, which needs openssl)
+# TLS certificates first, which needs openssl, and the test NKey and JWT credentials)
 composer nats:start
 
 # Run functional tests
@@ -1445,8 +1594,9 @@ composer nats:stop
 
 **Manual approach:**
 ```bash
-# Generate the test TLS certificates the TLS and mTLS servers use (never committed)
+# Generate the test TLS certificates, and the NKey and JWT credentials, the servers use (never committed)
 bash tests/nats/certs/generate.sh
+bash tests/nats/auth/generate.sh
 
 # Set up NATS in Docker (optional)
 cd tests/nats
@@ -1706,15 +1856,18 @@ if ($count > 0) {
 }
 ```
 
-`getMessageCount()`, which `messenger:stats` shows, returns 0 when NATS cannot be reached, the same as for an
-empty queue, so during an outage the queue reads as empty there. It gives up after a single connection attempt
-(about 6 seconds for a refused connection, see [Connection Timeout](#connection-timeout)). Monitor the
-connection itself, or the stream with the `nats` CLI, rather than reading a 0 as "nothing to do".
+`getMessageCount()`, which `messenger:stats` shows, returns 0 when NATS cannot be reached or refuses the login, the
+same as for an empty queue, so during an outage, or with a wrong password or seed, the queue reads as empty there, where
+`send()` and `get()` raise the error. Without `reconnect: true` it gives up after a single connection attempt (about 6
+seconds for a refused connection, see [Connection Timeout](#connection-timeout)). With it the client's attempt loop runs
+first: about 109 seconds for a refused connection at the default attempts, and about 43 seconds for a seed on a server that
+sends no nonce. A login the server itself refuses returns at once in both modes. Monitor the connection itself, or the
+stream with the `nats` CLI, rather than reading a 0 as "nothing to do".
 
 Nothing waits for a plain ACK, so for a moment after `ack()` returned the count can still include that message. With
 `ack_sync` the server has applied the acknowledgement when `ack()` returns.
 
-> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`
+> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`, `testMessageCountOfALoginTheServerRefusesDialsOnceAndReturnsZero`, the Behat scenarios `A seed the server does not know is refused by the server` and `A JWT with another user's seed is refused by the server`. The timings were measured by hand.
 
 ## Troubleshooting
 
@@ -1754,6 +1907,10 @@ outage outlasted one recovery cycle: raise `max_reconnect_attempts` for longer o
 10 covers about 109 s against a server that refuses connections), or leave the option off to fail fast and let
 the process supervisor restart the worker. The logger shows the attempts at warning level and, when
 acknowledgements were buffered during the outage, the discard at error level (see [Logging](#logging)).
+
+With a seed on a server that sends no nonce it is not an outage, and raising the option only makes it take longer: the client
+retried a login that cannot work, and the cause is the previous exception, `NKey authentication requires server nonce from
+INFO`. See [NKey Authentication](#nkey-authentication).
 
 > **Tested by:** `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`
 

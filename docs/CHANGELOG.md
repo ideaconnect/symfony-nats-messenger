@@ -7,7 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **NKey authentication: the `nkey_seed` option (#89).** The transport signs the server's nonce with the given seed and
+  sends the public key derived from it, so a user the server knows by its NKey can connect with the seed alone. Signing
+  needs the `sodium` extension. The value is refused when the transport is built, and never repeated, unless it is a
+  user seed (`SU...`) or null: a blank value, a list or another key type's seed would otherwise connect without it
+  or fail late. `%env(default::NATS_NKEY_SEED)%` gives null for an optional seed. A username, password or token next to
+  the seed, from the DSN or the options, is refused too: a server with both kinds of users would log the connection in
+  with the NKey and ignore them, even a wrong password. The seed does not stay in the transport's options.
+- **Real logins with a JWT, an NKey and a token in the tests and in CI (#89).** The JWT and NKey logins never worked and
+  nothing noticed, because the unit tests stop at what the client is given. `composer nats:start` now also runs
+  `nats-jwt` on port 4229, in operator mode, and `nats-token` on port 4230, as a token cannot sit next to a list of users,
+  and generates the NKey and JWT credentials with `tests/nats/auth/generate.sh`, which needs docker. None of them is
+  committed, for the reason the test TLS keys are not (#9). New Behat scenarios and the examples `nkey-login.php`,
+  `jwt-login.php` and `token-login.php` send and consume through each login and expect the server's
+  `Authorization Violation` for a wrong credential, in both CI jobs. They also cover a seed and a JWT read from the
+  environment in the README's `%env()%` forms, a seed over TLS and mTLS, a bearer JWT,
+  an expired JWT and an account without JetStream, a server restart under the NKey and JWT logins, and credentials refused when the
+  transport is built, through `messenger:setup-transports`, `messenger:stats` and `messenger:consume`.
+  `LoginCombinationsTest` adds the check to `composer test`, with no Docker: all 32 combinations of credentials are refused
+  when built, or go through the real client as a CONNECT that carries them.
+
+### Fixed
+- **`jwt` and `nkey` could never connect (#89).** The transport passed them to the client without a signer, and the
+  client throws before it writes the CONNECT then, on every server: `requires a nonce signer`, after 43 seconds and as
+  `Reconnect attempts exhausted` with `reconnect: true`. `jwt` now works next to `nkey_seed`, its user's seed: a `.creds`
+  file holds both. Each one with no signer, which means no seed today, is refused when the transport is built, naming
+  `nkey_seed`, and so is a `jwt`
+  that does not have the three parts of a JWT, such as a seed or a whole `.creds` file, which the CONNECT would otherwise
+  carry to the server. `nkey` stays
+  optional and is best left unset, as the key is derived from the seed; with a seed it must be that key, and the error
+  names the seed's key and does not repeat the value. No login that worked is lost, unless a subclass that replaces
+  `$client` still passes these options, and the error comes earlier, so see the README's "Upgrading from 5.8" for
+  `messenger:stats`, for workers on several transports and for such a subclass.
+- **A failed build no longer keeps a seed, password or token in its stack frames (#89).** With exception arguments on
+  (`zend.exception_ignore_args=0`, PHP's default without a php.ini), the frames of the factory, the transport's
+  constructor and the builder held the options and the DSN. Every such parameter is now `#[\SensitiveParameter]`, and so
+  are those of the builder's helpers that take one value of them. A
+  mistyped seed no longer chains the client's exception, whose frames hold the value, and neither does a sodium function
+  the client cannot call. Symfony Messenger's factory marks
+  its options only from 7.4.23 and 8.1.11, and the client marks nothing yet, so the README recommends turning those
+  arguments off in production.
+- **An error no longer repeats a name or value that may hold a credential (#89).** A query typed with `&` or `;` instead of
+  `?`, or with a second `?`, stays in the stream or topic name or in the value of the option before it, and the errors for
+  those printed it. They now repeat a name or value only if it is at most 50 plain characters, and still say what is
+  allowed.
+- **A `max_reconnect_attempts` float past the range of an int is refused (#89).** It did not survive the cast on its way to
+  the client: `1e19` became a negative number, which the client's constructor refused with every credential in its frame,
+  naming no option the user set, `2e19` an unrelated huge number, which worked, and `1e300` or `.inf` became 0. So did a
+  numeric string past the largest float, such as `1e400`. Each is now refused when the transport is built, naming the option.
+  An int of any size, and any other numeric string, which stops at the largest int, still work.
+- **A credential typed after a second `?` or a `;` in the DSN query is refused when the transport is built (#89).** It stayed
+  in the value of the option before it and went where that goes: into the TLS library's error for a file name, or to
+  the server, which stores it, for a consumer name, a stream description or a placement. Only the DSN query is checked,
+  for `nkey_seed`, `nkey`, `jwt`, `token`, `username`, `password` and `tls_key_passphrase`, also with a space next to the
+  name or in another case, as nothing splits a value in the options. An encoded `&`, a double encoding, a name with brackets
+  or a dot, a literal control character and a space outside ASCII stay a part of the value.
+
 ### Testing & CI
+- The bundle test expects the wording of Symfony Messenger 7.4.23 and 8.1.11, whose change had turned `composer test` red.
+  It still passes on the earlier versions.
+- `ext-sodium` is in `require-dev`, so `composer install` asks contributors for it, and every CI job has it: losing it
+  now fails instead of skipping the tests of NKey authentication.
+- `composer test:functional` runs without Composer's process timeout, as the scenarios take about as long as its limit of
+  600 seconds, and past it Composer left Behat running.
+- The worker restart scenarios wait for the worker's connection, as on CI's runners it used to come after the restart, so
+  they now prove the reconnect. They then pause 300 ms to stay out of a gap the README now names: a graceful stop of NATS 2.15
+  leaves a moment, about 10 ms for each durable consumer on a file stream, in which a pull can get 503, and that ends a
+  worker. The gap is not new, and it stays for now.
 - **The unit tests no longer depend on how fast their process runs.** `ReconnectModeTest` gave every operation 20 to 100 ms,
   so a machine short of CPU failed it, with `the send waited for the held dial` or a request that timed out. An operation that
   has to succeed now gets a budget it never uses up, only the send a test runs out of its budget gets a short one, and a

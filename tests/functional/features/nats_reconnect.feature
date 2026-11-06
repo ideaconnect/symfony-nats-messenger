@@ -17,6 +17,7 @@ Feature: Automatic reconnect (reconnect: true)
     And I send 5 messages to the transport
     And I wait for messages to be consumed
     Then all 5 messages should be consumed
+    And the consumer should have reconnected
 
   # The transport's ping_after_idle is 2 s here, so the send after the quiet period checks the connection first
   # and finds the client recovering it; without the check it would write into the dead socket and pay
