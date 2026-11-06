@@ -43,6 +43,7 @@ tests/
 ├── bootstrap.php                               # autoloader + BypassFinals; takes Infection's file swap over in mutant processes
 ├── Support/
 │   ├── ClientInjectedNatsTransport.php         # the transport with a client the test gives it
+│   ├── FaultInjectingNatsServer.php            # the scripted server behind a connection that fails the way a real one does
 │   ├── MessengerTestKernel.php                 # a FrameworkBundle + Messenger kernel for tests that need a compiled container
 │   ├── PhpProcess.php                          # runs a PHP script in a child process
 │   ├── RttCountingNatsClient.php               # the real client, counting the transport's connection checks
@@ -61,6 +62,8 @@ tests/
 │   ├── ComposerScriptsTest.php                 # composer test:functional runs past Composer's process timeout
 │   ├── SubscriptionLimitPullTest.php           # pulls at the subscription limit, real client over a scripted server
 │   ├── UnansweredPullTest.php                  # a pull the server never answered calls for a connection check
+│   ├── ReconnectModeTest.php                   # reconnect: true, the real client over a connection that fails like a real one
+│   ├── RunTestsWithPausesTest.php              # composer test:unit:paused really stops the tests and keeps PHPUnit's exit code
 │   ├── LoginCombinationsTest.php               # every combination of credentials: refused when built, or through the real client
 │   ├── TestNkeysTest.php                       # the keys tests/Support/TestNkeys.php builds when the tests run
 │   ├── Options/
