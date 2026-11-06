@@ -138,6 +138,9 @@ composer nats:stop               # Stop NATS
   Give an operation that has to succeed a budget it never uses up and only one that has to time out a short one, hold a
   recovery until the test releases it rather than for a time, and keep a bound on a duration far from what it normally
   takes. `composer test:unit:paused`, in CI, fails a test that breaks this.
+- A restart scenario on CI that fails with `JetStream pull request ended with status 503` and only `Connected` logged has hit a
+  known gap: a graceful stop of NATS 2.15 leaves a moment in which a pull gets 503 (the README's Automatic Reconnect section).
+  Any other failure there is real.
 - Behat step definitions and hooks are **attributes** (`#[Given]`, `#[When]`, `#[Then]`, `#[AfterScenario]`), and the
   Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
   configuration is strict, so a scenario with an undefined step fails the run instead of being skipped.
@@ -160,3 +163,6 @@ composer nats:stop               # Stop NATS
 ### PR Merge Documentation (`docs/PRs/`)
 - When a PR is merged or its features are adapted, add a file to `docs/PRs/` named `PR-NNN-short-description.md`.
 - Include: what the PR proposed, how the features were implemented, and which tests cover them.
+- Land a PR with a merge commit, never a squash or a rebase: one commit per item stays readable and revertable, and a
+  contributor's commits keep their ids, which is what marks their PR as merged when the work lands through another branch
+  (#89 through #101). Bring `main` into a branch by merging it, for the same reason.
