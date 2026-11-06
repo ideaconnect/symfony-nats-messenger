@@ -2408,11 +2408,12 @@ class NatsSetupContext implements Context
      * the restart would have nothing to recover, and those scenarios would pass with recovery broken: on a slow machine
      * the console command takes longer to boot than the restart takes to begin, which is what CI's logs showed.
      *
-     * The pause at the end keeps them out of a race they are not about. A graceful stop of NATS 2.15 leaves about 10 ms,
-     * some 50 ms after the signal, in which JetStream no longer answers and the connection is still open. A pull written
-     * then gets 503, which reads as a missing consumer, and the worker ends. When the signal ends a pull that began less
-     * than --sleep ago, the worker waits out the rest before its next pull, which can land right there, and CI's docker is
-     * fast enough for that. Past --sleep the worker pulls again at once, well before that moment.
+     * The pause at the end keeps them out of a race they are not about. With the one consumer these scenarios have, a
+     * graceful stop of NATS 2.15 leaves about 10 ms, some 50 ms after the signal, in which JetStream no longer answers and
+     * the connection is still open. A pull written then gets 503, which reads as a missing consumer, and the worker ends.
+     * When the signal ends a pull that began less than --sleep ago, the worker waits out the rest before its next pull,
+     * which can land right there, and CI's docker is fast enough for that. Past --sleep the worker pulls again at once,
+     * well before that moment.
      */
     #[When('I start a messenger consumer expecting :count messages')]
     public function iStartAMessengerConsumerExpectingMessages(int $count): void

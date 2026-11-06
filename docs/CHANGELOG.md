@@ -71,6 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now fails instead of skipping the tests of NKey authentication.
 - `composer test:functional` runs without Composer's process timeout, as the scenarios take about as long as its limit of
   600 seconds, and past it Composer left Behat running.
+- The worker restart scenarios wait for the worker's connection, as on CI's runners it used to come after the restart, so
+  they now prove the reconnect. They then pause 300 ms to stay out of a gap the README now names: a graceful stop of NATS 2.15
+  leaves a moment, about 10 ms for each durable consumer on a file stream, in which a pull can get 503, and that ends a
+  worker. The gap is not new, and it stays for now.
 
 ## [5.8.0] - 2026-11-04
 

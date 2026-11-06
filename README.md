@@ -1123,9 +1123,10 @@ In a DSN: `?reconnect=true&max_reconnect_attempts=20`.
   empty queue, so a worker ends and its supervisor restarts it. The same loop runs for a failed first dial, so
   `messenger:setup-transports` against a server that is down fails only after it.
 - What a worker gets: it polls through an outage shorter than one recovery cycle without exiting, every pull
-  ending empty after `max_batch_timeout` plus a second. One gap, measured on NATS 2.15.2 and not on 2.14.7 or 2.10.29: a
-  graceful stop leaves about 10 ms, some 50 ms after the signal, in which JetStream no longer answers and the connection is
-  still open. A pull written then gets 503, which reads as a missing consumer, and ends the run, with
+  ending empty after `max_batch_timeout` plus a second. One gap, seen on NATS 2.15 and not on 2.14.7 or 2.10.29: a graceful
+  stop leaves a moment in which JetStream no longer answers and the connection is still open. It lasts about 10 ms for each
+  durable consumer on a file stream, and starts at once, or about 50 ms after the signal when a pull is waiting. A pull
+  written then can get 503, which reads as a missing consumer, and ends the run, with
   `JetStream pull request ended with status 503` or, with `auto_setup`, `Failed to setup NATS stream`. Under a supervisor
   the worker starts again. `max_reconnect_attempts` sizes the cycle in attempts,
   not in seconds: the client's default of 10 gives about 109 s against a server that refuses connections,

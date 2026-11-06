@@ -202,8 +202,9 @@ apply only with the option on.
   through the real client as a CONNECT that carries them. Measured by hand, not in the suite: cluster failover with a seed, a JWT that expires under a worker.
   A scenario that restarts a server must wait for the worker's connection first, as `I start a messenger consumer expecting
   :count messages` does: on CI's runners the console boots after the restart begins, so without the wait nothing reconnects
-  and the scenario proves nothing, while a local run looks fine. That step then pauses 300 ms: NATS 2.15 leaves about 10 ms,
-  some 50 ms after the signal of a graceful stop, in which a pull gets 503 and ends the worker, and a worker whose pull ended
+  and the scenario proves nothing, while a local run looks fine. That step then pauses 300 ms: a graceful stop of NATS 2.15
+  leaves a moment, about 10 ms for each durable consumer on a file stream, starting at once or, with a pull waiting, about
+  50 ms after the signal, in which a pull can get 503 and end the worker, and a worker whose pull ended
   less than `--sleep` into its iteration waits right into it. The gap is the transport's, on `main` too, and left for a
   follow-up. Docker's CLI takes about 180 ms to reach the server here, through this machine's long PATH, and about 20 ms on
   CI, which hides this: to rehearse, call Docker's API directly and boot the worker at a random phase of the step's poll.
