@@ -77,6 +77,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_ALLOW_ROLLUP_HEADERS->value => null,
         TransportOption::STREAM_PLACEMENT_CLUSTER->value => null,
         TransportOption::STREAM_PLACEMENT_TAGS->value => null,
+        TransportOption::ADDITIONAL_SUBJECTS->value => null,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
@@ -372,6 +373,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertStreamDescriptionLength($configuration);
         $this->assertTriStateBooleans($configuration);
         $this->normalizeStreamPlacement($configuration);
+        $this->normalizeAdditionalSubjects($configuration);
         $this->assertNonNegativeNumber($configuration, TransportOption::NAK_DELAY);
         $this->assertPositiveNumber($configuration, TransportOption::ACK_WAIT);
         $this->assertPositiveNumber($configuration, TransportOption::MAX_DELIVER, true);
@@ -667,6 +669,39 @@ final class NatsTransportConfigurationBuilder
         }
 
         $configuration[TransportOption::STREAM_PLACEMENT_TAGS->value] = $normalizedTags;
+    }
+
+    /**
+     * Validates the shape of `additional_subjects` and stores it back as a normalized list.
+     *
+     * The subjects are added to the stream and to the durable consumer's filters next to the topic, so a message
+     * published to one of them with a {@see \IDCT\NatsMessenger\Stamp\NatsSubjectStamp} reaches the same consumer.
+     * Accepts a list (a YAML list, or `additional_subjects[]=a&additional_subjects[]=b` in a DSN query string) or a
+     * comma-separated string. Each entry is a subject pattern: wildcards are allowed, since the entries are only
+     * stored and filtered on, never published to.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function normalizeAdditionalSubjects(#[\SensitiveParameter] array &$configuration): void
+    {
+        $subjects = $configuration[TransportOption::ADDITIONAL_SUBJECTS->value] ?? null;
+        if ($subjects === null) {
+            return;
+        }
+
+        $elementsAreStrings = !is_array($subjects)
+            || count(array_filter($subjects, static fn (mixed $subject): bool => is_string($subject))) === count($subjects);
+        $normalizedSubjects = $elementsAreStrings && (is_string($subjects) || is_array($subjects))
+            ? TypeCoercion::stringListValue($subjects)
+            : [];
+        if ($normalizedSubjects === []) {
+            throw new InvalidArgumentException(sprintf(
+                'The %s option must be a non-empty list of subjects, or a comma-separated string of them.',
+                TransportOption::ADDITIONAL_SUBJECTS->value,
+            ));
+        }
+
+        $configuration[TransportOption::ADDITIONAL_SUBJECTS->value] = $normalizedSubjects;
     }
 
     /**

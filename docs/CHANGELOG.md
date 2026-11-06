@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Per-message subjects: `NatsSubjectStamp` and the `additional_subjects` option.** The topic in the DSN stays the
+  default publish subject. A `NatsSubjectStamp` publishes one message to another subject, such as
+  `orders.updated.42` for one entity. `additional_subjects` lists the patterns those subjects fall under:
+  `setup()` adds them to the stream, and the transport's one durable consumer filters on the topic and the
+  patterns with `filter_subjects` (NATS 2.10+), so every message still goes through one consumer in stream order.
+  Without the option the consumer keeps its single `filter_subject` and nothing changes. `get()` records the
+  subject a message arrived on in a `NatsReceivedSubjectStamp`, and Symfony's retry goes back to that subject.
+  A retry is an envelope a worker received (its `ReceivedStamp`) re-sent with a retry count, the one rule the
+  transport applies to the subject and, in nats mode, to the copy it leaves out. A copy for a failure transport
+  goes to that transport's topic. A delayed stamped message waits under the topic 
+  and is delivered to the stamped subject. `setup()` writes the filters to an existing durable consumer as well
+  (JetStream's consumer create updates an existing durable), so a changed `additional_subjects` applies on the next
+  setup; a removed pattern narrows the consumer at once, and the messages still stored on it are no longer delivered
+  or counted. The pattern itself stays on the stream, since `setup()` only adds subjects; the README describes
+  draining it first and removing it from the stream by hand. The stamp refuses a subject a message cannot be
+  published to (empty, whitespace, an empty token, a `*` or `>` token) with an `InvalidArgumentException`.
 - **NKey authentication: the `nkey_seed` option (#89).** The transport signs the server's nonce with the given seed and
   sends the public key derived from it, so a user the server knows by its NKey can connect with the seed alone. Signing
   needs the `sodium` extension. The value is refused when the transport is built, and never repeated, unless it is a
@@ -63,6 +79,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for `nkey_seed`, `nkey`, `jwt`, `token`, `username`, `password` and `tls_key_passphrase`, also with a space next to the
   name or in another case, as nothing splits a value in the options. An encoded `&`, a double encoding, a name with brackets
   or a dot, a literal control character and a space outside ASCII stay a part of the value.
+
+### Changed
+- **`Nats-Msg-Id` names the subject the message is delivered to, not the topic:** `<id>:<subject>:<retry count>`.
+  With `NatsSubjectStamp` one transport publishes to many subjects, and an id naming only the topic made JetStream
+  drop the copy one deduplication id sent to a second subject. The subject is the topic, the stamped subject or,
+  for Symfony's retry, the subject the message arrived on; for a delayed message it is the schedule's target.
+  Messages without a stamp keep the ids they had. Two transports publishing one stamped message to the same
+  subject now store it once.
 
 ### Testing & CI
 - The bundle test expects the wording of Symfony Messenger 7.4.23 and 8.1.11, whose change had turned `composer test` red.

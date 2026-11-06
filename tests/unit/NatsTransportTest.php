@@ -2086,9 +2086,13 @@ final class NatsTransportTest extends TestCase
     /**
      * With retry_handler=nats, NATS redelivers a failed message itself once reject() NAKs it, so the copy
      * Symfony's retry sends is not published: published as well, it retried the same failure twice, and every
-     * copy again (#47). Symfony's retry strategy is ignored in nats mode.
+     * copy again (#47). Symfony's retry strategy is ignored in nats mode. A message retried on the failure
+     * transport, which keeps the failure stamp of its first trip, is a retry like any other.
+     *
+     * @param list<\Symfony\Component\Messenger\Stamp\StampInterface> $stamps
      */
-    public function testNatsModeDoesNotPublishTheCopySymfonysRetrySends(): void
+    #[DataProvider('envelopesNatsModeLeavesToNats')]
+    public function testNatsModeDoesNotPublishTheCopySymfonysRetrySends(array $stamps): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->expects(self::never())->method('publish');
@@ -2097,9 +2101,28 @@ final class NatsTransportTest extends TestCase
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
         $transport->setJetStreamContext($jetStream);
-        $retry = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new DelayStamp(1000), new RedeliveryStamp(1)]);
+        $retry = new Envelope(new \stdClass(), $stamps);
 
         self::assertSame($retry, $transport->send($retry));
+    }
+
+    /**
+     * @return iterable<string, array{list<\Symfony\Component\Messenger\Stamp\StampInterface>}>
+     */
+    public static function envelopesNatsModeLeavesToNats(): iterable
+    {
+        yield 'retry on the transport that received the message' => [[
+            new ReceivedStamp('async'),
+            new DelayStamp(1000),
+            new RedeliveryStamp(1),
+        ]];
+        yield 'retry on the failure transport' => [[
+            new ReceivedStamp('failed'),
+            new SentToFailureTransportStamp('async'),
+            new RedeliveryStamp(0),
+            new DelayStamp(1000),
+            new RedeliveryStamp(1),
+        ]];
     }
 
     /**
