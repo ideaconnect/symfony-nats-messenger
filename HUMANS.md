@@ -44,7 +44,7 @@ composer install
 composer test
 ```
 
-That's the inner loop. The unit tests don't touch a network - they run in well under a second.
+That's the inner loop. The unit tests don't touch a network - they take about ten seconds.
 
 ### Trying the real thing (functional tests)
 
@@ -107,7 +107,8 @@ Contributions are welcome! The short version:
 2. Branch off `main`.
 3. Make your change **with tests** - unit tests for logic, a Behat scenario if it's end-to-end behavior.
 4. Keep it green: `composer test` (PHPStan at max level + unit tests) must pass, and coverage stays
-   **at or above 90%** (`composer test:unit` then `composer coverage:check`).
+   **at or above 90%** (`composer test:unit` then `composer coverage:check`). CI also runs the unit tests stopped at random
+   moments (`composer test:unit:paused`), so a test must not depend on how fast its process runs.
 5. Update the docs you touched:
    - `docs/CHANGELOG.md` (Keep a Changelog format, under `## [Unreleased]`),
    - `docs/TESTS.md` if you added/renamed/removed tests,

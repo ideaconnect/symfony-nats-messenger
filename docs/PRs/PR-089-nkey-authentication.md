@@ -3,8 +3,9 @@
 - **Author:** [Brajk19](https://github.com/ideaconnect/symfony-nats-messenger/pull/89) (Adrian Brajković)
 - **Branch:** `nkey-authentication` (contributor fork) → `ideaconnect:main`
 - **PR:** https://github.com/ideaconnect/symfony-nats-messenger/pull/89
-- **Status:** Open. Reviewed and adapted on the branch `feat/89-nkey-jwt-auth`, which keeps the contributor's commits
-  unchanged and adds one commit per item, opened as its own PR to supersede it.
+- **Status:** Merged on 2026-11-06 through [#101](https://github.com/ideaconnect/symfony-nats-messenger/pull/101), merge commit
+  `3760c1c`. Reviewed and adapted on the branch `feat/89-nkey-jwt-auth`, which keeps the contributor's commits unchanged and
+  adds one commit per item.
 - **Reviewed at:** commit `bef7115`, on `main` at `30b5685`, 9 files, +305 / -3
 
 ## What the PR Proposes
@@ -200,13 +201,14 @@ about 20 ms in CI's logs, on NATS 2.15.2, which `nats:alpine` is at this time, a
   on PHP 8.2 in 9m55s. On 2.10.29, the image of CI's `functional-oldest-nats` job, without `@delayed` as that job runs it: 89
   scenarios, 657 steps, in 9m7s. On 2.9.25, which the README allows and CI does not run: the NKey feature without TLS (18
   scenarios) and the JWT feature (10).
-- `composer examples` in strict mode: 14 of 14 in each of the three jobs. Three examples fail now and then, on `main` too, and
-  none of their files is changed here, so a red examples step naming one of them says nothing about this branch. `keepalive`
-  does on any version: it reads the count right after a plain ACK, and it failed 2 of 8 runs of `main` on 2.10.29 and 2 of 60 runs on
-  2.15.2. The two others do on 2.10.29, with `no suitable peers for placement, peer offline`, where a later iteration asks for
+- `composer examples` in strict mode: 14 of 14 in each of the three jobs. Three examples failed now and then at that time, on `main`
+  too, and this branch changed none of their files, so a red examples step naming one of them said nothing about it. `keepalive`
+  did on any version: it read the count right after a plain ACK, and it failed 2 of 8 runs of `main` on 2.10.29 and 2 of 60 runs on
+  2.15.2. The two others did on 2.10.29, with `no suitable peers for placement, peer offline`, where a later iteration asked for
   three replicas right after the one before it restarted a server: `handler-failing-during-failover` failed 2 of 20 runs of it
   alone on `main` and 1 of 20 here, and in a setup like CI's oldest job `handler-succeeding-during-failover` failed alone in 5
-  of 19 runs here and in 1 of 10 on `main`, where all three failed in one more.
+  of 19 runs here and in 1 of 10 on `main`, where all three failed in one more. [#102](PR-102-flaky-tests.md) fixed all three, and
+  went into this branch before it landed.
 - The restart scenarios at CI's speed, restarting through Docker's API with the worker's boot at a random phase of the step's poll,
   30 runs of each of the three on 2.15.2: 10 of 90 failed without the pause of `294b6d9`, all with `JetStream pull request ended
   with status 503`, and 0 of 90 with it. With the pause and busy CPUs, the stores on ext4 or PHP 8.2 limited to 2 CPUs: 0 of 309. A
@@ -218,12 +220,12 @@ about 20 ms in CI's logs, on NATS 2.15.2, which `nats:alpine` is at this time, a
   and 1 failure, signing other bytes 4 failures, dropping the JWT 2 failures.
 - gitleaks 8.28.0 over the range: 4 findings, all in `b6b3684`: the contributor's seed twice and its public key twice. The tip
   holds no key.
-- Not run: anything on GitHub, before this PR opens.
+- On GitHub: CI passed on the first run of #101, and again once #102 had gone into the branch: 1038 unit tests, also stopped at random moments,
+  coverage 99.80%, 1158 of 1176 mutants killed, Behat 93 of 93 on each PHP job and 89 of 89 on NATS 2.10.29, and 14 of 14 examples in
+  each job. The merge commit marked #89 as merged.
 
 ### Left for the maintainer
 
-- **How to merge.** Use a merge commit. Squash or rebase would drop `bef7115` from `main`, and #89 would not be marked merged.
-  Re-read #89's head first: if the author pushed after `bef7115`, this branch no longer holds that work.
 - **The release.** The entries are under `[Unreleased]`, and the upgrade note is headed "Upgrading from 5.8", which assumes
   this ships after 5.8.0. `main`'s changelog dates 5.8.0 2026-11-04, but no tag exists yet. To ship it in 5.8.0, move the
   entries into that section, add it to that section's opening lines and fold the note into "Upgrading from 5.7.1".

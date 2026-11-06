@@ -44,7 +44,8 @@ composer nats:stop               # stop NATS
 ## Definition of done for a code change
 
 1. `composer test` is green (PHPStan **level max**, all unit tests pass).
-2. New behavior has unit tests; coverage stays **≥ 90%** (`composer test:unit` + `composer coverage:check`).
+2. New behavior has unit tests; coverage stays **≥ 90%** (`composer test:unit` + `composer coverage:check`). They also pass
+   `composer test:unit:paused`, which CI runs.
 3. If transport wiring / Docker / NATS scenarios changed, run the functional suite
    (`composer nats:start` → `composer test:functional` → `composer nats:stop`).
 4. Docs updated (see below).
@@ -115,6 +116,9 @@ composer nats:stop               # stop NATS
   missing consumer reports 503, not 404: with `auto_setup` it is re-provisioned once, otherwise `get()` throws.
   The client also reports a pull that got no answer before its own deadline as 408 ("No messages received
   within timeout"); that one makes the next operation PING first, since the server did not answer.
+  A graceful stop of NATS 2.15 leaves a moment in which a pull can get that same 503, which ends a worker with or without
+  `reconnect: true`: a known gap, named in the README's Automatic Reconnect section. In a restart scenario on CI,
+  `JetStream pull request ended with status 503` with only `Connected` logged is this gap, and any other failure there is real.
 - **A pull refused at the subscription limit throws `TransportException`.** The transport holds two subscriptions
   per connection (the request reply inbox and the pull's inbox). At a limit of one, the client's
   `SubscriptionLimitException` (client `^2.27`) becomes Symfony's `TransportException` naming the stream, consumer
@@ -153,5 +157,8 @@ composer nats:stop               # stop NATS
 ## Repository facts
 
 - Default branch: `main`. Author commits as the repository owner, never as the agent.
+- PRs land with a merge commit, never a squash or a rebase: one commit per item stays readable and revertable, and a
+  contributor's commits keep their ids, which is what marks their PR as merged when the work lands through another branch
+  (#89 through #101). Bring `main` into a branch by merging it, for the same reason.
 - Tasks and findings are tracked as **GitHub issues** (`gh issue …`).
 - CI matrix: PHP `8.2` and `8.5`; functional suite runs against plain / TLS / mTLS / operator-mode / token NATS in Docker.

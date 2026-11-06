@@ -75,17 +75,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they now prove the reconnect. They then pause 300 ms to stay out of a gap the README now names: a graceful stop of NATS 2.15
   leaves a moment, about 10 ms for each durable consumer on a file stream, in which a pull can get 503, and that ends a
   worker. The gap is not new, and it stays for now.
-- **The unit tests no longer depend on how fast their process runs.** `ReconnectModeTest` gave every operation 20 to 100 ms,
+- **The unit tests no longer depend on how fast their process runs (#102).** `ReconnectModeTest` gave every operation 20 to 100 ms,
   so a machine short of CPU failed it, with `the send waited for the held dial` or a request that timed out. An operation that
   has to succeed now gets a budget it never uses up, only the send a test runs out of its budget gets a short one, and a
   recovery a test looks at waits for the test instead of for a time. The class also runs faster, 0.9 s instead of 2.2 s.
 - `SubscriptionLimitPullTest` and a connection check test bounded how long a failure took too tightly for a process that was
-  paused. Their bounds now sit far from what the failure normally takes.
-- **`composer test:unit:paused`, also in CI,** runs the unit tests and stops their process at random moments, so that a test
+  paused. Their bounds now sit far from what the failure normally takes (#102).
+- **`composer test:unit:paused`, also in CI (#102),** runs the unit tests and stops their process at random moments, so that a test
   that depends on how fast its process runs fails every time, not just now and then on a busy machine.
-- **The `keepalive` example no longer fails now and then.** It read the queue depth right after a plain ACK, which nothing
+- **The `keepalive` example no longer fails now and then (#102).** It read the queue depth right after a plain ACK, which nothing
   waits for. It now waits for the count to reach 0, and a lost ACK still fails it.
-- **The failover examples no longer fail now and then on NATS 2.10,** with `no suitable peers for placement, peer offline`.
+- **The failover examples no longer fail now and then on NATS 2.10 (#102),** with `no suitable peers for placement, peer offline`.
   After a server rejoins the cluster, the examples now wait until a stream with three replicas can really be created. A server
   answering JetStream requests did not show that.
 
