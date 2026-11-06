@@ -74,8 +74,9 @@ transport call, so the client notices a
 lost connection when an operation writes to it; that operation starts the recovery, and whether it waits for it or
 times out and leaves the client Connecting depends on whether the dial ends within its budget. An operation that has to
 succeed gets 5 s, which it never uses up, only the send a test runs out of its budget gets 50 ms, and a recovery a test
-looks at while it is in flight is held until the test releases it, so nothing here depends on how fast the process runs.
-The client's reconnect delay is 1 ms. The transport's PINGs are counted through `rtt()`; the client's heartbeat is off (#81).
+looks at while it is in flight is held until the test releases it, so nothing here depends on how fast the process runs
+(see [Unit Tests With Pauses](#unit-tests-with-pauses-testsunitruntestswithpausestestphp)). The client's reconnect delay is
+1 ms. The transport's PINGs are counted through `rtt()`; the client's heartbeat is off (#81).
 
 | Feature | Tests |
 |---------|-------|
@@ -193,6 +194,27 @@ The functional Behat suite also exercises the bundle end-to-end: the test app en
 | Feature | Tests |
 |---------|-------|
 | **Every README ` ```php ` block is valid PHP** | `testReadmePhpExampleIsSyntacticallyValid` (data provider, one case per block), `testReadmeContainsThePhpExamplesWeExpect` |
+
+### Unit Tests With Pauses (`tests/unit/RunTestsWithPausesTest.php`)
+
+`composer test:unit:paused` (`scripts/run-tests-with-pauses.php`, in CI on the PHP 8.5 job) runs the unit tests and stops
+their process at random moments, for 250 ms each time and with 20 to 120 ms between two stops, as a machine short of CPU
+does. It loads nothing, as a stopped process uses no CPU. `TEST_PAUSE_MS` sets the length of a stop.
+
+A test that needs this process to keep up fails there nearly every time, where it fails only now and then on a busy
+machine, so a unit test must not depend on it. An operation that has to succeed gets a budget far longer than a pause. Only
+an operation that has to run out of its budget gets a short one, as a pause then just ends it sooner. A recovery a test looks
+at while it is in flight waits for the test instead of for a time. A bound on how long something took stays far from what it
+normally takes: a lower bound comes from a timer the operation has to wait for, and an upper bound from the time the
+wrong behaviour would take.
+
+Before these rules, of 8 runs of the whole suite at each length, 2 failed at 60 ms, 8 at 120 ms and 8 at 250 ms. After them
+none did, and none of 4 runs at 500 ms or of 3 at 1 s.
+
+| Feature | Tests |
+|---------|-------|
+| **The tests are really paused, and arguments reach PHPUnit** | `testTheTestsArePausedAndTheirArgumentsReachPhpunit` |
+| **A failed run fails the CI step** | `testThePhpunitExitCodeIsTheScripts` |
 
 ### Mutation Testing Harness (`tests/unit/MutationTestingBootstrapTest.php`, `tests/unit/MutationTestingChecksTest.php`, `tests/unit/MutationTestingCommandsTest.php`)
 

@@ -108,6 +108,11 @@ composer test:unit               # Coverage report → clover.xml + coverage/
 composer coverage:check          # Verify ≥ 90% statement coverage
 ```
 
+### Unit tests stopped at random moments
+```bash
+composer test:unit:paused        # Fails a test that depends on how fast its process runs (in CI)
+```
+
 ### Functional tests (require Docker)
 ```bash
 composer test:functional:setup   # Install Behat dependencies (first time)
@@ -124,6 +129,10 @@ composer nats:stop               # Stop NATS
   installs 13 (CI runs 11 and 13). Make a test double that sets no expectations with `createStub()`, not
   `createMock()`: PHPUnit 12 and later report a notice for a mock without expectations, and CI's PHP 8.5 job
   fails on it. Keep `createMock()` where the test checks calls, for example `expects(self::never())`.
+- A unit test must not depend on how fast its process runs: a machine short of CPU pauses it for hundreds of milliseconds.
+  Give an operation that has to succeed a budget it never uses up and only one that has to time out a short one, hold a
+  recovery until the test releases it rather than for a time, and keep a bound on a duration far from what it normally
+  takes. `composer test:unit:paused`, in CI, fails a test that breaks this.
 - Behat step definitions and hooks are **attributes** (`#[Given]`, `#[When]`, `#[Then]`, `#[AfterScenario]`), and the
   Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
   configuration is strict, so a scenario with an undefined step fails the run instead of being skipped.

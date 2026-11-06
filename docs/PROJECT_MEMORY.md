@@ -228,6 +228,11 @@ client with an in-memory scripted server. It distinguishes a client's SUB-fence 
 transport's connection-check PING (PR #75). Changing client wire behavior can require adapting
 this harness even when transport behavior stays the same.
 
+Unit tests that run the real client over the scripted server use real timers, and a machine short of CPU pauses the process
+for longer than a short budget: `ReconnectModeTest` failed that way at load 7 and above. Reproduce such a failure with
+`composer test:unit:paused` rather than with busy loops, which slow the rest of the machine as well and fail far less often
+(see `docs/TESTS.md`, "Unit Tests With Pauses").
+
 Mutation testing has a specific harness trap: Infection's file interceptor can displace
 BypassFinals and make final-class mock failures look like killed mutants. `tests/bootstrap.php`
 handles this. Run `composer test:mutation:canary` before `composer test:mutation`, and

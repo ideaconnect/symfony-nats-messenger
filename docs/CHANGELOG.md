@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recovery a test looks at waits for the test instead of for a time. The class also runs faster, 0.9 s instead of 2.2 s.
 - `SubscriptionLimitPullTest` and a connection check test bounded how long a failure took too tightly for a process that was
   paused. Their bounds now sit far from what the failure normally takes.
+- **`composer test:unit:paused`, also in CI,** runs the unit tests and stops their process at random moments, so that a test
+  that depends on how fast its process runs fails every time, not just now and then on a busy machine.
 
 ## [5.8.0] - 2026-11-04
 

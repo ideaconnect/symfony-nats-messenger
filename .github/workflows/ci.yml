@@ -68,6 +68,10 @@ jobs:
     - name: Run static analysis and fast unit tests
       run: composer test
 
+    - name: Check that no unit test depends on how fast its process runs
+      if: matrix.php-version == '8.5'
+      run: composer test:unit:paused
+
     - name: Start NATS servers
       run: |
         composer nats:start
