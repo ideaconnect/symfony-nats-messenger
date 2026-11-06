@@ -243,7 +243,7 @@ the examples do. With the client's `encodeConnect` made to ignore credentials or
 
 | Feature | Tests |
 |---------|-------|
-| **`composer test:functional` runs past Composer's limit of 600 seconds** | `testTheFunctionalSuiteHasNoProcessTimeout` |
+| **`composer test:functional` runs Behat, and runs past Composer's limit of 600 seconds** | `testTheFunctionalSuiteHasNoProcessTimeout` |
 
 ### Mutation Testing Harness (`tests/unit/MutationTestingBootstrapTest.php`, `tests/unit/MutationTestingChecksTest.php`, `tests/unit/MutationTestingCommandsTest.php`)
 
