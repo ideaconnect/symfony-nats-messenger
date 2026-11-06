@@ -64,9 +64,13 @@ try {
     pcntl_signal(SIGALRM, SIG_DFL);
     $worker->ack($envelope);
 
-    if ($redelivered !== 0 || $keepalives < 3 || $worker->getMessageCount() !== 0) {
+    if ($redelivered !== 0 || $keepalives < 3) {
         throw new RuntimeException(sprintf('expected no redelivery after %d keepalives, but the second worker received %d message(s)', $keepalives, (int) $redelivered));
     }
+
+    // Nothing waits for a plain ACK, so the server can still count the message for a moment after ack() returned. Past
+    // ack_wait a lost ACK keeps it counted for good.
+    waitUntil('the server to count the message as acknowledged', 10, static fn (): bool => $worker->getMessageCount() === 0);
 
     printf("OK keepalive: handled for 5 s with ack_wait 2 s and %d keepalives, the second worker received nothing\n", $keepalives);
 } finally {

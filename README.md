@@ -1711,6 +1711,9 @@ empty queue, so during an outage the queue reads as empty there. It gives up aft
 (about 6 seconds for a refused connection, see [Connection Timeout](#connection-timeout)). Monitor the
 connection itself, or the stream with the `nats` CLI, rather than reading a 0 as "nothing to do".
 
+Nothing waits for a plain ACK, so for a moment after `ack()` returned the count can still include that message. With
+`ack_sync` the server has applied the acknowledgement when `ack()` returns.
+
 > **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`
 
 ## Troubleshooting

@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paused. Their bounds now sit far from what the failure normally takes.
 - **`composer test:unit:paused`, also in CI,** runs the unit tests and stops their process at random moments, so that a test
   that depends on how fast its process runs fails every time, not just now and then on a busy machine.
+- **The `keepalive` example no longer fails now and then.** It read the queue depth right after a plain ACK, which nothing
+  waits for. It now waits for the count to reach 0, and a lost ACK still fails it.
 
 ## [5.8.0] - 2026-11-04
 
