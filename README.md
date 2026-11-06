@@ -646,7 +646,8 @@ authorization {
   So set up the user on the server before you deploy the seed. With `reconnect: true` the client retries that failure,
   and the call takes about 43 seconds at the default attempts to report `Reconnect attempts exhausted`.
 - Signing needs the `sodium` extension, bundled with PHP since 7.2 and included in most builds. Without it the
-  transport fails when it is built.
+  transport fails when it is built. The polyfill `paragonie/sodium_compat` does not replace it: the build then fails with
+  `Failed to derive Ed25519 key pair from NKey seed`.
 - The transport's own parameters that can hold the seed are marked `#[\SensitiveParameter]`, so a failed build leaves it
   out of their stack frames. Symfony Messenger's factory marks its options only from 7.4.23 and 8.1.11, and the client
   marks nothing yet, so with `zend.exception_ignore_args=0`, PHP's default without a php.ini, frames of those two can
