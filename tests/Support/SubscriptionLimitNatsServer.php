@@ -53,6 +53,9 @@ final class SubscriptionLimitNatsServer implements TransportInterface
     /** Whether the write of a refused SUB ends only once another read has taken the -ERR (see the class). */
     public bool $rejectedSubWriteEndsAfterAnotherRead = false;
 
+    /** The nonce in the INFO of each session, as a server with NKey users or in operator mode sends one. */
+    public ?string $nonce = null;
+
     private readonly string $pullSubject;
 
     /** The index of the latest session: 0 for the first connect(), 1 for the next, ... */
@@ -72,7 +75,10 @@ final class SubscriptionLimitNatsServer implements TransportInterface
     /** @var list<array{session: int, op: string, subject: string}> What the server received, in order. */
     private array $received = [];
 
-    /** @var list<array{headers: ?string, payload: string}> The stream's messages, in order. */
+    /** @var list<array<string, mixed>> The fields of each CONNECT the server received, in order. */
+    private array $connects = [];
+
+    /** @var list<array{subject: string, headers: ?string, payload: string}> The stream's messages, in order. */
     private array $stream = [];
 
     /** How many of the stream's messages the consumer has delivered. */
@@ -107,7 +113,7 @@ final class SubscriptionLimitNatsServer implements TransportInterface
         $this->session++;
         $this->live = true;
         $this->subscriptions = [];
-        $this->reads = [self::INFO];
+        $this->reads = [$this->nonce === null ? self::INFO : str_replace('INFO {', 'INFO {"nonce":"' . $this->nonce . '",', self::INFO)];
         $this->wakeReaders();
 
         return Future::complete();
@@ -149,6 +155,11 @@ final class SubscriptionLimitNatsServer implements TransportInterface
         foreach ($frames as $frame) {
             $args = $frame['args'];
             switch ($frame['op']) {
+                case 'CONNECT':
+                    $fields = json_decode(substr($frame['line'], strlen('CONNECT ')), true, 512, JSON_THROW_ON_ERROR);
+                    assert(is_array($fields));
+                    $this->connects[] = $fields;
+                    break;
                 case 'PING':
                     // The PING the client writes behind a SUB, in the same write, is its own: not recorded.
                     if (!$subscribing) {
@@ -261,6 +272,16 @@ final class SubscriptionLimitNatsServer implements TransportInterface
         return $this->session + 1;
     }
 
+    /**
+     * The fields of each CONNECT the server received, in order.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function connects(): array
+    {
+        return $this->connects;
+    }
+
     public function peakSubscriptions(): int
     {
         return $this->peakSubscriptions;
@@ -345,7 +366,7 @@ final class SubscriptionLimitNatsServer implements TransportInterface
 
         $this->record('PUBLISH', $subject);
         if ($subject === $this->topic && $replyTo !== null) {
-            $this->stream[] = ['headers' => $headers, 'payload' => $body];
+            $this->stream[] = ['subject' => $subject, 'headers' => $headers, 'payload' => $body];
             $this->reply($replyTo, (string) json_encode(['stream' => $this->streamName, 'seq' => count($this->stream)]));
         }
     }
@@ -374,10 +395,10 @@ final class SubscriptionLimitNatsServer implements TransportInterface
                 count($this->stream) - $this->delivered,
             );
             if ($message['headers'] === null) {
-                $this->send(sprintf("MSG %s %d %s %d\r\n%s\r\n", $inbox, $sid, $ackSubject, strlen($message['payload']), $message['payload']));
+                $this->send(sprintf("MSG %s %d %s %d\r\n%s\r\n", $message['subject'], $sid, $ackSubject, strlen($message['payload']), $message['payload']));
             } else {
                 $total = strlen($message['headers']) + strlen($message['payload']);
-                $this->send(sprintf("HMSG %s %d %s %d %d\r\n%s%s\r\n", $inbox, $sid, $ackSubject, strlen($message['headers']), $total, $message['headers'], $message['payload']));
+                $this->send(sprintf("HMSG %s %d %s %d %d\r\n%s%s\r\n", $message['subject'], $sid, $ackSubject, strlen($message['headers']), $total, $message['headers'], $message['payload']));
             }
         }
 

@@ -2,6 +2,7 @@
 
 namespace IDCT\NatsMessenger\Tests\Unit\Options;
 
+use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\JetStream\Enum\DiscardPolicy;
@@ -13,13 +14,19 @@ use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Options\StreamCompression;
 use IDCT\NatsMessenger\Options\TransportOption;
+use IDCT\NatsMessenger\Tests\Support\PhpProcess;
+use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
 
 final class NatsTransportConfigurationBuilderTest extends TestCase
 {
     private const VALID_DSN = 'nats://admin:password@localhost:4222/test-stream/test-topic';
+
+    private const NKEY_SEED_MUST_BE_A_STRING = 'The nkey_seed option must be a non-empty string, or null for no seed. For an optional '
+        . 'seed from an environment variable use the default processor, as in %env(default::NATS_NKEY_SEED)%.';
 
     public function testBuildWithValidDsnReturnsConfiguration(): void
     {
@@ -206,8 +213,6 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'tls_peer_name' => 'nats.example.internal',
                 'tls_verify_peer' => false,
                 'token' => 'api-token',
-                'jwt' => 'jwt-value',
-                'nkey' => 'nkey-value',
                 'username' => 'override-user',
                 'password' => 'override-password',
             ]
@@ -224,10 +229,527 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame('nats.example.internal', $options->tlsPeerName);
         self::assertFalse($options->tlsVerifyPeer);
         self::assertSame('api-token', $options->token);
-        self::assertSame('jwt-value', $options->jwt);
-        self::assertSame('nkey-value', $options->nkey);
+        self::assertNull($options->jwt);
+        self::assertNull($options->nkey);
+        self::assertNull($options->nonceSigner);
         self::assertSame('override-user', $options->username);
         self::assertSame('override-password', $options->password);
+    }
+
+    #[RequiresPhpExtension('sodium')]
+    public function testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nkey_seed' => TestNkeys::seed()]
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+        self::assertSame(TestNkeys::publicKey(), $options->nonceSigner->publicKey());
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
+        self::assertNull($options->username);
+        self::assertNull($options->password);
+    }
+
+    #[RequiresPhpExtension('sodium')]
+    public function testBuildReadsTheNkeySeedFromTheDsnQuery(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?nkey_seed=' . TestNkeys::seed(),
+            []
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
+    }
+
+    #[RequiresPhpExtension('sodium')]
+    public function testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nkey_seed' => TestNkeys::seed(), 'nkey' => TestNkeys::publicKey()]
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
+        // A transport without the signer could not connect, whatever nkey says.
+        self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function nkeyValuesThatContradictTheSeed(): iterable
+    {
+        yield 'another public key' => ['UOTHERPUBLICKEY'];
+        yield 'the seed itself, as when both options read one variable' => [TestNkeys::seed()];
+    }
+
+    /**
+     * The error names the key the seed gives, which is public, and never the configured value, which may be a seed.
+     */
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('nkeyValuesThatContradictTheSeed')]
+    public function testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey(string $nkey): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['nkey_seed' => TestNkeys::seed(), 'nkey' => $nkey]
+            );
+            self::fail('An nkey that contradicts the seed was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The nkey option is not the public key of the configured NKey seed, which is "' . TestNkeys::publicKey() . '". '
+                . 'Leave nkey unset: the transport derives the key from the seed.',
+                $refused->getMessage(),
+            );
+            self::assertStringNotContainsString($nkey, $refused->getMessage());
+        }
+    }
+
+    /**
+     * The README says the transport fails when it is built without sodium. An extension cannot be unloaded from a running
+     * process, so a child process runs with the function the client looks for disabled.
+     */
+    public function testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt(): void
+    {
+        $script = <<<'PHP'
+            require 'vendor/autoload.php';
+            try {
+                (new IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey_seed' => $argv[1]]);
+                echo 'built';
+            } catch (InvalidArgumentException $refused) {
+                echo $refused->getMessage();
+            }
+            PHP;
+
+        $process = PhpProcess::run(
+            ['-d', 'disable_functions=sodium_crypto_sign_seed_keypair', '-r', $script, '--', TestNkeys::seed()],
+            dirname(__DIR__, 3),
+        );
+
+        self::assertSame(0, $process['exitCode'], PhpProcess::describe($process));
+        self::assertSame('The NKey seed cannot be used: NkeySeedSigner requires the sodium extension.', $process['stdout'], PhpProcess::describe($process));
+    }
+
+    /**
+     * A sodium function the client calls can be disabled while the one it checks for is not. That is an \Error, not the client's
+     * exception, and its frames hold the seed. Nothing is wrong with the seed, so the error says nothing about its form.
+     */
+    #[RequiresPhpExtension('sodium')]
+    public function testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError(): void
+    {
+        $process = PhpProcess::run(
+            ['-d', 'disable_functions=sodium_memzero', '-d', 'zend.exception_ignore_args=0', '-r', self::scriptBuildingWithTheSeedInItsArguments(), '--', TestNkeys::seed()],
+            dirname(__DIR__, 3),
+        );
+
+        self::assertSame(0, $process['exitCode'], PhpProcess::describe($process));
+        self::assertSame(
+            'The NKey seed cannot be used: Call to undefined function IDCT\NATS\Auth\sodium_memzero().|not chained',
+            $process['stdout'],
+            PhpProcess::describe($process),
+        );
+    }
+
+    /**
+     * The polyfill, sodium_compat, has the function the client checks for, and its sodium_memzero() always throws, which the
+     * client reports as a failed derivation. The stand-in below does the same in the client's namespace, as the polyfill is not
+     * a dependency. Nothing is wrong with the seed here either.
+     */
+    #[RequiresPhpExtension('sodium')]
+    public function testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike(): void
+    {
+        $script = 'namespace IDCT\NATS\Auth { function sodium_memzero(string &$value): void { throw new \SodiumException("not implemented"); } } '
+            . 'namespace { ' . self::scriptBuildingWithTheSeedInItsArguments() . ' }';
+
+        $process = PhpProcess::run(['-r', $script, '--', TestNkeys::seed()], dirname(__DIR__, 3));
+
+        self::assertSame(0, $process['exitCode'], PhpProcess::describe($process));
+        self::assertSame(
+            'The NKey seed cannot be used: Failed to derive Ed25519 key pair from NKey seed.|not chained',
+            $process['stdout'],
+            PhpProcess::describe($process),
+        );
+    }
+
+    private static function scriptBuildingWithTheSeedInItsArguments(): string
+    {
+        return <<<'PHP'
+            require 'vendor/autoload.php';
+            try {
+                (new IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey_seed' => $argv[1]]);
+                echo 'built';
+            } catch (InvalidArgumentException $refused) {
+                echo $refused->getMessage(), $refused->getPrevious() === null ? '|not chained' : '|chained';
+            }
+            PHP;
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function nkeyValuesWithoutASeed(): iterable
+    {
+        yield 'the public key' => [TestNkeys::publicKey()];
+        yield 'a seed put in the wrong option' => [TestNkeys::seed()];
+    }
+
+    /**
+     * Without a signer the client throws before it writes the CONNECT, on every server, so nkey alone could never
+     * connect. The error names what to configure, and does not repeat the value, which may be a seed.
+     */
+    #[DataProvider('nkeyValuesWithoutASeed')]
+    public function testBuildRejectsAnNkeyWithoutASeed(string $nkey): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey' => $nkey]);
+            self::fail('An nkey without a seed was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The nkey option needs nkey_seed: the client must sign the server\'s nonce with the seed, so nkey alone can '
+                . 'never connect. Put the seed (SU...) in nkey_seed and leave nkey unset: the public key is derived from it.',
+                $refused->getMessage(),
+            );
+        }
+    }
+
+    /**
+     * Without a signer the client throws before it writes the CONNECT, on every server, so a JWT alone could never
+     * connect. The error names the option to set.
+     */
+    public function testBuildRejectsAJwtWithoutASeed(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'The jwt option needs nkey_seed: the client signs the server\'s nonce with the seed of the JWT\'s user and cannot '
+            . 'connect without one. Put that seed (SU...) in nkey_seed; a .creds file holds both values.'
+        );
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['jwt' => 'user-jwt']);
+    }
+
+    /**
+     * How a user logs in on an operator-mode server: the JWT goes in the CONNECT with the seed's public key, and the
+     * seed signs the nonce. This also protects the jwt exception of the rule that a seed stands alone.
+     */
+    #[RequiresPhpExtension('sodium')]
+    public function testBuildPassesAJwtWithItsSeedToTheClient(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['jwt' => 'a.user.jwt', 'nkey_seed' => TestNkeys::seed()]
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertSame('a.user.jwt', $options->jwt);
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
+        self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+        self::assertSame(TestNkeys::publicKey(), $options->nonceSigner->publicKey());
+    }
+
+    /**
+     * Both values sit in a .creds file, so the seed or the whole file in this option is an easy mistake. Unlike a wrong
+     * value in nkey_seed it would leave the process: the CONNECT carries the option as it is, and a tracing server logs it.
+     *
+     * @return iterable<string, array{string}>
+     */
+    public static function valuesThatAreNotAJwt(): iterable
+    {
+        yield 'the seed' => [TestNkeys::seed()];
+        yield 'the text of a whole .creds file' => [
+            "-----BEGIN NATS USER JWT-----\na.user.jwt\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n"
+            . TestNkeys::seed() . "\n------END USER NKEY SEED------\n",
+        ];
+        yield 'two parts' => ['a.user'];
+        yield 'four parts' => ['a.user.jwt.more'];
+        yield 'an empty first part' => ['.user.jwt'];
+        yield 'an empty part' => ['a..jwt'];
+        yield 'an empty last part' => ['a.user.'];
+        yield 'padding, which a JWT does not have' => ['a.user.jwt=='];
+        yield 'padding on the first part' => ['a==.user.jwt'];
+        yield 'padding on the middle part' => ['a.user==.jwt'];
+        yield 'something before a JWT' => ['some a.user.jwt'];
+        yield 'something after a JWT' => ['a.user.jwt more'];
+    }
+
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('valuesThatAreNotAJwt')]
+    public function testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt(string $notAJwt): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['jwt' => $notAJwt, 'nkey_seed' => TestNkeys::seed()]
+            );
+            self::fail('A value that is not a JWT was accepted.');
+        } catch (InvalidArgumentException $thrown) {
+            self::assertSame(
+                'The jwt option is not a JWT, which has three parts separated by dots. A .creds file holds the JWT under its '
+                . 'BEGIN NATS USER JWT line, and the seed, for nkey_seed, under its BEGIN USER NKEY SEED line.',
+                $thrown->getMessage(),
+            );
+        }
+    }
+
+    /**
+     * A JWT read from a file ends in a newline, and a real one has the - and _ of base64url in its parts.
+     */
+    #[RequiresPhpExtension('sodium')]
+    public function testBuildAcceptsAJwtWithSpaceAroundItAndBase64UrlCharacters(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['jwt' => "a-1_b.c-2_d.e-3_f\n", 'nkey_seed' => TestNkeys::seed()]
+        );
+
+        self::assertSame('a-1_b.c-2_d.e-3_f', $this->extractNatsOptions($configuration->client)->jwt);
+    }
+
+    /**
+     * Valid seeds of the other key types.
+     *
+     * @return iterable<string, array{string}>
+     */
+    public static function seedsThatAreNotUserSeeds(): iterable
+    {
+        yield 'account' => [TestNkeys::seed('not-a-user', TestNkeys::ACCOUNT)];
+        yield 'operator' => [TestNkeys::seed('not-a-user', TestNkeys::OPERATOR)];
+        yield 'server' => [TestNkeys::seed('not-a-user', TestNkeys::SERVER)];
+        yield 'cluster' => [TestNkeys::seed('not-a-user', TestNkeys::CLUSTER)];
+        yield 'curve' => [TestNkeys::seed('not-a-user', TestNkeys::CURVE)];
+    }
+
+    /**
+     * The client takes all of these, and the server refuses them as users, so the error could only come at connect, as
+     * a bare Authorization Violation, but for a bearer JWT, whose signature the server does not check.
+     */
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('seedsThatAreNotUserSeeds')]
+    public function testBuildRejectsASeedThatIsNotAUserSeed(string $seed): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey_seed' => $seed]);
+            self::fail('A seed that is not a user seed was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The NKey seed cannot be used: it is not a user seed (SU...). A NATS user logs in with a user key, not with an '
+                . 'account, operator, server, cluster or curve key.',
+                $refused->getMessage(),
+            );
+        }
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function nkeySeedsThatAreNotANonEmptyString(): iterable
+    {
+        yield 'an empty string' => [''];
+        yield 'spaces' => ['   '];
+        yield 'a newline' => ["\n"];
+        yield 'false' => [false];
+        yield 'true' => [true];
+        yield 'an integer' => [0];
+        yield 'a float' => [1.5];
+        yield 'an empty list' => [[]];
+        yield 'a list holding the seed' => [[TestNkeys::seed()]];
+        yield 'an object' => [new \stdClass()];
+    }
+
+    /**
+     * Only null means "no seed": read as no seed, an empty variable connected with the other credentials there were, as the
+     * server's no_auth_user, or anonymously, without a word.
+     */
+    #[DataProvider('nkeySeedsThatAreNotANonEmptyString')]
+    public function testBuildRejectsAnNkeySeedThatIsNotANonEmptyString(mixed $seed): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(self::NKEY_SEED_MUST_BE_A_STRING);
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey_seed' => $seed]);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function dsnQueriesWhoseNkeySeedIsNotANonEmptyString(): iterable
+    {
+        yield 'empty' => ['nkey_seed='];
+        yield 'an encoded space' => ['nkey_seed=%20'];
+        yield 'a list holding the seed' => ['nkey_seed[]=' . TestNkeys::seed()];
+    }
+
+    #[DataProvider('dsnQueriesWhoseNkeySeedIsNotANonEmptyString')]
+    public function testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString(string $query): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(self::NKEY_SEED_MUST_BE_A_STRING);
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic?' . $query);
+    }
+
+    /**
+     * The merge keeps an explicit null, as for every option. The README warns about it, as its options block lists
+     * nkey_seed: null.
+     */
+    public function testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?nkey_seed=' . TestNkeys::seed(),
+            ['nkey_seed' => null]
+        );
+
+        self::assertNull($this->extractNatsOptions($configuration->client)->nonceSigner);
+    }
+
+    public function testBuildWithANullNkeySeedHasNoSigner(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nkey_seed' => null]
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+
+        self::assertNull($options->nonceSigner);
+        self::assertNull($options->nkey);
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function credentialsNextToASeed(): iterable
+    {
+        yield 'username and password in the DSN' => ['nats://admin:some-password@localhost:4222/test-stream/test-topic', []];
+        yield 'username alone in the DSN' => ['nats://admin@localhost:4222/test-stream/test-topic', []];
+        yield 'password alone in the DSN' => ['nats://:some-password@localhost:4222/test-stream/test-topic', []];
+        yield 'username option' => ['nats://localhost:4222/test-stream/test-topic', ['username' => 'admin']];
+        yield 'password option' => ['nats://localhost:4222/test-stream/test-topic', ['password' => 'some-password']];
+        yield 'token option' => ['nats://localhost:4222/test-stream/test-topic', ['token' => 'some-token']];
+        yield 'token option, next to a jwt' => ['nats://localhost:4222/test-stream/test-topic', ['token' => 'some-token', 'jwt' => 'user-jwt']];
+    }
+
+    /**
+     * On a server with both kinds of users the NKey wins without a word, even over a wrong password, so the connection
+     * would not be who the configuration says. The error repeats none of the values.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('credentialsNextToASeed')]
+    public function testBuildRejectsASeedNextToAUsernamePasswordOrToken(string $dsn, array $options): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build($dsn, $options + ['nkey_seed' => TestNkeys::seed()]);
+            self::fail('A seed next to another credential was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The nkey_seed option cannot be combined with a username, password or token, from the DSN or the options: a '
+                . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and on '
+                . 'a server that sends no nonce the client would refuse the login, as there is nothing to sign. Remove them, '
+                . 'or remove the seed.',
+                $refused->getMessage(),
+            );
+        }
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function optionsThatConfigureASeed(): iterable
+    {
+        yield 'the seed alone' => [['nkey_seed' => TestNkeys::seed()]];
+        yield 'nkey repeating the seed\'s public key' => [['nkey' => TestNkeys::publicKey(), 'nkey_seed' => TestNkeys::seed()]];
+    }
+
+    /**
+     * The nkey option stays as an optional check of the seed: nothing in it is deprecated.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('optionsThatConfigureASeed')]
+    public function testTheNkeyOptionIsNotDeprecated(array $options): void
+    {
+        $deprecations = [];
+        set_error_handler(static function (int $severity, string $message) use (&$deprecations): bool {
+            if ($severity === E_USER_DEPRECATED) {
+                $deprecations[] = $message;
+            }
+
+            return true;
+        });
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', $options);
+        } finally {
+            restore_error_handler();
+        }
+
+        self::assertSame([], $deprecations);
+    }
+
+    #[RequiresPhpExtension('sodium')]
+    public function testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt(): void
+    {
+        $invalidSeed = TestNkeys::mistypedSeed();
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['nkey_seed' => $invalidSeed]
+            );
+            self::fail('An invalid NKey seed was accepted.');
+        } catch (InvalidArgumentException $invalid) {
+            self::assertStringStartsWith('The NKey seed cannot be used: ', $invalid->getMessage());
+            self::assertStringNotContainsString($invalidSeed, $invalid->getMessage());
+            self::assertNull($invalid->getPrevious(), 'The frames of the client\'s exception hold the whole seed.');
+        }
+    }
+
+    /**
+     * The pair prints the public key right under the seed, and a .creds file holds the seed under the JWT, so these are easy
+     * mistakes. The client's own words for them say nothing about what a seed looks like.
+     *
+     * @return iterable<string, array{string, string}>
+     */
+    public static function valuesThatAreNotASeed(): iterable
+    {
+        yield 'the public key' => [TestNkeys::publicKey(), 'Invalid NKey seed encoding'];
+        yield 'a JWT' => ['a.user.jwt', 'Invalid base32 character in NKey encoding'];
+        yield 'the text of a whole .creds file' => [
+            "-----BEGIN NATS USER JWT-----\na.user.jwt\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n"
+            . TestNkeys::seed() . "\n------END USER NKEY SEED------\n",
+            'Invalid base32 character in NKey encoding',
+        ];
+    }
+
+    #[RequiresPhpExtension('sodium')]
+    #[DataProvider('valuesThatAreNotASeed')]
+    public function testBuildSaysWhatASeedLooksLikeForAValueThatIsNotOne(string $notASeed, string $clientsMessage): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['nkey_seed' => $notASeed]
+            );
+            self::fail('A value that is not a seed was accepted.');
+        } catch (InvalidArgumentException $invalid) {
+            self::assertSame(
+                'The NKey seed cannot be used: ' . $clientsMessage . '. A user seed starts with SU, and a .creds file holds it under '
+                . 'its BEGIN USER NKEY SEED line.',
+                $invalid->getMessage(),
+            );
+        }
     }
 
     public function testBuildUsesDsnCredentialsAndDefaultPortWhenOverridesAreAbsent(): void
@@ -1198,6 +1720,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
                 'request_timeout' => 10,
                 'reconnect' => false,
                 'max_reconnect_attempts' => 10,
+                'resend_on_reconnect' => false,
                 'deduplicate' => false,
                 'stream_max_age' => 86400,
                 'stream_max_bytes' => 1073741824,
@@ -1243,6 +1766,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(['cluster' => 'east', 'tags' => ['ssd', 'eu-west']], $configuration->streamPlacement());
         self::assertFalse($configuration->isReconnectEnabled());
         self::assertSame(10, $configuration->maxReconnectAttempts());
+        self::assertFalse($this->extractNatsOptions($configuration->client)->resendJetStreamPublishOnReconnect);
         self::assertSame('limits', $configuration->streamRetention()?->value);
         self::assertSame('old', $configuration->streamDiscard()?->value);
         self::assertSame(120, $configuration->streamDuplicateWindowSeconds());
@@ -1634,7 +2158,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     public function testBuildWithStreamMaxMessageSizeExceedingInt32ThrowsException(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('The stream_max_message_size option must not exceed 2147483647');
+        $this->expectExceptionMessage('The stream_max_message_size option must not exceed 2147483647: NATS stores it as a 32-bit integer.');
 
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_max_message_size' => 3000000000]);
     }
@@ -1863,6 +2387,84 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame((new NatsOptions())->maxReconnectAttempts, $options->maxReconnectAttempts);
     }
 
+    public function testResendOnReconnectIsOffByDefault(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['reconnect' => true]);
+
+        self::assertFalse($this->extractNatsOptions($configuration->client)->resendJetStreamPublishOnReconnect);
+    }
+
+    /**
+     * The client sends a publish with a Nats-Msg-Id again on the connection its recovery made (client 2.28.0, #249).
+     */
+    public function testBuildWithResendOnReconnectPropagatesToNatsOptions(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+        $fromOptions = $builder->build(self::VALID_DSN, ['reconnect' => true, 'resend_on_reconnect' => true]);
+        $fromDsn = $builder->build('nats://localhost:4222/test-stream/test-topic?reconnect=true&resend_on_reconnect=true');
+        $overriddenByOptions = $builder->build('nats://localhost:4222/test-stream/test-topic?reconnect=true&resend_on_reconnect=true', ['resend_on_reconnect' => 'false']);
+
+        self::assertTrue($this->extractNatsOptions($fromOptions->client)->resendJetStreamPublishOnReconnect);
+        self::assertTrue($this->extractNatsOptions($fromDsn->client)->resendJetStreamPublishOnReconnect);
+        self::assertFalse($this->extractNatsOptions($overriddenByOptions->client)->resendJetStreamPublishOnReconnect);
+    }
+
+    /**
+     * Without reconnect the client never replaces the connection a send went out on, so the option would do nothing.
+     */
+    public function testBuildWithResendOnReconnectWithoutReconnectThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The resend_on_reconnect option needs reconnect: true: only the NATS client\'s own recovery sends a publish again on the new connection.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['resend_on_reconnect' => true]);
+    }
+
+    /**
+     * The copy sent again goes out up to request_timeout after the first, and JetStream drops it only within the
+     * stream's duplicate window.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('duplicateWindowsNotLongerThanTheRequestTimeout')]
+    public function testBuildWithResendOnReconnectAndADuplicateWindowNotLongerThanTheRequestTimeoutThrowsException(array $options, string $message): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage($message);
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['reconnect' => true, 'resend_on_reconnect' => true] + $options);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function duplicateWindowsNotLongerThanTheRequestTimeout(): iterable
+    {
+        yield 'as long as the default request_timeout' => [
+            ['stream_duplicate_window' => 10],
+            'The stream_duplicate_window option (10s) must be longer than request_timeout (10s) with resend_on_reconnect: a publish sent again after the window could be stored twice.',
+        ];
+        yield 'shorter than a configured request_timeout' => [
+            ['stream_duplicate_window' => '20', 'request_timeout' => '30.5'],
+            'The stream_duplicate_window option (20s) must be longer than request_timeout (30.5s) with resend_on_reconnect: a publish sent again after the window could be stored twice.',
+        ];
+    }
+
+    public function testBuildWithResendOnReconnectAcceptsALongerOrAnUnsetDuplicateWindow(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+        $longer = $builder->build(self::VALID_DSN, ['reconnect' => true, 'resend_on_reconnect' => true, 'stream_duplicate_window' => 11]);
+        $unset = $builder->build(self::VALID_DSN, ['reconnect' => true, 'resend_on_reconnect' => true]);
+        // Without the option a short window is no concern of it.
+        $withoutTheOption = $builder->build(self::VALID_DSN, ['reconnect' => true, 'stream_duplicate_window' => 5]);
+
+        self::assertSame(11, $longer->streamDuplicateWindowSeconds());
+        self::assertTrue($this->extractNatsOptions($longer->client)->resendJetStreamPublishOnReconnect);
+        self::assertNull($unset->streamDuplicateWindowSeconds());
+        self::assertTrue($this->extractNatsOptions($unset->client)->resendJetStreamPublishOnReconnect);
+        self::assertSame(5, $withoutTheOption->streamDuplicateWindowSeconds());
+    }
+
     #[DataProvider('invalidMaxReconnectAttemptsProvider')]
     public function testBuildWithInvalidMaxReconnectAttemptsThrowsException(mixed $value): void
     {
@@ -1881,6 +2483,73 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'negative' => [-1];
         yield 'fractional' => [1.5];
         yield 'non-numeric' => ['many'];
+    }
+
+    /**
+     * A float past the range of an int does not survive the cast to an int, which on PHP 8.5 also warns. A numeric string
+     * past the largest float becomes 0 in the cast, with no warning.
+     *
+     * @return iterable<string, array{float|string}>
+     */
+    public static function numbersThatDoNotSurviveTheCastToAnInt(): iterable
+    {
+        yield 'the first float, which wrapped around to the smallest int' => [(float) PHP_INT_MAX];
+        yield 'a float that wrapped around to a negative number' => [1e19];
+        yield 'a float that became 0' => [1e300];
+        yield 'infinity, which became 0' => [INF];
+        yield 'a string past the largest float, with an exponent' => ['1e400'];
+        yield 'a string just past the largest float' => ['1.8e308'];
+        yield 'a string past the largest float, in digits' => [str_repeat('9', 400)];
+    }
+
+    #[DataProvider('numbersThatDoNotSurviveTheCastToAnInt')]
+    public function testBuildRejectsAMaxReconnectAttemptsThatDoesNotSurviveTheCastToAnInt(float|string $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The max_reconnect_attempts option is too large to be an integer.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['max_reconnect_attempts' => $value]);
+    }
+
+    /**
+     * 0 and -1 are refused, so a huge number is how to ask for attempts without an end, and these all worked before there
+     * was any check. A numeric string up to the largest float stops at the largest int.
+     *
+     * @return iterable<string, array{mixed, int}>
+     */
+    public static function largeMaxReconnectAttempts(): iterable
+    {
+        yield 'past an int32' => [2147483648, 2147483648];
+        yield 'the largest int' => [PHP_INT_MAX, PHP_INT_MAX];
+        yield 'the largest float that fits' => [9223372036854774784.0, 9223372036854774784];
+        yield 'a string past the range of an int' => ['99999999999999999999', PHP_INT_MAX];
+        yield 'a string with an exponent, past the range of an int' => ['1e19', PHP_INT_MAX];
+        yield 'a string with an exponent, just below the largest float' => ['1.7e308', PHP_INT_MAX];
+    }
+
+    #[DataProvider('largeMaxReconnectAttempts')]
+    public function testBuildPassesALargeMaxReconnectAttemptsToTheClient(mixed $value, int $expected): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['reconnect' => true, 'max_reconnect_attempts' => $value]);
+
+        self::assertSame($expected, $this->extractNatsOptions($configuration->client)->maxReconnectAttempts);
+    }
+
+    public function testBuildPassesALargeMaxReconnectAttemptsFromTheDsnToTheClient(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?reconnect=1&max_reconnect_attempts=1e19',
+        );
+
+        self::assertSame(PHP_INT_MAX, $this->extractNatsOptions($configuration->client)->maxReconnectAttempts);
+    }
+
+    public function testBuildRejectsAMaxReconnectAttemptsInTheDsnThatDoesNotSurviveTheCastToAnInt(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The max_reconnect_attempts option is too large to be an integer.');
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic?reconnect=1&max_reconnect_attempts=1e400');
     }
 
     /**

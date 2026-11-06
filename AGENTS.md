@@ -67,11 +67,16 @@ tests/
 │   │   ├── nats_term.feature                   # TERM failure handler
 │   │   ├── nats_delayed.feature                # Scheduled/delayed messages
 │   │   ├── nats_tls.feature                    # TLS connections
-│   │   └── nats_mtls.feature                   # mTLS with client certificates
+│   │   ├── nats_mtls.feature                   # mTLS with client certificates
+│   │   ├── nats_nkey.feature                   # Logins with an NKey seed, and credentials refused when built
+│   │   ├── nats_jwt.feature                    # Logins with a JWT and its seed on a server in operator mode
+│   │   └── nats_token.feature                  # Logins with a token
 │   └── tests/Behat/NatsSetupContext.php        # All step definitions
 └── nats/                                       # Docker Compose + NATS configs for testing
     ├── docker-compose.yaml
     ├── nats.conf / nats-tls.conf / nats-mtls.conf
+    ├── nats-jwt.conf / nats-token.conf         # operator mode and token logins
+    ├── auth/                                   # generate.sh for the test NKey and JWT credentials (generated, not committed)
     └── certs/                                  # generate.sh for the test TLS certificates (generated, not committed)
 ```
 
@@ -88,12 +93,12 @@ tests/
 - **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers
 - **Per-message subjects**: `NatsSubjectStamp` overrides the topic per message; `additional_subjects` adds the patterns the stream and the one consumer cover (`filter_subjects`); retries go back to the subject a message arrived on (`NatsReceivedSubjectStamp`)
 - **TLS/mTLS**: full TLS config options including client certificates
-- **Authentication**: username/password, token, JWT, NKey
+- **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`)
 - **Serialization**: igbinary (default with fallback) or custom via `AbstractEnveloperSerializer`
 - **Publish validation**: JetStream publish responses are parsed and validated
-- **Connection checks**: a lost connection is dialled again; `ping_after_idle` PINGs a connection that sat idle, or that an operation failed on, before reuse
+- **Connection checks**: a lost connection is dialled again; `ping_after_idle` PINGs a connection that sat idle, or that an operation failed on, before reuse, and before the NAK or TERM of a failed delivery
 - **Timeouts**: `connection_timeout` (the dial), `request_timeout` (replies from the server), `max_batch_timeout` (pulls)
-- **Duplicate protection**: the `deduplicate` option and `DeduplicationIdStamp`, sent as `Nats-Msg-Id`
+- **Duplicate protection**: the `deduplicate` option and `DeduplicationIdStamp`, sent as `Nats-Msg-Id`; with `reconnect: true`, `resend_on_reconnect` sends such a publish again on the recovered connection
 - **Keepalive**: `messenger:consume --keepalive`, an in-progress acknowledgement queued from the signal handler
 
 ## Testing
@@ -109,10 +114,15 @@ composer test:unit               # Coverage report → clover.xml + coverage/
 composer coverage:check          # Verify ≥ 90% statement coverage
 ```
 
+### Unit tests stopped at random moments
+```bash
+composer test:unit:paused        # Fails a test that depends on how fast its process runs (in CI)
+```
+
 ### Functional tests (require Docker)
 ```bash
 composer test:functional:setup   # Install Behat dependencies (first time)
-composer nats:start              # Generate the test TLS certs, then start NATS in Docker
+composer nats:start              # Generate the test TLS certs and NKey/JWT credentials, then start NATS in Docker
 composer test:functional         # Run Behat scenarios
 composer examples                # Run examples/*.php against the test NATS (needs nats:start)
 composer nats:stop               # Stop NATS
@@ -125,6 +135,13 @@ composer nats:stop               # Stop NATS
   installs 13 (CI runs 11 and 13). Make a test double that sets no expectations with `createStub()`, not
   `createMock()`: PHPUnit 12 and later report a notice for a mock without expectations, and CI's PHP 8.5 job
   fails on it. Keep `createMock()` where the test checks calls, for example `expects(self::never())`.
+- A unit test must not depend on how fast its process runs: a machine short of CPU pauses it for hundreds of milliseconds.
+  Give an operation that has to succeed a budget it never uses up and only one that has to time out a short one, hold a
+  recovery until the test releases it rather than for a time, and keep a bound on a duration far from what it normally
+  takes. `composer test:unit:paused`, in CI, fails a test that breaks this.
+- A restart scenario on CI that fails with `JetStream pull request ended with status 503` and only `Connected` logged has hit a
+  known gap: a graceful stop of NATS 2.15 leaves a moment in which a pull gets 503 (the README's Automatic Reconnect section).
+  Any other failure there is real.
 - Behat step definitions and hooks are **attributes** (`#[Given]`, `#[When]`, `#[Then]`, `#[AfterScenario]`), and the
   Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
   configuration is strict, so a scenario with an undefined step fails the run instead of being skipped.
@@ -147,3 +164,6 @@ composer nats:stop               # Stop NATS
 ### PR Merge Documentation (`docs/PRs/`)
 - When a PR is merged or its features are adapted, add a file to `docs/PRs/` named `PR-NNN-short-description.md`.
 - Include: what the PR proposed, how the features were implemented, and which tests cover them.
+- Land a PR with a merge commit, never a squash or a rebase: one commit per item stays readable and revertable, and a
+  contributor's commits keep their ids, which is what marks their PR as merged when the work lands through another branch
+  (#89 through #101). Bring `main` into a branch by merging it, for the same reason.

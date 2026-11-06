@@ -2,8 +2,8 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.2%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.78%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
-[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-96.9%25-brightgreen)](https://infection.github.io/)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.80%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-98.5%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -25,7 +25,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
 - 🌐 **NATS Clusters** - One server in the DSN, the others learned from the cluster; failover, replicated streams
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
-- 🧪 **Thoroughly Tested** - 673 unit tests, ~99.8% coverage, mutation-tested (96.9% MSI)
+- 🧪 **Thoroughly Tested** - 1038 unit tests, ~99.8% coverage, mutation-tested (98.5% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -61,8 +61,8 @@ return [
 ```
 
 If you leave the bundle out, register the transport factory yourself. Messenger finds it by its tag, and
-nothing else registers it, so without it every `nats-jetstream://` DSN fails with "No transport supports
-Messenger DSN":
+nothing else registers it, so without it every `nats-jetstream://` DSN fails with "No transport supports the
+given Messenger DSN" (before Symfony Messenger 7.4.23 and 8.1.11 the message names the DSN instead):
 
 ```yaml
 # config/services.yaml (only without the bundle)
@@ -115,6 +115,58 @@ changes.
 
 > **Tested by:** `testAnAcknowledgementWhoseWriteFindsTheConnectionLostReturnsAtOnceAndTheRecoverySendsIt`
 
+### Upgrading from 5.7.1
+
+Nothing to change in the configuration, but look at your logs and your retry settings:
+
+- **Client 2.28.0 or later.** 5.8.0 requires `idct/php-nats-jetstream-client` `^2.28`, which `composer update`
+  installs. The client now notices, before it writes, that the server has closed the connection while nothing read
+  it, as a server that stops while a handler runs does. With `reconnect: true` the ACK of a message handled at that
+  moment, and Symfony's retry copy of one that failed, go out on the connection the client recovers on another
+  server, where the ACK used to be lost (the message was handled again after `ack_wait`) and the retry copy timed out
+  and stopped the worker. With `reconnect: false` that write now fails at once instead of vanishing. See
+  [A Handler Failing During the Loss](#a-handler-failing-during-the-loss).
+- **`retry_handler: nats` with Symfony's retries on.** Up to 5.7.1, on Symfony Messenger 7.4.22 / 8.1.10 or
+  later, a message whose handler failed was lost after its first failure in this setup (#90); 5.8.0 NAKs it, so
+  NATS delivers it again. A transport in nats mode whose retry strategy still retries (FrameworkBundle's default
+  `max_retries: 3`) now logs a warning once, through your `logger`. Set `max_retries: 0` on it (see
+  [Retry Handler Behavior](#retry-handler-behavior)).
+- **A failed message costs one round trip more.** The NAK or TERM of a message whose handler failed checks the
+  connection with a PING first, so that it is not lost when the server went away during the handler (see
+  [Losing the Connection](#losing-the-connection)). `ping_after_idle: 0` turns it off.
+- **`setup()` waits for a consumer NATS is moving** after a change of `stream_replicas`, for up to 5 seconds and
+  one more `request_timeout`, instead of failing (see [High Availability](#high-availability)).
+- **New option `resend_on_reconnect`** (off by default): with `reconnect: true`, a send with a message id whose server
+  went away before it answered is sent again on the recovered connection (see
+  [Automatic Reconnect](#automatic-reconnect)).
+
+> **Tested by:** `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testTheAckOfAHandledMessageReachesTheServerOnTheRecoveredConnectionWithNoCheckFirst`, `testSymfonysRetryCopyAfterTheServerClosedTheConnectionDuringTheHandlerGoesOutOnTheRecoveredConnection`, `testBuildWithResendOnReconnectPropagatesToNatsOptions`, the examples `nats-retry.php`, `handler-failing-during-failover.php` and `handler-succeeding-during-failover.php`
+
+### Upgrading from 5.8
+
+Nothing to change unless a transport has `nkey` or `jwt` set and no `nkey_seed`. Such a transport could never connect,
+as the client needs the seed to sign the server's nonce, but it could be built. It now fails when it is built, with an
+`InvalidArgumentException` naming `nkey_seed`. Add the seed or remove the option. Until you do, the earlier error is
+visible even where nothing uses that transport:
+
+- `messenger:stats` showed 0 for it and exited 0. A plain `messenger:stats` now exits 1 and shows no transport; naming the
+  other transports still works.
+- A worker consuming from it and from other transports stopped with the client's `requires a nonce signer` once it reached
+  this one: at once if it comes first, otherwise when the transports before it had nothing to do. Under a supervisor it
+  still handled their messages between restarts. It now stops when it starts and handles none.
+- A `catch (\RuntimeException)` around a dispatch to it caught the connection error, and does not catch this one.
+- A service or smoke test that builds the transport fails.
+- A subclass of `NatsTransport` that replaces the protected `$client` with its own signed client must stop passing
+  `nkey` or `jwt` here, as its client has them.
+
+Two other values are refused now, in the same way: a `max_reconnect_attempts` float past the range of an int, such as
+`1e20`, `1e300` or `.inf`, or a numeric string past the largest float, such as `'1e400'`, which became an unrelated huge
+number, 0, or a negative number that the client refused, and a credential option after a second `?` or a `;` in the DSN
+query, which was a part of the option before it. So a huge number of attempts is now written as an int or a numeric string
+up to the largest float, and a value that really holds such text goes in the options, where nothing splits it.
+
+> **Tested by:** `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAMaxReconnectAttemptsThatDoesNotSurviveTheCastToAnInt`, `testBuildRejectsAMaxReconnectAttemptsInTheDsnThatDoesNotSurviveTheCastToAnInt`, `testBuildPassesALargeMaxReconnectAttemptsToTheClient`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, Behat scenario `Credentials that need or exclude a seed are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). `messenger:stats` naming a transport, and a worker on several transports, were measured by hand.
+
 ### Logging
 
 The NATS client reports what it does with the connection through a PSR-3 logger: the connection's lifecycle
@@ -122,6 +174,10 @@ The NATS client reports what it does with the connection through a PSR-3 logger:
 errors at error level. Among the errors is the only trace of acknowledgements lost to an outage with
 [`reconnect: true`](#automatic-reconnect): `Reconnect exhausted: N bytes of buffered publishes were discarded`.
 There is no debug-level chatter, so a wired logger costs a few lines per connection.
+
+The transport writes one line of its own to the same logger: a warning, once per transport object, when a
+transport in nats mode leaves out a retry Symfony's retry strategy sent, i.e. when `max_retries` is above 0 with
+`retry_handler: nats` (see [Retry Handler Behavior](#retry-handler-behavior)).
 
 With the bundle, the application's `logger` service is handed to the factory, tagged for Monolog's
 `messenger` channel, so the client's lines land next to the worker's. Without that service, or without the
@@ -137,7 +193,7 @@ services:
         tags: [messenger.transport_factory]
 ```
 
-> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, the examples `reconnect.php` and `cluster-failover.php`
+> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, the examples `reconnect.php` and `cluster-failover.php`
 
 ### Development Setup
 
@@ -322,11 +378,16 @@ the test server and print `OK` when what they show held:
 | `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it |
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
+| `jwt-login.php` | `jwt` with `nkey_seed`: a user of a server in operator mode logs in; its JWT with another user's seed and an expired JWT are refused by the server, and the JWT alone when the transport is built |
+| `nkey-login.php` | `nkey_seed`: a user the server knows by its public key logs in; a seed it does not know is refused by the server, and the public key alone or a seed next to a password when the transport is built |
+| `token-login.php` | `token`: a client logs in with the server's token, and a wrong one is refused |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, and `auto_setup` recreates the memory stream the restart lost |
 | `cluster-failover.php` | `reconnect: true` on a cluster: a worker carries on through another server when the one it is connected to stops |
+| `handler-failing-during-failover.php` | both retry modes on a cluster: a handler fails while the worker's server stops, and the worker carries on through another server; the message comes back at once as Symfony's retry copy, or `nak_delay` later in nats mode |
+| `handler-succeeding-during-failover.php` | both retry modes on a cluster: a handler succeeds while the worker's server stops, and its ACK reaches the cluster through another server, so the message is not handled again |
 | `stream-placement.php` | `stream_placement_tags` and `stream_placement_cluster` on a cluster, and staging a move with a replica change |
 
-`composer nats:start` runs a three-server JetStream cluster for the last two next to the single test servers;
+`composer nats:start` runs a three-server JetStream cluster for the last four next to the single test servers;
 [`examples/README.md`](examples/README.md#the-test-cluster) describes it, and
 [Using a NATS Cluster](#using-a-nats-cluster) what they mean for an application.
 
@@ -403,6 +464,10 @@ framework:
                                             #          operations wait for it (see Automatic Reconnect)
           max_reconnect_attempts: null      # Attempts per recovery before the client gives up
                                             # (null = the client's own default of 10). Positive integer.
+          resend_on_reconnect: false        # With reconnect: true, a send with a message id (deduplicate or
+                                            # a DeduplicationIdStamp) whose server went away before it
+                                            # answered goes out again on the recovered connection
+                                            # (default: false; see Automatic Reconnect)
 
           # Consumer Flow Control & Lifecycle
           max_ack_pending: 1000             # Max delivered-but-unacked messages outstanding
@@ -525,11 +590,125 @@ framework:
           token: null                       # NATS token authentication
           username: null                    # Overrides DSN username if provided
           password: null                    # Overrides DSN password if provided
-          jwt: null                         # JWT authentication value
-          nkey: null                        # NKey public value
+          jwt: null                         # User JWT; needs nkey_seed, see NKey Authentication
+          nkey: null                        # Leave unset: the public key is derived from nkey_seed
+          nkey_seed: null                   # NKey seed (SU...) that signs the server's nonce; see NKey Authentication
 ```
 
-> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (all options above), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`
+> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (everything above but the redelivery tuning, TLS and authentication options, which the tests after it and the sections below cover), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`
+
+### NKey Authentication
+
+A NATS user can authenticate with an NKey instead of a password. The server keeps only the user's public key
+(`U...`), and the client proves it holds the matching seed (`SU...`) by signing a nonce the server sends in its
+`INFO`.
+
+Give the transport the seed in `nkey_seed`, with no user, password or token in the DSN or the options:
+
+```yaml
+framework:
+    messenger:
+        transports:
+            orders:
+                dsn: 'nats-jetstream://nats.example.com:4222/orders/orders.created'
+                options:
+                    nkey_seed: '%env(NATS_NKEY_SEED)%'
+                    # a seed kept in a file (e.g. a mounted secret), its path in NATS_NKEY_SEED_FILE:
+                    # nkey_seed: '%env(trim:file:NATS_NKEY_SEED_FILE)%'
+                    # a seed that is optional, none for an unset or empty variable:
+                    # nkey_seed: '%env(default::NATS_NKEY_SEED)%'
+```
+
+On the server, the user is the public key of a pair you generate yourself. `nsc generate nkey --user` prints one, as does
+`nk -gen user -pubout` from [nkeys](https://github.com/nats-io/nkeys): the first line is the seed, the second the public key.
+
+```
+jetstream {}
+
+authorization {
+    users = [ { nkey: U...your public key... } ]
+}
+```
+
+- Only null, or leaving the option out, means no seed. Any other value that is not a user seed is refused when the
+  transport is built, without repeating it: an empty string, a list, a boolean, a mistyped seed, or the seed of an account,
+  operator, server, cluster or curve key. Read as no seed, an empty variable would connect with the other credentials
+  there are, as the server's `no_auth_user`, or anonymously.
+- A username, password or token next to the seed, from the DSN or the options, is refused when the transport is built. A
+  server with both kinds of users would log the connection in with the NKey and ignore them, even a wrong password,
+  so the DSN could name one user while the connection is another. On a server that sends no nonce the client would refuse
+  the login, as there is nothing to sign, though the password alone would have worked.
+- For a user the server knows by its NKey, the seed is all the transport needs: the public key it sends is derived from
+  it, so leave the `nkey` option unset. It may repeat the derived key, but a different one is refused when the transport
+  is built, not on its first connect. So is `nkey` without a seed, which could never log in: the client needs a signer
+  for the nonce, and the seed is where the transport gets one.
+- A seed needs a server that has NKey users or runs in operator mode, and in a cluster every server must list the user,
+  as the client can fail over to any of them. A server with NKey users refuses a seed it does not list with a bare
+  `Authorization Violation`. Any other server, a password, token or open one, sends no nonce, so the client refuses the
+  login with `NKey authentication requires server nonce from INFO`, or the same words starting with `JWT` next to a `jwt`.
+  The reference CLI refuses it too.
+  So set up the user on the server before you deploy the seed. With `reconnect: true` the client retries that failure,
+  and the call takes about 43 seconds at the default attempts to report `Reconnect attempts exhausted`.
+- Signing needs the `sodium` extension, bundled with PHP since 7.2 and included in most builds. Without it the
+  transport fails when it is built. The polyfill `paragonie/sodium_compat` does not replace it: the build then fails with
+  `Failed to derive Ed25519 key pair from NKey seed`.
+- The transport's own parameters that can hold the seed are marked `#[\SensitiveParameter]`, so a failed build leaves it
+  out of their stack frames. Symfony Messenger's factory marks its options only from 7.4.23 and 8.1.11, and the client
+  marks nothing yet, so with `zend.exception_ignore_args=0`, PHP's default without a php.ini, frames of those two can
+  still hold it. Keep that setting at 1 where stack traces are collected, as `php.ini-production` does.
+- The seed works in the DSN query too (`?nkey_seed=SU...`), but prefer the option with an environment variable, as the
+  [recommendations](#general-recommendations) say for every credential. A literal seed, in a DSN or in an option, ends
+  up in `debug:config` and in a file of the compiled container, where a DSN or option that reads a variable does not.
+  Keep the variable out of a committed `.env`, and do not log the full DSN. As `token: null` hides `?token=`, an explicit
+  `nkey_seed: null` in the options hides a seed in the DSN query, so leave it out rather than copy it from the block above.
+  A credential typed after a second `?` or a `;` in the query is refused when the transport is built, without repeating
+  it, as it would be read as a part of the option before it: separate the options with `&`.
+
+> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt`, `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError`, `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testBuildSaysWhatASeedLooksLikeForAValueThatIsNotOne`, `testAMistypedSeedStaysOutOfTheFailure`, `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure`, `testNoFrameOfAFailedBuildHoldsASecret`, `testNoFrameOfAFailedTransportCreationHoldsASecret`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive`, `testASeedTypedIntoTheDsnPathStaysOutOfTheError`, `testTheConfigurationDoesNotKeepTheTextOfTheSeed`, `testBuildRejectsASeedThatIsNotAUserSeed`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesSeedFileFormGivesASignerWhenTheFileHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, `testASeedTypedIntoAnOptionsValueStaysOutOfTheError`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, `testTheReadmeNamesNoUsableNkey`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, `testASeedOnAServerThatSendsNoNonceCannotLogIn`, the Behat scenarios of `nats_nkey.feature` (real logins, in each form of the configuration above, also over TLS and mTLS and across a server restart, and the refusals through the console), the example `nkey-login.php`. Not in the suite: a cluster failover with a seed, and the 43 seconds on a server that sends no nonce, which were measured by hand.
+
+#### JWT Users (Operator Mode)
+
+On a server in operator mode a user has a JWT as well as an NKey. Give the transport both: `jwt` is the user's JWT, and
+`nkey_seed` is that user's seed. Both values are in the user's `.creds` file, under its `BEGIN NATS USER JWT` and
+`BEGIN USER NKEY SEED` lines. The transport does not read the file itself, so pass the two values:
+
+```bash
+export NATS_USER_JWT=$(awk '/BEGIN NATS USER JWT/ { getline; print }' user.creds)
+export NATS_NKEY_SEED=$(awk '/BEGIN USER NKEY SEED/ { getline; print }' user.creds)
+```
+
+```yaml
+framework:
+    messenger:
+        transports:
+            orders:
+                dsn: 'nats-jetstream://nats.example.com:4222/orders/orders.created'
+                options:
+                    jwt: '%env(NATS_USER_JWT)%'
+                    nkey_seed: '%env(NATS_NKEY_SEED)%'
+```
+
+- `jwt` without `nkey_seed` is refused when the transport is built: the client needs a signer for the server's nonce and
+  cannot connect without one, and the seed is where the transport gets one. For a bearer JWT (`nsc add user --bearer`) the server does not check that
+  signature, so there the seed is only what the client asks for, but it is required all the same.
+- `jwt` must be the JWT alone, which has three parts separated by dots. A seed or the whole text of a `.creds` file there
+  is refused when the transport is built, without repeating it, as the CONNECT would carry it to the server, in clear
+  on a connection without TLS, and a server that traces logs it.
+- The seed must be the one of the JWT's user, unless the JWT is a bearer token. The server checks that when the transport
+  connects: a seed without its JWT, or another user's seed, gets a bare `Authorization Violation`.
+- In operator mode JetStream is enabled per account, for example with
+  `nsc edit account --name ACCOUNT --js-mem-storage 256M --js-disk-storage 1G`, and the server needs the account's new JWT
+  afterwards, for example from a new `nsc generate config --mem-resolver`. Without it `messenger:setup-transports` fails with
+  `JetStream not enabled for account`, and `messenger:stats` shows 0. That file has no `jetstream` block, and a server
+  needs one as well, so add `jetstream {}` next to it, as `tests/nats/nats-jwt.conf` does: without it setup fails with
+  `No responders for subject $JS.API.STREAM.CREATE.orders`. `tests/nats/auth/generate.sh` has the `nsc` commands for a whole
+  test setup.
+- The transport keeps the JWT it was built with and never fetches a new one. At the JWT's expiry the server sends
+  `User Authentication Expired` and closes the connection, which ends a running worker with that message. After that
+  each new connection with the same JWT is refused with `Authorization Violation`, which does not mention the expiry.
+  A new JWT needs a new transport, so restart the workers with the new value.
+
+> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `theReadmesJwtFormGivesTheClientTheJwtAndASigner`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt`, `testBuildAcceptsAJwtWithSpaceAroundItAndBase64UrlCharacters`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the Behat scenarios of `nats_jwt.feature` (real logins on a server in operator mode, with a user's JWT and seed as in the configuration above and with a bearer JWT, across a server restart, and what is refused: a value that is not a JWT when the transport is built, and by the server another user's seed, a seed with no JWT, an expired JWT, an account without JetStream), the example `jwt-login.php`. Not in the suite: a JWT that expires under a running worker, which was measured by hand on NATS 2.9.25 and 2.15.1.
 
 ### Retry Handler Behavior
 
@@ -574,7 +753,15 @@ settles the original: Symfony Messenger up to 7.4.21 and 8.1.9 rejects it, and 7
 acknowledge it, since the retry was sent ([symfony/symfony#67038](https://github.com/symfony/symfony/pull/67038)).
 The transport NAKs it either way. Set `max_retries: 0` on the transport anyway: with retries left on, Symfony
 still logs each failure as a retry it never makes ("Sending for retry #1") and never treats the message as
-failed for good.
+failed for good. The transport warns about it through its logger (see [Logging](#logging)), once per transport
+object, so once per worker, the first time it leaves out such a retry:
+
+```text
+retry_handler=nats on stream "my-stream", subject "my-topic": Symfony's retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").
+```
+
+The warning reads no configuration: a strategy that does not retry never sends a retry, so it cannot appear with
+`max_retries: 0`, and it works the same when `retry_handler` comes from a DSN in an environment variable.
 
 > ⚠️ **Up to 5.7.1 of this transport, `max_retries: 0` is required with `retry_handler: nats` on Symfony
 > Messenger 7.4.22, 8.1.10 or later.** Those releases acknowledge the message they send for retry, and 5.7.1
@@ -597,7 +784,7 @@ framework:
           max_retries: 0
 ```
 
-> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSymfonyModeAcksADeliveryItPublishedTheRetryCopyOf`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
+> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSymfonyModeAcksADeliveryItPublishedTheRetryCopyOf`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testNatsModeWithoutSymfonysRetriesLogsNoWarning`, `testNoWarningWhenSendLeavesOutNoRetryCopy`, `testEachTransportWarnsOnceAboutItsOwnStreamAndSubject`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
 
 ### Long-Running Handlers (`--keepalive`)
 
@@ -811,6 +998,10 @@ options:
   deduplicate: true   # default: false
 ```
 
+With [`reconnect: true`](#automatic-reconnect), `resend_on_reconnect: true` puts the id to one more use: a send whose
+server went away after it took the message and before it answered goes out once more on the recovered connection,
+where JetStream drops it if the first copy was stored.
+
 > **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, `testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn`, `testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn`, `testSendGivesTheCopiesForTwoStampedSubjectsMessageIdsOfTheirOwn`, `testSendGivesTwoTransportsPublishingToOneStampedSubjectTheSameMessageId`, `testSendNamesTheScheduleTargetInTheMessageIdOfADelayedStampedMessage`, `testSendNamesTheReceivedSubjectInTheMessageIdOfARetry`, `testSendNamesTheTopicInTheMessageIdOfAFailureTransportCopy`, Behat scenarios `A message dispatched again with the same deduplication id is stored once`, `Distinct messages are all stored with the deduplicate option` and `A message routed to two deduplicating transports on one stream is stored for each`
 
 ### Losing the Connection
@@ -845,15 +1036,24 @@ the client can keep reporting a dead connection open, and a send to a connection
 delivering only times out. A pull from such a connection ends empty, which reads as no messages rather than
 a failure, but the server never answered it: a server that is there ends every pull itself, after
 `max_batch_timeout` at the latest. So the check follows such a pull too, and the pull after it runs on a new
-connection. `ping_after_idle: 0` turns both checks off. `keepalive()` never checks: Symfony calls it from a
-signal handler.
+connection. The NAK or TERM of a message whose handler failed runs the check too, even right after a pull: the
+handler may have run into the server going away, and the client reads the socket only while an operation waits
+for a reply, so a server that closed the connection meanwhile leaves that close unread, and an acknowledgement
+written then was taken by the socket and lost (see
+[A Handler Failing During the Loss](#a-handler-failing-during-the-loss)). Since client 2.28.0, which 5.8.0
+requires, the client notices such a close itself before it writes, but the check still matters: with
+`reconnect: false` the client would fail the NAK with `Reconnect is disabled` and end the worker, where the check
+dials another server first, and a close behind data not read yet, such as a TLS server's `close_notify`, is one the
+client cannot notice that way. That costs one round trip per failed message; the ACK of a handled message is not
+checked. `ping_after_idle: 0` turns all of these checks off.
+`keepalive()` never checks: Symfony calls it from a signal handler.
 
 ```yaml
 options:
   ping_after_idle: 30   # seconds; 0 turns the check off
 ```
 
-> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testBuildWithInvalidPingAfterIdleThrowsException`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
+> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testPingAfterIdleZeroTurnsTheCheckBeforeSettlingAFailedDeliveryOff`, `testBuildWithInvalidPingAfterIdleThrowsException`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
 
 ### Subscription Limits
 
@@ -913,7 +1113,10 @@ In a DSN: `?reconnect=true&max_reconnect_attempts=20`.
   client notices a lost connection when an operation writes to it or when this check runs: a `ping_after_idle`
   shorter than the quiet periods between operations makes the first operation after one check first and go out
   on the recovered connection, where without the check it writes into the dead socket, waits `request_timeout`
-  and fails, and only the next operation goes out.
+  and fails, and only the next operation goes out. A connection the server closed is the exception since client
+  2.28.0: the client sees that close before it writes, and the operation goes out on the recovered connection
+  without the check; a connection that went silent, or a close behind data not read yet (a TLS server's
+  `close_notify`), it still cannot see.
 - With `auto_setup`, provisioning is verified again once the client reconnected, because the stream may have
   gone with the server (a memory stream over a restart, a failover to a server without it). A send begun while
   the client was recovering can still land on a server without the stream; when its publish fails with the
@@ -928,19 +1131,28 @@ In a DSN: `?reconnect=true&max_reconnect_attempts=20`.
   empty queue, so a worker ends and its supervisor restarts it. The same loop runs for a failed first dial, so
   `messenger:setup-transports` against a server that is down fails only after it.
 - What a worker gets: it polls through an outage shorter than one recovery cycle without exiting, every pull
-  ending empty after `max_batch_timeout` plus a second. `max_reconnect_attempts` sizes the cycle in attempts,
+  ending empty after `max_batch_timeout` plus a second. One gap, seen on NATS 2.15 and not on 2.14.7 or 2.10.29: a graceful
+  stop leaves a moment in which JetStream no longer answers and the connection is still open. It lasts about 10 ms for each
+  durable consumer on a file stream, and starts at once, or about 50 ms after the signal when a pull is waiting. A pull
+  written then can get 503, which reads as a missing consumer, and ends the run, with
+  `JetStream pull request ended with status 503` or, with `auto_setup`, `Failed to setup NATS stream`. Under a supervisor
+  the worker starts again. `max_reconnect_attempts` sizes the cycle in attempts,
   not in seconds: the client's default of 10 gives about 109 s against a server that refuses connections,
   where a refused dial costs about 6 s. An `ack_sync` acknowledgement that runs into the outage still fails
   after `request_timeout`, which ends the worker's run as any exception from `ack()` does: synchronous
   acknowledgement keeps its meaning. The retry copy Symfony sends when a handler fails in the default
-  `retry_handler: symfony` fails and ends the run the same way, since it is a publish (see
+  `retry_handler: symfony` is a publish: one sent after the server closed the connection goes out on the recovered
+  connection (client 2.28.0), but one the server took and could not answer before it went away fails after
+  `request_timeout` and ends the run, unless `resend_on_reconnect` sends it again (below; see also
   [A Handler Failing During the Loss](#a-handler-failing-during-the-loss)).
 - An ACK, NAK or TERM written during a recovery is buffered by the client, and `ack()` or `reject()` returns at
   once. That holds too when its own write is the first to notice the lost connection while the client still
   reports it open: the write starts the recovery, and the frame goes out on the connection the recovery makes.
   Before client 2.27.1, which the transport requires since 5.7.1, such a write ran the recovery inline, so one
   `ack()` or `reject()` could wait for a whole attempt loop
-  ([client issue #244](https://github.com/ideaconnect/php-nats-jetstream-client/issues/244)). `keepalive()` only
+  ([client issue #244](https://github.com/ideaconnect/php-nats-jetstream-client/issues/244)). Since client 2.28.0,
+  which 5.8.0 requires, the same holds for an acknowledgement written after the server closed the connection while
+  nothing read it, which the socket used to take and lose. `keepalive()` only
   queues its frame, as it must inside a signal handler, and never waits, PINGs or dials.
 - A server that stops gracefully ends every pull in flight with `409 Server Shutdown`, and a consumer whose
   leader moved ends them with `409 Leadership Change`. Both are empty batches, in either mode, and no longer
@@ -974,7 +1186,31 @@ request handler stalls for a whole attempt loop when it runs into an outage once
 it off to rely on the process supervisor and Symfony's retries, and to have `messenger:setup-transports`
 fail fast when NATS is unreachable.
 
-> **Tested by:** `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `testReconnectModeLeavesAClientInTheMiddleOfItsRecoveryAlone`, `testReconnectModeReadsAFailedPingAgainstTheClientsRecovery`, `testReconnectModeTakesARecoveredConnectionAsChecked`, `testWithoutReconnectAFailedPingReplacesTheConnectionAndTheReconnectCountIsNeverRead`, `testReconnectModeVerifiesProvisioningAgainAfterTheClientReconnected`, `testReconnectModeReprovisionsOnceWhenTheFirstPublishAfterTheReconnectFindsNoResponder`, `testReconnectModeDoesNotRetryAPublishOutsideTheNoResponderCase`, `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testAPullEndedByALeadershipChangeIsEmptyAndTheNextOneDoesNotCheckTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `testAnAcknowledgementWhoseWriteFindsTheConnectionLostReturnsAtOnceAndTheRecoverySendsIt`, the real-client tests in `tests/unit/ReconnectModeTest.php`, and the Behat scenarios `A worker keeps consuming across a server restart` and `A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated`; the examples `reconnect.php` and `cluster-failover.php` (a failover in a three-server cluster)
+**A send in flight when its server goes away (`resend_on_reconnect`).** A `send()` whose server took the message
+and went away before it answered, as a stream's leader that stops, waits out `request_timeout` on the recovered
+connection and fails with `TimeoutException`, its outcome unknown: the server that took it can no longer answer.
+With `resend_on_reconnect: true` the client writes the same publish once more on the
+recovered connection, within the same `request_timeout`, when it carries a `Nats-Msg-Id`, which `deduplicate: true`
+or a `DeduplicationIdStamp` gives it (see [Duplicate Protection](#duplicate-protection)). JetStream drops it when
+the first copy was stored and answers it either way, so the send succeeds; Symfony's retry copy is covered the same
+way. Only a replaced connection triggers it, never a slow answer, at most once per publish, and a publish without
+an id is never sent again (client 2.28.0,
+[client issue #249](https://github.com/ideaconnect/php-nats-jetstream-client/issues/249)).
+
+```yaml
+options:
+  reconnect: true             # required with resend_on_reconnect
+  deduplicate: true           # or a DeduplicationIdStamp of your own on each message
+  resend_on_reconnect: true   # default: false
+```
+
+In a DSN: `?reconnect=true&deduplicate=true&resend_on_reconnect=true`. It is off by default because of two limits,
+the client's: the stream's duplicate window has to be longer than `request_timeout` (the 2-minute default is; the
+transport refuses a `stream_duplicate_window` that is not, but cannot check the window of a stream it does not
+configure), and on a NATS 2.10 cluster a new stream leader can take the publish before it has applied what the old
+leader replicated, so a copy may be stored twice there.
+
+> **Tested by:** `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testResendOnReconnectIsOffByDefault`, `testBuildWithResendOnReconnectPropagatesToNatsOptions`, `testBuildWithResendOnReconnectWithoutReconnectThrowsException`, `testBuildWithResendOnReconnectAndADuplicateWindowNotLongerThanTheRequestTimeoutThrowsException`, `testBuildWithResendOnReconnectAcceptsALongerOrAnUnsetDuplicateWindow`, `testASendWhoseServerWentDownBeforeItAnsweredIsWrittenAgainOnlyWithResendOnReconnectAndAMessageId`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `testReconnectModeLeavesAClientInTheMiddleOfItsRecoveryAlone`, `testReconnectModeReadsAFailedPingAgainstTheClientsRecovery`, `testReconnectModeTakesARecoveredConnectionAsChecked`, `testWithoutReconnectAFailedPingReplacesTheConnectionAndTheReconnectCountIsNeverRead`, `testReconnectModeVerifiesProvisioningAgainAfterTheClientReconnected`, `testReconnectModeReprovisionsOnceWhenTheFirstPublishAfterTheReconnectFindsNoResponder`, `testReconnectModeDoesNotRetryAPublishOutsideTheNoResponderCase`, `testAPullTheServerEndedForItsShutdownIsEmptyAndTheNextOperationChecksTheConnection`, `testAPullEndedByALeadershipChangeIsEmptyAndTheNextOneDoesNotCheckTheConnection`, `testA409ReportingAConfigurationErrorStaysVisible`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `testAnAcknowledgementWhoseWriteFindsTheConnectionLostReturnsAtOnceAndTheRecoverySendsIt`, the real-client tests in `tests/unit/ReconnectModeTest.php`, and the Behat scenarios `A worker keeps consuming across a server restart` and `A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated`; the examples `reconnect.php` and `cluster-failover.php` (a failover in a three-server cluster)
 
 ## Stream Configuration
 
@@ -1023,7 +1259,17 @@ unset, `stream_replicas` gives a new stream one replica and leaves the count of 
 a stream scaled up in NATS is not scaled back down by the next `setup()`. See
 [Using a NATS Cluster](#using-a-nats-cluster).
 
-> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`, `testSetupPreservesExistingReplicaCountWhenStreamReplicasNotConfigured`, `testSetupOverridesExistingReplicaCountWhenStreamReplicasExplicitlyConfigured`
+When `setup()` changes the replica count of an existing stream, NATS moves the stream's durable consumer to the
+stream's new set of servers after it has answered the update. A consumer whose leader was on a server the stream
+left has no leader for a moment, and the server answers a request for it with err_code 10008, "JetStream system
+temporarily unavailable" (measured on nats-server 2.10 going from 2 replicas to 1). In the same moment a request
+can also be told that the stream is not found (err_code 10059), or get no answer at all. `setup()` asks for the
+consumer again on either code, every 100 ms for up to 5 seconds, and once more after a request that got no
+answer within `request_timeout`, so `messenger:setup-transports` does not fail on that moment. A cluster that
+stays unavailable longer, a stream that really is gone, and a second request without an answer still fail the
+setup with the server's message.
+
+> **Tested by:** `testReadmeStreamRetentionExamplesAreAccepted` (replicas 1 and 3), `testSetupPassesConfiguredStreamOptions`, `testSetupPreservesExistingReplicaCountWhenStreamReplicasNotConfigured`, `testSetupOverridesExistingReplicaCountWhenStreamReplicasExplicitlyConfigured`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testSetupCreatesTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testSetupWaitsBeforeAskingTheTemporarilyUnavailableClusterAgain`, `testSetupGivesUpOnATemporarilyUnavailableClusterAfterFiveSeconds`, `testSetupDoesNotAskForTheConsumerAgainAfterAnotherJetStreamError`, `testSetupAsksForTheConsumerAgainWhileTheMovedStreamIsReportedAsNotFound`, `testSetupCreatesTheConsumerAgainWhileTheMovedStreamIsReportedAsNotFound`, `testSetupGivesUpOnAStreamStillReportedAsNotFoundAfterFiveSeconds`, `testSetupReadsAMissingConsumerAsNoConsumerWithoutAskingAgain`, `testSetupAsksForTheConsumerOnceMoreAfterARequestTheClusterDidNotAnswer`, `testSetupCreatesTheConsumerOnceMoreAfterARequestTheClusterDidNotAnswer`, `testSetupGivesUpOnASecondConsumerRequestTheClusterDidNotAnswer`, `testEachConsumerRequestGetsItsOwnSecondTryAfterAnUnansweredOne`, `testSetupGivesUpOnATemporarilyUnavailableClusterAfterAnUnansweredRequestPastFiveSeconds`, the example `stream-placement.php` (from 2 replicas to 1 on the test cluster)
 
 ### Stream Placement
 
@@ -1165,70 +1411,93 @@ What a process does when the server it is connected to goes away depends on
 - **`reconnect: true`:** the client recovers the connection in the background on a server it learned, and a
   worker polls on. `cluster-failover.php` stops the server a worker is connected to halfway through its
   messages: the worker receives the rest through another server, without an exception. A handler that fails
-  at that moment still stops the worker with the default `retry_handler: symfony` (see
+  or succeeds at that moment no longer stops the worker or loses its acknowledgement, in either retry mode (see
   [A Handler Failing During the Loss](#a-handler-failing-during-the-loss)).
 
-Measured on the test cluster (nats-server 2.15.1, client 2.27.2, PHP 8.5), a stream with three replicas, the
+Measured on the test cluster (nats-server 2.15.1, client 2.28.0, PHP 8.5), a stream with three replicas, the
 DSN on the server that leads it, that server stopped with `docker stop`, `request_timeout` 10 and
 `max_reconnect_attempts` 2 (for the pause, `ping_after_idle` 1 and 2 s), one transport object throughout:
 
 | | `reconnect: false` | `reconnect: true` |
 |---|---|---|
-| first `send()`, right after the stop | fails at once, `Reconnect is disabled` | 10.0 s, `TimeoutException`; the client is on another server by then |
+| first `send()`, right after the stop | fails at once, `Reconnect is disabled` | stored at once, through another server (client 2.27.2: 10.0 s, `TimeoutException`) |
 | first `send()`, after a pause longer than `ping_after_idle` | stored at once, through another server | stored at once, through another server |
 | next `send()` | stored at once, through another server | stored at once, through another server |
 | a new transport whose DSN names the stopped server | 6.0 s, connection refused | 18.4 s, `Reconnect attempts exhausted` |
 
-Right after the stop, the first send ran into the lost connection: with the option off the client reported the
-loss at once, with it on the send went into the dead connection before the client noticed and waited for a
-reply that never came. After a pause longer than `ping_after_idle` the check that runs first finds the
-connection gone, in either mode, and the send goes out through another server (see
-[Losing the Connection](#losing-the-connection)). Whether a send that failed was stored is unknown either way
-(see [Duplicate Protection](#duplicate-protection)).
+Right after the stop, the first send ran into the connection the server had closed. The client sees that close
+before it writes (since client 2.28.0): with the option off it reports the loss at once, and the send was not
+written; with it on it recovers the connection on another server and the send goes out there. With client 2.27
+the send went into the closed socket, and with the option on it waited for a reply that never came. After a pause
+longer than `ping_after_idle` the check that runs first finds the connection gone, in either mode, and the send
+goes out through another server (see [Losing the Connection](#losing-the-connection)). A send the server took and
+could not answer before it went away still fails after `request_timeout` with the option on, unless
+`resend_on_reconnect` sends it again (see [Automatic Reconnect](#automatic-reconnect)); whether such a send was
+stored is unknown (see [Duplicate Protection](#duplicate-protection)).
 
 #### A Handler Failing During the Loss
 
-With the default `retry_handler: symfony`, a worker exits when a handler fails while the connection to its
-server is being lost, in either `reconnect` mode. Symfony's retry listener sends the retry copy right after the
-failure, and that send is a publish into the lost connection: with `reconnect: true` it waits out
-`request_timeout` and fails with the client's `TimeoutException`, as the first `send()` in the table above
-does; with `reconnect: false` it fails at once. The exception leaves the worker before the failed delivery is
-settled, so `messenger:consume` exits. Nothing is lost: NATS delivers the message again, to the worker the
-supervisor starts or to another one, once `ack_wait` has passed since the failed delivery, which counts
-against `max_deliver`.
+The server a worker is connected to goes away while a handler runs, as in a deploy or a rolling restart. The
+server closes the connection on its way out, and the client, which reads the socket only while an operation waits
+for a reply, has not read that close when the handler returns. What the worker writes next - the ACK of a handled
+message, Symfony's retry copy of a failed one, or the NAK of a failed one in nats mode - meets that unread close.
+Since client 2.28.0, which 5.8.0 requires, the client notices the close before it writes and handles the write as
+one that failed: with `reconnect: true` the client recovers the connection on another server of the cluster and the
+write goes out there, and with `reconnect: false` it fails at once with `Reconnect is disabled`.
 
-Whether the retry copy was stored is unknown (see [Duplicate Protection](#duplicate-protection)). If it was,
-and the message delivered again is then handled, the message is handled twice: once from the original, once
-from the copy. If the message delivered again fails once more, Symfony sends the same copy again. So, on a
-cluster whose servers restart while workers run:
+- **`reconnect: true`: the worker carries on, in both retry modes.** A handled message's ACK reaches the cluster,
+  and the message is not handled again. A failed message's retry copy (`retry_handler: symfony`) is stored at once
+  and handled, or its NAK (`retry_handler: nats`) takes effect and the message comes back `nak_delay` later. With
+  client 2.27 the ACK was lost, so the message was handled again after `ack_wait`, and the retry copy timed out
+  after `request_timeout` and stopped the worker.
+- **`reconnect: false`: the worker exits on an ACK or a retry copy,** since the client may not reconnect, and the
+  message comes back after `ack_wait`, to the worker the supervisor starts or to another one, counting one
+  delivery against `max_deliver`. In nats mode a failed message's NAK still keeps the worker going: the NAK checks
+  the connection first with one PING (see [Losing the Connection](#losing-the-connection)), the transport dials
+  another server, and the NAK goes out there.
+
+The client cannot see a close behind data it has not read yet, such as the `close_notify` a TLS server sends
+ahead of its close (the client's documented limit; not measured here). There the ACK of a handled message is still
+taken by the socket and lost, and the retry copy times out as with client 2.27, while the NAK of a failed message
+in nats mode is still saved by its PING. A retry copy that went out there, or that the server took and could not
+answer before it went away, is sent again on the recovered connection only with
+[`resend_on_reconnect`](#automatic-reconnect); without it, it times out. Whether such a copy was stored
+is unknown (see [Duplicate Protection](#duplicate-protection)): if it was, and the message delivered again is then
+handled, the message is handled twice, once from the original and once from the copy, and if the message
+delivered again fails once more, Symfony sends the same copy again. So, on a cluster whose servers restart while
+workers run:
 
 - set `deduplicate: true` with a `stream_duplicate_window` longer than `ack_wait` plus the handler's run, so
   that JetStream drops that second copy;
-- keep handlers idempotent, for a stored copy next to an original that succeeds, which no id can catch.
+- keep handlers idempotent, for a message handled twice after a lost ACK, or a stored copy next to an original
+  that succeeds, which no id can catch.
 
-With `retry_handler: nats` and `reconnect: true` the worker carries on: the transport does not publish Symfony's
-retry copy in that mode, and the NAK waits for no reply. The NAK did not take effect in the runs below, though
-(the cause is not pinned down): the message came back after `ack_wait`, not after `nak_delay`.
-
-Measured on the test cluster (nats-server 2.15.1, client 2.27.2, Symfony Messenger 8.1.9, PHP 8.5) with
+Measured on the test cluster (nats-server 2.15.1, client 2.28.0, Symfony Messenger 8.1.10, PHP 8.5) with
 Symfony's `Worker` and retry listener and FrameworkBundle's default retry strategy. The worker's DSN named the
-server that leads a stream with three replicas, and the handler stopped that server with `docker stop` before
-it failed, on the message's first delivery; `request_timeout` 10, `ack_wait` 30, `deduplicate: true`:
+server that leads a stream with three replicas, and the handler stopped that server with `docker stop` on the
+message's first delivery, then failed or returned; `request_timeout` 10, `ack_wait` 30, `nak_delay` 1,
+`deduplicate: true`, each worker run for up to 40 s:
 
 | | `reconnect: false` | `reconnect: true` |
 |---|---|---|
-| `retry_handler: symfony` (default) | the worker exits at once, the retry send fails with `Reconnect is disabled` | the worker exits after 10.0 s, the retry send fails with `TimeoutException` |
-| `retry_handler: nats` | the worker exits at once, `Reconnect is disabled` | the worker carries on |
-| the message | a new worker gets it again 30.0 s after its first delivery and handles it; nothing left pending | symfony mode: the same; nats mode: the same worker gets it again 30.0 s after its first delivery, not 1 s after the failure (`nak_delay` 1) |
+| `retry_handler: symfony`, the handler fails | the worker exits at once, the retry send fails with `Reconnect is disabled`; a new worker gets the message again 30.0 s after its first delivery | the worker carries on: the retry copy is stored through another server and handled 0.3 s after the first delivery (client 2.27.2: the worker exited after 10.0 s, `TimeoutException`) |
+| `retry_handler: nats`, the handler fails | the worker carries on through another server, and gets the message again 1.0 s after the failure | the worker carries on, and gets the message again 1.0 s after the failure |
+| either mode, the handler succeeds (an ACK) | the worker exits at once, `ack()` fails with `Reconnect is disabled`; a new worker gets the message again 30.0 s after its first delivery and handles it again (client 2.27.2: the ACK was lost and the next pull failed) | the worker carries on, the ACK reaches the cluster, and the message is not delivered again (client 2.27.2: the ACK was lost, and the message was handled again 30.0 s after its first delivery) |
 
-In symfony mode the retry copy was not stored in any of these runs.
+Nothing was left pending after any run, and with `reconnect: false` the retry copy was not stored. The
+examples [`handler-failing-during-failover.php`](examples/handler-failing-during-failover.php) and
+[`handler-succeeding-during-failover.php`](examples/handler-succeeding-during-failover.php) repeat the
+`reconnect: true` column in both retry modes, and CI runs them; both fail with client 2.27.2.
+
+> **Tested by:** `testTheNakOfAFailedDeliveryReachesTheServerThatReplacedOneWhichClosedTheConnectionDuringTheHandler` (the real client, against a connection the server closed without the client reading it, on a plain socket and behind unread bytes; `reject()`, and `send()` plus `ack()`), `testTheAckOfAHandledMessageReachesTheServerOnTheRecoveredConnectionWithNoCheckFirst`, `testTheAckOfAHandledMessageIsStillLostToACloseBehindUnreadBytes`, `testSymfonysRetryCopyAfterTheServerClosedTheConnectionDuringTheHandlerGoesOutOnTheRecoveredConnection`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, the examples `handler-failing-during-failover.php` and `handler-succeeding-during-failover.php`
 
 ### Streams on a Cluster
 
 - **Replicas.** A stream with one replica lives on one server and is unavailable while that server is down.
   With `stream_replicas: 3` it outlives the loss of one server, with 5 the loss of two. The durable consumer
   the transport creates takes the stream's replica count. Left unset, the option gives a new stream one replica
-  and leaves an existing stream's count alone (see [High Availability](#high-availability)).
+  and leaves an existing stream's count alone (see [High Availability](#high-availability)). When `setup()`
+  changes the count, it waits out the moment the consumer moves to the stream's new servers (up to 5 seconds).
 - **Placement.** `stream_placement_tags` and `stream_placement_cluster` choose the servers, and in a
   super-cluster the cluster, that hold the replicas. A change of the replica count and of the placement has to
   be staged in two runs of `messenger:setup-transports`. See [Stream Placement](#stream-placement).
@@ -1274,6 +1543,9 @@ composer test:unit
 
 # Or run tests manually
 ./vendor/bin/phpunit
+
+# Stopped at random moments, which fails a test that depends on how fast its process runs
+composer test:unit:paused
 ```
 
 The target is to have at least 90% of code coverage.
@@ -1281,7 +1553,8 @@ The target is to have at least 90% of code coverage.
 **What's tested:**
 - DSN parsing and validation
 - Configuration option handling
-- Authentication support
+- Authentication: every combination of credentials is refused when the transport is built, or goes through the real
+  client as a CONNECT that carries it (the real logins are in the functional tests below)
 - Port configuration
 - Error handling
 - Interface compliance
@@ -1299,10 +1572,11 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 96.9% (1008 of 1040 mutants killed, with 100% mutation code coverage).
-[docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 32 mutants that survive, with the reason for each:
-27 are equivalent, three make no difference with the real client, and two differ about once in a million
-runs. CI runs all three on the PHP 8.5 job and every day. Scores published before, 100% among them, were not
+95%; the suite scores 98.5% (1158 of 1176 mutants killed, with 100% mutation code coverage).
+[docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 18 mutants that survive, with the reason for each:
+13 are equivalent, two make no difference with the real client, and three are caught by tests in a child process,
+which a mutant does not reach. CI runs all three commands on the PHP 8.5 job and
+every day. Scores published before, 100% among them, were not
 real: in Infection's mutant processes the client's final classes could not be doubled, so every mutant their
 tests covered counted as killed.
 
@@ -1315,7 +1589,7 @@ Functional tests require a running NATS server with JetStream enabled:
 composer test:functional:setup
 
 # Start the NATS test servers in Docker, with the three-server cluster the examples use (generates the test
-# TLS certificates first, which needs openssl)
+# TLS certificates first, which needs openssl, and the test NKey and JWT credentials)
 composer nats:start
 
 # Run functional tests
@@ -1327,8 +1601,9 @@ composer nats:stop
 
 **Manual approach:**
 ```bash
-# Generate the test TLS certificates the TLS and mTLS servers use (never committed)
+# Generate the test TLS certificates, and the NKey and JWT credentials, the servers use (never committed)
 bash tests/nats/certs/generate.sh
+bash tests/nats/auth/generate.sh
 
 # Set up NATS in Docker (optional)
 cd tests/nats
@@ -1649,12 +1924,18 @@ if ($count > 0) {
 }
 ```
 
-`getMessageCount()`, which `messenger:stats` shows, returns 0 when NATS cannot be reached, the same as for an
-empty queue, so during an outage the queue reads as empty there. It gives up after a single connection attempt
-(about 6 seconds for a refused connection, see [Connection Timeout](#connection-timeout)). Monitor the
-connection itself, or the stream with the `nats` CLI, rather than reading a 0 as "nothing to do".
+`getMessageCount()`, which `messenger:stats` shows, returns 0 when NATS cannot be reached or refuses the login, the
+same as for an empty queue, so during an outage, or with a wrong password or seed, the queue reads as empty there, where
+`send()` and `get()` raise the error. Without `reconnect: true` it gives up after a single connection attempt (about 6
+seconds for a refused connection, see [Connection Timeout](#connection-timeout)). With it the client's attempt loop runs
+first: about 109 seconds for a refused connection at the default attempts, and about 43 seconds for a seed on a server that
+sends no nonce. A login the server itself refuses returns at once in both modes. Monitor the connection itself, or the
+stream with the `nats` CLI, rather than reading a 0 as "nothing to do".
 
-> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`
+Nothing waits for a plain ACK, so for a moment after `ack()` returned the count can still include that message. With
+`ack_sync` the server has applied the acknowledgement when `ack()` returns.
+
+> **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`, `testMessageCountOfALoginTheServerRefusesDialsOnceAndReturnsZero`, the Behat scenarios `A seed the server does not know is refused by the server` and `A JWT with another user's seed is refused by the server`. The timings were measured by hand.
 
 ## Troubleshooting
 
@@ -1694,6 +1975,10 @@ outage outlasted one recovery cycle: raise `max_reconnect_attempts` for longer o
 10 covers about 109 s against a server that refuses connections), or leave the option off to fail fast and let
 the process supervisor restart the worker. The logger shows the attempts at warning level and, when
 acknowledgements were buffered during the outage, the discard at error level (see [Logging](#logging)).
+
+With a seed on a server that sends no nonce it is not an outage, and raising the option only makes it take longer: the client
+retried a login that cannot work, and the cause is the previous exception, `NKey authentication requires server nonce from
+INFO`. See [NKey Authentication](#nkey-authentication).
 
 > **Tested by:** `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`
 
@@ -1740,7 +2025,7 @@ The bridge consists of two main components, wired into the framework by a thin b
 
 ### NatsTransportFactory
 - Handles DSN scheme detection (`nats-jetstream://`)
-- Creates `NatsTransport` instances, handing them its optional PSR-3 logger for the NATS client
+- Creates `NatsTransport` instances, handing them its optional PSR-3 logger for the NATS client and the transport's warning in nats mode
 - Validates configuration
 
 ### NatsTransport

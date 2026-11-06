@@ -78,11 +78,18 @@ apply only with the option on.
 ## Behavior to preserve
 
 - **Connections:** construction opens no socket. First use connects; a Closed client is dialled
-  again. An idle connection (strictly longer than `ping_after_idle`) or a failed operation calls
-  for an RTT PING before reuse. An unanswered PING causes replacement. The wait is bounded by
+  again. An idle connection (strictly longer than `ping_after_idle`), a failed operation, or the NAK/TERM of a
+  failed delivery calls for an RTT PING before reuse. An unanswered PING causes replacement. The wait is bounded by
   `connection_timeout`, or the client's shorter `request_timeout`. `ping_after_idle: 0` disables
   idle and post-failure checks, but Closed-state recovery still applies. `close()` resets the
   connection and provisioning state; the same transport remains reusable.
+- **Default mode** (`reconnect: false`; decided in #81, kept in #95 and client #249): Symfony owns
+  recovery. The operation that meets a lost connection fails with the client's exception and the
+  transport sends nothing again; the next operation checks the connection and dials. A worker exits on
+  a failed pull, ACK (`ack_sync` included) or retry copy, its supervisor starts a new one, and the
+  message comes back after `ack_wait`. Do not add a resend of a failed write in this mode: a worker that
+  should outlive the loss of its server is what `reconnect: true` is for (`resend_on_reconnect` requires
+  it). The PING before a failed delivery's NAK/TERM is a check before the write, not a resend.
 - **Reconnect mode** (`reconnect: true`, 5.7.0, #81): the client owns recovery. A Connecting
   client gets no PING and no dial; the operation waits within its own budget. After a failed
   PING, the client's state and reconnect count decide: recovering or recovered is kept, the same
@@ -92,20 +99,41 @@ apply only with the option on.
   The count is read only with the option on; default-mode mocks have no stats stub. An ACK/NAK/
   TERM whose write meets the dead socket is buffered and returns at once from client 2.27.1
   (#244), hence the `^2.27.1` floor since 5.7.1. The factory's optional PSR-3 logger reaches the
-  client; the bundle passes `logger` on Monolog's `messenger` channel.
-  A handler failing while the worker's server goes away still ends the worker in symfony mode:
-  Symfony's retry send is a request whose reply the lost connection cannot bring, so it times out (#95, README
+  client; the bundle passes `logger` on Monolog's `messenger` channel. Since 5.8.0 the floor is `^2.28`:
+  client 2.28.0 asks the socket transport, before a publish or request write, whether the server already
+  closed the connection (`PeerCloseAwareTransportInterface::peerClosed()`, a MSG_PEEK; client #252) and
+  treats a yes as a failed write, so the ACK of a handled message and Symfony's retry copy written after a
+  server stopped during the handler go out on the recovered connection (reconnect on) or fail with
+  "Reconnect is disabled" (off), instead of vanishing. A close behind unread bytes (TLS close_notify,
+  a WebSocket Close frame) is still invisible to it, which is why the PING before a failed delivery's
+  NAK/TERM stays (with reconnect off it also dials another server, where the client would fail the NAK).
+  The transport option `resend_on_reconnect` (5.8.0, off) maps to the client's
+  `resendJetStreamPublishOnReconnect` (#249): a publish with a Nats-Msg-Id is written again once the
+  connection its frame went out on is replaced; the builder requires `reconnect: true` and a configured
+  `stream_duplicate_window` longer than `request_timeout`. Measured 2026-11-04 on the test cluster
+  (nats 2.15.1, client 2.28.0, Messenger 8.1.10, the handler `docker stop`ping the worker's server): with
+  reconnect on, both retry modes carry on and nothing is lost or handled twice (retry copy stored 0.3 s
+  after the first delivery, NAK effective after nak_delay, ACK delivered); with reconnect off an ACK or
+  retry copy ends the worker at once and the message returns after ack_wait, while nats mode's NAK still
+  carries on through another server.
+  History (#95, before 2.28.0):
+  a handler failing while the worker's server goes away ended the worker in symfony mode:
+  Symfony's retry send is a request whose reply the lost connection cannot bring, so it timed out (#95, README
   "A Handler Failing During the Loss"; measured 2026-11-01, nats 2.15.1, client 2.27.2). #95
   analysed a transport re-publish after the timeout (misfires on a slow but connected leader with
   409 err_code 10158, doubles the wait with no server to fail over to) and pointed at the client
-  instead: ideaconnect/php-nats-jetstream-client#249, merged in its #251 (`58106f4`, 2026-11-02, no
-  client release yet), adds the opt-in `NatsOptions::$resendJetStreamPublishOnReconnect` (off by
+  instead: ideaconnect/php-nats-jetstream-client#249, merged in its #251 (`58106f4`, 2026-11-02,
+  released in 2.28.0), adds the opt-in `NatsOptions::$resendJetStreamPublishOnReconnect` (off by
   default): a publish with a `Nats-Msg-Id` goes out again once the connection its frame went out on
   is replaced. On the test cluster (2.15.1) a publish right after the leader's `docker stop` was
-  stored 0.01 s later with it, and timed out after 10 s without it. The transport does not set it:
-  that needs a client release, a raised requirement and an option for sends with a message id; the
-  default configuration (no id) stays as described. In nats mode the NAK at that moment
-  did not take effect (redelivery after `ack_wait`).
+  stored 0.01 s later with it, and timed out after 10 s without it. In nats mode the NAK at that moment did not take effect
+  (redelivery after `ack_wait`) up to 5.7.1. Cause (measured 2026-11-02, nats 2.15.1, client 2.27.2): the
+  client reads the socket only while an operation waits for a reply, so a close the server sent during the handler
+  stays unread (the socket sat in CLOSE-WAIT, the client reported Open 1.5 s after `docker stop`), and a write that
+  waits for no reply (ACK, NAK, TERM, WPI) is taken by the socket and lost; #244's buffer only catches writes that
+  fail. Since 5.8.0 `reject()` and `ack()`'s NAK of a left-out retry arm `checkBeforeNextUse` first, so a PING reads
+  the close and the NAK/TERM goes out on the recovered or newly dialled connection. The ACK of a handled message
+  stays unchecked by the transport (no round trip per message); client 2.28.0 covers it on plain sockets.
 - **Pull status:** 408 is empty; 404 is historically empty. A missing consumer normally gives 503,
   and deletion during a pull can give 409. With `auto_setup`, 404/409/503 cause one provisioning
   attempt and one retried pull; repeated 409/503 propagate. Since 5.7.0, `409 Server Shutdown`
@@ -127,7 +155,9 @@ apply only with the option on.
   and with `ack()` from 7.4.22/8.1.10 on (symfony/symfony#67038). `send()` therefore remembers
   the delivery token of a suppressed copy (a `WeakMap` by message) and `ack()` NAKs that one
   delivery; an ACK there lost the message (#90). Any code path that settles a received message
-  must keep both Messenger lines in mind.
+  must keep both Messenger lines in mind. The first copy left out logs a warning, once per transport object,
+  that Symfony's retry strategy is on (#94), through the logger the transport now keeps besides handing it to
+  the client; it parses no configuration and cannot fire with `max_retries: 0`.
 - **Keepalive:** Symfony invokes it from SIGALRM. It queues `inProgress()->ignore()` without
   awaiting, pinging, or connecting, because a signal handler cannot switch fibers (#48).
   The event loop must run for the queued write to leave. Plain blocking PHP work therefore
@@ -156,6 +186,30 @@ apply only with the option on.
   contains a closure. A custom serializer takes precedence; otherwise choose igbinary if installed
   or `PhpSerializer` with a warning. Both defaults deserialize PHP objects and require trusted
   subjects. Keep the documented security guidance intact.
+- **NKey and JWT (#89):** `nkey_seed` builds the client's `NkeySeedSigner`, and the public key sent is derived from
+  it. Only null means no seed. A blank or non-string value, an invalid seed and a seed that is not a user key are refused
+  at build, as are a username, password or token next to it (a server with both kinds of users ignores them without a
+  word) and `jwt` or `nkey` without it (the client throws before the CONNECT without a signer, on every server, and for
+  a bearer JWT too, though the server would not check the signature). So are a `jwt` without a JWT's three parts, which the
+  CONNECT would carry to the server, and a credential after a second `?` or a `;` in the DSN query, which `parse_str()`
+  leaves in the value of the option before it. `nkey` stays as an optional check: it must equal
+  the derived key, its error prints the derived key and never the value. The seed is unset from the option map once the
+  signer exists. Keep the client's exception out of `previous`: its frames hold the seed, and the client marks nothing.
+  Every parameter on the build path that holds the DSN, the options, a credential or one value of them is
+  `#[\SensitiveParameter]`, guarded by reflection in `SecretsInExceptionsTest`. Not fixed, in the client: `NkeySeedSigner`'s `secretKey` prints in a
+  dump and its first 32 bytes are the seed; its frames and `encodeConnect`'s are unmarked; the wording of a seed on a
+  server with no nonce, which `reconnect: true` retries for about 43 s. Real logins run in the functional suite and
+  the examples: NKey on `nats`, `nats-tls` and `nats-mtls`, JWT on `nats-jwt`, token on `nats-token`, also across a restart
+  for NKey and JWT. On every `composer test` the 32 combinations in `LoginCombinationsTest` are refused when built, or go
+  through the real client as a CONNECT that carries them. Measured by hand, not in the suite: cluster failover with a seed, a JWT that expires under a worker.
+  A scenario that restarts a server must wait for the worker's connection first, as `I start a messenger consumer expecting
+  :count messages` does: on CI's runners the console boots after the restart begins, so without the wait nothing reconnects
+  and the scenario proves nothing, while a local run looks fine. That step then pauses 300 ms: a graceful stop of NATS 2.15
+  leaves a moment, about 10 ms for each durable consumer on a file stream, starting at once or, with a pull waiting, about
+  50 ms after the signal, in which a pull can get 503 and end the worker, and a worker whose pull ended
+  less than `--sleep` into its iteration waits right into it. The gap is the transport's, on `main` too, and left for a
+  follow-up. Docker's CLI takes about 180 ms to reach the server here, through this machine's long PATH, and about 20 ms on
+  CI, which hides this: to rehearse, call Docker's API directly and boot the worker at a random phase of the step's poll.
 - **Stats:** consumer `num_pending + num_ack_pending`, falling back to stream messages and then 0.
   Stream count can include already acknowledged messages; outage and empty queue both read as 0.
   A failed initial connection gets one dial attempt, not a second for the fallback (#54).
@@ -178,22 +232,45 @@ apply only with the option on.
 Transport checks: `composer test` (PHPStan max on `src` plus fast unit tests) after code changes.
 Coverage: `composer test:unit`, then `composer coverage:check` (>= 90%). Live transport changes:
 `composer test:functional:setup`, `composer nats:start`, `composer test:functional`, and relevant
-`composer examples`; stop the fixtures afterwards. TLS certificates are generated, not committed.
-Fixtures expose plain/TLS/mTLS/stale-idle NATS on 4222/4223/4224/4225, and a three-server JetStream cluster
+`composer examples`; stop the fixtures afterwards. TLS certificates, NKeys and JWTs are generated, not committed (#9):
+`tests/nats/auth/generate.sh` makes the credentials with `nsc` from `natsio/nats-box`, and the unit tests use `TestNkeys`.
+Fixtures expose plain/TLS/mTLS/stale-idle NATS on 4222/4223/4224/4225, a three-server JetStream cluster
 `east` for the examples on 4226-4228 (containers and server names `nats_cluster_1..3`; two servers tagged
-`disk:ssd`, one `disk:hdd`). Examples that stop or restart a server with docker start it again. Measured on it
+`disk:ssd`, one `disk:hdd`), a server in operator mode on 4229 and one with a token on 4230, these two on the loopback
+address only. Examples that stop or restart a server with docker start it again. Measured on it
 (2026-10-19, client 2.27.0): after a graceful `docker stop` of a stream's leader (nats 2.15.1 and 2.10.29) a
 `reconnect: true` worker failed over with no empty pull; after `docker kill` (2.15.1) the first send timed out after
 `request_timeout`, or failed with 503 "No JetStream responder" while the stream had no leader. The DSN names one
 server (`servers: [$server]`), so a worker started while that server is down cannot connect. CI runs PHP 8.2 with the lowest
 allowed client and PHP 8.5 with latest, verifies root/app versions match, and also tests NATS 2.10
 without delayed scenarios. README advertises NATS ^2.9; the oldest CI image is actually 2.10.
+Measured on it (2026-11-01, nats 2.10.29): right after a stream update from 2 replicas to 1, consumer requests
+can get err_code 10008 "JetStream system temporarily unavailable", "stream not found" or no answer for a few ms
+while NATS moves the consumer; `setup()` asks again on 10008 and 10059 (up to 5 s) and once more after no answer.
+The example `stream-placement.php`
+hit it in CI (PR #98); a reproduction needs parallel consumer-info probes to load the 2-core test machine.
 
 Transport unit tests use `DG\BypassFinals` for final client mocks, `Future::complete/error`,
 `TestableNatsTransport`, and `RuntimeTestableNatsTransport`. `UnansweredPullTest` exercises the real
 client with an in-memory scripted server. It distinguishes a client's SUB-fence PING from the
 transport's connection-check PING (PR #75). Changing client wire behavior can require adapting
 this harness even when transport behavior stays the same.
+
+Unit tests that run the real client over the scripted server use real timers, and a machine short of CPU pauses the process
+for longer than a short budget: `ReconnectModeTest` failed that way at load 7 and above. Reproduce such a failure with
+`composer test:unit:paused` rather than with busy loops, which slow the rest of the machine as well and fail far less often
+(see `docs/TESTS.md`, "Unit Tests With Pauses").
+
+Two findings from the examples, measured on NATS 2.10.29. A plain ACK is not applied when `ack()` returns: the count read right
+after it still included the message in 102 of 400 tries in a tight loop, for at most 3 ms, and in none of 400 with `ack_sync`.
+After a server rejoins a cluster and answers JetStream requests, creating a stream with three replicas can still fail for a
+moment with `no suitable peers for placement, peer offline`, while the meta leader's `/jsz` shows every peer online and
+current, so `waitForClusterServer()` tries a real placement. That was not seen on 2.15.
+
+Two traps when reading results. `nats:alpine` is whatever this machine last pulled (2.14.2 here on 2026-11-06), so name the
+version when it matters: `NATS_IMAGE=nats:2.15.2-alpine composer nats:start`. `gh run view --log` stops at the Large Messages
+feature, probably on its 131 KB lines, which hides every later feature and Behat's summary, so read a CI job's whole log with
+`gh api --allow-escape-sequences repos/ideaconnect/symfony-nats-messenger/actions/jobs/<id>/logs` into a file.
 
 Mutation testing has a specific harness trap: Infection's file interceptor can displace
 BypassFinals and make final-class mock failures look like killed mutants. `tests/bootstrap.php`
@@ -358,3 +435,20 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   2.27.2 is the latest release; root and functional app both require `^2.27.1`.
 - `composer test` passed with client 2.27.1 (the lowest allowed) and 2.27.2 on PHP 8.5.11:
   PHPStan clean; 673 tests, 1941 assertions; coverage 99.78 % (893/895).
+
+## Dated snapshot: 2026-11-06
+
+- `main` has #102 (the flaky tests, `59a60cc`) and #101 (NKey and JWT logins, `3760c1c`), which also lands #89: GitHub marked it
+  as merged. Both are under `[Unreleased]` in the changelog.
+- **The next release has a decision to make first.** The latest tag is `v5.7.1`. `[5.8.0]`, dated 2026-11-04, was merged as #98
+  (`5cd9ffa`) and never tagged, and the README's "Upgrading from 5.8" assumes that it ships before `[Unreleased]`. Either tag 5.8.0 on
+  `5cd9ffa`, or fold the entries and the note into 5.8.0, as `docs/PRs/PR-089-nkey-authentication.md` describes.
+- No open transport issues. The one open PR is #100, per-message subjects, by a contributor: it conflicts with `main` in `README.md`,
+  `docs/CHANGELOG.md` and `docs/TESTS.md`, the same three files as before #101 and #102, and its code has not been run on top of them.
+- Known and not filed yet: `.creds` files and rotation, external signers, and the smaller findings under "Left for the maintainer"
+  in `docs/PRs/PR-089-nkey-authentication.md`.
+- Still able to fail on CI: the 503 of a graceful stop on NATS 2.15, under "Behavior to preserve". The examples and unit tests
+  that failed now and then are fixed (`docs/PRs/PR-102-flaky-tests.md`), so treat a new failure of one of them as real.
+- Both manifests require client `^2.28`, and 2.28.0 is the version tested. CI on the tree of `3760c1c`: PHPStan clean; 1038 tests,
+  2962 assertions, also stopped at random moments; coverage 99.80 % (1016/1018); Infection killed 1158 of 1176 mutants, with the 18
+  survivors `docs/TESTS.md` lists; Behat 93 of 93 on each PHP job and 89 of 89 on NATS 2.10.29; 14 of 14 examples in each job.

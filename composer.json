@@ -25,11 +25,12 @@
         "php": "^8.2",
         "symfony/framework-bundle": "^7 || ^8",
         "symfony/messenger": "^7.2 || ^8.0",
-        "idct/php-nats-jetstream-client": "^2.27.1",
+        "idct/php-nats-jetstream-client": "^2.28",
         "symfony/uid": "^7.2 || ^8.0",
         "psr/log": "^3.0"
     },
     "require-dev": {
+        "ext-sodium": "*",
         "behat/behat": "^4.0",
         "phpunit/phpunit": "^11.5 || ^12.5 || ^13.4",
         "phpstan/phpstan": "^2.3",
@@ -39,8 +40,10 @@
     "scripts": {
         "analyse": "phpstan analyse --configuration phpstan.neon.dist",
         "nats:certs": "bash tests/nats/certs/generate.sh",
+        "nats:auth": "bash tests/nats/auth/generate.sh",
         "nats:start": [
             "@nats:certs",
+            "@nats:auth",
             "cd tests/nats && docker compose up -d"
         ],
         "nats:stop": "cd tests/nats && docker compose down -v",
@@ -51,10 +54,14 @@
         ],
         "coverage:check": "php -r \"\\$xml = simplexml_load_file('clover.xml'); \\$m = \\$xml->project->metrics; \\$stmts = (int)\\$m['statements']; \\$covered = (int)\\$m['coveredstatements']; \\$pct = \\$stmts > 0 ? (\\$covered / \\$stmts) * 100 : 0; printf(\\\"Coverage: %.2f%% (%d/%d statements)\\n\\\", \\$pct, \\$covered, \\$stmts); if (\\$pct < 90) { fwrite(STDERR, \\\"Below 90% threshold\\n\\\"); exit(1); } echo \\\"Meets 90% threshold\\n\\\";\"",
         "test:benchmark": "cd tests/functional && chmod +x run-benchmark.sh && ./run-benchmark.sh",
-        "test:functional": "cd tests/functional && vendor/bin/behat",
+        "test:functional": [
+            "Composer\\Config::disableProcessTimeout",
+            "cd tests/functional && vendor/bin/behat"
+        ],
         "test:functional:setup": "cd tests/functional && composer install --prefer-dist --no-progress",
         "test:unit": "XDEBUG_MODE=coverage ./vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-clover clover.xml --coverage-text --colors=never --coverage-html coverage",
         "test:unit:fast": "./vendor/bin/phpunit --configuration phpunit.xml.dist",
+        "test:unit:paused": "@php scripts/run-tests-with-pauses.php",
         "test:mutation": "XDEBUG_MODE=coverage ./vendor/bin/infection --threads=max --no-interaction --log-verbosity=all --show-mutations=max --logger-github=false",
         "test:mutation:canary": [
             "@php -r \"@unlink('.infection/noop-summary.json');\" --",
@@ -64,7 +71,8 @@
         "test:mutation:check-log": "@php scripts/check-mutation-log.php"
     },
     "suggest": {
-        "ext-igbinary": "For improved serialization performance when using the default IgbinarySerializer"
+        "ext-igbinary": "For improved serialization performance when using the default IgbinarySerializer",
+        "ext-sodium": "For NKey and JWT authentication: signing the server's nonce with the nkey_seed option needs it"
     },
     "autoload-dev": {
         "psr-4": {

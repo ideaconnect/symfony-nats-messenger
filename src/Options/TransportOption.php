@@ -12,7 +12,7 @@ namespace IDCT\NatsMessenger\Options;
  *
  * **Consumer & Batching:** CONSUMER, BATCHING, MAX_BATCH_TIMEOUT, CONNECTION_TIMEOUT,
  *                          MAX_ACK_PENDING, INACTIVE_THRESHOLD, REPLAY_POLICY
- * **Connection:** PING_AFTER_IDLE, REQUEST_TIMEOUT, RECONNECT, MAX_RECONNECT_ATTEMPTS
+ * **Connection:** PING_AFTER_IDLE, REQUEST_TIMEOUT, RECONNECT, MAX_RECONNECT_ATTEMPTS, RESEND_ON_RECONNECT
  * **Stream Limits:** STREAM_MAX_AGE, STREAM_MAX_BYTES, STREAM_MAX_MESSAGES,
  *                    STREAM_MAX_MESSAGES_PER_SUBJECT, STREAM_MAX_MESSAGE_SIZE, STREAM_MAX_CONSUMERS,
  *                    STREAM_STORAGE, STREAM_REPLICAS
@@ -28,7 +28,7 @@ namespace IDCT\NatsMessenger\Options;
  * **Provisioning:** AUTO_SETUP
  * **TLS:** TLS_REQUIRED, TLS_HANDSHAKE_FIRST, TLS_CA_FILE, TLS_CERT_FILE, TLS_KEY_FILE,
  *          TLS_KEY_PASSPHRASE, TLS_PEER_NAME, TLS_VERIFY_PEER
- * **Authentication:** TOKEN, JWT, NKEY, USERNAME, PASSWORD
+ * **Authentication:** TOKEN, JWT, NKEY, NKEY_SEED, USERNAME, PASSWORD
  */
 enum TransportOption: string
 {
@@ -40,6 +40,7 @@ enum TransportOption: string
     case REQUEST_TIMEOUT = 'request_timeout';
     case RECONNECT = 'reconnect';
     case MAX_RECONNECT_ATTEMPTS = 'max_reconnect_attempts';
+    case RESEND_ON_RECONNECT = 'resend_on_reconnect';
     case MAX_ACK_PENDING = 'max_ack_pending';
     case INACTIVE_THRESHOLD = 'inactive_threshold';
     case REPLAY_POLICY = 'replay_policy';
@@ -85,6 +86,7 @@ enum TransportOption: string
     case TOKEN = 'token';
     case JWT = 'jwt';
     case NKEY = 'nkey';
+    case NKEY_SEED = 'nkey_seed';
     case USERNAME = 'username';
     case PASSWORD = 'password';
 }

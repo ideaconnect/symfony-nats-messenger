@@ -51,6 +51,8 @@ use Symfony\Component\Messenger\Transport\SetupableTransportInterface;
 use Symfony\Component\Messenger\Transport\TransportInterface;
 use Symfony\Component\Uid\Uuid;
 
+use function Amp\delay;
+
 /**
  * Symfony Messenger transport for NATS JetStream.
  *
@@ -110,6 +112,24 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private const JS_ERR_STREAM_MOVE_AND_SCALE = 10123;
 
     /**
+     * JetStream err_code of "JetStream system temporarily unavailable" (JSClusterNotAvailErr), which setup() waits
+     * out for its consumer requests, see {@see whileTheClusterSettles()}.
+     */
+    private const JS_ERR_CLUSTER_NOT_AVAILABLE = 10008;
+
+    /**
+     * JetStream err_code of "stream not found" (JSStreamNotFoundErr). A consumer request of setup() can get it for a
+     * moment right after the stream update that changed the replica count, see {@see whileTheClusterSettles()}.
+     */
+    private const JS_ERR_STREAM_NOT_FOUND = 10059;
+
+    /** How long {@see whileTheClusterSettles()} sends a consumer request again, in seconds. */
+    private const CLUSTER_SETTLE_SECONDS = 5.0;
+
+    /** The pause before each of those requests, in seconds. */
+    private const CLUSTER_SETTLE_PAUSE = 0.1;
+
+    /**
      * When an operation last used the connection, in monotonic seconds; null while the transport has none.
      * Tells how long the connection sat idle ({@see connectionUsable()}).
      */
@@ -130,6 +150,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private ?\WeakMap $retriesNatsRedelivers = null;
 
+    /** The logger this transport was given, which the NATS client got too; null without one. */
+    private ?LoggerInterface $logger;
+
+    /**
+     * Whether this transport has logged that Symfony's retry strategy is on while it is in nats mode
+     * ({@see warnThatSymfonysRetryStrategyIsOn()}), which it does once.
+     */
+    private bool $symfonysRetryStrategyReported = false;
+
     /**
      * Creates a transport instance from DSN/options and optional serializer override.
      *
@@ -142,11 +171,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * @param SerializerInterface|null $serializer Custom serializer; when null, defaults to igbinary
      * @param LoggerInterface|null   $logger     The NATS client's logger: the connection's lifecycle at info level,
      *                                           its errors at error level, among them a reconnect that gave up and
-     *                                           discarded the acknowledgements buffered meanwhile. The bundle hands
-     *                                           the application's logger to {@see NatsTransportFactory}.
+     *                                           discarded the acknowledgements buffered meanwhile. The transport
+     *                                           keeps it as well, for a warning in nats mode when Symfony's retry
+     *                                           strategy is on ({@see warnThatSymfonysRetryStrategyIsOn()}). The
+     *                                           bundle hands the application's logger to {@see NatsTransportFactory}.
      */
-    public function __construct(#[\SensitiveParameter] string $dsn, array $options, ?SerializerInterface $serializer = null, ?LoggerInterface $logger = null)
+    public function __construct(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options, ?SerializerInterface $serializer = null, ?LoggerInterface $logger = null)
     {
+        $this->logger = $logger;
+
         if ($serializer !== null) {
             $this->serializer = $serializer;
         } elseif ($this->isExtensionLoaded('igbinary')) {
@@ -193,7 +226,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *
      * With retry_handler=nats, the copy Symfony's retry sends of a message this transport received is not
      * published ({@see isRetryNatsRedeliversItself()}): the delivery it belongs to is remembered instead, so that
-     * the worker's ack() of it NAKs it ({@see natsRedeliversTheRetryOf()}).
+     * the worker's ack() of it NAKs it ({@see natsRedeliversTheRetryOf()}). The first such copy is logged as a
+     * warning that Symfony's retry strategy is on ({@see warnThatSymfonysRetryStrategyIsOn()}).
      *
      * @throws RuntimeException     If serialization fails and the envelope carries an ErrorDetailsStamp.
      * @throws \Throwable           The original serializer exception when serialization fails and the
@@ -206,6 +240,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function send(Envelope $envelope): Envelope
     {
         if ($this->isRetryNatsRedeliversItself($envelope)) {
+            $this->warnThatSymfonysRetryStrategyIsOn();
+
             $delivery = $envelope->last(TransportMessageIdStamp::class);
             if ($delivery !== null) {
                 $this->retriesNatsRedelivers ??= new \WeakMap();
@@ -243,9 +279,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $targetSubject = $this->resolvePublishSubject($envelope);
         $publishSubject = $targetSubject;
 
-        $delayMs = $envelope->last(DelayStamp::class)?->getDelay() ?? 0;
+        $delayMs = $envelope->last(DelayStamp::class)?->getDelay();
         if ($delayMs > 0 && $this->configuration->isScheduledMessagesEnabled()) {
-            $deliverAt = new \DateTimeImmutable('+' . $delayMs . ' milliseconds');
+            $deliverAt = $this->deliveryTime($delayMs);
             // The @at schedule expression has whole-second resolution and truncates any sub-second
             // component. Round up to the next whole second when one is present so a delayed message is
             // never delivered before the requested delay elapses - truncating down could otherwise fire
@@ -262,7 +298,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $normalizedHeaders = [];
         foreach ($headers as $name => $value) {
-            $normalizedHeaders[(string) $name] = TypeCoercion::stringValue($value);
+            $normalizedHeaders[$name] = TypeCoercion::stringValue($value);
         }
 
         // A single JetStream publish path for both plain and header-carrying (incl. scheduled)
@@ -284,6 +320,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         return $envelope;
+    }
+
+    /**
+     * When a message sent now with a delay of $delayMs milliseconds is due. Exposed for testability: send() rounds
+     * a time with a fraction of a second up to the next whole second, and a test needs a time without one.
+     */
+    protected function deliveryTime(int $delayMs): \DateTimeImmutable
+    {
+        return new \DateTimeImmutable(sprintf('+%d milliseconds', $delayMs));
     }
 
     /**
@@ -392,6 +437,37 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
+     * Logs a warning, the first time {@see send()} leaves out the copy Symfony's retry sends, that Symfony's retry
+     * strategy is on for this transport in nats mode, where it has no effect (#94).
+     *
+     * FrameworkBundle gives every transport max_retries: 3, and the README asks for max_retries: 0 in nats mode, in
+     * a paragraph that is easy to miss. With retries on, Symfony logs every failure as a retry it never makes
+     * ("Sending for retry #1"), dispatches WorkerMessageRetriedEvent for it, and never treats the message as failed
+     * for good, so a failure transport never receives it; up to 5.7.1, on Symfony Messenger 7.4.22 / 8.1.10 and
+     * later, the message was lost after its first failure (#90).
+     *
+     * A strategy that does not retry (max_retries: 0, or one of its own that says no) sends no copy, so the first
+     * copy left out proves that retries are on: no configuration is read and nothing is guessed, whether
+     * retry_handler comes from the transport's options or from a DSN in an environment variable. Once per
+     * transport object, so a worker logs it once rather than for every failure, through the logger the transport
+     * was given; without one nothing is logged.
+     */
+    private function warnThatSymfonysRetryStrategyIsOn(): void
+    {
+        if ($this->symfonysRetryStrategyReported) {
+            return;
+        }
+
+        $this->symfonysRetryStrategyReported = true;
+        $this->logger?->warning(sprintf(
+            'retry_handler=nats on stream "%s", subject "%s": Symfony\'s retry strategy retried a message that NATS'
+            . ' redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+            $this->streamName,
+            $this->topic,
+        ));
+    }
+
+    /**
      * Pulls and decodes a batch of envelopes from JetStream.
      *
      * Fetches up to {@see NatsTransportConfiguration::batching()} messages with the
@@ -453,9 +529,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 continue;
             }
 
-            $headers = ($message->rawHeaders !== null && $message->rawHeaders !== '')
-                ? self::stringNamedHeaders(NatsHeaders::fromWireBlock($message->rawHeaders))
-                : [];
+            // fromWireBlock() reads a message without headers (null, or an empty block) as no headers.
+            $headers = self::stringNamedHeaders(NatsHeaders::fromWireBlock($message->rawHeaders));
 
             try {
                 $decoded = $this->serializer->decode([
@@ -550,6 +625,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
 
         if ($this->natsRedeliversTheRetryOf($envelope, $id)) {
+            $this->checkTheConnectionBeforeSettlingAFailure();
             $this->sendNak($id);
 
             return;
@@ -579,7 +655,29 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
         // Forget the delivery whose retry copy send() left out; handleFailedDelivery() NAKs it in nats mode either way.
         $this->natsRedeliversTheRetryOf($envelope, $id);
+        $this->checkTheConnectionBeforeSettlingAFailure();
         $this->handleFailedDelivery($id);
+    }
+
+    /**
+     * Makes the NAK or TERM of a delivery whose handler failed check the connection first, as after a failed
+     * operation ({@see connectionUsable()}): one PING, unless ping_after_idle is 0.
+     *
+     * An acknowledgement is a write that waits for no reply, and the client reads the socket only while an operation
+     * waits for one. A server that closed the connection while the handler ran (a restart, a rolling upgrade, a
+     * failover) leaves that close unread, the write of the NAK still succeeds, and the frame is lost: measured on the
+     * test cluster (nats-server 2.15.1, client 2.27.2), the server stopped with `docker stop` inside the handler, the
+     * client still reported the connection open 1.5 s later, and the message came back after ack_wait instead of
+     * nak_delay. The PING reads the close, the client recovers the connection (or, without `reconnect`, the
+     * transport dials again), and the NAK goes out on the new one, where it took effect after nak_delay. A handler
+     * that failed is the likely moment for a lost connection, and a failure is rare enough to pay a round trip for;
+     * the ACK of a handled message stays a plain write. Since client 2.28.0 the client sees such a close on a plain
+     * socket before it writes, ACK included; the PING still covers the close it cannot see, behind bytes not read
+     * yet, as behind the close_notify of a TLS server.
+     */
+    private function checkTheConnectionBeforeSettlingAFailure(): void
+    {
+        $this->checkBeforeNextUse = true;
     }
 
     /**
@@ -672,8 +770,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * retains already-acknowledged messages, so the count can stay above 0 even when nothing is left
      * to process. The consumer-info path does not have this limitation.
      *
-     * When NATS cannot be reached it returns 0, the same as for an empty queue, so `messenger:stats`
-     * shows 0 during an outage. It gives up after a single connection attempt.
+     * When NATS cannot be reached or refuses the login it returns 0, the same as for an empty queue, so
+     * `messenger:stats` shows 0 then. Without reconnect: true it gives up after a single connection attempt.
+     * With it the client's attempt loop runs first, unless the server itself refused the login.
      */
     public function getMessageCount(): int
     {
@@ -783,12 +882,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $consumerConfiguration->inactiveThreshold($inactiveThresholdMs);
             }
 
-            $replayPolicy = $this->resolveReplayPolicy();
+            // A setup() that changed stream_replicas reaches the consumer while NATS may still be moving it.
+            $replayPolicy = $this->whileTheClusterSettles($this->resolveReplayPolicy(...));
             if ($replayPolicy !== null) {
                 $consumerConfiguration->replayPolicy($replayPolicy);
             }
 
-            $consumerInfo = $this->awaitOnConnection($this->jetStream()->addConsumer($this->streamName, $consumerConfiguration));
+            $consumerInfo = $this->whileTheClusterSettles(fn (): ConsumerInfo => $this->awaitOnConnection($this->jetStream()->addConsumer($this->streamName, $consumerConfiguration)));
             $this->assertConsumerMatchesConfiguration($consumerInfo);
         } catch (UnsupportedFeatureException $unsupportedFeature) {
             throw new RuntimeException($this->describeUnsupportedFeature($unsupportedFeature), 0, $unsupportedFeature);
@@ -1240,6 +1340,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
+     * Waits $seconds while the event loop goes on serving the connection. Exposed for testability.
+     */
+    protected function pause(float $seconds): void
+    {
+        delay($seconds);
+    }
+
+    /**
      * Applies configured failure strategy for failed deliveries.
      *
      * When {@see RetryHandler::NATS} is active, sends a NAK so JetStream redelivers
@@ -1324,6 +1432,51 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
+     * Runs one of setup()'s consumer requests, and runs it again while the cluster is still moving the consumer,
+     * pausing CLUSTER_SETTLE_PAUSE before each new attempt: for up to CLUSTER_SETTLE_SECONDS while it answers
+     * err_code 10008, "JetStream system temporarily unavailable", or 10059, "stream not found", and once after a
+     * request it did not answer at all. Any other error, either code still there at the end, and a second
+     * unanswered request propagate as before.
+     *
+     * A stream update that changes the replica count makes NATS move the stream's consumers to its new set of
+     * servers. It does that after it has answered the update, so setup() reaches the consumer in the middle of the
+     * move. A consumer whose leader was on a server the stream left has no leader until a remaining server takes
+     * over, and a consumer request in that window is answered with 10008 (measured on nats-server 2.10.29 with
+     * stream_replicas going from 2 to 1: the window lasts milliseconds). Before this, that failed the setup, and
+     * running it again passed. In the same window a request can also be told that the stream setup() has just
+     * created or updated is not found, or get no answer within request_timeout (both seen in the same
+     * measurements); a stream that really went away in between still fails the setup, after the window. Both
+     * requests repeated here are reads or idempotent: the consumer lookup, and the consumer create with the same
+     * configuration.
+     *
+     * @template T
+     * @param \Closure(): T $request
+     * @return T
+     */
+    private function whileTheClusterSettles(\Closure $request): mixed
+    {
+        $deadline = $this->monotonicSeconds() + self::CLUSTER_SETTLE_SECONDS;
+        $unanswered = false;
+        while (true) {
+            try {
+                return $request();
+            } catch (JetStreamException $exception) {
+                $errCode = $exception->getErrCode();
+                if (($errCode !== self::JS_ERR_CLUSTER_NOT_AVAILABLE && $errCode !== self::JS_ERR_STREAM_NOT_FOUND) || $this->monotonicSeconds() >= $deadline) {
+                    throw $exception;
+                }
+            } catch (TimeoutException $timeout) {
+                // Already request_timeout long, so asked once more whatever the deadline says, and not again.
+                if ($unanswered) {
+                    throw $timeout;
+                }
+                $unanswered = true;
+            }
+            $this->pause(self::CLUSTER_SETTLE_PAUSE);
+        }
+    }
+
+    /**
      * Returns the replay policy to write to the durable consumer, or null to leave the field out.
      *
      * NATS refuses to change the replay policy of an existing durable consumer ("replay policy can not
@@ -1357,14 +1510,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /**
      * Returns the existing durable consumer, or null when it does not exist.
      *
-     * Mirrors {@see getExistingStream()}: a 404 means the consumer is absent, anything else propagates.
+     * Mirrors {@see getExistingStream()}: a 404 means the consumer is absent, anything else propagates. A 404 that
+     * says the stream is not found (err_code 10059) propagates too: setup() has just created or updated the stream,
+     * so the cluster is still moving it ({@see whileTheClusterSettles()}), and reading that as "no consumer" would
+     * send the configured replay policy to a consumer that may have another one.
      */
     private function getExistingConsumer(): ?ConsumerInfo
     {
         try {
             return $this->awaitOnConnection($this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer()));
         } catch (JetStreamException $exception) {
-            if ($exception->getCode() === 404) {
+            if ($exception->getCode() === 404 && $exception->getErrCode() !== self::JS_ERR_STREAM_NOT_FOUND) {
                 return null;
             }
 
@@ -1491,9 +1647,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $streamConfiguration->maxConsumers($this->configuration->streamMaxConsumers());
         }
 
-        if ($this->configuration->streamReplicas() > 0) {
-            $streamConfiguration->replicas($this->configuration->streamReplicas());
-        }
+        // At least 1: NatsTransportConfiguration::streamReplicas() reads an unset option as one replica. The update
+        // path keeps an existing stream's count when the option is unset ({@see buildUpdatedStreamConfiguration()}).
+        $streamConfiguration->replicas($this->configuration->streamReplicas());
 
         // Retention is set only at creation - NATS rejects changing it on an existing stream, so the
         // update path ({@see buildUpdatedStreamConfiguration()}) preserves the server value instead.
@@ -1596,7 +1752,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         unset($serverConfiguration['name']);
         $serverConfiguration = $this->normalizeStreamConfigurationForUpdate($serverConfiguration);
 
-        $serverSubjects = $this->normalizeSubjects($serverConfiguration['subjects'] ?? $streamInfo->subjects);
+        // StreamInfo::fromArray() reads its subjects from this same config entry.
+        $serverSubjects = $this->normalizeSubjects($serverConfiguration['subjects'] ?? []);
         $mergedSubjects = $this->mergeSubjects($serverSubjects, $desiredSubjects);
 
         // When scheduled messages are disabled, actively drop the transport-managed '{topic}.delayed.>'
@@ -1629,10 +1786,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // The transport authoritatively manages these retention limits. On update we always write
         // the value - including JetStream's "unlimited" sentinels (max_age 0, others -1) when the
         // option is unset - so a previously-configured limit is actually relaxed/cleared instead of
-        // being preserved from the existing server configuration by the array_merge above.
-        $updatedConfiguration['max_age'] = $this->configuration->streamMaxAgeSeconds() > 0
-            ? $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS
-            : 0;
+        // being preserved from the existing server configuration by the array_merge above. An unset
+        // stream_max_age reads as 0 seconds, which is 0 nanoseconds.
+        $updatedConfiguration['max_age'] = $this->configuration->streamMaxAgeSeconds() * self::SECONDS_TO_NANOSECONDS;
         $updatedConfiguration['max_bytes'] = $this->configuration->streamMaxBytes() ?? -1;
         $updatedConfiguration['max_msgs'] = $this->configuration->streamMaxMessages() ?? -1;
         $updatedConfiguration['max_msgs_per_subject'] = $this->configuration->streamMaxMessagesPerSubject() ?? -1;

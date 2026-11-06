@@ -28,6 +28,8 @@ If this saves you time, support is genuinely appreciated:
 - **PHP 8.2+**
 - **Composer**
 - **Docker** (only for the functional/end-to-end tests - they spin up a real NATS server)
+- the **`sodium`** PHP extension, which `composer install` asks for here, as the unit tests of NKey authentication would
+  otherwise skip or fail. An application needs it only to use `nkey_seed`
 - *(optional)* the **`igbinary`** PHP extension for faster serialization; without it the library
   falls back to PHP's serializer and prints a one-time notice.
 
@@ -42,7 +44,7 @@ composer install
 composer test
 ```
 
-That's the inner loop. The unit tests don't touch a network - they run in well under a second.
+That's the inner loop. The unit tests don't touch a network - they take about ten seconds.
 
 ### Trying the real thing (functional tests)
 
@@ -50,7 +52,7 @@ These exercise the transport against an actual NATS server in Docker:
 
 ```bash
 composer test:functional:setup   # one-time: install the test app's dependencies
-composer nats:start              # generate the test TLS certs, then start NATS (plain + TLS + mTLS) in Docker
+composer nats:start              # generate the test TLS certs and NKey/JWT credentials, then start NATS in Docker
 composer test:functional         # run the Behat scenarios
 composer examples                # run the examples in examples/ against that NATS
 composer nats:stop               # tear NATS back down
@@ -105,7 +107,8 @@ Contributions are welcome! The short version:
 2. Branch off `main`.
 3. Make your change **with tests** - unit tests for logic, a Behat scenario if it's end-to-end behavior.
 4. Keep it green: `composer test` (PHPStan at max level + unit tests) must pass, and coverage stays
-   **at or above 90%** (`composer test:unit` then `composer coverage:check`).
+   **at or above 90%** (`composer test:unit` then `composer coverage:check`). CI also runs the unit tests stopped at random
+   moments (`composer test:unit:paused`), so a test must not depend on how fast its process runs.
 5. Update the docs you touched:
    - `docs/CHANGELOG.md` (Keep a Changelog format, under `## [Unreleased]`),
    - `docs/TESTS.md` if you added/renamed/removed tests,

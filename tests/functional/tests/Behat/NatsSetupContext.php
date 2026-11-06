@@ -11,6 +11,7 @@ use Behat\Step\Then;
 use Behat\Step\When;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Process\Exception\ProcessFailedException;
+use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NatsMessenger\NatsTransport;
@@ -35,9 +36,10 @@ use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
  *   the NATS client to verify configuration (max_age, storage, subjects, etc.).
  *
  * Infrastructure:
- * - Docker Compose manages three NATS containers: plain (4222), TLS (4223), mTLS (4224).
- * - Connection helpers (`createNatsClient`, `createNatsTlsClient`, `createNatsMtlsClient`)
- *   route to the correct server based on `$useTls`/`$useMtls` flags.
+ * - Docker Compose manages the NATS containers: plain (4222), TLS (4223), mTLS (4224), a server that drops
+ *   idle clients (4225), one in operator mode (4229) and one with a token (4230).
+ * - Connection helpers (`createNatsClient`, `createNatsTlsClient`, `createNatsMtlsClient`, and so on)
+ *   route to the correct server based on the `$useTls`/`$useMtls`/... flags.
  *
  * Cleanup (#[AfterScenario]):
  * - Stops consumer processes, deletes NATS streams, clears marker and retry-state files,
@@ -48,6 +50,9 @@ class NatsSetupContext implements Context
 {
     /** The serializer service the igbinary steps give a transport's `serializer:` key: the README's value. */
     private const IGBINARY_SERIALIZER = IgbinarySerializer::class;
+
+    /** The token of the server in tests/nats/nats-token.conf, for the tests only. */
+    private const TEST_TOKEN = 'test-only-token';
 
     private ?Process $natsProcess = null;
     private ?Process $setupProcess = null;
@@ -63,7 +68,12 @@ class NatsSetupContext implements Context
     private bool $useTls = false;
     private bool $useMtls = false;
     private bool $useStaleServer = false;
+    private bool $useJwtServer = false;
+    private bool $useTokenServer = false;
     private ?Process $idleSendProcess = null;
+    /** @var list<string> The variables of the commands' environment this scenario set. */
+    private array $commandEnvironment = [];
+    private ?string $seedFile = null;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
     private string $testFilesDir;
@@ -1128,6 +1138,45 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Checks how often the consumer warned, in nats mode, that Symfony's retry strategy is on (#94). The functional
+     * app has no Monolog: FrameworkBundle's default logger writes warnings to the consumer's stderr, which the
+     * transport gets through the bundle. The transport warns once per transport object, so once per consumer process
+     * however many retry copies it leaves out, and not at all with max_retries: 0.
+     */
+    #[Then('the consumer should have warned once that Symfony\'s retry strategy is on')]
+    public function theConsumerShouldHaveWarnedOnceThatSymfonysRetryStrategyIsOn(): void
+    {
+        $this->assertSymfonysRetryStrategyWarnings(1);
+    }
+
+    #[Then('the consumer should not have warned that Symfony\'s retry strategy is on')]
+    public function theConsumerShouldNotHaveWarnedThatSymfonysRetryStrategyIsOn(): void
+    {
+        $this->assertSymfonysRetryStrategyWarnings(0);
+    }
+
+    private function assertSymfonysRetryStrategyWarnings(int $expected): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        $warning = sprintf(
+            'retry_handler=nats on stream "%s", subject "%s": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport',
+            $this->testStreamName,
+            $this->testSubject
+        );
+        $warnings = substr_count($output, $warning);
+
+        if ($warnings !== $expected) {
+            throw new \RuntimeException(
+                sprintf("Expected the warning that Symfony's retry strategy is on %d time(s), but found it %d time(s).\nConsumer output: %s", $expected, $warnings, $output)
+            );
+        }
+    }
+
+    /**
      * Verifies that the failure transport received the expected number of permanently
      * failed messages by parsing `messenger:stats` output for the `failed_transport` queue.
      *
@@ -1576,6 +1625,234 @@ class NatsSetupContext implements Context
 
         file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
         $this->resetSymfonyCache();
+    }
+
+    /**
+     * No user or password in the DSN: the connection authenticates only with the NKey seed, whose public key is
+     * the NKey user in tests/nats/nats.conf. The seed goes in the transport's options, as the README recommends.
+     */
+    #[Given('I have a messenger transport configured with an NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeed(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://localhost:4222/%s/%s?stream_max_age=900'\n                options:\n                    nkey_seed: '%s'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $this->credentials()['nkey_user']['seed']
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * A valid seed, of a user no server lists.
+     */
+    #[Given('I have a messenger transport configured with an NKey seed the server does not know')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeedTheServerDoesNotKnow(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $this->credentials()['unknown_user']['seed']]);
+    }
+
+    #[Given('I have a messenger transport configured with a JWT and no NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithAJwtAndNoNkeySeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['jwt' => $this->credentials()['jwt_user']['jwt']]);
+    }
+
+    #[Given('I have a messenger transport configured with a public NKey and no seed')]
+    public function iHaveAMessengerTransportConfiguredWithAPublicNkeyAndNoSeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nkey' => $this->credentials()['nkey_user']['public']]);
+    }
+
+    #[Given('I have a messenger transport configured with an NKey seed next to a password')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeedNextToAPassword(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $this->credentials()['nkey_user']['seed'], 'username' => 'admin', 'password' => 'password']);
+    }
+
+    /**
+     * The README's other form. A DSN usually comes from an environment variable, so a seed in it never reaches the
+     * options the bundle sees.
+     */
+    #[Given('I have a messenger transport with the NKey seed in the DSN query')]
+    public function iHaveAMessengerTransportWithTheNkeySeedInTheDsnQuery(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, [], '&nkey_seed=' . $this->credentials()['nkey_user']['seed']);
+    }
+
+    #[Given('I have a messenger transport configured with an NKey seed and its public key')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeedAndItsPublicKey(): void
+    {
+        $user = $this->credentials()['nkey_user'];
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $user['seed'], 'nkey' => $user['public']]);
+    }
+
+    /**
+     * Every connection after the restart has to sign the new server's nonce with the seed again.
+     */
+    #[Given('I have a messenger transport configured with an NKey seed and reconnect enabled')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeedAndReconnectEnabled(): void
+    {
+        $this->writeTransportThatLogsInWith(
+            4222,
+            ['nkey_seed' => $this->credentials()['nkey_user']['seed'], 'reconnect' => 'true', 'max_reconnect_attempts' => '30']
+        );
+    }
+
+    /**
+     * Port 4223 is the TLS server, with the same NKey user as the plain one. The DSN has no user or password.
+     */
+    #[Given('I have a TLS messenger transport configured with an NKey seed')]
+    public function iHaveATlsMessengerTransportConfiguredWithAnNkeySeed(): void
+    {
+        $this->writeTransportThatLogsInWith(
+            4223,
+            ['nkey_seed' => $this->credentials()['nkey_user']['seed']],
+            sprintf('&tls_handshake_first=true&tls_ca_file=%s&tls_verify_peer=true&tls_peer_name=localhost', realpath(__DIR__ . '/../../../nats/certs/ca.pem')),
+            'nats-jetstream+tls',
+        );
+    }
+
+    /**
+     * Port 4224 is the mTLS server, with the same NKey user as the plain one. The client certificate only opens the
+     * connection there: the seed still logs the user in.
+     */
+    #[Given('I have an mTLS messenger transport configured with an NKey seed')]
+    public function iHaveAnMtlsMessengerTransportConfiguredWithAnNkeySeed(): void
+    {
+        $certificates = __DIR__ . '/../../../nats/certs/';
+        $this->writeTransportThatLogsInWith(
+            4224,
+            ['nkey_seed' => $this->credentials()['nkey_user']['seed']],
+            sprintf(
+                '&tls_handshake_first=true&tls_ca_file=%s&tls_cert_file=%s&tls_key_file=%s&tls_verify_peer=true&tls_peer_name=localhost',
+                realpath($certificates . 'ca.pem'),
+                realpath($certificates . 'client-cert.pem'),
+                realpath($certificates . 'client-key.pem'),
+            ),
+            'nats-jetstream+tls',
+        );
+    }
+
+    /**
+     * The token server has no NKey users, so it sends no nonce to sign.
+     */
+    #[Given('I have a messenger transport on that server with an NKey seed')]
+    public function iHaveAMessengerTransportOnThatServerWithAnNkeySeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4230, ['nkey_seed' => $this->credentials()['nkey_user']['seed']]);
+    }
+
+    #[Given('I have a messenger transport configured with an empty NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithAnEmptyNkeySeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => '']);
+    }
+
+    #[Given('I have a messenger transport configured with a mistyped NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithAMistypedNkeySeed(): void
+    {
+        $seed = $this->credentials()['nkey_user']['seed'];
+        // Past the first 30 characters, which the check of the output looks for, and still caught by the client's checksum.
+        $seed[40] = $seed[40] === 'B' ? 'C' : 'B';
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $seed]);
+    }
+
+    /**
+     * A form the README's configuration shows: the seed read from a variable of the commands' environment, or from a file
+     * that variable names, ending in a line end as a mounted secret may.
+     */
+    #[Given('I have a messenger transport configured with the NKey seed through :form')]
+    public function iHaveAMessengerTransportConfiguredWithTheNkeySeedThrough(string $form): void
+    {
+        $seed = $this->credentials()['nkey_user']['seed'];
+        $this->seedFile = (string) tempnam(sys_get_temp_dir(), 'nats-messenger-seed-');
+        file_put_contents($this->seedFile, $seed . "\n");
+        $this->setCommandEnvironment('NATS_NKEY_SEED', $seed);
+        $this->setCommandEnvironment('NATS_NKEY_SEED_FILE', $this->seedFile);
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $form]);
+    }
+
+    /**
+     * A query typed with a second ?, which leaves the seed in the value of the option before it: there, in the transport's
+     * DSN, stream_max_age.
+     */
+    #[Given('I have a messenger transport configured with an NKey seed typed after a second question mark in the DSN')]
+    public function iHaveAMessengerTransportConfiguredWithAnNkeySeedTypedAfterASecondQuestionMarkInTheDsn(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, [], '?nkey_seed=' . $this->credentials()['nkey_user']['seed']);
+    }
+
+    #[Given('I have a messenger transport configured with the seed of an account as the NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithTheSeedOfAnAccountAsTheNkeySeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $this->credentials()['account_key']['seed']]);
+    }
+
+    /**
+     * A mix-up the two option names invite. The error must not print the value, as it would then show a seed.
+     */
+    #[Given('I have a messenger transport configured with a seed in the nkey option next to the NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithASeedInTheNkeyOptionNextToTheNkeySeed(): void
+    {
+        $seed = $this->credentials()['nkey_user']['seed'];
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $seed, 'nkey' => $seed]);
+    }
+
+    #[Given('I have a messenger transport configured with another user\'s public key next to the NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithAnotherUsersPublicKeyNextToTheNkeySeed(): void
+    {
+        $credentials = $this->credentials();
+        $this->writeTransportThatLogsInWith(4222, ['nkey_seed' => $credentials['nkey_user']['seed'], 'nkey' => $credentials['unknown_user']['public']]);
+    }
+
+    /**
+     * Whatever the command printed, no seed of the test credentials may be in it. A mistyped seed shares its start with
+     * the real one, and the console wraps a long line at any character, so this looks for that start without whitespace.
+     */
+    #[Then('the setup output should show no seed')]
+    public function theSetupOutputShouldShowNoSeed(): void
+    {
+        if ($this->setupProcess === null) {
+            throw new \RuntimeException('The command was not run');
+        }
+
+        $output = (string) preg_replace('/\s+/', '', $this->setupProcess->getOutput() . $this->setupProcess->getErrorOutput());
+        foreach ($this->credentials() as $name => $key) {
+            if (str_contains($output, substr($key['seed'], 0, 30))) {
+                throw new \RuntimeException(sprintf('The output shows the seed of %s.', $name));
+            }
+        }
+    }
+
+    #[Then('the setup should fail saying :message')]
+    public function theSetupShouldFailSaying(string $message): void
+    {
+        $this->assertCommandFailedSaying($this->setupProcess, $message);
+    }
+
+    #[Then('the messenger stats command should fail saying :message')]
+    public function theMessengerStatsCommandShouldFailSaying(string $message): void
+    {
+        $process = new Process(['php', 'bin/console', 'messenger:stats', '--env=test'], __DIR__ . '/../..');
+        $process->run();
+
+        $this->assertCommandFailedSaying($process, $message);
+    }
+
+    #[Then('a messenger consumer should fail saying :message')]
+    public function aMessengerConsumerShouldFailSaying(string $message): void
+    {
+        $process = new Process(
+            ['php', 'bin/console', 'messenger:consume', 'test_transport', '--limit=1', '--time-limit=10', '--sleep=0.1', '--env=test'],
+            __DIR__ . '/../..'
+        );
+        $process->setTimeout(30);
+        $process->run();
+
+        $this->assertCommandFailedSaying($process, $message);
     }
 
     #[Given('I have a messenger transport configured with batching of :batching')]
@@ -2031,28 +2308,150 @@ class NatsSetupContext implements Context
         $this->useStaleServer = true;
 
         $this->startNatsServer();
-        // On a stack started before this server was added, port 4222 is up, so startNatsServer() returned at
-        // once, and port 4225 is closed: start that one service.
-        $socket = @fsockopen('localhost', 4225, $errno, $errstr, 2);
-        if ($socket === false) {
-            (new Process(['docker', 'compose', 'up', '-d', 'nats-stale'], __DIR__ . '/../../../nats'))->run();
-        } else {
-            fclose($socket);
-        }
+        $this->waitForTestServer('nats-stale', 4225, $this->createNatsStaleClient(...));
+    }
 
-        $deadline = microtime(true) + 60;
-        while (true) {
-            try {
-                $this->createNatsStaleClient()->jetStream()->accountInfo()->await();
+    /**
+     * The test server in operator mode (tests/nats/nats-jwt.conf), on port 4229. It has no list of users: a user
+     * logs in with a JWT its account signed and a signature made with the user's seed.
+     */
+    #[Given('the NATS server in operator mode is running')]
+    public function theNatsServerInOperatorModeIsRunning(): void
+    {
+        $this->shouldNatsBeRunning = true;
+        $this->useJwtServer = true;
 
-                return;
-            } catch (\Throwable $e) {
-                if (microtime(true) > $deadline) {
-                    throw new \RuntimeException('The NATS server that drops idle clients (port 4225) did not become ready: ' . $e->getMessage());
-                }
-                usleep(500000);
-            }
-        }
+        $this->startNatsServer();
+        // Without the credentials the wait below would only retry for a minute before it says so.
+        $this->credentials();
+        $this->waitForTestServer('nats-jwt', 4229, $this->createNatsJwtClient(...));
+    }
+
+    #[Given('I have a messenger transport on that server with the user\'s JWT and seed')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersJwtAndSeed(): void
+    {
+        $user = $this->credentials()['jwt_user'];
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed']]);
+    }
+
+    /**
+     * The form the README's configuration shows.
+     */
+    #[Given('I have a messenger transport on that server with the user\'s JWT and seed read from the environment')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersJwtAndSeedReadFromTheEnvironment(): void
+    {
+        $user = $this->credentials()['jwt_user'];
+        $this->setCommandEnvironment('NATS_USER_JWT', $user['jwt']);
+        $this->setCommandEnvironment('NATS_NKEY_SEED', $user['seed']);
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => '%env(NATS_USER_JWT)%', 'nkey_seed' => '%env(NATS_NKEY_SEED)%']);
+    }
+
+    /**
+     * The other seed is a valid one, of a user no server lists, so the only thing wrong with this login is that the JWT
+     * is not that user's.
+     */
+    #[Given('I have a messenger transport on that server with the user\'s JWT and another user\'s seed')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersJwtAndAnotherUsersSeed(): void
+    {
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $this->credentials()['jwt_user']['jwt'], 'nkey_seed' => $this->credentials()['unknown_user']['seed']]);
+    }
+
+    /**
+     * The server does not check the signature of a bearer JWT, but the client asks for a signer all the same.
+     */
+    #[Given('I have a messenger transport on that server with a bearer JWT and its seed')]
+    public function iHaveAMessengerTransportOnThatServerWithABearerJwtAndItsSeed(): void
+    {
+        $user = $this->credentials()['bearer_user'];
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed']]);
+    }
+
+    /**
+     * Every connection after the restart has to sign the new server's nonce with the seed again.
+     */
+    #[Given('I have a messenger transport on that server with the user\'s JWT and seed and reconnect enabled')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersJwtAndSeedAndReconnectEnabled(): void
+    {
+        $user = $this->credentials()['jwt_user'];
+        $this->writeTransportThatLogsInWith(
+            4229,
+            ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed'], 'reconnect' => 'true', 'max_reconnect_attempts' => '30']
+        );
+    }
+
+    /**
+     * A .creds file holds both values, which makes these two mistakes easy.
+     */
+    #[Given('I have a messenger transport on that server with the seed in the jwt option')]
+    public function iHaveAMessengerTransportOnThatServerWithTheSeedInTheJwtOption(): void
+    {
+        $seed = $this->credentials()['jwt_user']['seed'];
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $seed, 'nkey_seed' => $seed]);
+    }
+
+    #[Given('I have a messenger transport on that server with the text of a .creds file in the jwt option')]
+    public function iHaveAMessengerTransportOnThatServerWithTheTextOfACredsFileInTheJwtOption(): void
+    {
+        $user = $this->credentials()['jwt_user'];
+        $this->writeTransportThatLogsInWith(4229, [
+            'jwt' => sprintf('-----BEGIN NATS USER JWT----- %s ------END NATS USER JWT------ -----BEGIN USER NKEY SEED----- %s ------END USER NKEY SEED------', $user['jwt'], $user['seed']),
+            'nkey_seed' => $user['seed'],
+        ]);
+    }
+
+    #[Given('I have a messenger transport on that server with the user\'s seed and no JWT')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersSeedAndNoJwt(): void
+    {
+        $this->writeTransportThatLogsInWith(4229, ['nkey_seed' => $this->credentials()['jwt_user']['seed']]);
+    }
+
+    #[Given('I have a messenger transport on that server with an expired JWT and its seed')]
+    public function iHaveAMessengerTransportOnThatServerWithAnExpiredJwtAndItsSeed(): void
+    {
+        $user = $this->credentials()['expired_user'];
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed']]);
+    }
+
+    #[Given('I have a messenger transport on that server with the JWT and seed of an account without JetStream')]
+    public function iHaveAMessengerTransportOnThatServerWithTheJwtAndSeedOfAnAccountWithoutJetStream(): void
+    {
+        $user = $this->credentials()['no_jetstream_user'];
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed']]);
+    }
+
+    /**
+     * The test server whose clients log in with a token (tests/nats/nats-token.conf), on port 4230.
+     */
+    #[Given('the NATS server that logs clients in with a token is running')]
+    public function theNatsServerThatLogsClientsInWithATokenIsRunning(): void
+    {
+        $this->shouldNatsBeRunning = true;
+        $this->useTokenServer = true;
+
+        $this->startNatsServer();
+        $this->waitForTestServer('nats-token', 4230, $this->createNatsTokenClient(...));
+    }
+
+    #[Given('I have a messenger transport on that server with its token')]
+    public function iHaveAMessengerTransportOnThatServerWithItsToken(): void
+    {
+        $this->writeTransportThatLogsInWith(4230, ['token' => self::TEST_TOKEN]);
+    }
+
+    #[Given('I have a messenger transport on that server with a wrong token')]
+    public function iHaveAMessengerTransportOnThatServerWithAWrongToken(): void
+    {
+        $this->writeTransportThatLogsInWith(4230, ['token' => 'not-the-token']);
+    }
+
+    /**
+     * Only a message the server itself sends says this, so a transport that failed before it reached the server, or
+     * for another reason, does not pass.
+     */
+    #[Then('the setup should fail with the server\'s authorization error')]
+    public function theSetupShouldFailWithTheServersAuthorizationError(): void
+    {
+        $this->assertCommandFailedSaying($this->setupProcess, 'Authorization Violation');
     }
 
     #[Given('I have a messenger transport on that server with ping_after_idle of :seconds second')]
@@ -2143,12 +2542,51 @@ class NatsSetupContext implements Context
         $this->resetSymfonyCache();
     }
 
-    /** Starts a consumer that stops after the given number of messages, before any of them is sent. */
+    /**
+     * Starts a consumer that stops after the given number of messages, before any of them is sent, and returns once it
+     * holds a connection. The scenarios that use this restart the server next. A worker whose first connection came after
+     * the restart would have nothing to recover, and those scenarios would pass with recovery broken: on a slow machine
+     * the console command takes longer to boot than the restart takes to begin, which is what CI's logs showed.
+     *
+     * The pause at the end keeps them out of a race they are not about. With the one consumer these scenarios have, a
+     * graceful stop of NATS 2.15 leaves about 10 ms, some 50 ms after the signal, in which JetStream no longer answers and
+     * the connection is still open. A pull written then gets 503, which reads as a missing consumer, and the worker ends.
+     * When the signal ends a pull that began less than --sleep ago, the worker waits out the rest before its next pull,
+     * which can land right there, and CI's docker is fast enough for that. Past --sleep the worker pulls again at once,
+     * well before that moment.
+     */
     #[When('I start a messenger consumer expecting :count messages')]
     public function iStartAMessengerConsumerExpectingMessages(int $count): void
     {
         $this->messagesSent = $count;
         $this->iStartAMessengerConsumer();
+
+        $deadline = microtime(true) + 30;
+        while (!str_contains($this->consumerProcess->getErrorOutput(), 'NATS connection Connected')) {
+            if (!$this->consumerProcess->isRunning() || microtime(true) > $deadline) {
+                throw new \RuntimeException("The consumer did not connect.\nOutput: " . $this->consumerProcess->getOutput() . "\nError: " . $this->consumerProcess->getErrorOutput());
+            }
+            usleep(100000);
+        }
+
+        usleep(300000);
+    }
+
+    /**
+     * The client logs this once it has a new connection. With a seed that takes a new signature, as the new server sends
+     * a nonce of its own.
+     */
+    #[Then('the consumer should have reconnected')]
+    public function theConsumerShouldHaveReconnected(): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $this->consumerProcess->wait();
+        if (!str_contains($this->consumerProcess->getErrorOutput(), 'NATS connection Reconnected')) {
+            throw new \RuntimeException("The consumer did not reconnect.\nError output: " . $this->consumerProcess->getErrorOutput());
+        }
     }
 
     /**
@@ -2159,17 +2597,18 @@ class NatsSetupContext implements Context
     #[When('I restart the NATS server')]
     public function iRestartTheNatsServer(): void
     {
-        $restart = new Process(['docker', 'restart', 'nats_test']);
+        $container = $this->useJwtServer ? 'nats_test_jwt' : 'nats_test';
+        $restart = new Process(['docker', 'restart', $container]);
         $restart->setTimeout(90);
         $restart->run();
         if (!$restart->isSuccessful()) {
-            throw new \RuntimeException('docker restart nats_test failed: ' . $restart->getErrorOutput());
+            throw new \RuntimeException(sprintf('docker restart %s failed: %s', $container, $restart->getErrorOutput()));
         }
 
         $deadline = microtime(true) + 60;
         while (true) {
             try {
-                $this->createNatsClient()->jetStream()->accountInfo()->await();
+                $this->createAppropriateNatsClient()->jetStream()->accountInfo()->await();
 
                 return;
             } catch (\Throwable $e) {
@@ -2293,6 +2732,16 @@ class NatsSetupContext implements Context
             }
         }
 
+        foreach ($this->commandEnvironment as $name) {
+            unset($_ENV[$name]);
+        }
+        $this->commandEnvironment = [];
+
+        if ($this->seedFile !== null) {
+            unlink($this->seedFile);
+            $this->seedFile = null;
+        }
+
         // Remove temporary config file and clear cache
         $configFile = __DIR__ . '/../../config/packages/test_messenger.yaml';
         if (file_exists($configFile)) {
@@ -2307,6 +2756,8 @@ class NatsSetupContext implements Context
         $this->useTls = false;
         $this->useMtls = false;
         $this->useStaleServer = false;
+        $this->useJwtServer = false;
+        $this->useTokenServer = false;
         $this->idleSendProcess = null;
         $this->testStreamName = 'stream';
         $this->testSubject = 'test.messages';
@@ -2326,6 +2777,14 @@ class NatsSetupContext implements Context
         $certificates->run();
         if (!$certificates->isSuccessful()) {
             throw new \RuntimeException('Failed to generate the test TLS certificates: ' . $certificates->getErrorOutput());
+        }
+
+        // The NKey user and the logins of the server in operator mode are generated too (#9).
+        $credentials = new Process(['bash', __DIR__ . '/../../../nats/auth/generate.sh']);
+        $credentials->setTimeout(180);
+        $credentials->run();
+        if (!$credentials->isSuccessful()) {
+            throw new \RuntimeException('Failed to generate the test NKey and JWT credentials: ' . $credentials->getErrorOutput());
         }
 
         // Use docker compose to start NATS
@@ -2543,6 +3002,136 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * The logins of the test servers, as tests/nats/auth/generate.sh wrote them.
+     *
+     * @return array<string, array<string, string>>
+     */
+    private function credentials(): array
+    {
+        $file = __DIR__ . '/../../../nats/auth/credentials.json';
+        if (!is_file($file)) {
+            throw new \RuntimeException('No test credentials: run composer nats:start, which generates them (tests/nats/auth/README.md)');
+        }
+
+        return json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+    }
+
+    private function createNatsJwtClient(): NatsClient
+    {
+        $user = $this->credentials()['jwt_user'];
+        $signer = new NkeySeedSigner($user['seed']);
+
+        $client = new NatsClient(new NatsOptions(
+            servers: ['nats://127.0.0.1:4229'],
+            connectTimeoutMs: 5000,
+            jwt: $user['jwt'],
+            nkey: $signer->publicKey(),
+            nonceSigner: $signer,
+        ));
+        $client->connect()->await();
+
+        return $client;
+    }
+
+    private function createNatsTokenClient(): NatsClient
+    {
+        $client = new NatsClient(new NatsOptions(
+            servers: ['nats://127.0.0.1:4230'],
+            connectTimeoutMs: 5000,
+            token: self::TEST_TOKEN,
+        ));
+        $client->connect()->await();
+
+        return $client;
+    }
+
+    /**
+     * Waits until a test server of its own answers JetStream requests. On a stack started before that server was
+     * added, port 4222 is up, so startNatsServer() returned at once, and this port is closed: starts that one service.
+     *
+     * @param \Closure(): NatsClient $createClient
+     */
+    private function waitForTestServer(string $service, int $port, \Closure $createClient): void
+    {
+        $socket = @fsockopen('127.0.0.1', $port, $errno, $errstr, 2);
+        if ($socket === false) {
+            (new Process(['docker', 'compose', 'up', '-d', $service], __DIR__ . '/../../../nats'))->run();
+        } else {
+            fclose($socket);
+        }
+
+        $deadline = microtime(true) + 60;
+        while (true) {
+            try {
+                $createClient()->jetStream()->accountInfo()->await();
+
+                return;
+            } catch (\Throwable $e) {
+                if (microtime(true) > $deadline) {
+                    throw new \RuntimeException(sprintf('The test server %s (port %d) did not become ready: %s', $service, $port, $e->getMessage()));
+                }
+                usleep(500000);
+            }
+        }
+    }
+
+    /**
+     * Sets a variable of the environment the scenario's commands run in: Process passes $_ENV on to them. cleanup() removes it.
+     */
+    private function setCommandEnvironment(string $name, string $value): void
+    {
+        $_ENV[$name] = $value;
+        $this->commandEnvironment[] = $name;
+    }
+
+    /**
+     * Writes a transport on one test server whose DSN holds no user or password, so that it logs in with these options
+     * alone, or with what $query adds to the DSN.
+     *
+     * @param array<string, string> $options
+     */
+    private function writeTransportThatLogsInWith(int $port, array $options, string $query = '', string $scheme = 'nats-jetstream'): void
+    {
+        $optionLines = '';
+        foreach ($options as $name => $value) {
+            $optionLines .= sprintf("                    %s: '%s'\n", $name, $value);
+        }
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: '%s://127.0.0.1:%d/%s/%s?stream_max_age=900%s'\n                options:\n%s                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $scheme,
+            $port,
+            $this->testStreamName,
+            $this->testSubject,
+            $query,
+            $optionLines
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * A console command must have failed, and its output must say $expected. The console wraps a long message at any
+     * character, so the two are compared without their whitespace.
+     */
+    private function assertCommandFailedSaying(?Process $process, string $expected): void
+    {
+        if ($process === null) {
+            throw new \RuntimeException('The command was not run');
+        }
+
+        $output = $process->getOutput() . $process->getErrorOutput();
+        if ($process->isSuccessful()) {
+            throw new \RuntimeException(sprintf("Expected the command to fail saying \"%s\", but it succeeded.\nOutput: %s", $expected, $output));
+        }
+
+        if (!str_contains((string) preg_replace('/\s+/', '', $output), (string) preg_replace('/\s+/', '', $expected))) {
+            throw new \RuntimeException(sprintf("Expected the command to fail saying \"%s\".\nOutput: %s", $expected, $output));
+        }
+    }
+
+    /**
      * Selects the correct NATS client (plain, TLS, or mTLS) based on the current
      * scenario's connection flags. This ensures stream verification queries use
      * the same connection type as the transport under test.
@@ -2551,6 +3140,12 @@ class NatsSetupContext implements Context
     {
         if ($this->useStaleServer) {
             return $this->createNatsStaleClient();
+        }
+        if ($this->useJwtServer) {
+            return $this->createNatsJwtClient();
+        }
+        if ($this->useTokenServer) {
+            return $this->createNatsTokenClient();
         }
         if ($this->useMtls) {
             return $this->createNatsMtlsClient();

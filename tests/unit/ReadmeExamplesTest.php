@@ -47,6 +47,17 @@ final class ReadmeExamplesTest extends TestCase
     }
 
     /**
+     * A key in a server example gets pasted, so this file names none: a reader must generate their own pair.
+     */
+    public function testTheReadmeNamesNoUsableNkey(): void
+    {
+        $readme = (string) file_get_contents(self::README);
+
+        self::assertDoesNotMatchRegularExpression('/\bU[A-Z2-7]{55}\b/', $readme, 'The README names a public NKey.');
+        self::assertDoesNotMatchRegularExpression('/\bSU[A-Z2-7]{56}\b/', $readme, 'The README names an NKey seed.');
+    }
+
+    /**
      * @return iterable<string, array{string}>
      */
     public static function readmePhpBlocksProvider(): iterable

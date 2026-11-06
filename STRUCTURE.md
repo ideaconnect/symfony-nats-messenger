@@ -16,7 +16,7 @@ Symfony Messenger  ──dispatch──▶  NatsTransportFactory ──▶ NatsT
 - **Symfony side:** the library implements `TransportInterface`, `MessageCountAwareInterface`,
   and `SetupableTransportInterface`, so it plugs into `messenger:consume`, `messenger:setup-transports`,
   and the failure/retry machinery like any first-party transport.
-- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.27.1`,
+- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.28`,
   amphp-based). Calls return `Amp\Future`; the transport resolves them synchronously with `->await()`
   because Symfony Messenger's transport contract is blocking.
 
@@ -45,11 +45,13 @@ tests/
 ├── bootstrap.php                               # autoloader + BypassFinals; takes Infection's file swap over in mutant processes
 ├── Support/
 │   ├── ClientInjectedNatsTransport.php         # the transport with a client the test gives it
+│   ├── FaultInjectingNatsServer.php            # the scripted server behind a connection that fails the way a real one does
 │   ├── MessengerTestKernel.php                 # a FrameworkBundle + Messenger kernel for tests that need a compiled container
 │   ├── PhpProcess.php                          # runs a PHP script in a child process
 │   ├── RttCountingNatsClient.php               # the real client, counting the transport's connection checks
 │   ├── StrictHeaderNameSerializer.php          # a serializer that reads header names as strings under strict types
-│   └── SubscriptionLimitNatsServer.php         # a scripted server with a stream, a pull consumer and a subscription limit
+│   ├── SubscriptionLimitNatsServer.php         # a scripted server with a stream, a pull consumer and a subscription limit
+│   └── TestNkeys.php                           # NKeys built when the tests run, so that no private key is committed
 ├── unit/                                       # PHPUnit 11 to 13 - fast, no live NATS required
 │   ├── IDCTNatsMessengerBundleTest.php         # the bundle in a compiled kernel: factory discovery, the README serializer
 │   ├── FunctionalSuiteConfigTest.php           # the Behat config fails the functional suite on undefined steps
@@ -59,28 +61,39 @@ tests/
 │   ├── MutationTestingBootstrapTest.php        # mutant processes can double final classes and load the mutant
 │   ├── MutationTestingChecksTest.php           # the mutation canary and infection.log checks fail closed
 │   ├── MutationTestingCommandsTest.php         # the Infection runs in composer.json write no GitHub annotations
+│   ├── ComposerScriptsTest.php                 # composer test:functional runs past Composer's process timeout
 │   ├── SubscriptionLimitPullTest.php           # pulls at the subscription limit, real client over a scripted server
 │   ├── UnansweredPullTest.php                  # a pull the server never answered calls for a connection check
+│   ├── ReconnectModeTest.php                   # reconnect: true, the real client over a connection that fails like a real one
+│   ├── RunTestsWithPausesTest.php              # composer test:unit:paused really stops the tests and keeps PHPUnit's exit code
+│   ├── LoginCombinationsTest.php               # every combination of credentials: refused when built, or through the real client
+│   ├── TestNkeysTest.php                       # the keys tests/Support/TestNkeys.php builds when the tests run
 │   ├── Options/
 │   │   ├── NatsTransportConfigurationBuilderTest.php  # DSN parsing, validation, option merging
+│   │   ├── SecretsInExceptionsTest.php                 # a failed build leaves no seed or password in its exception
 │   │   └── NatsTransportConfigurationTest.php          # accessor coercion, defaults
 │   └── Serializer/
 │       ├── AbstractEnveloperSerializerTest.php
 │       └── IgbinarySerializerTest.php
 ├── functional/                                 # Behat - requires a running NATS server (Docker)
-│   ├── features/*.feature                      # setup, batching, consumer, nak, term, delayed, tls, mtls, stream_limits
+│   ├── features/*.feature                      # setup, batching, consumer, nak, term, delayed, tls, mtls, stream_limits, nkey, jwt, token
 │   ├── tests/Behat/NatsSetupContext.php        # all step definitions
 │   └── src/, config/, bin/, public/            # a minimal Symfony app exercising the transport end-to-end
 └── nats/                                       # Docker Compose + NATS configs + test TLS certificate generator
-                                                # (nats-cluster*.conf: the three-server cluster "east" for the examples)
+                                                # (nats-cluster*.conf: the three-server cluster "east" for the examples;
+                                                # nats-jwt.conf: the server in operator mode; nats-token.conf: the server
+                                                # with a token; auth/: the generator of the NKey and JWT credentials)
 
 examples/                                       # Runnable scripts, one per behaviour (composer examples)
 ├── _bootstrap.php                              # shared setup: autoloader, server, stream, test cluster and docker helpers
-└── *.php                                       # send-and-consume, duplicate-protection, request-timeout, keepalive, connection-checks,
-                                                # reconnect, cluster-failover, stream-placement
+└── *.php                                       # send-and-consume, duplicate-protection, nats-retry, request-timeout, keepalive,
+                                                # connection-checks, jwt-login, nkey-login, token-login, reconnect, cluster-failover,
+                                                # handler-failing-during-failover, handler-succeeding-during-failover,
+                                                # stream-placement
 
 scripts/
 ├── run-examples.sh                             # runs examples/*.php, strict mode for CI
+├── run-tests-with-pauses.php                   # composer test:unit:paused: the unit tests, stopped at random moments
 ├── check-mutation-canary.php                   # composer test:mutation:canary: mutants that change nothing all escape
 └── check-mutation-log.php                      # composer test:mutation:check-log: no mutant killed by the harness
 

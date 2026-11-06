@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger\Options;
 
+use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
+use IDCT\NATS\Exception\NatsException;
 use IDCT\NATS\JetStream\Enum\DiscardPolicy;
 use IDCT\NATS\JetStream\Enum\ReplayPolicy;
 use IDCT\NATS\JetStream\Enum\RetentionPolicy;
@@ -52,6 +54,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::REQUEST_TIMEOUT->value => 10,
         TransportOption::RECONNECT->value => false,
         TransportOption::MAX_RECONNECT_ATTEMPTS->value => null,
+        TransportOption::RESEND_ON_RECONNECT->value => false,
         TransportOption::MAX_ACK_PENDING->value => null,
         TransportOption::INACTIVE_THRESHOLD->value => null,
         TransportOption::REPLAY_POLICY->value => null,
@@ -95,6 +98,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::TOKEN->value => null,
         TransportOption::JWT->value => null,
         TransportOption::NKEY->value => null,
+        TransportOption::NKEY_SEED->value => null,
         TransportOption::USERNAME->value => null,
         TransportOption::PASSWORD->value => null,
     ];
@@ -110,7 +114,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $options
      */
-    public function build(#[\SensitiveParameter] string $dsn, array $options = [], ?LoggerInterface $logger = null): NatsTransportConfiguration
+    public function build(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options = [], ?LoggerInterface $logger = null): NatsTransportConfiguration
     {
         $components = $this->parseDsn($dsn);
         $configuration = $this->buildConfiguration($components, $options);
@@ -124,11 +128,26 @@ final class NatsTransportConfigurationBuilder
 
         // max_reconnect_attempts is forwarded only when configured so that the client's own default
         // applies otherwise; repeating that default here would silently diverge from the client over time.
-        $reconnectArguments = ['reconnectEnabled' => $this->toBool($configuration[TransportOption::RECONNECT->value])];
+        $reconnectArguments = [
+            'reconnectEnabled' => $this->toBool($configuration[TransportOption::RECONNECT->value]),
+            // A send() with a Nats-Msg-Id writes its frame once more on the connection the client's recovery made
+            // when the server that took it went away before its PubAck (client 2.28.0, #249). Validated to come
+            // with reconnect: true.
+            'resendJetStreamPublishOnReconnect' => $this->toBool($configuration[TransportOption::RESEND_ON_RECONNECT->value]),
+        ];
         $maxReconnectAttempts = $configuration[TransportOption::MAX_RECONNECT_ATTEMPTS->value] ?? null;
         if ($maxReconnectAttempts !== null) {
             $reconnectArguments['maxReconnectAttempts'] = TypeCoercion::intValue($maxReconnectAttempts);
         }
+
+        $nkeySigner = $this->resolveNkeySigner($configuration);
+        // Nothing reads the seed after this, and the option map stays with the transport for its lifetime, where a dump would
+        // print it as text.
+        unset($configuration[TransportOption::NKEY_SEED->value]);
+        $token = $this->toNullableString($configuration[TransportOption::TOKEN->value]);
+        $username = $this->resolveCredential($components, $configuration, TransportOption::USERNAME, 'user');
+        $password = $this->resolveCredential($components, $configuration, TransportOption::PASSWORD, 'pass');
+        $this->assertSeedStandsAlone($nkeySigner, $username, $password, $token);
 
         $client = new NatsClient(new NatsOptions(
             ...$reconnectArguments,
@@ -149,11 +168,12 @@ final class NatsTransportConfigurationBuilder
             // recognize has to keep it on: only false, 0, no or off turns peer verification off. Any other
             // value, an empty one included, used to turn it off without a word (#42).
             tlsVerifyPeer: TypeCoercion::boolValue($configuration[TransportOption::TLS_VERIFY_PEER->value], true),
-            token: $this->toNullableString($configuration[TransportOption::TOKEN->value]),
-            username: $this->resolveCredential($components, $configuration, TransportOption::USERNAME, 'user'),
-            password: $this->resolveCredential($components, $configuration, TransportOption::PASSWORD, 'pass'),
-            jwt: $this->toNullableString($configuration[TransportOption::JWT->value]),
-            nkey: $this->toNullableString($configuration[TransportOption::NKEY->value]),
+            token: $token,
+            username: $username,
+            password: $password,
+            jwt: $this->resolveJwt($configuration, $nkeySigner),
+            nkey: $this->resolveNkey($configuration, $nkeySigner),
+            nonceSigner: $nkeySigner,
             logger: $logger,
         ));
 
@@ -175,7 +195,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @return array<string, mixed>
      */
-    private function parseDsn(string $dsn): array
+    private function parseDsn(#[\SensitiveParameter] string $dsn): array
     {
         // A single gate for both structural failures: parse_url() returns false on a seriously
         // malformed DSN, and a hostless URL (e.g. "nats:///stream/topic") has no 'host'. Both are
@@ -195,7 +215,7 @@ final class NatsTransportConfigurationBuilder
      * @param array<string, mixed> $components
      * @return array{0: string, 1: string}
      */
-    private function parseStreamAndTopic(array $components): array
+    private function parseStreamAndTopic(#[\SensitiveParameter] array $components): array
     {
         if (!isset($components['path'])) {
             throw new InvalidArgumentException('NATS Stream name not provided.');
@@ -203,10 +223,11 @@ final class NatsTransportConfigurationBuilder
 
         // A valid path is exactly two non-empty slash-separated tokens (/stream/topic). Coercing a
         // non-string/empty path to '' lets this single check reject every malformed path - missing,
-        // too few or too many segments, or an empty token.
+        // too few or too many segments, or an empty token: trim() takes the slashes off both ends, so
+        // an empty token can only sit between two slashes, which makes a third segment.
         $path = is_string($components['path']) ? $components['path'] : '';
         $pathParts = explode('/', trim($path, '/'));
-        if (count($pathParts) !== 2 || $pathParts[0] === '' || $pathParts[1] === '') {
+        if (count($pathParts) !== 2) {
             throw new InvalidArgumentException('NATS DSN must contain both stream name and topic name (format: /stream/topic).');
         }
 
@@ -227,7 +248,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @throws InvalidArgumentException If the name contains disallowed characters
      */
-    private function validateNatsName(string $name, string $label): void
+    private function validateNatsName(#[\SensitiveParameter] string $name, string $label): void
     {
         $pattern = $label === 'topic'
             ? '/^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*$/'
@@ -239,11 +260,47 @@ final class NatsTransportConfigurationBuilder
                 : 'Only alphanumeric characters, hyphens, and underscores are allowed.';
 
             throw new InvalidArgumentException(sprintf(
-                'NATS %s name "%s" contains invalid characters. %s',
+                'NATS %s name%s contains invalid characters. %s',
                 $label,
-                $name,
+                $this->quotedIfPlain($name, '"'),
                 $allowedCharacters,
             ));
+        }
+    }
+
+    /**
+     * A name or value for an error message, in quotes and with a space before it, or nothing when it may hold more than a
+     * plain mistake. A DSN query typed with & or ; instead of ?, or with a second ?, stays in the path or in the option
+     * before it, credentials included, and a message reaches logs and consoles whatever zend.exception_ignore_args says.
+     * None of those characters is allowed here, and a seed is longer than the limit.
+     */
+    private function quotedIfPlain(#[\SensitiveParameter] string $value, string $quote = "'"): string
+    {
+        return preg_match('/^[\w.*> -]{1,50}$/D', $value) === 1 ? ' ' . $quote . $value . $quote : '';
+    }
+
+    /**
+     * Refuses a credential option typed after a second ? or a ; in the DSN query.
+     *
+     * By default parse_str() splits on & only, so such a credential stays in the value of the option before it, and goes
+     * where that goes: into the TLS library's error for a file name, or to the server, which stores it, for a consumer name
+     * or a stream description. That is never what was meant, and the login that was meant does not happen either. The value
+     * is not repeated. An option in the options map is not checked, as nothing splits it.
+     *
+     * The query is read as parse_str() reads it, with + as a space, and a name may have a space next to it or be in another
+     * case, as a mistake does not keep to the spelling. An encoded & or a double encoding, a name with brackets or a dot, a
+     * literal control character, which parse_url() has already turned into _, and a space outside ASCII are not checked:
+     * nobody types those by mistake, and they stay a part of the value.
+     *
+     * @throws InvalidArgumentException When the query holds such a credential.
+     */
+    private function assertNoCredentialAfterASecondQuery(#[\SensitiveParameter] string $query): void
+    {
+        if (preg_match('/[?;]\s*(?:nkey_seed|nkey|jwt|token|username|password|tls_key_passphrase)\s*=/i', urldecode($query)) === 1) {
+            throw new InvalidArgumentException(
+                'The NATS DSN holds a credential after a second "?" or a ";" in its query, where it would be read as a part '
+                . 'of the option before it. Separate the options with "&".'
+            );
         }
     }
 
@@ -258,10 +315,11 @@ final class NatsTransportConfigurationBuilder
      * @param array<string, mixed> $options    Method-level option overrides
      * @return array<string, mixed>            Fully merged and validated configuration
      */
-    private function buildConfiguration(array $components, array $options): array
+    private function buildConfiguration(#[\SensitiveParameter] array $components, #[\SensitiveParameter] array $options): array
     {
         $query = [];
         if (isset($components['query']) && is_string($components['query'])) {
+            $this->assertNoCredentialAfterASecondQuery($components['query']);
             /** @var array<string, mixed> $query */
             parse_str($components['query'], $query);
         }
@@ -271,8 +329,10 @@ final class NatsTransportConfigurationBuilder
 
         $retryHandler = RetryHandler::tryFrom(TypeCoercion::stringValue($configuration[TransportOption::RETRY_HANDLER->value] ?? RetryHandler::SYMFONY->value));
         if ($retryHandler === null) {
-            $invalidRetryHandler = TypeCoercion::stringValue($configuration[TransportOption::RETRY_HANDLER->value] ?? null);
-            throw new InvalidArgumentException("Invalid retry_handler option '{$invalidRetryHandler}'. Allowed values are 'symfony' or 'nats'.");
+            throw new InvalidArgumentException(sprintf(
+                "Invalid retry_handler option%s. Allowed values are 'symfony' or 'nats'.",
+                $this->quotedIfPlain(TypeCoercion::stringValue($configuration[TransportOption::RETRY_HANDLER->value] ?? null)),
+            ));
         }
 
         $configuration[TransportOption::RETRY_HANDLER->value] = $retryHandler->value;
@@ -292,6 +352,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertNonNegativeNumber($configuration, TransportOption::PING_AFTER_IDLE);
         // null defers to the client's default; 0 would only spell "reconnect disabled" a second way.
         $this->assertPositiveNumber($configuration, TransportOption::MAX_RECONNECT_ATTEMPTS, true);
+        $this->assertNumberFitsAnInt($configuration, TransportOption::MAX_RECONNECT_ATTEMPTS);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_AGE, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_BYTES, true);
         $this->assertNonNegativeNumber($configuration, TransportOption::STREAM_MAX_MESSAGES, true);
@@ -321,6 +382,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertBackoff($configuration);
         $this->assertMaxDeliverExceedsBackoff($configuration);
         $this->assertDuplicateWindowNotExceedingMaxAge($configuration);
+        $this->assertResendOnReconnect($configuration);
         $this->normalizeStorageBackend($configuration);
         $this->normalizeStreamRetention($configuration);
         $this->normalizeStreamDiscard($configuration);
@@ -335,7 +397,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeStorageBackend(array &$configuration): void
+    private function normalizeStorageBackend(#[\SensitiveParameter] array &$configuration): void
     {
         $storage = TypeCoercion::stringValue(
             $configuration[TransportOption::STREAM_STORAGE->value] ?? StorageBackend::File->value,
@@ -345,8 +407,8 @@ final class NatsTransportConfigurationBuilder
         $storageBackend = StorageBackend::tryFrom(strtolower($storage));
         if ($storageBackend === null) {
             throw new InvalidArgumentException(sprintf(
-                "Invalid stream_storage option '%s'. Allowed values are 'file' or 'memory'.",
-                $storage,
+                "Invalid stream_storage option%s. Allowed values are 'file' or 'memory'.",
+                $this->quotedIfPlain($storage),
             ));
         }
 
@@ -358,7 +420,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeStreamRetention(array &$configuration): void
+    private function normalizeStreamRetention(#[\SensitiveParameter] array &$configuration): void
     {
         $this->normalizeEnumOption(
             $configuration,
@@ -373,7 +435,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeStreamDiscard(array &$configuration): void
+    private function normalizeStreamDiscard(#[\SensitiveParameter] array &$configuration): void
     {
         $this->normalizeEnumOption(
             $configuration,
@@ -388,7 +450,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeReplayPolicy(array &$configuration): void
+    private function normalizeReplayPolicy(#[\SensitiveParameter] array &$configuration): void
     {
         $this->normalizeEnumOption(
             $configuration,
@@ -410,7 +472,7 @@ final class NatsTransportConfigurationBuilder
      * @param callable(string): ?\BackedEnum $tryFrom       Enum resolver (e.g. RetentionPolicy::tryFrom(...))
      * @param list<string>                   $allowed       Allowed values, for the error message
      */
-    private function normalizeEnumOption(array &$configuration, TransportOption $option, callable $tryFrom, array $allowed): void
+    private function normalizeEnumOption(#[\SensitiveParameter] array &$configuration, TransportOption $option, callable $tryFrom, array $allowed): void
     {
         $value = $configuration[$option->value] ?? null;
         if ($value === null) {
@@ -421,9 +483,9 @@ final class NatsTransportConfigurationBuilder
         $enum = $tryFrom(strtolower($raw));
         if ($enum === null) {
             throw new InvalidArgumentException(sprintf(
-                "Invalid %s option '%s'. Allowed values are '%s'.",
+                "Invalid %s option%s. Allowed values are '%s'.",
                 $option->value,
-                $raw,
+                $this->quotedIfPlain($raw),
                 implode("', '", $allowed),
             ));
         }
@@ -440,7 +502,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeStreamCompression(array &$configuration): void
+    private function normalizeStreamCompression(#[\SensitiveParameter] array &$configuration): void
     {
         $this->normalizeEnumOption(
             $configuration,
@@ -457,7 +519,7 @@ final class NatsTransportConfigurationBuilder
      * @param TransportOption      $option        The option key to validate
      * @param bool                 $integerOnly   When true, also rejects non-integer values
      */
-    private function assertPositiveNumber(array $configuration, TransportOption $option, bool $integerOnly = false): void
+    private function assertPositiveNumber(#[\SensitiveParameter] array $configuration, TransportOption $option, bool $integerOnly = false): void
     {
         $value = $configuration[$option->value] ?? null;
         if ($value === null) {
@@ -477,7 +539,7 @@ final class NatsTransportConfigurationBuilder
      * @param TransportOption      $option        The option key to validate
      * @param bool                 $integerOnly   When true, also rejects non-integer values
      */
-    private function assertNonNegativeNumber(array $configuration, TransportOption $option, bool $integerOnly = false): void
+    private function assertNonNegativeNumber(#[\SensitiveParameter] array $configuration, TransportOption $option, bool $integerOnly = false): void
     {
         $value = $configuration[$option->value] ?? null;
         if ($value === null) {
@@ -500,7 +562,7 @@ final class NatsTransportConfigurationBuilder
      * @param array<string, mixed> $configuration Merged configuration array
      * @param TransportOption      $option        The option key to validate
      */
-    private function assertNotExceedingInt32(array $configuration, TransportOption $option): void
+    private function assertNotExceedingInt32(#[\SensitiveParameter] array $configuration, TransportOption $option): void
     {
         $value = $configuration[$option->value] ?? null;
         if ($value === null) {
@@ -517,20 +579,36 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
+     * Validates that a number survives the cast to an int.
+     *
+     * A float past the range of an int does not: 1e19 wraps around to a negative number, which the client's constructor
+     * refuses with every credential in its frame, 2e19 to an unrelated huge number, and 1e300 or INF become 0. A numeric
+     * string past the largest float, such as "1e400", becomes 0 too. An int of any size stays as it is, and any other numeric
+     * string stops at the largest int, which is a fair reading of a huge number, so neither is refused here.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     * @param TransportOption      $option        The option key to validate
+     */
+    private function assertNumberFitsAnInt(#[\SensitiveParameter] array $configuration, TransportOption $option): void
+    {
+        $value = $configuration[$option->value] ?? null;
+        // Next to a float PHP_INT_MAX reads as 2^63, the first float that does not fit.
+        if ((is_float($value) && $value >= PHP_INT_MAX) || (is_string($value) && is_infinite((float) $value))) {
+            throw new InvalidArgumentException(sprintf('The %s option is too large to be an integer.', $option->value));
+        }
+    }
+
+    /**
      * Validates the stream description against the server's length limit.
      *
      * NATS caps a stream description at 4096 characters and rejects a longer one at setup time.
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertStreamDescriptionLength(array $configuration): void
+    private function assertStreamDescriptionLength(#[\SensitiveParameter] array $configuration): void
     {
-        $value = $configuration[TransportOption::STREAM_DESCRIPTION->value] ?? null;
-        if ($value === null) {
-            return;
-        }
-
-        $description = TypeCoercion::stringValue($value);
+        // An unset description reads as '', which is within the limit.
+        $description = TypeCoercion::stringValue($configuration[TransportOption::STREAM_DESCRIPTION->value] ?? null);
         if (strlen($description) > self::MAX_STREAM_DESCRIPTION_LENGTH) {
             throw new InvalidArgumentException(sprintf(
                 'The %s option must not exceed %d characters (got %d): NATS rejects longer descriptions.',
@@ -557,7 +635,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeStreamPlacement(array &$configuration): void
+    private function normalizeStreamPlacement(#[\SensitiveParameter] array &$configuration): void
     {
         $cluster = $configuration[TransportOption::STREAM_PLACEMENT_CLUSTER->value] ?? null;
         if ($cluster !== null) {
@@ -604,7 +682,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function normalizeAdditionalSubjects(array &$configuration): void
+    private function normalizeAdditionalSubjects(#[\SensitiveParameter] array &$configuration): void
     {
         $subjects = $configuration[TransportOption::ADDITIONAL_SUBJECTS->value] ?? null;
         if ($subjects === null) {
@@ -638,7 +716,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertTriStateBooleans(array $configuration): void
+    private function assertTriStateBooleans(#[\SensitiveParameter] array $configuration): void
     {
         $flags = [
             TransportOption::STREAM_DENY_DELETE,
@@ -657,9 +735,9 @@ final class NatsTransportConfigurationBuilder
             // the same answer either way, an unrecognized one does not.
             if (TypeCoercion::boolValue($value, false) !== TypeCoercion::boolValue($value, true)) {
                 throw new InvalidArgumentException(sprintf(
-                    "Invalid %s option '%s'. Expected a boolean: 'true'/'false', '1'/'0', 'yes'/'no' or 'on'/'off'.",
+                    "Invalid %s option%s. Expected a boolean: 'true'/'false', '1'/'0', 'yes'/'no' or 'on'/'off'.",
                     $flag->value,
-                    TypeCoercion::stringValue($value, '(non-scalar)'),
+                    $this->quotedIfPlain(TypeCoercion::stringValue($value)),
                 ));
             }
         }
@@ -670,7 +748,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertBackoff(array $configuration): void
+    private function assertBackoff(#[\SensitiveParameter] array $configuration): void
     {
         $backoff = $configuration[TransportOption::BACKOFF->value] ?? null;
         if ($backoff === null) {
@@ -682,7 +760,9 @@ final class NatsTransportConfigurationBuilder
         }
 
         foreach ($backoff as $value) {
-            if ((!is_int($value) && !is_float($value) && !is_string($value)) || !is_numeric($value) || (float) $value < 0) {
+            // is_numeric() is false for anything but an int, a float or a numeric string, and PHP compares a
+            // numeric string with 0 as a number.
+            if (!is_numeric($value) || $value < 0) {
                 throw new InvalidArgumentException('The backoff option must be a list of non-negative numbers (seconds).');
             }
         }
@@ -698,7 +778,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertMaxDeliverExceedsBackoff(array $configuration): void
+    private function assertMaxDeliverExceedsBackoff(#[\SensitiveParameter] array $configuration): void
     {
         $backoff = $configuration[TransportOption::BACKOFF->value] ?? null;
         $maxDeliver = $configuration[TransportOption::MAX_DELIVER->value] ?? null;
@@ -719,6 +799,38 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
+     * Validates the two conditions under which resend_on_reconnect does what it says.
+     *
+     * Only the NATS client's own recovery replaces the connection under a send in flight, so without reconnect: true
+     * the option would do nothing, silently. And the copy sent again goes out up to request_timeout after the first:
+     * JetStream drops it only while the first is inside the stream's duplicate window, so a configured window that
+     * is not longer than request_timeout could store the message twice. An unset window leaves the stream's own (2
+     * minutes for a new stream), which cannot be checked here.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function assertResendOnReconnect(#[\SensitiveParameter] array $configuration): void
+    {
+        if (!$this->toBool($configuration[TransportOption::RESEND_ON_RECONNECT->value])) {
+            return;
+        }
+
+        if (!$this->toBool($configuration[TransportOption::RECONNECT->value])) {
+            throw new InvalidArgumentException('The resend_on_reconnect option needs reconnect: true: only the NATS client\'s own recovery sends a publish again on the new connection.');
+        }
+
+        $duplicateWindow = $configuration[TransportOption::STREAM_DUPLICATE_WINDOW->value];
+        $requestTimeout = TypeCoercion::floatValue($configuration[TransportOption::REQUEST_TIMEOUT->value]);
+        if ($duplicateWindow !== null && TypeCoercion::floatValue($duplicateWindow) <= $requestTimeout) {
+            throw new InvalidArgumentException(sprintf(
+                'The stream_duplicate_window option (%ss) must be longer than request_timeout (%ss) with resend_on_reconnect: a publish sent again after the window could be stored twice.',
+                TypeCoercion::stringValue($duplicateWindow),
+                TypeCoercion::stringValue($configuration[TransportOption::REQUEST_TIMEOUT->value]),
+            ));
+        }
+    }
+
+    /**
      * Validates that the de-duplication window does not exceed the stream's max age.
      *
      * NATS rejects a stream whose duplicate_window is larger than a finite max_age
@@ -728,19 +840,15 @@ final class NatsTransportConfigurationBuilder
      *
      * @param array<string, mixed> $configuration Merged configuration array
      */
-    private function assertDuplicateWindowNotExceedingMaxAge(array $configuration): void
+    private function assertDuplicateWindowNotExceedingMaxAge(#[\SensitiveParameter] array $configuration): void
     {
-        $duplicateWindow = $configuration[TransportOption::STREAM_DUPLICATE_WINDOW->value] ?? null;
-        if ($duplicateWindow === null) {
-            return;
-        }
-
         $maxAge = TypeCoercion::intValue($configuration[TransportOption::STREAM_MAX_AGE->value] ?? 0);
         if ($maxAge <= 0) {
             return;
         }
 
-        $duplicateWindowValue = TypeCoercion::intValue($duplicateWindow);
+        // An unset window reads as 0, which never exceeds a positive max age.
+        $duplicateWindowValue = TypeCoercion::intValue($configuration[TransportOption::STREAM_DUPLICATE_WINDOW->value] ?? null);
         if ($duplicateWindowValue > $maxAge) {
             throw new InvalidArgumentException(sprintf(
                 'The stream_duplicate_window option (%ds) must not exceed stream_max_age (%ds): NATS rejects a duplicate window larger than the stream max age.',
@@ -755,7 +863,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @throws InvalidArgumentException If the value is not numeric
      */
-    private function toNumber(mixed $value, TransportOption $option): float
+    private function toNumber(#[\SensitiveParameter] mixed $value, TransportOption $option): float
     {
         // is_numeric() is the single sufficient gate: it returns false for every non-numeric input -
         // arrays, bools, null and objects included - so a separate is_int/is_float/is_string guard
@@ -791,7 +899,7 @@ final class NatsTransportConfigurationBuilder
      * Thin wrapper over {@see TypeCoercion::boolValue()} - kept so the numerous call sites in this
      * builder read fluently, while the coercion policy itself lives in one shared place.
      */
-    private function toBool(mixed $value): bool
+    private function toBool(#[\SensitiveParameter] mixed $value): bool
     {
         return TypeCoercion::boolValue($value);
     }
@@ -802,12 +910,9 @@ final class NatsTransportConfigurationBuilder
      * Returns null for actual nulls, non-scalar types, and empty/whitespace-only strings.
      * Trims whitespace from valid string values.
      */
-    private function toNullableString(mixed $value): ?string
+    private function toNullableString(#[\SensitiveParameter] mixed $value): ?string
     {
-        if ($value === null) {
-            return null;
-        }
-
+        // null is not a scalar either.
         if (!is_string($value) && !is_int($value) && !is_float($value) && !is_bool($value)) {
             return null;
         }
@@ -815,6 +920,161 @@ final class NatsTransportConfigurationBuilder
         $normalized = trim((string) $value);
 
         return $normalized === '' ? null : $normalized;
+    }
+
+    /**
+     * Builds the signer that answers the server's nonce challenge from the nkey_seed option.
+     *
+     * Only null means "no seed". Any other value that is not a seed is refused, an empty one included: reading it as no
+     * seed would connect with whatever other credentials exist, as the server's no_auth_user or anonymously, without a word,
+     * because a variable happens to be empty. %env(default::NATS_NKEY_SEED)% gives null for an optional seed.
+     *
+     * @param array<string, mixed> $configuration Merged option map
+     *
+     * @throws InvalidArgumentException When the seed is not a valid NKey user seed, or the sodium extension is missing.
+     */
+    private function resolveNkeySigner(#[\SensitiveParameter] array $configuration): ?NkeySeedSigner
+    {
+        $seed = $configuration[TransportOption::NKEY_SEED->value];
+        if ($seed === null) {
+            return null;
+        }
+
+        if (!is_string($seed) || trim($seed) === '') {
+            throw new InvalidArgumentException(
+                'The nkey_seed option must be a non-empty string, or null for no seed. For an optional seed from an environment '
+                . 'variable use the default processor, as in %env(default::NATS_NKEY_SEED)%.'
+            );
+        }
+
+        try {
+            $signer = new NkeySeedSigner($seed);
+        } catch (NatsException|\Error $invalid) {
+            // Only the message goes on. The exception is not chained: its frames hold the whole seed as a string argument,
+            // which the client does not mark, and one wrong character in it is easily repaired. An \Error comes from a sodium
+            // function the client cannot call, such as a disabled one, and holds the seed in the same frames.
+            //
+            // The client says little about a seed that is not one, such as the public key or a whole .creds file, so the error
+            // adds what one looks like. It does not when the fault is in sodium, as nothing is wrong with the seed then: the
+            // extension is missing, a function is disabled, or sodium failed, as the polyfill's sodium_memzero() always does.
+            throw new InvalidArgumentException(sprintf(
+                'The NKey seed cannot be used: %s.%s',
+                $invalid->getMessage(),
+                $invalid instanceof NatsException && $invalid->getPrevious() === null && function_exists('sodium_crypto_sign_seed_keypair')
+                    ? ' A user seed starts with SU, and a .creds file holds it under its BEGIN USER NKEY SEED line.'
+                    : '',
+            ));
+        }
+
+        // The client takes a seed of any key type. A server only knows users by a user key, and refuses the others in
+        // its config, so such a seed could only ever get a bare Authorization Violation at connect, but for a bearer JWT,
+        // whose signature the server does not check and which has no reason to come with such a seed.
+        if (!str_starts_with($signer->publicKey(), 'U')) {
+            throw new InvalidArgumentException(
+                'The NKey seed cannot be used: it is not a user seed (SU...). A NATS user logs in with a user key, not with an '
+                . 'account, operator, server, cluster or curve key.'
+            );
+        }
+
+        return $signer;
+    }
+
+    /**
+     * Refuses a seed next to a username, password or token, from the DSN or the options.
+     *
+     * The CONNECT would carry both, and a server with both kinds of users logs the connection in with the NKey and ignores
+     * the rest, even a wrong password: the DSN says one user and the connection is another, in another account if the
+     * server has more than one. On a server that sends no nonce the client refuses the login outright, though the password
+     * alone would have worked, and a server in operator mode refuses it. A jwt stays allowed: it goes with the seed.
+     *
+     * @throws InvalidArgumentException When a seed comes with a username, password or token.
+     */
+    private function assertSeedStandsAlone(
+        #[\SensitiveParameter] ?NkeySeedSigner $signer,
+        #[\SensitiveParameter] ?string $username,
+        #[\SensitiveParameter] ?string $password,
+        #[\SensitiveParameter] ?string $token,
+    ): void {
+        if ($signer !== null && ($username !== null || $password !== null || $token !== null)) {
+            throw new InvalidArgumentException(
+                'The nkey_seed option cannot be combined with a username, password or token, from the DSN or the options: a '
+                . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and on '
+                . 'a server that sends no nonce the client would refuse the login, as there is nothing to sign. Remove them, '
+                . 'or remove the seed.'
+            );
+        }
+    }
+
+    /**
+     * The public NKey the CONNECT carries next to the signature. With a seed it is the seed's own, derived from it, which
+     * the nkey option may repeat but not contradict. Without a signer nkey is refused: the client throws before it writes
+     * the CONNECT when it has none, on every server, so that configuration can never connect, and with reconnect: true it
+     * took 43 seconds to say so. The seed is the one source of a signer here.
+     *
+     * @param array<string, mixed> $configuration Merged option map
+     *
+     * @throws InvalidArgumentException When nkey is set without a seed, or is not the public key of the seed.
+     */
+    private function resolveNkey(#[\SensitiveParameter] array $configuration, #[\SensitiveParameter] ?NkeySeedSigner $signer): ?string
+    {
+        $configured = $this->toNullableString($configuration[TransportOption::NKEY->value]);
+        if ($signer === null) {
+            if ($configured !== null) {
+                throw new InvalidArgumentException(
+                    'The nkey option needs nkey_seed: the client must sign the server\'s nonce with the seed, so nkey alone can '
+                    . 'never connect. Put the seed (SU...) in nkey_seed and leave nkey unset: the public key is derived from it.'
+                );
+            }
+
+            return null;
+        }
+
+        $derived = $signer->publicKey();
+        if ($configured !== null && $configured !== $derived) {
+            // The derived key is public. The configured value is not repeated: it may be a seed put here by mistake,
+            // and an exception message reaches logs and consoles whatever zend.exception_ignore_args says.
+            throw new InvalidArgumentException(sprintf(
+                'The nkey option is not the public key of the configured NKey seed, which is "%s". Leave nkey unset: the '
+                . 'transport derives the key from the seed.',
+                $derived,
+            ));
+        }
+
+        return $derived;
+    }
+
+    /**
+     * The user JWT the CONNECT carries. It needs a signer: the client signs the server's nonce with it and throws before
+     * it writes the CONNECT when it has none, on every server, so a JWT alone can never connect. The seed is the one
+     * source of a signer here. For a bearer JWT the server does not check that signature, but the client asks for the
+     * signer all the same.
+     *
+     * The CONNECT carries the value as it is, and a tracing server logs it, so one that cannot be a JWT stops here: a .creds
+     * file holds a JWT and a seed, which makes the seed, or the whole file, an easy mistake. The value is not repeated.
+     *
+     * @param array<string, mixed> $configuration Merged option map
+     *
+     * @throws InvalidArgumentException When jwt is set without a seed, or does not have the three parts of a JWT.
+     */
+    private function resolveJwt(#[\SensitiveParameter] array $configuration, #[\SensitiveParameter] ?NkeySeedSigner $signer): ?string
+    {
+        $jwt = $this->toNullableString($configuration[TransportOption::JWT->value]);
+        if ($jwt !== null && $signer === null) {
+            throw new InvalidArgumentException(
+                'The jwt option needs nkey_seed: the client signs the server\'s nonce with the seed of the JWT\'s user and cannot '
+                . 'connect without one. Put that seed (SU...) in nkey_seed; a .creds file holds both values.'
+            );
+        }
+
+        // The value is trimmed, so the end of the pattern cannot be fooled by a last newline.
+        if ($jwt !== null && preg_match('/^[\w-]+\.[\w-]+\.[\w-]+$/', $jwt) !== 1) {
+            throw new InvalidArgumentException(
+                'The jwt option is not a JWT, which has three parts separated by dots. A .creds file holds the JWT under its '
+                . 'BEGIN NATS USER JWT line, and the seed, for nkey_seed, under its BEGIN USER NKEY SEED line.'
+            );
+        }
+
+        return $jwt;
     }
 
     /**
@@ -830,7 +1090,7 @@ final class NatsTransportConfigurationBuilder
      * @param TransportOption       $option        Explicit-option key (USERNAME or PASSWORD)
      * @param string                $componentKey  DSN component key ('user' or 'pass')
      */
-    private function resolveCredential(array $components, array $configuration, TransportOption $option, string $componentKey): ?string
+    private function resolveCredential(#[\SensitiveParameter] array $components, #[\SensitiveParameter] array $configuration, TransportOption $option, string $componentKey): ?string
     {
         $configured = $this->normalizeCredential($configuration[$option->value] ?? null);
         if ($configured !== null) {
@@ -848,7 +1108,7 @@ final class NatsTransportConfigurationBuilder
      * Unlike toNullableString() this does NOT trim, because leading or trailing whitespace can be a
      * significant part of a username or password and trimming it would silently corrupt the credential.
      */
-    private function normalizeCredential(mixed $value): ?string
+    private function normalizeCredential(#[\SensitiveParameter] mixed $value): ?string
     {
         if (!is_string($value) && !is_int($value) && !is_float($value) && !is_bool($value)) {
             return null;
@@ -867,7 +1127,7 @@ final class NatsTransportConfigurationBuilder
      *
      * @throws InvalidArgumentException If the key is missing or empty
      */
-    private function requiredString(array $components, string $key): string
+    private function requiredString(#[\SensitiveParameter] array $components, string $key): string
     {
         $value = $components[$key] ?? null;
 
