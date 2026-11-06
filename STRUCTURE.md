@@ -88,6 +88,7 @@ examples/                                       # Runnable scripts, one per beha
 
 scripts/
 ├── run-examples.sh                             # runs examples/*.php, strict mode for CI
+├── run-tests-with-pauses.php                   # composer test:unit:paused: the unit tests, stopped at random moments
 ├── check-mutation-canary.php                   # composer test:mutation:canary: mutants that change nothing all escape
 └── check-mutation-log.php                      # composer test:mutation:check-log: no mutant killed by the harness
 

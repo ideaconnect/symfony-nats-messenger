@@ -25,7 +25,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
 - 🌐 **NATS Clusters** - One server in the DSN, the others learned from the cluster; failover, replicated streams
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
-- 🧪 **Thoroughly Tested** - 1036 unit tests, ~99.8% coverage, mutation-tested (98.5% MSI)
+- 🧪 **Thoroughly Tested** - 1038 unit tests, ~99.8% coverage, mutation-tested (98.5% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -1536,6 +1536,9 @@ composer test:unit
 
 # Or run tests manually
 ./vendor/bin/phpunit
+
+# Stopped at random moments, which fails a test that depends on how fast its process runs
+composer test:unit:paused
 ```
 
 The target is to have at least 90% of code coverage.
@@ -1860,6 +1863,9 @@ seconds for a refused connection, see [Connection Timeout](#connection-timeout))
 first: about 109 seconds for a refused connection at the default attempts, and about 43 seconds for a seed on a server that
 sends no nonce. A login the server itself refuses returns at once in both modes. Monitor the connection itself, or the
 stream with the `nats` CLI, rather than reading a 0 as "nothing to do".
+
+Nothing waits for a plain ACK, so for a moment after `ack()` returned the count can still include that message. With
+`ack_sync` the server has applied the acknowledgement when `ack()` returns.
 
 > **Tested by:** `testGetMessageCountReturnsConsumerPendingMessages`, `testGetMessageCountFallsBackToStreamState`, `testGetMessageCountReturnsZeroWhenLookupsFail`, `testGetMessageCountSumsAckPendingAndPending`, `testMessageCountThatCannotConnectDialsOnceAndReturnsZero`, `testMessageCountOfALoginTheServerRefusesDialsOnceAndReturnsZero`, the Behat scenarios `A seed the server does not know is refused by the server` and `A JWT with another user's seed is refused by the server`. The timings were measured by hand.
 

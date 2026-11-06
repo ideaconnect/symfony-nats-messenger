@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/../vendor/autoload.php';
 
+use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
@@ -273,11 +274,21 @@ function answersJetStream(JetStreamContext $jetStream): bool
 }
 
 /**
- * Waits until one server of the test cluster answers JetStream requests, after it started or rejoined.
+ * Waits until one server of the test cluster takes part in the cluster again, after it started or rejoined: until a
+ * stream with three replicas can be created through it. Answering JetStream requests is not enough. For a moment after
+ * that, NATS 2.10 can still refuse such a stream with "no suitable peers for placement, peer offline", while the meta
+ * leader's /jsz shows every peer online and current, so only a real placement tells.
  */
 function waitForClusterServer(string $server): void
 {
-    waitUntil($server . ' to answer JetStream requests', 60, static fn (): bool => withClusterJetStream($server, answersJetStream(...)));
+    // One name for all tries: when a try created the stream and failed to delete it, the next one finishes that.
+    $probe = exampleStream('placement_probe');
+    waitUntil($server . ' to place a stream with three replicas', 60, static fn (): bool => withClusterJetStream($server, static function (JetStreamContext $jetStream) use ($probe): bool {
+        $jetStream->addStream((new StreamConfiguration($probe))->subjects($probe . '.messages')->replicas(3))->await();
+        $jetStream->deleteStream($probe)->await();
+
+        return true;
+    }));
 }
 
 /**

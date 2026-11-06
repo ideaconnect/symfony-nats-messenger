@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace IDCT\NatsMessenger\Tests\Support;
 
 use Amp\Cancellation;
+use Amp\DeferredFuture;
 use Amp\Future;
 use IDCT\NATS\Transport\PeerCloseAwareTransportInterface;
 use IDCT\NATS\Transport\TransportClosedException;
+use Revolt\EventLoop;
 
 use function Amp\async;
 use function Amp\delay;
@@ -28,10 +30,15 @@ use function Amp\delay;
  *    publish or request write, which sees such a close on a plain socket; closeUnread(behindUnreadBytes: true) is a
  *    close no peek can see, as over TLS, where the server's close_notify waits unread ahead of it;
  *  - holdNextDial(): the next dial completes only after the given time, so a recovery stays in flight that long;
+ *  - holdNextDialUntilReleased(): the next dial completes when the test says so, however long the test took to get
+ *    there, for a test that looks at a recovery while it is in flight;
  *  - refuseDials: every dial fails, so a recovery runs through its attempts and gives up.
  */
 final class FaultInjectingNatsServer implements PeerCloseAwareTransportInterface
 {
+    /** How long a dial stays held when the test does not release it. */
+    private const DIAL_HOLD_LIMIT_SECONDS = 10.0;
+
     /** Whether every dial fails. */
     public bool $refuseDials = false;
 
@@ -46,6 +53,9 @@ final class FaultInjectingNatsServer implements PeerCloseAwareTransportInterface
     private ?string $dropAfterWriteContaining = null;
 
     private int $holdNextDialMs = 0;
+
+    /** @var DeferredFuture<null>|null Completed when the dial holdNextDialUntilReleased() holds may go on. */
+    private ?DeferredFuture $dialRelease = null;
 
     /** The session closeUnread() closed, by the server's count, or null. */
     private ?int $closedUnreadSession = null;
@@ -69,6 +79,10 @@ final class FaultInjectingNatsServer implements PeerCloseAwareTransportInterface
                 $hold = $this->holdNextDialMs;
                 $this->holdNextDialMs = 0;
                 delay($hold / 1000);
+            }
+
+            if ($this->dialRelease !== null) {
+                $this->waitForDialRelease($this->dialRelease);
             }
 
             if ($this->refuseDials) {
@@ -152,6 +166,24 @@ final class FaultInjectingNatsServer implements PeerCloseAwareTransportInterface
         $this->holdNextDialMs = $milliseconds;
     }
 
+    /**
+     * The next dial completes when {@see releaseHeldDial()} is called, or after DIAL_HOLD_LIMIT_SECONDS when nothing
+     * calls it, as when the operation under test wrongly waits for the dial: the test then fails on what it checks,
+     * rather than hanging. One-shot.
+     */
+    public function holdNextDialUntilReleased(): void
+    {
+        $this->dialRelease = new DeferredFuture();
+    }
+
+    /** Lets the dial go on that {@see holdNextDialUntilReleased()} holds. Does nothing when no dial is held. */
+    public function releaseHeldDial(): void
+    {
+        $release = $this->dialRelease;
+        $this->dialRelease = null;
+        $release?->complete();
+    }
+
     /** The server closes the connection: the client's read meets EOF. */
     public function dropConnection(): void
     {
@@ -189,5 +221,19 @@ final class FaultInjectingNatsServer implements PeerCloseAwareTransportInterface
     public function lostWrites(): array
     {
         return $this->lostWrites;
+    }
+
+    /**
+     * @param DeferredFuture<null> $release
+     */
+    private function waitForDialRelease(DeferredFuture $release): void
+    {
+        // Also what keeps the event loop running meanwhile, as the socket of a real dial does: the client's budgets do not.
+        $limit = EventLoop::delay(self::DIAL_HOLD_LIMIT_SECONDS, $this->releaseHeldDial(...));
+        try {
+            $release->getFuture()->await();
+        } finally {
+            EventLoop::cancel($limit);
+        }
     }
 }
