@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a machine short of CPU failed it, with `the send waited for the held dial` or a request that timed out. An operation that
   has to succeed now gets a budget it never uses up, only the send a test runs out of its budget gets a short one, and a
   recovery a test looks at waits for the test instead of for a time. The class also runs faster, 0.9 s instead of 2.2 s.
+- `SubscriptionLimitPullTest` and a connection check test bounded how long a failure took too tightly for a process that was
+  paused. Their bounds now sit far from what the failure normally takes.
 
 ## [5.8.0] - 2026-11-04
 
