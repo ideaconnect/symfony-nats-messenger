@@ -72,9 +72,10 @@ the client reading or not, and, not read, seen or not by the client's `peerClose
 right after it took a write, hold the next dial or refuse every dial. A PHP process runs the event loop only inside a
 transport call, so the client notices a
 lost connection when an operation writes to it; that operation starts the recovery, and whether it waits for it or
-times out and leaves the client Connecting depends on how long the dial is held against `request_timeout` (0.1 s here,
-`connection_timeout` 0.02 s, the client's reconnect delay 1 ms). The transport's PINGs are counted through `rtt()`; the
-client's heartbeat is off (#81).
+times out and leaves the client Connecting depends on whether the dial ends within its budget. An operation that has to
+succeed gets 5 s, which it never uses up, only the send a test runs out of its budget gets 50 ms, and a recovery a test
+looks at while it is in flight is held until the test releases it, so nothing here depends on how fast the process runs.
+The client's reconnect delay is 1 ms. The transport's PINGs are counted through `rtt()`; the client's heartbeat is off (#81).
 
 | Feature | Tests |
 |---------|-------|
