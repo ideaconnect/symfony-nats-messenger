@@ -78,7 +78,7 @@ final class SubscriptionLimitNatsServer implements TransportInterface
     /** @var list<array<string, mixed>> The fields of each CONNECT the server received, in order. */
     private array $connects = [];
 
-    /** @var list<array{headers: ?string, payload: string}> The stream's messages, in order. */
+    /** @var list<array{subject: string, headers: ?string, payload: string}> The stream's messages, in order. */
     private array $stream = [];
 
     /** How many of the stream's messages the consumer has delivered. */
@@ -366,7 +366,7 @@ final class SubscriptionLimitNatsServer implements TransportInterface
 
         $this->record('PUBLISH', $subject);
         if ($subject === $this->topic && $replyTo !== null) {
-            $this->stream[] = ['headers' => $headers, 'payload' => $body];
+            $this->stream[] = ['subject' => $subject, 'headers' => $headers, 'payload' => $body];
             $this->reply($replyTo, (string) json_encode(['stream' => $this->streamName, 'seq' => count($this->stream)]));
         }
     }
@@ -395,10 +395,10 @@ final class SubscriptionLimitNatsServer implements TransportInterface
                 count($this->stream) - $this->delivered,
             );
             if ($message['headers'] === null) {
-                $this->send(sprintf("MSG %s %d %s %d\r\n%s\r\n", $inbox, $sid, $ackSubject, strlen($message['payload']), $message['payload']));
+                $this->send(sprintf("MSG %s %d %s %d\r\n%s\r\n", $message['subject'], $sid, $ackSubject, strlen($message['payload']), $message['payload']));
             } else {
                 $total = strlen($message['headers']) + strlen($message['payload']);
-                $this->send(sprintf("HMSG %s %d %s %d %d\r\n%s%s\r\n", $inbox, $sid, $ackSubject, strlen($message['headers']), $total, $message['headers'], $message['payload']));
+                $this->send(sprintf("HMSG %s %d %s %d %d\r\n%s%s\r\n", $message['subject'], $sid, $ackSubject, strlen($message['headers']), $total, $message['headers'], $message['payload']));
             }
         }
 
