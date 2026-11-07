@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.8.0] - 2026-11-06
+## [5.8.0] - 2026-11-07
 
 A **minor** release. NKey and JWT logins work for the first time: the new option `nkey_seed` signs the server's nonce, and a
 transport with `jwt` or `nkey` and no seed, which could never connect, is now refused when it is built (#89, #101). With
