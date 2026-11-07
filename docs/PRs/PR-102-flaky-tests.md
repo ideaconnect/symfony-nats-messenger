@@ -75,4 +75,4 @@ One green CI run cannot show that a flake is gone, so the repeated runs above ar
 
 A pull in the last moments of a graceful stop on NATS 2.15 can get 503, which the transport reads as a missing consumer, so a restart
 scenario on a runner short of CPU can still fail with it. That is the transport's behaviour rather than a test's, so this PR does
-not change it: see the README's Automatic Reconnect section and `docs/PROJECT_MEMORY.md`, "Behavior to preserve".
+not change it: see #106, the README's Automatic Reconnect section and `docs/PROJECT_MEMORY.md`, "Behavior to preserve".

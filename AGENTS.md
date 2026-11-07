@@ -140,7 +140,7 @@ composer nats:stop               # Stop NATS
   recovery until the test releases it rather than for a time, and keep a bound on a duration far from what it normally
   takes. `composer test:unit:paused`, in CI, fails a test that breaks this.
 - A restart scenario on CI that fails with `JetStream pull request ended with status 503` and only `Connected` logged has hit a
-  known gap: a graceful stop of NATS 2.15 leaves a moment in which a pull gets 503 (the README's Automatic Reconnect section).
+  known gap (#106): a graceful stop of NATS 2.15 leaves a moment in which a pull gets 503 (the README's Automatic Reconnect section).
   Any other failure there is real.
 - Behat step definitions and hooks are **attributes** (`#[Given]`, `#[When]`, `#[Then]`, `#[AfterScenario]`), and the
   Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
