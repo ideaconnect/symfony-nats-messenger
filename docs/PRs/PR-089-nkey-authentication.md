@@ -5,7 +5,7 @@
 - **PR:** https://github.com/ideaconnect/symfony-nats-messenger/pull/89
 - **Status:** Merged on 2026-11-06 through [#101](https://github.com/ideaconnect/symfony-nats-messenger/pull/101), merge commit
   `3760c1c`. Reviewed and adapted on the branch `feat/89-nkey-jwt-auth`, which keeps the contributor's commits unchanged and
-  adds one commit per item.
+  adds one commit per item. It ships in 5.8.0.
 - **Reviewed at:** commit `bef7115`, on `main` at `30b5685`, 9 files, +305 / -3
 
 ## What the PR Proposes
@@ -159,7 +159,7 @@ Exceptions", "Login Combinations" and the sections of the NKey, JWT and token fe
 | `2c1b2af` | A test and two scenarios pin the 0 a refused login reads as, and the docs say when the count runs the attempt loop. |
 
 The other commits are documentation, some with a test that pins a statement: the README's NKey and JWT sections and
-"Upgrading from 5.8", `docs/TESTS.md`, `docs/CHANGELOG.md`, `STRUCTURE.md`, `AGENTS.md`, `CLAUDE.md`, `HUMANS.md`, the project
+its upgrade note, `docs/TESTS.md`, `docs/CHANGELOG.md`, `STRUCTURE.md`, `AGENTS.md`, `CLAUDE.md`, `HUMANS.md`, the project
 memory, the functional suite's README and the examples' guide, with one commit for two blank lines.
 
 ### Not changed
@@ -226,13 +226,10 @@ about 20 ms in CI's logs, on NATS 2.15.2, which `nats:alpine` is at this time, a
 
 ### Left for the maintainer
 
-- **The release.** The entries are under `[Unreleased]`, and the upgrade note is headed "Upgrading from 5.8", which assumes
-  this ships after 5.8.0. `main`'s changelog dates 5.8.0 2026-11-04, but no tag exists yet. To ship it in 5.8.0, move the
-  entries into that section, add it to that section's opening lines and fold the note into "Upgrading from 5.7.1".
-- **Follow-ups,** left for separate issues: `.creds` files and rotation, external signers, and the smaller findings, among
-  them the client's dumps and frames, a raw `StreamException` on a send after a restart, a pull in the last moments of a
-  graceful stop on NATS 2.15, the `^7.2` constraint that cannot
-  load `NatsTransport` (the real floor is 7.3.0, since 5.0.0), and a rule that a new option must reach a real server in a test.
+- **Follow-ups:** `.creds` files and rotation (#104), external signers (#105), a pull in the last moments of a graceful stop on
+  NATS 2.15 (#106), and smaller findings not filed yet, among them the client's dumps and frames, a raw `StreamException` on a send
+  after a restart, the `^7.2` constraint that cannot load `NatsTransport` (the real floor is 7.3.0, since 5.0.0), and a rule that a
+  new option must reach a real server in a test.
 - **The least permissions of a restricted user,** measured on client 2.28.0 and not in the README:
   - Subscribe: `_INBOX.>`.
   - To send: the topic, plus `{topic}.delayed.*` with `scheduled_messages`.

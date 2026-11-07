@@ -117,7 +117,7 @@ composer nats:stop               # stop NATS
   The client also reports a pull that got no answer before its own deadline as 408 ("No messages received
   within timeout"); that one makes the next operation PING first, since the server did not answer.
   A graceful stop of NATS 2.15 leaves a moment in which a pull can get that same 503, which ends a worker with or without
-  `reconnect: true`: a known gap, named in the README's Automatic Reconnect section. In a restart scenario on CI,
+  `reconnect: true`: a known gap (#106), named in the README's Automatic Reconnect section. In a restart scenario on CI,
   `JetStream pull request ended with status 503` with only `Connected` logged is this gap, and any other failure there is real.
 - **A pull refused at the subscription limit throws `TransportException`.** The transport holds two subscriptions
   per connection (the request reply inbox and the pull's inbox). At a limit of one, the client's

@@ -17,7 +17,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 📦 **Symfony Integration** - Implements Messenger's `TransportInterface`, `MessageCountAwareInterface`, `SetupableTransportInterface`, `KeepaliveReceiverInterface`, and `CloseableTransportInterface`
 - ⚙️ **Configurable Consumers** - Support for multiple consumer strategies
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
-- 🔐 **Authentication Support** - Built-in support for NATS authentication
+- 🔐 **Authentication Support** - User and password, token, NKey and JWT logins (see [NKey Authentication](#nkey-authentication))
 - 📊 **Stream Configuration** - Configurable retention policies and replication
 - 📍 **Stream Placement** - Pin a stream to a JetStream cluster and to tagged servers; an option you set
   changes only its own half of an existing placement (see [Stream Placement](#stream-placement))
@@ -117,8 +117,26 @@ changes.
 
 ### Upgrading from 5.7.1
 
-Nothing to change in the configuration, but look at your logs and your retry settings:
+Nothing to change in the configuration unless a transport has `nkey` or `jwt` set and no `nkey_seed`, but look at your logs and your retry settings:
 
+- **`nkey` or `jwt` with no `nkey_seed`.** Such a transport could never connect, as the client needs the seed to sign the
+  server's nonce, but it could be built. It now fails when it is built, with an `InvalidArgumentException` naming `nkey_seed`.
+  Add the seed or remove the option (see [NKey Authentication](#nkey-authentication)). Until you do, the earlier error is
+  visible even where nothing uses that transport:
+  - `messenger:stats` showed 0 for it and exited 0. A plain `messenger:stats` now exits 1 and shows no transport; naming the
+    other transports still works.
+  - A worker consuming from it and from other transports stopped with the client's `requires a nonce signer` once it reached
+    this one: at once if it comes first, otherwise when the transports before it had nothing to do. Under a supervisor it
+    still handled their messages between restarts. It now stops when it starts and handles none.
+  - A `catch (\RuntimeException)` around a dispatch to it caught the connection error, and does not catch this one.
+  - A service or smoke test that builds the transport fails.
+  - A subclass of `NatsTransport` that replaces the protected `$client` with its own signed client must stop passing
+    `nkey` or `jwt` here, as its client has them.
+- **Two other values are refused now, in the same way:** a `max_reconnect_attempts` float past the range of an int, such as
+  `1e20`, `1e300` or `.inf`, or a numeric string past the largest float, such as `'1e400'`, which became an unrelated huge
+  number, 0, or a negative number that the client refused, and a credential option after a second `?` or a `;` in the DSN
+  query, which was a part of the option before it. So a huge number of attempts is now written as an int or a numeric string
+  up to the largest float, and a value that really holds such text goes in the options, where nothing splits it.
 - **Client 2.28.0 or later.** 5.8.0 requires `idct/php-nats-jetstream-client` `^2.28`, which `composer update`
   installs. The client now notices, before it writes, that the server has closed the connection while nothing read
   it, as a server that stops while a handler runs does. With `reconnect: true` the ACK of a message handled at that
@@ -140,32 +158,7 @@ Nothing to change in the configuration, but look at your logs and your retry set
   went away before it answered is sent again on the recovered connection (see
   [Automatic Reconnect](#automatic-reconnect)).
 
-> **Tested by:** `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testTheAckOfAHandledMessageReachesTheServerOnTheRecoveredConnectionWithNoCheckFirst`, `testSymfonysRetryCopyAfterTheServerClosedTheConnectionDuringTheHandlerGoesOutOnTheRecoveredConnection`, `testBuildWithResendOnReconnectPropagatesToNatsOptions`, the examples `nats-retry.php`, `handler-failing-during-failover.php` and `handler-succeeding-during-failover.php`
-
-### Upgrading from 5.8
-
-Nothing to change unless a transport has `nkey` or `jwt` set and no `nkey_seed`. Such a transport could never connect,
-as the client needs the seed to sign the server's nonce, but it could be built. It now fails when it is built, with an
-`InvalidArgumentException` naming `nkey_seed`. Add the seed or remove the option. Until you do, the earlier error is
-visible even where nothing uses that transport:
-
-- `messenger:stats` showed 0 for it and exited 0. A plain `messenger:stats` now exits 1 and shows no transport; naming the
-  other transports still works.
-- A worker consuming from it and from other transports stopped with the client's `requires a nonce signer` once it reached
-  this one: at once if it comes first, otherwise when the transports before it had nothing to do. Under a supervisor it
-  still handled their messages between restarts. It now stops when it starts and handles none.
-- A `catch (\RuntimeException)` around a dispatch to it caught the connection error, and does not catch this one.
-- A service or smoke test that builds the transport fails.
-- A subclass of `NatsTransport` that replaces the protected `$client` with its own signed client must stop passing
-  `nkey` or `jwt` here, as its client has them.
-
-Two other values are refused now, in the same way: a `max_reconnect_attempts` float past the range of an int, such as
-`1e20`, `1e300` or `.inf`, or a numeric string past the largest float, such as `'1e400'`, which became an unrelated huge
-number, 0, or a negative number that the client refused, and a credential option after a second `?` or a `;` in the DSN
-query, which was a part of the option before it. So a huge number of attempts is now written as an int or a numeric string
-up to the largest float, and a value that really holds such text goes in the options, where nothing splits it.
-
-> **Tested by:** `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAMaxReconnectAttemptsThatDoesNotSurviveTheCastToAnInt`, `testBuildRejectsAMaxReconnectAttemptsInTheDsnThatDoesNotSurviveTheCastToAnInt`, `testBuildPassesALargeMaxReconnectAttemptsToTheClient`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, Behat scenario `Credentials that need or exclude a seed are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). `messenger:stats` naming a transport, and a worker on several transports, were measured by hand.
+> **Tested by:** `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testTheAckOfAHandledMessageReachesTheServerOnTheRecoveredConnectionWithNoCheckFirst`, `testSymfonysRetryCopyAfterTheServerClosedTheConnectionDuringTheHandlerGoesOutOnTheRecoveredConnection`, `testBuildWithResendOnReconnectPropagatesToNatsOptions`, the examples `nats-retry.php`, `handler-failing-during-failover.php` and `handler-succeeding-during-failover.php`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAMaxReconnectAttemptsThatDoesNotSurviveTheCastToAnInt`, `testBuildRejectsAMaxReconnectAttemptsInTheDsnThatDoesNotSurviveTheCastToAnInt`, `testBuildPassesALargeMaxReconnectAttemptsToTheClient`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, Behat scenario `Credentials that need or exclude a seed are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). `messenger:stats` naming a transport, and a worker on several transports, were measured by hand.
 
 ### Logging
 
@@ -1128,7 +1121,7 @@ In a DSN: `?reconnect=true&max_reconnect_attempts=20`.
   stop leaves a moment in which JetStream no longer answers and the connection is still open. It lasts about 10 ms for each
   durable consumer on a file stream, and starts at once, or about 50 ms after the signal when a pull is waiting. A pull
   written then can get 503, which reads as a missing consumer, and ends the run, with
-  `JetStream pull request ended with status 503` or, with `auto_setup`, `Failed to setup NATS stream`. Under a supervisor
+  `JetStream pull request ended with status 503` or, with `auto_setup`, `Failed to setup NATS stream` (#106). Under a supervisor
   the worker starts again. `max_reconnect_attempts` sizes the cycle in attempts,
   not in seconds: the client's default of 10 gives about 109 s against a server that refuses connections,
   where a refused dial costs about 6 s. An `ack_sync` acknowledgement that runs into the outage still fails
