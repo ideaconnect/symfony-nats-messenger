@@ -455,3 +455,33 @@ These are posted recommendations; the tests and proposed issue-summary edits are
 - Both manifests require client `^2.28`, and 2.28.0 is the version tested. CI on the tree of `3760c1c`: PHPStan clean; 1038 tests,
   2962 assertions, also stopped at random moments; coverage 99.80 % (1016/1018); Infection killed 1158 of 1176 mutants, with the 18
   survivors `docs/TESTS.md` lists; Behat 93 of 93 on each PHP job and 89 of 89 on NATS 2.10.29; 14 of 14 examples in each job.
+
+## #106: a pull's 503 during a graceful stop (2026-11-09)
+
+- **Where it belongs: the transport.** nats-server answers a pull with 503 (no responders) whenever nothing is subscribed to
+  the consumer's `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`: for a missing consumer, and for one a stopping server has
+  already stopped. The client reports that faithfully (`JetStream pull request ended with status 503`, no err_code), and
+  no client can tell the two apart from the pull alone. The misreading was `recoverFromFetchFailure()`'s, so the fix is
+  here (`pullMetAServerGoingAway()`), with the client's public API only.
+- **Why an unanswered CONSUMER.INFO means "going away".** `Server.Shutdown()` at v2.15.2 runs `signalPullConsumers()` (the
+  `409 Server Shutdown`), `stepdownRaftNodes()`, `shutdownEventing()` (`s.sys = nil`), then `shutdownJetStream()` (streams and
+  consumers stop), then closes the clients. JetStream API replies go out through `sendInternalAccountMsg()`, which sends
+  nothing once `s.sys` is nil during a shutdown. So the API is silent before any consumer stops: an order in the code,
+  not a race. Measured (16 consumers, 12 rounds): CONSUMER.INFO last answered 61 to 66 ms after `docker restart` began,
+  pulls got 503 from 75 to 105 ms until the close at 227 to 233 ms; none answered after a 503.
+- **The client keeps a request across its reconnect.** With reconnect on, a CONSUMER.INFO sent during the stop waited the
+  whole request timeout (3 s of 3 s) though the client had reconnected long before; with reconnect off it failed with
+  `Reconnect is disabled` at the close. So the transport's wait looks at the connection every 50 ms (Closed, Connecting,
+  or the reconnect count moved) instead of awaiting the reply.
+- **Not hidden: a missing consumer.** Any answer keeps the 503's reading; no answer on a connection that stays (a user
+  without permission for consumer info: the server reports a permissions violation and never answers) keeps it too.
+- **Worker loop like Symfony's** (`--sleep=1`, reconnect on, 48 consumers, restart at a random moment, 30 rounds each):
+  `main` ended the worker in 7 rounds (plain) and 6 (`auto_setup`, `Failed to setup NATS stream ... Request timed out`);
+  the fix in none, with 10 and 9 pulls that got 503, all read as a server going away (the client Connecting each time).
+  Rehearse with `curl --unix-socket /var/run/docker.sock -X POST .../containers/<name>/restart` from a child process and
+  many consumers on the file stream; Docker's CLI here is too slow to hit the moment. In such a script, register an
+  autoloader for another `src/` after requiring Composer's, which puts itself first.
+- **Client follow-ups, not filed:** `PullConsumerIterator::handle()` polls forever on a 503 from a deleted consumer (the
+  mirror image), and a request whose server went away waits out `request_timeout` after the reconnect.
+- **Not measured:** a cluster (another server may answer CONSUMER.INFO for an R3 consumer, and the 503 then keeps its old
+  reading), and lame duck mode.

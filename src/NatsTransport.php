@@ -1052,9 +1052,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * server that stays answers it at once, with the consumer or with 404 (err_code 10014, or 10059 for a missing
      * stream). A server that is going away does not answer it at all: Server.Shutdown() shuts its eventing down, which
      * drops every JetStream API reply from then on, before it stops the first consumer, and then it closes the
-     * connection. Measured on 2.15.2 with client 2.28.0 and `docker restart` (16 consumers): CONSUMER.INFO went
-     * unanswered from 17 to 68 ms after the restart began, pulls got 503 from 69 ms on, and the connection closed
-     * 150 to 230 ms in; no CONSUMER.INFO sent after a pull's 503 was ever answered.
+     * connection. Measured on 2.15.2 with client 2.28.0, `docker restart` and 16 consumers on a file stream, in 12
+     * rounds: CONSUMER.INFO was last answered 61 to 66 ms after the restart began, pulls got 503 from 75 to 105 ms on,
+     * until the connection closed, 227 to 233 ms in, and no CONSUMER.INFO sent after a pull's 503 was answered.
      *
      * So after a 503 this asks for the consumer once. An answer of any kind, the consumer, a 404 or another JetStream
      * error, leaves the 503 its reading as a missing consumer: with auto_setup the consumer is provisioned again and
