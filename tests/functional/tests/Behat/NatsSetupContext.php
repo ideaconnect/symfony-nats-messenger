@@ -2408,12 +2408,13 @@ class NatsSetupContext implements Context
      * the restart would have nothing to recover, and those scenarios would pass with recovery broken: on a slow machine
      * the console command takes longer to boot than the restart takes to begin, which is what CI's logs showed.
      *
-     * The pause at the end keeps them out of a race they are not about. With the one consumer these scenarios have, a
-     * graceful stop of NATS 2.15 leaves about 10 ms, some 50 ms after the signal, in which JetStream no longer answers and
-     * the connection is still open. A pull written then gets 503, which reads as a missing consumer, and the worker ends.
-     * When the signal ends a pull that began less than --sleep ago, the worker waits out the rest before its next pull,
-     * which can land right there, and CI's docker is fast enough for that. Past --sleep the worker pulls again at once,
-     * well before that moment.
+     * It no longer pauses after the connection (#106). With the one consumer these scenarios have, a graceful stop of
+     * NATS 2.15 leaves about 10 ms, some 50 ms after the signal, in which the server has stopped the consumer and the
+     * connection is still open, and a pull written then gets 503. A worker whose pull ended less than --sleep before the
+     * signal waits out the rest and can pull right then, which CI's docker is fast enough for. That 503 used to read as
+     * a missing consumer and end the worker, and a pause of 300 ms kept these scenarios out of it; the transport now asks
+     * for the consumer after a 503 and reads the pull as empty when the server going away leaves the question unanswered,
+     * so the scenarios run into it as a worker would.
      */
     #[When('I start a messenger consumer expecting :count messages')]
     public function iStartAMessengerConsumerExpectingMessages(int $count): void
@@ -2428,8 +2429,6 @@ class NatsSetupContext implements Context
             }
             usleep(100000);
         }
-
-        usleep(300000);
     }
 
     /**
