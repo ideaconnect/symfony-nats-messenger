@@ -138,7 +138,12 @@ apply only with the option on.
   and deletion during a pull can give 409. With `auto_setup`, 404/409/503 cause one provisioning
   attempt and one retried pull; repeated 409/503 propagate. Since 5.7.0, `409 Server Shutdown`
   (which also checks the connection next time) and `409 Leadership Change` are empty batches in
-  both modes, on the first and the retried pull; other 409s keep the handling above. The client's own unanswered-pull
+  both modes, on the first and the retried pull; other 409s keep the handling above. Since #106 a 503, on
+  either pull, is first followed by one CONSUMER.INFO (`pullMetAServerGoingAway()`): any answer keeps the
+  handling above; no answer with the connection gone meanwhile (Closed, Connecting, or the reconnect count
+  moved) is an empty batch and checks the connection next time; no answer on a connection that stays keeps
+  the handling above too (a user allowed to pull but not to ask for consumer info must not poll a missing
+  consumer forever). The client's own unanswered-pull
   deadline is also a JetStream 408, distinguished by the prefix `No messages received within
   timeout`. It triggers a check next time. A server-answered empty pull counts as connection use.
 - **Delivery identity:** outgoing `TransportMessageIdStamp` is a UUID; incoming it holds the
@@ -202,10 +207,10 @@ apply only with the option on.
   through the real client as a CONNECT that carries them. Measured by hand, not in the suite: cluster failover with a seed, a JWT that expires under a worker.
   A scenario that restarts a server must wait for the worker's connection first, as `I start a messenger consumer expecting
   :count messages` does: on CI's runners the console boots after the restart begins, so without the wait nothing reconnects
-  and the scenario proves nothing, while a local run looks fine. That step then pauses 300 ms: a graceful stop of NATS 2.15
-  leaves a moment, about 10 ms for each durable consumer on a file stream, starting at once or, with a pull waiting, about
-  50 ms after the signal, in which a pull can get 503 and end the worker, and a worker whose pull ended
-  less than `--sleep` into its iteration waits right into it. The gap is the transport's, and tracked in #106.
+  and the scenario proves nothing, while a local run looks fine. That step used to pause 300 ms after the connection, to
+  stay out of the 503 of a graceful stop of NATS 2.15 (a worker whose pull ended less than `--sleep` into its iteration
+  waits right into it); since #106 the transport reads that 503 as an empty batch and the pause is gone, so the scenarios
+  run into that moment as a worker would.
   Docker's CLI takes about 180 ms to reach the server here, through this machine's long PATH, and about 20 ms on
   CI, which hides this: to rehearse, call Docker's API directly and boot the worker at a random phase of the step's poll.
 - **Stats:** consumer `num_pending + num_ack_pending`, falling back to stream messages and then 0.

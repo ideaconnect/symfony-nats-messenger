@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A pull in the last moments of a graceful stop of NATS 2.15 no longer ends the worker (#106).** A server that stops
+  gracefully answers a pull with 503 for a consumer it has already stopped, until it closes the connection, the same 503 it
+  gives for a consumer that does not exist; NATS 2.15 stops each durable consumer on a file stream in about 10 ms, so the
+  moment grows with the consumers. The transport read that 503 as a missing consumer, and a worker ended with
+  `JetStream pull request ended with status 503` or, with `auto_setup`, with `Failed to setup NATS stream` after a request
+  timeout, as `setup()` ran against the server that was going away, with or without `reconnect: true`. After a 503 the
+  transport now asks for the consumer once (CONSUMER.INFO). A server that stays answers at once, with the consumer or with
+  404, and the 503 keeps its reading: `auto_setup` provisions the consumer again, and without it the 503 propagates. A
+  server that is going away leaves the question unanswered, as nats-server drops every JetStream API reply once it has shut
+  its eventing down, which `Server.Shutdown()` does before it stops the first consumer, and then closes the connection:
+  that pull is an empty batch, and the operation after it checks the connection first, as after `409 Server Shutdown`. With
+  `reconnect: true` the client keeps an unanswered request waiting across its reconnect until `request_timeout`, so the
+  transport stops waiting as soon as the client is recovering the connection or has replaced it. A question that goes
+  unanswered on a connection that stays, as for a user allowed to pull but not to ask for consumer info, keeps the 503's
+  reading as well, so a missing consumer still ends the worker instead of hiding behind empty pulls. A 503 costs one
+  round trip more; no other status asks anything. The restart scenarios of the functional suite no longer pause 300 ms
+  after the worker connects to stay out of that moment.
+
 ## [5.8.0] - 2026-11-07
 
 A **minor** release. NKey and JWT logins work for the first time: the new option `nkey_seed` signs the server's nonce, and a

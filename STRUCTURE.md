@@ -62,6 +62,7 @@ tests/
 │   ├── ComposerScriptsTest.php                 # composer test:functional runs past Composer's process timeout
 │   ├── SubscriptionLimitPullTest.php           # pulls at the subscription limit, real client over a scripted server
 │   ├── UnansweredPullTest.php                  # a pull the server never answered calls for a connection check
+│   ├── GracefulStopPullTest.php                # a pull's 503 from a server going away is an empty batch (#106)
 │   ├── ReconnectModeTest.php                   # reconnect: true, the real client over a connection that fails like a real one
 │   ├── RunTestsWithPausesTest.php              # composer test:unit:paused really stops the tests and keeps PHPUnit's exit code
 │   ├── LoginCombinationsTest.php               # every combination of credentials: refused when built, or through the real client

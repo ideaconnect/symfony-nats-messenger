@@ -116,9 +116,13 @@ composer nats:stop               # stop NATS
   missing consumer reports 503, not 404: with `auto_setup` it is re-provisioned once, otherwise `get()` throws.
   The client also reports a pull that got no answer before its own deadline as 408 ("No messages received
   within timeout"); that one makes the next operation PING first, since the server did not answer.
-  A graceful stop of NATS 2.15 leaves a moment in which a pull can get that same 503, which ends a worker with or without
-  `reconnect: true`: a known gap (#106), named in the README's Automatic Reconnect section. In a restart scenario on CI,
-  `JetStream pull request ended with status 503` with only `Connected` logged is this gap, and any other failure there is real.
+  A graceful stop of NATS 2.15 leaves a moment in which a pull gets that same 503, from a consumer the server has already
+  stopped (#106). So after a 503 the transport asks for the consumer (`pullMetAServerGoingAway()`): a server that stays
+  answers, with the consumer or 404, and the 503 keeps its reading; a server going away leaves the question unanswered
+  (Server.Shutdown() drops JetStream API replies before it stops the first consumer) and closes the connection, and the
+  pull is an empty batch. No answer on a connection that stays, as for a user not allowed to ask for consumer info, keeps
+  the reading too, so a missing consumer is never hidden. With `reconnect: true` the client keeps an unanswered request
+  across its reconnect until `request_timeout`, so the wait ends on the connection's state and reconnect count instead.
 - **A pull refused at the subscription limit throws `TransportException`.** The transport holds two subscriptions
   per connection (the request reply inbox and the pull's inbox). At a limit of one, the client's
   `SubscriptionLimitException` (client `^2.27`) becomes Symfony's `TransportException` naming the stream, consumer
