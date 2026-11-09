@@ -607,8 +607,10 @@ for a message without headers (`NatsHeaders::fromWireBlock()` returns `[]` for b
 `whileTheClusterSettles()` without `return $request();` never returns and pauses forever. It used to end with
 Infection's 60-second per-mutant timeout, which counts as detected. The unit tests' transport doubles now fail a
 test once `pause()` ran more often than `setup()` ever pauses (60 real pauses, 1000 recorded ones), so the
-mutant fails a test within seconds and counts as killed. The 60-second `timeout` in `infection.json5` stays, for
-any other loop that never ends.
+mutant fails a test within seconds and counts as killed. `tests/Support/ClientInjectedNatsTransport.php` has the
+same 60-pause limit since #106: the tests of an `auto_setup` pull reach `setup()` through it, and are among the
+first Infection runs for that line, so without the limit the mutant timed out again. The 60-second `timeout` in
+`infection.json5` stays, for any other loop that never ends.
 
 ## README Example Coverage
 

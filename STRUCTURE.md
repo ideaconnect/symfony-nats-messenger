@@ -42,7 +42,7 @@ src/
 tests/
 ├── bootstrap.php                               # autoloader + BypassFinals; takes Infection's file swap over in mutant processes
 ├── Support/
-│   ├── ClientInjectedNatsTransport.php         # the transport with a client the test gives it
+│   ├── ClientInjectedNatsTransport.php         # the transport with a client the test gives it, and a limit on pause()
 │   ├── FaultInjectingNatsServer.php            # the scripted server behind a connection that fails the way a real one does
 │   ├── MessengerTestKernel.php                 # a FrameworkBundle + Messenger kernel for tests that need a compiled container
 │   ├── PhpProcess.php                          # runs a PHP script in a child process
