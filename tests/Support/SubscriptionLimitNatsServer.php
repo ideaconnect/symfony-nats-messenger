@@ -27,6 +27,7 @@ use function Amp\async;
  *    not delivered yet, up to its batch, each with an ack subject, and status 408 when fewer were there, as a pull
  *    that found no more messages ends; a pull on an inbox the session does not hold gets nothing, since nothing is
  *    subscribed to deliver to;
+ *  - a CONSUMER.INFO request of the consumer gets {@see $consumerInfoReply}, and nothing while that is null;
  *  - a publish to an ack subject is recorded.
  * The stream's messages, the deliveries and the acknowledgements outlive a session, as on a real server.
  *
@@ -36,7 +37,9 @@ use function Amp\async;
  *    waits for its write, the client's heartbeat is the only other reader;
  *  - limitErrorAndCloseOnNextWriteContaining(): the closing form. The server answers the next write that contains a
  *    needle with "-ERR 'maximum subscriptions exceeded'" alone, as nats-server does when an account's limit is lowered
- *    below what the connection holds, and closes the connection 20 ms later. serverClose() completes once it has.
+ *    below what the connection holds, and closes the connection 20 ms later. serverClose() completes once it has;
+ *  - {@see $pullsFindNoResponder}: every pull ends with status 503, as nats-server ends one when nothing is subscribed
+ *    to the consumer's pull subject: the consumer is missing, or a server that stops gracefully has stopped it (#106).
  *
  * Reads block like an idle socket until something arrives, the session ends or the caller's cancellation fires, and
  * return everything that has arrived. A read of an ended session, and a write to it, fails as a closed socket does.
@@ -56,7 +59,18 @@ final class SubscriptionLimitNatsServer implements TransportInterface
     /** The nonce in the INFO of each session, as a server with NKey users or in operator mode sends one. */
     public ?string $nonce = null;
 
+    /** Whether every pull ends with status 503 (no responders), see the class. */
+    public bool $pullsFindNoResponder = false;
+
+    /**
+     * The JSON a CONSUMER.INFO request of the consumer gets, or null to leave it unanswered, as a server that stops
+     * gracefully leaves every JetStream API request once it has shut its eventing down (#106).
+     */
+    public ?string $consumerInfoReply = null;
+
     private readonly string $pullSubject;
+
+    private readonly string $consumerInfoSubject;
 
     /** The index of the latest session: 0 for the first connect(), 1 for the next, ... */
     private int $session = -1;
@@ -105,6 +119,7 @@ final class SubscriptionLimitNatsServer implements TransportInterface
         string $consumer,
     ) {
         $this->pullSubject = '$JS.API.CONSUMER.MSG.NEXT.' . $streamName . '.' . $consumer;
+        $this->consumerInfoSubject = '$JS.API.CONSUMER.INFO.' . $streamName . '.' . $consumer;
         $this->wake = new DeferredFuture();
     }
 
@@ -365,6 +380,12 @@ final class SubscriptionLimitNatsServer implements TransportInterface
         }
 
         $this->record('PUBLISH', $subject);
+        if ($subject === $this->consumerInfoSubject && $replyTo !== null && $this->consumerInfoReply !== null) {
+            $this->reply($replyTo, $this->consumerInfoReply);
+
+            return;
+        }
+
         if ($subject === $this->topic && $replyTo !== null) {
             $this->stream[] = ['headers' => $headers, 'payload' => $body];
             $this->reply($replyTo, (string) json_encode(['stream' => $this->streamName, 'seq' => count($this->stream)]));
@@ -375,6 +396,13 @@ final class SubscriptionLimitNatsServer implements TransportInterface
     {
         $sid = array_search($inbox, $this->subscriptions, true);
         if ($sid === false) {
+            return;
+        }
+
+        if ($this->pullsFindNoResponder) {
+            $status = "NATS/1.0 503\r\n\r\n";
+            $this->send(sprintf("HMSG %s %d %d %d\r\n%s\r\n", $inbox, $sid, strlen($status), strlen($status), $status));
+
             return;
         }
 

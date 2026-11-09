@@ -76,6 +76,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private const UNANSWERED_PULL = 'No messages received within timeout';
 
+    /**
+     * How often {@see pullMetAServerGoingAway()} looks at the connection while its CONSUMER.INFO waits for an answer,
+     * in seconds. A server that stays answers within a few milliseconds, in the first look.
+     */
+    private const GOING_AWAY_CHECK_SECONDS = 0.05;
+
     /** Symfony serializer used to encode/decode envelopes to/from wire payloads. */
     protected SerializerInterface $serializer;
 
@@ -447,7 +453,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * With auto_setup enabled, a 404, 409 or 503 (see {@see recoverFromFetchFailure()} for why
      * all three) first triggers one re-provisioning attempt and a second pull. A 409 with which the
      * server ended the pull itself, "Server Shutdown" or "Leadership Change", is an empty batch
-     * instead, in either mode ({@see pullEndedByTheServer()}).
+     * instead, in either mode ({@see pullEndedByTheServer()}). So is a 503 from a server that is going
+     * away, which leaves the CONSUMER.INFO asked after it unanswered and closes the connection
+     * ({@see pullMetAServerGoingAway()}, #106).
      *
      * A pull the server refuses because the connection is at its subscription limit fails with a
      * TransportException that names the stream, the consumer and the limit ({@see fetchBatchMessages()}).
@@ -951,7 +959,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * "JetStream pull request ended with status 503". 409 is what a consumer deleted mid-pull reports.
      * A 404 reports a pull that found no messages, but re-provisioning on it as well is harmless when
      * the resources exist, so all three are treated as a sign that the consumer or stream it pulls from
-     * may not be there.
+     * may not be there. A 503 is that sign only from a server that stays: one that is going away sends the
+     * same 503 for a consumer it has already stopped, and that pull is an empty batch
+     * ({@see pullMetAServerGoingAway()}).
      *
      * @return list<NatsMessage>|null
      */
@@ -965,7 +975,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return null;
         }
 
-        if ($this->pullEndedByTheServer($exception)) {
+        if ($this->pullEndedByTheServer($exception) || $this->pullMetAServerGoingAway($exception)) {
             return null;
         }
 
@@ -981,8 +991,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 // but a repeated 503 or 409 no longer means "missing" - it means pulls are failing on a
                 // consumer that verifiably exists, and flattening that into an empty batch would hide
                 // a real outage behind a worker that forever reports nothing to do. A pull the server
-                // ended itself is as empty here as on the first try.
-                if ($retryException->getCode() === 404 || $retryException->getCode() === 408 || $this->pullEndedByTheServer($retryException)) {
+                // ended itself, or whose 503 came from a server going away, is as empty here as on the first try.
+                if ($retryException->getCode() === 404 || $retryException->getCode() === 408 || $this->pullEndedByTheServer($retryException) || $this->pullMetAServerGoingAway($retryException)) {
                     return null;
                 }
 
@@ -1029,6 +1039,85 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         return stripos($exception->getMessage(), 'Leadership Change') !== false;
+    }
+
+    /**
+     * Whether a pull's 503 came from a server that is going away, rather than from a missing consumer, and arms the
+     * connection check when it did (#106).
+     *
+     * nats-server answers a pull with 503 (no responders) whenever nothing is subscribed to the consumer's pull subject:
+     * when the consumer does not exist, and also during a graceful stop, from the moment the server has stopped the
+     * consumer until it closes the connection. NATS 2.15 stops each durable consumer on a file stream in about 10 ms,
+     * so that moment lasts about 10 ms for each of them. The pull alone cannot tell the two apart; CONSUMER.INFO can. A
+     * server that stays answers it at once, with the consumer or with 404 (err_code 10014, or 10059 for a missing
+     * stream). A server that is going away does not answer it at all: Server.Shutdown() shuts its eventing down, which
+     * drops every JetStream API reply from then on, before it stops the first consumer, and then it closes the
+     * connection. Measured on 2.15.2 with client 2.28.0 and `docker restart` (16 consumers): CONSUMER.INFO went
+     * unanswered from 17 to 68 ms after the restart began, pulls got 503 from 69 ms on, and the connection closed
+     * 150 to 230 ms in; no CONSUMER.INFO sent after a pull's 503 was ever answered.
+     *
+     * So after a 503 this asks for the consumer once. An answer of any kind, the consumer, a 404 or another JetStream
+     * error, leaves the 503 its reading as a missing consumer: with auto_setup the consumer is provisioned again and
+     * pulled from once more, without it the 503 propagates. No answer, with the connection the pull came on gone
+     * meanwhile, is a server going away, and the pull is an empty batch; the operation after it checks the connection
+     * first, as after `409 Server Shutdown`. No answer on a connection that stays (a user allowed to pull but not to
+     * ask for consumer info, which the server reports as a permissions violation and leaves unanswered) keeps the
+     * 503's reading too: reading it as empty would hide a missing consumer behind a worker that never stops polling.
+     *
+     * The wait ends with the answer, or once the connection is gone: Closed (with `reconnect` off the unanswered
+     * request fails as the server closes the connection), Connecting, or replaced, its reconnect count moved (with
+     * `reconnect` on, the client keeps the request waiting for its reply across the reconnect, until request_timeout).
+     * It looks at the connection every {@see GOING_AWAY_CHECK_SECONDS}, and the client's own request_timeout bounds it.
+     */
+    private function pullMetAServerGoingAway(JetStreamException $exception): bool
+    {
+        if ($exception->getCode() !== 503 || $this->jetStream === null) {
+            return false;
+        }
+
+        // What "replaced" is read against: the count before the question, read only when the client owns recovery.
+        $reconnectsBefore = $this->clientOwnsRecovery() ? $this->client->statistics()->reconnects : null;
+
+        $info = $this->jetStream->getConsumer($this->streamName, $this->configuration->consumer());
+
+        // Left behind once the connection is gone, the request still ends later, with nobody awaiting it; the first
+        // await() below already marks it handled, so its failure then is not reported to the event loop.
+        while (true) {
+            try {
+                $info->await(new TimeoutCancellation(self::GOING_AWAY_CHECK_SECONDS));
+
+                return false;
+            } catch (JetStreamException) {
+                return false;
+            } catch (\Throwable) {
+                // Either this look at the connection came due with the request still waiting, or the request ended
+                // without an answer: the connection failed under it, or request_timeout ran out.
+            }
+
+            $gone = $this->connectionGoneSince($reconnectsBefore);
+            if (!$gone && !$info->isComplete()) {
+                continue;
+            }
+
+            $this->checkBeforeNextUse = true;
+
+            return $gone;
+        }
+    }
+
+    /**
+     * Whether the connection an operation began on is gone: the client has closed, is recovering it, or has replaced
+     * it since its reconnect count was $reconnectsBefore (null when the client does not own recovery, see
+     * {@see clientOwnsRecovery()}).
+     */
+    private function connectionGoneSince(?int $reconnectsBefore): bool
+    {
+        $state = $this->client->state();
+        if ($state === ConnectionState::Closed || $state === ConnectionState::Connecting) {
+            return true;
+        }
+
+        return $reconnectsBefore !== null && $this->client->statistics()->reconnects > $reconnectsBefore;
     }
 
     /**
