@@ -10,6 +10,7 @@ use IDCT\NATS\JetStream\Enum\ReplayPolicy;
 use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use IDCT\NatsMessenger\Options\RetryDelaySource;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Options\StreamCompression;
@@ -2565,5 +2566,37 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         self::assertSame($logger, $this->extractNatsOptions($withLogger->client)->logger);
         self::assertNull($this->extractNatsOptions($withoutLogger->client)->logger);
+    }
+
+    public function testRetryDelaySourceDefaultsToNatsAndCanBeSymfonyInNatsMode(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        self::assertSame(RetryDelaySource::NATS, $builder->build(self::VALID_DSN, ['retry_handler' => 'nats'])->retryDelaySource());
+        self::assertSame(RetryDelaySource::NATS, $builder->build(self::VALID_DSN, [])->retryDelaySource());
+        self::assertSame(
+            RetryDelaySource::SYMFONY,
+            $builder->build(self::VALID_DSN, ['retry_handler' => 'nats', 'retry_delay_source' => 'symfony'])->retryDelaySource(),
+        );
+        self::assertSame(
+            RetryDelaySource::SYMFONY,
+            $builder->build(self::VALID_DSN . '?retry_handler=nats&retry_delay_source=symfony', [])->retryDelaySource(),
+        );
+    }
+
+    public function testBuildWithInvalidRetryDelaySourceThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("Invalid retry_delay_source option 'jitter'. Allowed values are 'nats' or 'symfony'.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_handler' => 'nats', 'retry_delay_source' => 'jitter']);
+    }
+
+    public function testBuildWithSymfonyRetryDelaySourceOutsideNatsModeThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("The retry_delay_source option can be 'symfony' only with retry_handler 'nats'.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_delay_source' => 'symfony']);
     }
 }

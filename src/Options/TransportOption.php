@@ -20,7 +20,7 @@ namespace IDCT\NatsMessenger\Options;
  *                    STREAM_DESCRIPTION, STREAM_DENY_DELETE, STREAM_DENY_PURGE, STREAM_ALLOW_DIRECT,
  *                    STREAM_ALLOW_ROLLUP_HEADERS
  * **Stream Placement:** STREAM_PLACEMENT_CLUSTER, STREAM_PLACEMENT_TAGS
- * **Retry Strategy:** RETRY_HANDLER, NAK_DELAY, ACK_WAIT, MAX_DELIVER, BACKOFF
+ * **Retry Strategy:** RETRY_HANDLER, RETRY_DELAY_SOURCE, NAK_DELAY, ACK_WAIT, MAX_DELIVER, BACKOFF
  * **Acknowledgement:** ACK_SYNC
  * **Deduplication:** DEDUPLICATE
  * **Scheduling:** SCHEDULED_MESSAGES
@@ -63,6 +63,7 @@ enum TransportOption: string
     case STREAM_PLACEMENT_CLUSTER = 'stream_placement_cluster';
     case STREAM_PLACEMENT_TAGS = 'stream_placement_tags';
     case RETRY_HANDLER = 'retry_handler';
+    case RETRY_DELAY_SOURCE = 'retry_delay_source';
     case NAK_DELAY = 'nak_delay';
     case ACK_WAIT = 'ack_wait';
     case MAX_DELIVER = 'max_deliver';

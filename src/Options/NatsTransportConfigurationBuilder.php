@@ -78,6 +78,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_PLACEMENT_CLUSTER->value => null,
         TransportOption::STREAM_PLACEMENT_TAGS->value => null,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
+        TransportOption::RETRY_DELAY_SOURCE->value => RetryDelaySource::NATS->value,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
         TransportOption::MAX_DELIVER->value => null,
@@ -335,6 +336,22 @@ final class NatsTransportConfigurationBuilder
         }
 
         $configuration[TransportOption::RETRY_HANDLER->value] = $retryHandler->value;
+
+        $retryDelaySource = RetryDelaySource::tryFrom(TypeCoercion::stringValue($configuration[TransportOption::RETRY_DELAY_SOURCE->value] ?? RetryDelaySource::NATS->value));
+        if ($retryDelaySource === null) {
+            throw new InvalidArgumentException(sprintf(
+                "Invalid retry_delay_source option%s. Allowed values are 'nats' or 'symfony'.",
+                $this->quotedIfPlain(TypeCoercion::stringValue($configuration[TransportOption::RETRY_DELAY_SOURCE->value] ?? null)),
+            ));
+        }
+
+        // With retry_handler=symfony the retry copy is published and Symfony's delay already applies (through
+        // scheduled_messages), so the option would only mislead there.
+        if ($retryDelaySource === RetryDelaySource::SYMFONY && $retryHandler !== RetryHandler::NATS) {
+            throw new InvalidArgumentException("The retry_delay_source option can be 'symfony' only with retry_handler 'nats'.");
+        }
+
+        $configuration[TransportOption::RETRY_DELAY_SOURCE->value] = $retryDelaySource->value;
 
         $consumer = trim(TypeCoercion::stringValue($configuration[TransportOption::CONSUMER->value] ?? null));
         if ($consumer === '') {
