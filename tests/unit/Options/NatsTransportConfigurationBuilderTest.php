@@ -10,6 +10,7 @@ use IDCT\NATS\JetStream\Enum\ReplayPolicy;
 use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use IDCT\NatsMessenger\Options\NoRetryAction;
 use IDCT\NatsMessenger\Options\RetryDelaySource;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\RetryHandler;
@@ -2576,11 +2577,11 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(RetryDelaySource::NATS, $builder->build(self::VALID_DSN, [])->retryDelaySource());
         self::assertSame(
             RetryDelaySource::SYMFONY,
-            $builder->build(self::VALID_DSN, ['retry_handler' => 'nats', 'retry_delay_source' => 'symfony'])->retryDelaySource(),
+            $builder->build(self::VALID_DSN, ['retry_handler' => 'nats', 'retry_delay_source' => 'symfony', 'max_deliver' => 4])->retryDelaySource(),
         );
         self::assertSame(
             RetryDelaySource::SYMFONY,
-            $builder->build(self::VALID_DSN . '?retry_handler=nats&retry_delay_source=symfony', [])->retryDelaySource(),
+            $builder->build(self::VALID_DSN . '?retry_handler=nats&retry_delay_source=symfony&max_deliver=4', [])->retryDelaySource(),
         );
     }
 
@@ -2598,5 +2599,30 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         $this->expectExceptionMessage("The retry_delay_source option can be 'symfony' only with retry_handler 'nats'.");
 
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_delay_source' => 'symfony']);
+    }
+
+    public function testBuildWithSymfonyRetryDelaySourceWithoutMaxDeliverThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("retry_delay_source 'symfony' needs max_deliver: set it to the retry strategy's max_retries + 1.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_handler' => 'nats', 'retry_delay_source' => 'symfony']);
+    }
+
+    public function testNoRetryActionDefaultsToNakAndCanBeTerm(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        self::assertSame(NoRetryAction::NAK, $builder->build(self::VALID_DSN, [])->noRetryAction());
+        self::assertSame(NoRetryAction::TERM, $builder->build(self::VALID_DSN, ['no_retry_action' => 'term'])->noRetryAction());
+        self::assertSame(NoRetryAction::TERM, $builder->build(self::VALID_DSN . '?no_retry_action=term', [])->noRetryAction());
+    }
+
+    public function testBuildWithInvalidNoRetryActionThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("Invalid no_retry_action option 'drop'. Allowed values are 'nak' or 'term'.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['no_retry_action' => 'drop']);
     }
 }

@@ -419,6 +419,16 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns what happens, with {@see RetryDelaySource::SYMFONY}, to a delivery Symfony does not retry although
+     * max_deliver allows more.
+     */
+    public function noRetryAction(): NoRetryAction
+    {
+        return NoRetryAction::tryFrom(TypeCoercion::stringValue($this->options[TransportOption::NO_RETRY_ACTION->value] ?? null))
+            ?? NoRetryAction::NAK;
+    }
+
+    /**
      * Returns true when retry handling is delegated to NATS (NAK mode).
      */
     public function isNatsRetryHandlerEnabled(): bool

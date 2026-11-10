@@ -7270,7 +7270,8 @@ final class NatsTransportTest extends TestCase
     // retry_delay_source=symfony: NATS redelivers, after the delay Symfony's retry strategy computed.
     // ---------------------------------------------------------------------------------------------------------
 
-    private const SYMFONY_DELAYS = self::NATS_MODE + ['retry_delay_source' => 'symfony'];
+    /** max_deliver 4 goes with a retry strategy of max_retries 3: four deliveries, the fourth one the last. */
+    private const SYMFONY_DELAYS = self::NATS_MODE + ['retry_delay_source' => 'symfony', 'max_deliver' => 4];
 
     /**
      * The NAK of a delivery Symfony retries carries Symfony's delay, from the retry copy's DelayStamp, whichever
@@ -7347,22 +7348,96 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * A rejection without a retry copy is Symfony's final word (no retries left, or an unrecoverable failure), so
-     * the delivery is TERMed: a NAK would have NATS redeliver a message Symfony already gave up on.
+     * The last delivery max_deliver allows, which Symfony does not retry, gets a plain NAK and never a TERM: NATS
+     * keeps the message in the stream and publishes the MAX_DELIVERIES advisory. The NAK carries no delay, whatever
+     * nak_delay and no_retry_action say, and nothing is logged.
+     *
+     * @param array<string, mixed> $options
      */
-    public function testSymfonyDelaySourceTermsADeliverySymfonyDoesNotRetry(): void
+    #[DataProvider('optionsThatDoNotTouchTheLastDelivery')]
+    public function testSymfonyDelaySourceNaksTheLastDeliveryPlainly(array $options): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::never())->method('nak');
+        $jetStream->expects(self::never())->method('term');
         $jetStream->expects(self::never())->method('nakWithDelay');
-        $jetStream->expects(self::once())->method('term')
-            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === 'delivery-1'))
+        $jetStream->expects(self::once())->method('nak')
+            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === '$JS.ACK.test-stream.client.4.1.4.0.0'))
             ->willReturn(Future::complete());
+        $logger = new RecordingLogger();
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::SYMFONY_DELAYS + ['nak_delay' => 5]);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::SYMFONY_DELAYS + $options, null, $logger);
         $transport->setJetStreamContext($jetStream);
 
-        $transport->reject(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]));
+        $transport->reject(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.4.1.4.0.0')]));
+
+        self::assertSame([], $logger->records);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function optionsThatDoNotTouchTheLastDelivery(): iterable
+    {
+        yield 'defaults' => [[]];
+        yield 'nak_delay' => [['nak_delay' => 5]];
+        yield 'no_retry_action=term' => [['no_retry_action' => 'term']];
+    }
+
+    /**
+     * A delivery Symfony does not retry although max_deliver allows more is NAKed plainly by default, so NATS
+     * redelivers it at once, and TERMed with no_retry_action=term. Logged once as a warning, since max_retries is
+     * then likely below max_deliver - 1.
+     */
+    #[DataProvider('noRetryActions')]
+    public function testSymfonyDelaySourceSettlesAnEarlierDeliverySymfonyDoesNotRetry(string $action, string $settledWith): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('nakWithDelay');
+        $jetStream->expects(self::never())->method($settledWith === 'nak' ? 'term' : 'nak');
+        $jetStream->expects(self::exactly(2))->method($settledWith)->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::SYMFONY_DELAYS + ['no_retry_action' => $action, 'nak_delay' => 5], null, $logger);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->reject(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.2.1.2.0.0')]));
+        $transport->reject(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.3.1.3.0.0')]));
+
+        self::assertSame([[
+            'level' => 'warning',
+            'message' => 'retry_delay_source=symfony on stream "test-stream", subject "test-topic": Symfony does not retry a message after delivery 2, but max_deliver is 4 (no_retry_action=' . $action . '). If its retries ran out, set max_deliver to max_retries + 1.',
+        ]], $logger->records);
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function noRetryActions(): iterable
+    {
+        yield 'nak (default)' => ['nak', 'nak'];
+        yield 'term' => ['term', 'term'];
+    }
+
+    /**
+     * A failure Symfony never retries, named by the ErrorDetailsStamp FrameworkBundle adds, is settled the same
+     * way without the warning: it says nothing about max_retries.
+     */
+    public function testSymfonyDelaySourceDoesNotWarnForAnUnrecoverableFailure(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::SYMFONY_DELAYS, null, $logger);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->reject(new Envelope(new \stdClass(), [
+            new ReceivedStamp('async'),
+            new TransportMessageIdStamp('$JS.ACK.test-stream.client.1.1.1.0.0'),
+            ErrorDetailsStamp::create(new \Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException('never')),
+        ]));
+
+        self::assertSame([], $logger->records);
     }
 
     /**
@@ -7422,9 +7497,9 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * Through Symfony's Worker and its retry listener: the multiplier follows the deliveries (1 s, then 2 s), and
-     * the delivery after max_retries is TERMed. Nothing is published and nothing is logged: Symfony's retry
-     * strategy is on by intent here.
+     * Through Symfony's Worker and its retry listener, with max_deliver at max_retries + 1: the multiplier follows
+     * the deliveries (1 s, then 2 s), and the last delivery gets a plain NAK, after which NATS keeps the message.
+     * Nothing is published, TERMed or logged: Symfony's retry strategy is on by intent here.
      */
     public function testSymfonyDelaySourceFollowsTheMultiplierAndEndsAtMaxRetries(): void
     {
@@ -7454,7 +7529,7 @@ final class NatsTransportTest extends TestCase
         });
         $logger = new RecordingLogger();
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::SYMFONY_DELAYS, $this->decodingSerializer(), $logger);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['max_deliver' => 3] + self::SYMFONY_DELAYS, $this->decodingSerializer(), $logger);
         $transport->setJetStreamContext($jetStream);
         // Jitter 0: the strategy's default of 0.1 would spread each delay by up to 10 %, which reaches the NAK too.
         self::runWorkerOverFailingMessages($transport, new MultiplierRetryStrategy(2, 1000, 2, 0, 0.0), 3);
@@ -7462,7 +7537,7 @@ final class NatsTransportTest extends TestCase
         self::assertSame([
             'nak 1000 $JS.ACK.test-stream.client.1.1.1.0.0',
             'nak 2000 $JS.ACK.test-stream.client.2.1.2.0.0',
-            'term $JS.ACK.test-stream.client.3.1.3.0.0',
+            'nak $JS.ACK.test-stream.client.3.1.3.0.0',
         ], $settled);
         self::assertSame([], $logger->records);
     }
@@ -7497,19 +7572,21 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * An UnrecoverableMessageHandlingException is not retried, so its delivery is TERMed on the first failure.
+     * An UnrecoverableMessageHandlingException is not retried: its first delivery is NAKed plainly by default, so
+     * it comes back at once until max_deliver, and TERMed with no_retry_action=term.
      */
-    public function testSymfonyDelaySourceTermsAnUnrecoverableFailure(): void
+    #[DataProvider('noRetryActions')]
+    public function testSymfonyDelaySourceSettlesAnUnrecoverableFailure(string $action, string $settledWith): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->method('fetchBatch')->willReturn(Future::complete([
             new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'p'),
         ]));
-        $jetStream->expects(self::never())->method('nak');
         $jetStream->expects(self::never())->method('nakWithDelay');
-        $jetStream->expects(self::once())->method('term')->willReturn(Future::complete());
+        $jetStream->expects(self::never())->method($settledWith === 'nak' ? 'term' : 'nak');
+        $jetStream->expects(self::once())->method($settledWith)->willReturn(Future::complete());
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::SYMFONY_DELAYS, $this->decodingSerializer());
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::SYMFONY_DELAYS + ['no_retry_action' => $action], $this->decodingSerializer());
         $transport->setJetStreamContext($jetStream);
 
         $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
@@ -7528,16 +7605,27 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * When Symfony retries the last delivery max_deliver allows, NATS will not redeliver it and Symfony never
-     * sends it to a failure transport: logged as a warning, once.
+     * When Symfony retries the last delivery max_deliver allows (max_deliver below max_retries + 1), NATS will not
+     * redeliver it: the NAK goes out without Symfony's delay, so the MAX_DELIVERIES advisory is not held back, and
+     * a warning is logged, once.
      */
-    public function testSymfonyDelaySourceWarnsOnceWhenMaxDeliverEndsTheRetries(): void
+    public function testSymfonyDelaySourceNaksPlainlyAndWarnsOnceWhenMaxDeliverEndsTheRetries(): void
     {
+        $settled = [];
         $jetStream = $this->createStub(JetStreamContext::class);
-        $jetStream->method('nakWithDelay')->willReturn(Future::complete());
+        $jetStream->method('nakWithDelay')->willReturnCallback(static function (NatsMessage $message, int $delayMs) use (&$settled): Future {
+            $settled[] = 'nak ' . $delayMs . ' ' . $message->replyTo;
+
+            return Future::complete();
+        });
+        $jetStream->method('nak')->willReturnCallback(static function (NatsMessage $message) use (&$settled): Future {
+            $settled[] = 'nak ' . $message->replyTo;
+
+            return Future::complete();
+        });
         $logger = new RecordingLogger();
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::SYMFONY_DELAYS + ['max_deliver' => 2], null, $logger);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['max_deliver' => 2] + self::SYMFONY_DELAYS, null, $logger);
         $transport->setJetStreamContext($jetStream);
 
         foreach (['$JS.ACK.test-stream.client.1.1.1.0.0', '$JS.ACK.test-stream.client.2.1.2.0.0', '$JS.ACK.test-stream.client.2.2.3.0.0'] as $delivery) {
@@ -7546,9 +7634,14 @@ final class NatsTransportTest extends TestCase
             $transport->ack($failed);
         }
 
+        self::assertSame([
+            'nak 1000 $JS.ACK.test-stream.client.1.1.1.0.0',
+            'nak $JS.ACK.test-stream.client.2.1.2.0.0',
+            'nak $JS.ACK.test-stream.client.2.2.3.0.0',
+        ], $settled);
         self::assertSame([[
             'level' => 'warning',
-            'message' => 'retry_delay_source=symfony on stream "test-stream", subject "test-topic": Symfony retries a message after delivery 2, but max_deliver is 2, so NATS does not redeliver it and it never reaches a failure transport. Set max_deliver above max_retries + 1, or leave it unset.',
+            'message' => 'retry_delay_source=symfony on stream "test-stream", subject "test-topic": Symfony retries a message after delivery 2, but max_deliver is 2, so NATS does not redeliver it and the retries Symfony still had are not made. Set max_deliver to max_retries + 1.',
         ]], $logger->records);
     }
 }

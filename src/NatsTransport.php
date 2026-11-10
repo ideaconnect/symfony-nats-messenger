@@ -28,6 +28,7 @@ use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NATS\JetStream\Schedule;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use IDCT\NatsMessenger\Options\NoRetryAction;
 use IDCT\NatsMessenger\Options\RetryDelaySource;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
@@ -37,6 +38,7 @@ use Psr\Log\LoggerInterface;
 use RuntimeException;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\TransportException;
+use Symfony\Component\Messenger\Exception\UnrecoverableExceptionInterface;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
@@ -163,6 +165,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * ({@see warnThatMaxDeliverEndsTheRetries()}), which it does once.
      */
     private bool $maxDeliverEndingRetriesReported = false;
+
+    /**
+     * Whether this transport has logged that Symfony gave a message up while max_deliver allowed more deliveries
+     * ({@see warnThatSymfonyGaveUpBeforeMaxDeliver()}), which it does once.
+     */
+    private bool $givenUpBeforeMaxDeliverReported = false;
 
     /** The logger this transport was given, which the NATS client got too; null without one. */
     private ?LoggerInterface $logger;
@@ -606,7 +614,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * NAKs a delivery whose retry copy {@see send()} left out, so NATS redelivers it.
      *
      * With a delay from Symfony's retry strategy the NAK carries that delay, and a delay of 0 is a plain NAK,
-     * which NATS redelivers at once; nak_delay plays no part. Without one (null) it is {@see sendNak()}.
+     * which NATS redelivers at once; nak_delay plays no part. The last delivery max_deliver allows is NAKed
+     * without the delay. Without a delay from Symfony (null) it is {@see sendNak()}.
      *
      * @param string   $id      The replyTo address (JetStream delivery token)
      * @param int|null $delayMs Symfony's delay in milliseconds, or null to use nak_delay
@@ -619,8 +628,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return;
         }
 
-        $this->warnThatMaxDeliverEndsTheRetries($id);
         $message = $this->buildAckMessage($id);
+
+        // The last delivery max_deliver allows is not redelivered, so a delay would only hold back the
+        // MAX_DELIVERIES advisory: measured on nats-server 2.15.0, it is published when the delay has passed.
+        if ($this->isTheLastDelivery($id)) {
+            $this->warnThatMaxDeliverEndsTheRetries($id);
+            $delayMs = 0;
+        }
 
         if ($delayMs > 0) {
             $this->awaitOnConnection($this->jetStream()->nakWithDelay($message, min($delayMs, self::MAX_NAK_DELAY_MS)));
@@ -633,31 +648,100 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
     /**
      * Logs a warning, once, when Symfony's retry strategy retries a delivery that was the last one max_deliver
-     * allows: NATS does not redeliver it, and Symfony, which counted on the retry, never sends the message to
-     * the failure transport. It stays in the stream, unprocessed. max_deliver has to exceed max_retries + 1, or
-     * be left unset.
+     * allows: NATS does not redeliver it, so the retries Symfony still had are not made. max_deliver is below
+     * max_retries + 1.
      */
     private function warnThatMaxDeliverEndsTheRetries(string $id): void
     {
-        $maxDeliver = $this->configuration->maxDeliver();
-        if ($this->maxDeliverEndingRetriesReported || $maxDeliver === null) {
-            return;
-        }
-
-        $delivered = JsMessageMetadata::fromMessage($this->buildAckMessage($id))?->numDelivered;
-        if ($delivered === null || $delivered < $maxDeliver) {
+        if ($this->maxDeliverEndingRetriesReported) {
             return;
         }
 
         $this->maxDeliverEndingRetriesReported = true;
         $this->logger?->warning(sprintf(
             'retry_delay_source=symfony on stream "%s", subject "%s": Symfony retries a message after delivery %d, but'
-            . ' max_deliver is %d, so NATS does not redeliver it and it never reaches a failure transport. Set'
-            . ' max_deliver above max_retries + 1, or leave it unset.',
+            . ' max_deliver is %d, so NATS does not redeliver it and the retries Symfony still had are not made. Set'
+            . ' max_deliver to max_retries + 1.',
             $this->streamName,
             $this->topic,
-            $delivered,
-            $maxDeliver,
+            $this->deliveriesOf($id) ?? 0,
+            $this->configuration->maxDeliver() ?? 0,
+        ));
+    }
+
+    /**
+     * How many times NATS has delivered the message of this delivery, this one included, from its reply subject;
+     * null when that is not a JetStream reply subject.
+     */
+    private function deliveriesOf(string $id): ?int
+    {
+        return JsMessageMetadata::fromMessage($this->buildAckMessage($id))?->numDelivered;
+    }
+
+    /**
+     * Whether this is the last delivery max_deliver allows, after which NATS keeps the message in the stream and
+     * publishes the MAX_DELIVERIES advisory instead of delivering it again.
+     */
+    private function isTheLastDelivery(string $id): bool
+    {
+        $maxDeliver = $this->configuration->maxDeliver();
+        $delivered = $this->deliveriesOf($id);
+
+        return $maxDeliver !== null && $delivered !== null && $delivered >= $maxDeliver;
+    }
+
+    /**
+     * Settles, with retry_delay_source=symfony, a delivery Symfony does not retry: no retries left, or a failure
+     * that is not retried at all.
+     *
+     * The last delivery max_deliver allows gets a plain NAK: NATS does not redeliver it, keeps the message in the
+     * stream and publishes the MAX_DELIVERIES advisory, at once since the NAK carries no delay. With max_deliver
+     * at max_retries + 1 that is the delivery on which Symfony's retries run out.
+     *
+     * An earlier delivery cannot end that way: a NAK brings the message back. {@see NoRetryAction} decides: a
+     * plain NAK, after which the handler runs again at once and up to max_deliver times in all, or a TERM.
+     */
+    private function settleWhatSymfonyDoesNotRetry(Envelope $envelope, string $id): void
+    {
+        if (!$this->isTheLastDelivery($id)) {
+            $this->warnThatSymfonyGaveUpBeforeMaxDeliver($envelope, $id);
+
+            if ($this->configuration->noRetryAction() === NoRetryAction::TERM) {
+                $this->sendTerm($id);
+
+                return;
+            }
+        }
+
+        $this->awaitOnConnection($this->jetStream()->nak($this->buildAckMessage($id)));
+    }
+
+    /**
+     * Logs a warning, once, when Symfony does not retry a delivery although max_deliver allows more, unless the
+     * failure is one Symfony never retries ({@see UnrecoverableExceptionInterface}, read from the envelope's
+     * ErrorDetailsStamp, which FrameworkBundle adds): then max_retries is likely below max_deliver - 1.
+     */
+    private function warnThatSymfonyGaveUpBeforeMaxDeliver(Envelope $envelope, string $id): void
+    {
+        if ($this->givenUpBeforeMaxDeliverReported) {
+            return;
+        }
+
+        $failure = $envelope->last(ErrorDetailsStamp::class)?->getExceptionClass();
+        if ($failure !== null && is_a($failure, UnrecoverableExceptionInterface::class, true)) {
+            return;
+        }
+
+        $this->givenUpBeforeMaxDeliverReported = true;
+        $this->logger?->warning(sprintf(
+            'retry_delay_source=symfony on stream "%s", subject "%s": Symfony does not retry a message after delivery'
+            . ' %d, but max_deliver is %d (no_retry_action=%s). If its retries ran out, set max_deliver to'
+            . ' max_retries + 1.',
+            $this->streamName,
+            $this->topic,
+            $this->deliveriesOf($id) ?? 0,
+            $this->configuration->maxDeliver() ?? 0,
+            $this->configuration->noRetryAction()->value,
         ));
     }
 
@@ -731,11 +815,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return;
         }
 
-        // With retry_delay_source=symfony Symfony's strategy decides, and a rejection without a retry copy is its
-        // final word: the message went to the failure transport, or is dropped. A NAK would have NATS redeliver
-        // it, and every redelivery would fail for good again and reach the failure transport once more.
+        // With retry_delay_source=symfony a rejection without a retry copy is Symfony's final word.
         if ($this->configuration->retryDelaySource() === RetryDelaySource::SYMFONY) {
-            $this->sendTerm($id);
+            $this->settleWhatSymfonyDoesNotRetry($envelope, $id);
 
             return;
         }
