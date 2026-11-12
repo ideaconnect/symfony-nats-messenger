@@ -27,7 +27,8 @@ use function Amp\async;
  *    not delivered yet, up to its batch, each with an ack subject, and status 408 when fewer were there, as a pull
  *    that found no more messages ends; a pull on an inbox the session does not hold gets nothing, since nothing is
  *    subscribed to deliver to;
- *  - a CONSUMER.INFO request of the consumer gets {@see $consumerInfoReply}, and nothing while that is null;
+ *  - a CONSUMER.INFO request of the consumer gets {@see $consumerInfoReply}, and nothing while that is null; with
+ *    {@see $lameDuckOnConsumerInfo} the server says it is going away instead (an INFO that carries `ldm`);
  *  - a publish to an ack subject is recorded.
  * The stream's messages, the deliveries and the acknowledgements outlive a session, as on a real server.
  *
@@ -67,6 +68,13 @@ final class SubscriptionLimitNatsServer implements TransportInterface
      * gracefully leaves every JetStream API request once it has shut its eventing down (#106).
      */
     public ?string $consumerInfoReply = null;
+
+    /**
+     * Whether a CONSUMER.INFO request of the consumer that gets no {@see $consumerInfoReply} is followed by an INFO that
+     * carries `ldm`, as a server in lame duck mode sends its clients once it has stopped JetStream, whose API answers
+     * nothing from then on; the connection stays open (#106).
+     */
+    public bool $lameDuckOnConsumerInfo = false;
 
     private readonly string $pullSubject;
 
@@ -380,8 +388,12 @@ final class SubscriptionLimitNatsServer implements TransportInterface
         }
 
         $this->record('PUBLISH', $subject);
-        if ($subject === $this->consumerInfoSubject && $replyTo !== null && $this->consumerInfoReply !== null) {
-            $this->reply($replyTo, $this->consumerInfoReply);
+        if ($subject === $this->consumerInfoSubject && $replyTo !== null) {
+            if ($this->consumerInfoReply !== null) {
+                $this->reply($replyTo, $this->consumerInfoReply);
+            } elseif ($this->lameDuckOnConsumerInfo) {
+                $this->send(str_replace('"headers":true', '"headers":true,"ldm":true', self::INFO));
+            }
 
             return;
         }
