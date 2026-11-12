@@ -2,7 +2,7 @@ Feature: Automatic reconnect (reconnect: true)
   With reconnect on, the NATS client recovers a lost connection on its own and the transport leaves it to
   that: it never ends a recovery in flight, keeps a connection the client has already recovered, and verifies
   provisioning again once the client reconnected, since the stream may have gone with the server. The server is
-  restarted with docker while a process holds a connection to it (#81).
+  restarted with docker while a process holds a connection to it (#81), or leaves in lame duck mode (#106).
 
   Background:
     Given NATS server is running
@@ -14,6 +14,21 @@ Feature: Automatic reconnect (reconnect: true)
     And the NATS stream is set up
     When I start a messenger consumer expecting 5 messages
     And I restart the NATS server
+    And I send 5 messages to the transport
+    And I wait for messages to be consumed
+    Then all 5 messages should be consumed
+    And the consumer should have reconnected
+
+  # In lame duck mode the server stops JetStream at once and keeps its connections for its grace period (10 s in
+  # nats.conf) before it closes them and exits, so every pull meanwhile gets 503 on a connection that stays open (#106).
+  # request_timeout is 3 s, below that grace period: a transport that waited out a question about the 503 would end
+  # the worker before the server closed the connection.
+  @reconnect
+  Scenario: A worker keeps consuming across a server that leaves in lame duck mode
+    Given I have a messenger transport configured with reconnect enabled and a request timeout of 3 seconds
+    And the NATS stream is set up
+    When I start a messenger consumer expecting 5 messages
+    And the NATS server leaves in lame duck mode and starts again
     And I send 5 messages to the transport
     And I wait for messages to be consumed
     Then all 5 messages should be consumed

@@ -16,7 +16,7 @@ Symfony Messenger  ──dispatch──▶  NatsTransportFactory ──▶ NatsT
 - **Symfony side:** the library implements `TransportInterface`, `MessageCountAwareInterface`,
   and `SetupableTransportInterface`, so it plugs into `messenger:consume`, `messenger:setup-transports`,
   and the failure/retry machinery like any first-party transport.
-- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.28`,
+- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.29`,
   amphp-based). Calls return `Amp\Future`; the transport resolves them synchronously with `->await()`
   because Symfony Messenger's transport contract is blocking.
 
@@ -42,7 +42,7 @@ src/
 tests/
 ├── bootstrap.php                               # autoloader + BypassFinals; takes Infection's file swap over in mutant processes
 ├── Support/
-│   ├── ClientInjectedNatsTransport.php         # the transport with a client the test gives it
+│   ├── ClientInjectedNatsTransport.php         # the transport with a client the test gives it, and a limit on pause()
 │   ├── FaultInjectingNatsServer.php            # the scripted server behind a connection that fails the way a real one does
 │   ├── MessengerTestKernel.php                 # a FrameworkBundle + Messenger kernel for tests that need a compiled container
 │   ├── PhpProcess.php                          # runs a PHP script in a child process
@@ -62,6 +62,7 @@ tests/
 │   ├── ComposerScriptsTest.php                 # composer test:functional runs past Composer's process timeout
 │   ├── SubscriptionLimitPullTest.php           # pulls at the subscription limit, real client over a scripted server
 │   ├── UnansweredPullTest.php                  # a pull the server never answered calls for a connection check
+│   ├── GracefulStopPullTest.php                # a pull's 503 from a server going away is an empty batch (#106)
 │   ├── ReconnectModeTest.php                   # reconnect: true, the real client over a connection that fails like a real one
 │   ├── RunTestsWithPausesTest.php              # composer test:unit:paused really stops the tests and keeps PHPUnit's exit code
 │   ├── LoginCombinationsTest.php               # every combination of credentials: refused when built, or through the real client

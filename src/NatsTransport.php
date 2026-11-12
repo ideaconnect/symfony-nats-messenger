@@ -19,6 +19,7 @@ use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
 use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
 use IDCT\NATS\JetStream\Enum\AckPolicy;
 use IDCT\NATS\JetStream\Enum\DeliverPolicy;
+use IDCT\NATS\JetStream\Enum\NoRespondersCause;
 use IDCT\NATS\JetStream\Enum\ReplayPolicy;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
@@ -447,7 +448,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * With auto_setup enabled, a 404, 409 or 503 (see {@see recoverFromFetchFailure()} for why
      * all three) first triggers one re-provisioning attempt and a second pull. A 409 with which the
      * server ended the pull itself, "Server Shutdown" or "Leadership Change", is an empty batch
-     * instead, in either mode ({@see pullEndedByTheServer()}).
+     * instead, in either mode ({@see pullEndedByTheServer()}). So is a 503 from a server that is going
+     * away, in a graceful stop or lame duck mode, which the client's diagnosis of the 503 tells from a
+     * missing consumer ({@see pullMetAServerGoingAway()}, #106).
      *
      * A pull the server refuses because the connection is at its subscription limit fails with a
      * TransportException that names the stream, the consumer and the limit ({@see fetchBatchMessages()}).
@@ -951,7 +954,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * "JetStream pull request ended with status 503". 409 is what a consumer deleted mid-pull reports.
      * A 404 reports a pull that found no messages, but re-provisioning on it as well is harmless when
      * the resources exist, so all three are treated as a sign that the consumer or stream it pulls from
-     * may not be there.
+     * may not be there. A 503 is that sign only from a server that stays: one that is going away sends the
+     * same 503 for a consumer it has already stopped, and that pull is an empty batch
+     * ({@see pullMetAServerGoingAway()}).
      *
      * @return list<NatsMessage>|null
      */
@@ -965,7 +970,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return null;
         }
 
-        if ($this->pullEndedByTheServer($exception)) {
+        if ($this->pullEndedByTheServer($exception) || $this->pullMetAServerGoingAway($exception)) {
             return null;
         }
 
@@ -981,8 +986,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 // but a repeated 503 or 409 no longer means "missing" - it means pulls are failing on a
                 // consumer that verifiably exists, and flattening that into an empty batch would hide
                 // a real outage behind a worker that forever reports nothing to do. A pull the server
-                // ended itself is as empty here as on the first try.
-                if ($retryException->getCode() === 404 || $retryException->getCode() === 408 || $this->pullEndedByTheServer($retryException)) {
+                // ended itself, or whose 503 came from a server going away, is as empty here as on the first try.
+                if ($retryException->getCode() === 404 || $retryException->getCode() === 408 || $this->pullEndedByTheServer($retryException) || $this->pullMetAServerGoingAway($retryException)) {
                     return null;
                 }
 
@@ -1029,6 +1034,42 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         return stripos($exception->getMessage(), 'Leadership Change') !== false;
+    }
+
+    /**
+     * Whether a pull's 503 came from a server that is going away, rather than from a missing consumer, and arms the
+     * connection check when it may have (#106).
+     *
+     * nats-server answers a pull with 503 (no responders) whenever nothing is subscribed to the consumer's pull subject:
+     * when the consumer does not exist, and also while a server that is going away has stopped the consumer and not yet
+     * closed the connection. In a graceful stop that moment lasts about 10 ms for each durable consumer on a file stream
+     * on NATS 2.15; in lame duck mode it lasts the whole grace period (10 s by default, on every version), since the
+     * server stops JetStream at once and keeps the connections open. The pull alone cannot tell them apart. The
+     * client's diagnoseNoResponders() (client 2.29) does: it asks for the consumer while it watches the connection. A
+     * server that stays answers; one that is going away answers nothing, and closes the connection or announces lame
+     * duck mode, which ends the wait without request_timeout, also when the client keeps the question across its
+     * reconnect.
+     *
+     * ServerGoingAway is an empty batch, and the operation after it checks the connection first, as after
+     * `409 Server Shutdown` (a recovery the client runs is left to it). Any answer - the consumer, a 404 or another
+     * JetStream error - comes from a server that stays, and the 503 keeps its reading as a missing consumer: with
+     * auto_setup the consumer is provisioned again and pulled from once more, without it the 503 propagates. So does
+     * NoAnswer, on a connection that stays (a user allowed to pull but not to ask for consumer info, which the server
+     * leaves unanswered), after request_timeout: reading it as empty would hide a missing consumer behind a worker that
+     * never stops polling. The operation after it checks the connection first, as after any that failed on it.
+     */
+    private function pullMetAServerGoingAway(JetStreamException $exception): bool
+    {
+        if ($exception->getCode() !== 503 || $this->jetStream === null) {
+            return false;
+        }
+
+        $cause = $this->jetStream->diagnoseNoResponders($this->streamName, $this->configuration->consumer())->await();
+        if ($cause === NoRespondersCause::ServerGoingAway || $cause === NoRespondersCause::NoAnswer) {
+            $this->checkBeforeNextUse = true;
+        }
+
+        return $cause === NoRespondersCause::ServerGoingAway;
     }
 
     /**
