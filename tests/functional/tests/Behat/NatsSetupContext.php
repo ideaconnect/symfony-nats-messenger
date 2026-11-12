@@ -2375,6 +2375,18 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * As above, with request_timeout at the given number of seconds. The lame duck scenario sets it below the 10 s for
+     * which the main test server keeps its connections in lame duck mode (lame_duck_grace_period in nats.conf): a
+     * question about a pull's 503 that the transport waited out would then end before the server closes the connection,
+     * and the worker with it, so the scenario fails on a transport that does not know lame duck mode (#106).
+     */
+    #[Given('I have a messenger transport configured with reconnect enabled and a request timeout of :seconds seconds')]
+    public function iHaveAMessengerTransportConfiguredWithReconnectEnabledAndARequestTimeout(int $seconds): void
+    {
+        $this->writeTransportConfiguration('stream_max_age=900&reconnect=1&max_reconnect_attempts=30&request_timeout=' . $seconds);
+    }
+
+    /**
      * As above, with auto_setup and a memory stream, which a server restart loses: the fixture for provisioning
      * verified again after the client's own reconnect. ping_after_idle is 2 s, so the send after the quiet period
      * checks the connection first: a PHP process runs the event loop only inside a transport call, so the client
@@ -2464,6 +2476,56 @@ class NatsSetupContext implements Context
             throw new \RuntimeException(sprintf('docker restart %s failed: %s', $container, $restart->getErrorOutput()));
         }
 
+        $this->waitUntilTheNatsServerAnswersAgain();
+    }
+
+    /**
+     * Puts the main test server into lame duck mode (SIGUSR2) and returns once it is back. In lame duck mode nats-server
+     * stops JetStream at once, keeps the client connections for its grace period (10 s in nats.conf), closes them over
+     * the rest of its lame_duck_duration (30 s, the least it accepts) and exits; docker starts it again (restart:
+     * always), which raises the container's restart count. A pull written meanwhile gets 503 on a connection that stays
+     * open (#106). The signal goes to the server from inside the container: `docker kill`, whatever the signal, marks
+     * the container as stopped by hand, and docker then leaves it stopped once it exits.
+     */
+    #[When('the NATS server leaves in lame duck mode and starts again')]
+    public function theNatsServerLeavesInLameDuckModeAndStartsAgain(): void
+    {
+        $container = 'nats_test';
+        $restarts = $this->restartCountOf($container);
+        $signal = new Process(['docker', 'exec', $container, 'kill', '-USR2', '1']);
+        $signal->setTimeout(30);
+        $signal->run();
+        if (!$signal->isSuccessful()) {
+            throw new \RuntimeException(sprintf('Sending SIGUSR2 to the server in %s failed: %s', $container, $signal->getErrorOutput()));
+        }
+
+        $deadline = microtime(true) + 120;
+        while ($this->restartCountOf($container) === $restarts) {
+            if (microtime(true) > $deadline) {
+                throw new \RuntimeException('The NATS server did not leave lame duck mode and start again within 120 s.');
+            }
+            usleep(250000);
+        }
+
+        $this->waitUntilTheNatsServerAnswersAgain();
+    }
+
+    /** How many times docker has started the container again under its restart policy. */
+    private function restartCountOf(string $container): int
+    {
+        $inspect = new Process(['docker', 'inspect', '--format', '{{.RestartCount}}', $container]);
+        $inspect->setTimeout(30);
+        $inspect->run();
+        if (!$inspect->isSuccessful()) {
+            throw new \RuntimeException(sprintf('docker inspect %s failed: %s', $container, $inspect->getErrorOutput()));
+        }
+
+        return (int) trim($inspect->getOutput());
+    }
+
+    /** Returns once the server answers JetStream requests again, after a restart. */
+    private function waitUntilTheNatsServerAnswersAgain(): void
+    {
         $deadline = microtime(true) + 60;
         while (true) {
             try {
