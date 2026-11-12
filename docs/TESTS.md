@@ -50,22 +50,28 @@ Runs the real client against an in-memory server that answers the handshake and 
 
 ### A Pull During a Graceful Stop (`tests/unit/GracefulStopPullTest.php`)
 
-nats-server answers a pull with 503 for a consumer that does not exist and, during a graceful stop, for one it has
-already stopped; NATS 2.15 takes about 10 ms for each durable consumer on a file stream (#106). After a 503 the
-transport asks for the consumer once (`pullMetAServerGoingAway()`). The first tests double the client and its JetStream
-context, to drive each answer and each state of the connection; the others run the real client over the scripted server
-of [Subscription Limit](#subscription-limit-testsunitsubscriptionlimitpulltestphp), whose pulls can end with status 503
-(`$pullsFindNoResponder`) and which answers a CONSUMER.INFO of the consumer with `$consumerInfoReply`, or not at all,
-behind `FaultInjectingNatsServer`, which closes the connection right after the question went out, as the stopping
-server does. Every test but the three of `testOnlyA503AsksForTheConsumer` fails before #106.
+nats-server answers a pull with 503 for a consumer that does not exist and, while it is going away, for one it has
+already stopped: in the last moments of a graceful stop (NATS 2.15 takes about 10 ms for each durable consumer on a file
+stream) and for the whole grace period of lame duck mode (#106). After a 503 the transport asks the client why
+(`pullMetAServerGoingAway()`, `JetStreamContext::diagnoseNoResponders()` of client 2.29, whose own tests cover how it
+watches the connection). The first tests double the client and its JetStream context, to drive each cause and each state
+of the connection; the others run the real client over the scripted server of
+[Subscription Limit](#subscription-limit-testsunitsubscriptionlimitpulltestphp), whose pulls can end with status 503
+(`$pullsFindNoResponder`) and which answers a CONSUMER.INFO of the consumer with `$consumerInfoReply`, with nothing, or
+with an INFO that announces lame duck mode (`$lameDuckOnConsumerInfo`), behind `FaultInjectingNatsServer`, which closes
+the connection right after the question went out, as the stopping server does. On the transport of 5.8.0 every test but
+the three of `testOnlyA503AsksWhyThePullGotNoResponders` fails; on the transport that asked CONSUMER.INFO itself (the
+first commits of #108, client 2.28), the two real-client lame duck cases fail with the 503 after request_timeout.
 
 | Feature | Tests |
 |---------|-------|
-| **A 503 whose question the closing connection leaves unanswered is an empty batch; with auto_setup nothing is provisioned on the server going away** | `testA503WhoseQuestionTheClosingConnectionLeavesUnansweredIsAnEmptyBatch` (auto_setup off and on), `testWithTheRealClientAPullOnAStoppingServerIsAnEmptyBatchAndTheNextOneDialsAgain` |
-| **With `reconnect`, the wait ends once the client is recovering or has replaced the connection, not at request_timeout, which the client keeps the question waiting for** | `testA503IsAnEmptyBatchOnceTheClientRecoversTheConnectionWhileTheQuestionWaits` (recovering: the next pull leaves the recovery to the client; replaced: it checks the new connection first), `testWithTheRealClientAndReconnectAPullOnAStoppingServerIsAnEmptyBatchWithoutWaitingForTheRequestTimeout` |
-| **Any answer keeps the 503's reading as a missing consumer, and the next operation does not check the connection** | `testA503KeepsItsReadingWhenTheQuestionIsAnswered` (the consumer, 404 consumer or stream not found, 503 with no JetStream responder or JetStream not enabled, an answer that takes several looks), `testWithTheRealClientA503FromAServerThatAnswersTheQuestionPropagates` |
-| **No answer on a connection that stays keeps the reading too, and the next operation checks the connection** | `testA503KeepsItsReadingWhenTheQuestionGoesUnansweredOnAConnectionThatStays` (reconnect off and on, the request ending with the client's timeout or with a cancelled budget of its own, which is not taken for a look at the connection that came due), `testWithTheRealClientA503WhoseQuestionGoesUnansweredOnAConnectionThatStaysPropagates` (the question gets a 50 ms budget) |
-| **Only a 503 asks for the consumer** | `testOnlyA503AsksForTheConsumer` (404 no messages, 409 consumer deleted, 500; guard: passes before #106 too) |
+| **A 503 from a server going away is an empty batch; with auto_setup nothing is provisioned on the server going away** | `testA503FromAServerGoingAwayIsAnEmptyBatch` (auto_setup off and on), `testWithTheRealClientAPullOnAStoppingServerIsAnEmptyBatchAndTheNextOneDialsAgain` |
+| **The operation after it checks the connection the client has, and leaves a recovery in flight to the client** | `testTheOperationAfterAServerGoingAwayChecksTheConnectionTheClientHas` (recovering: no check; replaced: a check of the new connection; a lame duck server's connection: a check) |
+| **With `reconnect`, the client's diagnosis ends once it is recovering or has replaced the connection, not at request_timeout** | `testWithTheRealClientAndReconnectAPullOnAStoppingServerIsAnEmptyBatchWithoutWaitingForTheRequestTimeout` |
+| **Lame duck mode: the pull is an empty batch while the connection stays open, and the next pull asks nothing** | `testWithTheRealClientAPullOnAServerInLameDuckModeIsAnEmptyBatchWhileTheConnectionStays` (reconnect off and on: an empty batch in under 2.5 s with a 5 s request_timeout, one session, one question for two pulls, one check of the connection) |
+| **Any answer keeps the 503's reading as a missing consumer, and the next operation does not check the connection** | `testA503KeepsItsReadingWhenTheServerAnswers` (the consumer, 404 consumer or stream not found, another JetStream error), `testWithTheRealClientA503FromAServerThatAnswersTheQuestionPropagates` |
+| **No answer on a connection that stays keeps the reading too, and the next operation checks the connection** | `testA503KeepsItsReadingWhenNothingAnswersOnAConnectionThatStays` (reconnect off and on), `testWithTheRealClientA503WhoseQuestionGoesUnansweredOnAConnectionThatStaysPropagates` (the question gets a 50 ms budget) |
+| **Only a 503 asks why** | `testOnlyA503AsksWhyThePullGotNoResponders` (404 no messages, 409 consumer deleted, 500; guard: passes before #106 too) |
 | **The pull after provisioning again gets the same reading** | `testA503OfThePullAfterProvisioningAgainFromAServerGoingAwayIsAnEmptyBatch` |
 
 ### Subscription Limit (`tests/unit/SubscriptionLimitPullTest.php`)
@@ -520,6 +526,7 @@ does not survive it.
 | Feature | Scenarios |
 |---------|-----------|
 | **A worker polls through a server restart without exiting** | A worker keeps consuming across a server restart (the consumer holds a connection before the restart, reconnects, and consumes the five messages sent after it; the step no longer pauses after the connection, so on CI's fast docker the worker's pull can land in the last moments of a graceful stop on NATS 2.15, whose 503 the transport reads as an empty batch since #106) |
+| **A worker polls through a server that leaves in lame duck mode** | A worker keeps consuming across a server that leaves in lame duck mode (SIGUSR2 sent from inside the container, as `docker kill` would mark it stopped by hand and keep docker from starting it again; the server stops JetStream, keeps the connections for its 10 s grace period, during which every pull gets 503, closes them and exits, and docker starts it again; request_timeout is 3 s, below the grace period, so that a transport waiting out a question about the 503 would end the worker first. Fails with `JetStream pull request ended with status 503` on the transport that asked CONSUMER.INFO itself with client 2.28, #106) |
 | **The client's own reconnect is used by the next send, and auto_setup recreates the memory stream the restart lost** | A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated (`ping_after_idle` 2 s, so the send after the quiet period checks the connection first and finds the client recovering it; the stats show the one message the recreated stream holds) |
 
 ### Stream Placement (`tests/functional/features/nats_stream_placement.feature`)

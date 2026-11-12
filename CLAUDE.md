@@ -8,7 +8,7 @@ for Claude Code. For architecture see [STRUCTURE.md](STRUCTURE.md); for human on
 
 A Symfony Messenger **transport** for NATS JetStream. It implements `TransportInterface`,
 `MessageCountAwareInterface`, and `SetupableTransportInterface`, bridging Symfony's message bus to
-NATS via the async `idct/php-nats-jetstream-client` (`^2.28`, amphp-based). It ships
+NATS via the async `idct/php-nats-jetstream-client` (`^2.29`, amphp-based). It ships
 `IDCTNatsMessengerBundle` (auto-enabled by Flex), which registers the transport factory
 and the igbinary serializer so projects need no manual wiring.
 
@@ -116,13 +116,19 @@ composer nats:stop               # stop NATS
   missing consumer reports 503, not 404: with `auto_setup` it is re-provisioned once, otherwise `get()` throws.
   The client also reports a pull that got no answer before its own deadline as 408 ("No messages received
   within timeout"); that one makes the next operation PING first, since the server did not answer.
-  A graceful stop of NATS 2.15 leaves a moment in which a pull gets that same 503, from a consumer the server has already
-  stopped (#106). So after a 503 the transport asks for the consumer (`pullMetAServerGoingAway()`): a server that stays
-  answers, with the consumer or 404, and the 503 keeps its reading; a server going away leaves the question unanswered
-  (Server.Shutdown() drops JetStream API replies before it stops the first consumer) and closes the connection, and the
-  pull is an empty batch. No answer on a connection that stays, as for a user not allowed to ask for consumer info, keeps
-  the reading too, so a missing consumer is never hidden. With `reconnect: true` the client keeps an unanswered request
-  across its reconnect until `request_timeout`, so the wait ends on the connection's state and reconnect count instead.
+  A server that is going away answers a pull with that same 503, from a consumer it has already stopped (#106): in the
+  last moments of a graceful stop (NATS 2.15 stops each durable consumer on a file stream in about 10 ms), and for the
+  whole grace period of lame duck mode (10 s by default), as it stops JetStream at once and keeps the connections. So
+  after a 503 the transport asks the client why (`pullMetAServerGoingAway()`, the client's `diagnoseNoResponders()`,
+  `^2.29`), which asks for the consumer while it watches the connection: a server that stays answers, with the consumer
+  or 404, and the 503 keeps its reading; a server going away leaves the question unanswered (Server.Shutdown() drops
+  JetStream API replies before it stops the first consumer, lameDuckMode() stops JetStream before it sends the `ldm`
+  INFO) and closes the connection or announces lame duck mode: `ServerGoingAway`, an empty batch, and the next
+  operation checks the connection first. `NoAnswer`, on a connection that stays (a user not allowed to ask for consumer
+  info), keeps the reading too, so a missing consumer is never hidden. The client, not the transport, ends the wait
+  once the connection is closed, being recovered or replaced, or in lame duck mode. To reproduce lame duck mode in a
+  test, signal the server from inside its container (`docker exec <c> kill -USR2 1`): `docker kill` marks the container
+  stopped by hand, and docker then does not start it again under `restart: always`.
 - **A pull refused at the subscription limit throws `TransportException`.** The transport holds two subscriptions
   per connection (the request reply inbox and the pull's inbox). At a limit of one, the client's
   `SubscriptionLimitException` (client `^2.27`) becomes Symfony's `TransportException` naming the stream, consumer

@@ -162,14 +162,18 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
 
 ### Upgrading from 5.8.0
 
-Nothing to change. A pull that gets 503 costs one round trip more: the transport asks for the consumer
-(`$JS.API.CONSUMER.INFO.<stream>.<consumer>`), so that a pull in the last moments of a graceful stop of the server,
-which gets that 503 for a consumer the server has already stopped, is an empty batch instead of the end of the worker
-(#106, see [Note on a server that stops](#provisioning-the-stream--consumer)). A missing consumer still ends a worker
-without `auto_setup`, as before. For a user allowed to pull but not to ask for consumer info, it ends it only after
-`request_timeout`, as the server leaves the question unanswered; allow that subject to have it at once.
+- **Client 2.29.0 or later.** The transport requires `idct/php-nats-jetstream-client` `^2.29`, which `composer update`
+  installs. Its `diagnoseNoResponders()` tells a pull's 503 from a server that is going away apart from a missing
+  consumer, and its JetStream API calls report a request nothing answers as `JetStreamException` code 503.
+- **A pull that gets 503 costs one round trip more:** the client asks for the consumer
+  (`$JS.API.CONSUMER.INFO.<stream>.<consumer>`), so that a pull in the last moments of a graceful stop of the server,
+  or during lame duck mode, which gets that 503 for a consumer the server has already stopped, is an empty batch
+  instead of the end of the worker (#106, see [Note on a server that stops](#provisioning-the-stream--consumer)). A
+  missing consumer still ends a worker without `auto_setup`, as before. For a user allowed to pull but not to ask for
+  consumer info, it ends it only after `request_timeout`, as the server leaves the question unanswered; allow that
+  subject to have it at once.
 
-> **Tested by:** `testA503KeepsItsReadingWhenTheQuestionIsAnswered`, `testA503KeepsItsReadingWhenTheQuestionGoesUnansweredOnAConnectionThatStays`, `testWithTheRealClientA503FromAServerThatAnswersTheQuestionPropagates`, `testWithTheRealClientA503WhoseQuestionGoesUnansweredOnAConnectionThatStaysPropagates`
+> **Tested by:** `testA503KeepsItsReadingWhenTheServerAnswers`, `testA503KeepsItsReadingWhenNothingAnswersOnAConnectionThatStays`, `testWithTheRealClientA503FromAServerThatAnswersTheQuestionPropagates`, `testWithTheRealClientA503WhoseQuestionGoesUnansweredOnAConnectionThatStaysPropagates`
 
 ### Logging
 
@@ -1130,12 +1134,14 @@ In a DSN: `?reconnect=true&max_reconnect_attempts=20`.
 - What a worker gets: it polls through an outage shorter than one recovery cycle without exiting, every pull
   ending empty after `max_batch_timeout` plus a second. That includes the last moments of a graceful stop, which on
   NATS 2.15 leave the connection open while the server stops each durable consumer on a file stream, in about 10 ms
-  each: a pull written then gets 503, the same status a missing consumer gives. After a 503 the transport asks for the
-  consumer once. The server going away leaves that question unanswered and closes the connection, and the pull is an
-  empty batch; a server that stays answers it, and the 503 keeps its reading as a missing consumer (see
-  [Note on a server that stops](#provisioning-the-stream--consumer)). Up to 5.8.0 that pull ended the worker, with
-  `JetStream pull request ended with status 503` or, with `auto_setup`, `Failed to setup NATS stream` (#106). Under a
-  supervisor the worker starts again. `max_reconnect_attempts` sizes the cycle in attempts,
+  each, and lame duck mode (`nats-server --signal ldm`, SIGUSR2), in which the server stops JetStream at once and
+  keeps the connections for its grace period (`lame_duck_grace_period`, 10 s by default) before it closes them and
+  exits: a pull written then gets 503, the same status a missing consumer gives. After a 503 the client asks for the
+  consumer once. The server going away leaves that question unanswered, and closes the connection or announces lame
+  duck mode, and the pull is an empty batch; a server that stays answers it, and the 503 keeps its reading as a
+  missing consumer (see [Note on a server that stops](#provisioning-the-stream--consumer)). Up to 5.8.0 that pull
+  ended the worker, with `JetStream pull request ended with status 503` or, with `auto_setup`, `Failed to setup NATS
+  stream` (#106). Under a supervisor the worker starts again. `max_reconnect_attempts` sizes the cycle in attempts,
   not in seconds: the client's default of 10 gives about 109 s against a server that refuses connections,
   where a refused dial costs about 6 s. An `ack_sync` acknowledgement that runs into the outage still fails
   after `request_timeout`, which ends the worker's run as any exception from `ack()` does: synchronous
@@ -1755,19 +1761,22 @@ framework:
 > server that is going away. After a shutdown the next operation checks the connection first. Every other
 > 409, `Consumer Deleted` among them, still triggers one re-provisioning attempt, and the 409s that report
 > configuration (`Consumer is push based`, `Exceeded MaxRequestBatch`) still propagate.
-> A pull written in the last moments of a graceful stop gets 503, as the server has stopped the consumer and
-> not yet closed the connection (NATS 2.15 stops each durable consumer on a file stream in about 10 ms). A
-> missing consumer gives the same 503, so after a 503 the transport asks for the consumer once (CONSUMER.INFO),
-> in either mode. A server that stays answers at once, with the consumer or with 404, and the 503 keeps the
-> reading above: `auto_setup` provisions again, and without it the 503 propagates. A server that is going away
-> drops the reply and closes the connection: that pull is an empty batch, and the next operation checks the
-> connection first. The transport stops waiting once the connection is closed or, with `reconnect: true`, once the
-> client is recovering it or has replaced it; the client itself would keep the question waiting until
-> `request_timeout`. A question that goes unanswered on a connection that stays, as for a user allowed to pull
-> but not to ask for consumer info (`$JS.API.CONSUMER.INFO.<stream>.<consumer>`), keeps the 503's reading, after
+> A pull written while a server is going away gets 503, as the server has stopped the consumer and not yet
+> closed the connection: in the last moments of a graceful stop (NATS 2.15 stops each durable consumer on a file
+> stream in about 10 ms), and for the whole grace period of lame duck mode, in which the server stops JetStream at
+> once and keeps the connections open (10 s by default). A missing consumer gives the same 503, so after a 503 the
+> transport asks the client why (`JetStreamContext::diagnoseNoResponders()`, client 2.29), in either mode; the
+> client asks for the consumer once (CONSUMER.INFO). A server that stays answers at once, with the consumer or with
+> 404, and the 503 keeps the reading above: `auto_setup` provisions again, and without it the 503 propagates. A
+> server that is going away drops the reply, and closes the connection or announces lame duck mode: that pull is an
+> empty batch, and the next operation checks the connection first. The client stops waiting once the connection is
+> closed, being recovered or replaced by a reconnect, or its server announced lame duck mode, where it would
+> otherwise keep the question waiting until `request_timeout`; once the server has announced lame duck mode it asks
+> nothing more. A question that goes unanswered on a connection that stays, as for a user allowed to pull but not to
+> ask for consumer info (`$JS.API.CONSUMER.INFO.<stream>.<consumer>`), keeps the 503's reading, after
 > `request_timeout`: a missing consumer is not hidden behind empty pulls.
 >
-> **Tested by:** `testA503WhoseQuestionTheClosingConnectionLeavesUnansweredIsAnEmptyBatch`, `testA503IsAnEmptyBatchOnceTheClientRecoversTheConnectionWhileTheQuestionWaits`, `testA503KeepsItsReadingWhenTheQuestionIsAnswered`, `testA503KeepsItsReadingWhenTheQuestionGoesUnansweredOnAConnectionThatStays`, `testWithTheRealClientAPullOnAStoppingServerIsAnEmptyBatchAndTheNextOneDialsAgain`, `testWithTheRealClientAndReconnectAPullOnAStoppingServerIsAnEmptyBatchWithoutWaitingForTheRequestTimeout`, Behat scenario `A worker keeps consuming across a server restart`
+> **Tested by:** `testA503FromAServerGoingAwayIsAnEmptyBatch`, `testTheOperationAfterAServerGoingAwayChecksTheConnectionTheClientHas`, `testA503KeepsItsReadingWhenTheServerAnswers`, `testA503KeepsItsReadingWhenNothingAnswersOnAConnectionThatStays`, `testWithTheRealClientAPullOnAStoppingServerIsAnEmptyBatchAndTheNextOneDialsAgain`, `testWithTheRealClientAndReconnectAPullOnAStoppingServerIsAnEmptyBatchWithoutWaitingForTheRequestTimeout`, `testWithTheRealClientAPullOnAServerInLameDuckModeIsAnEmptyBatchWhileTheConnectionStays`, Behat scenarios `A worker keeps consuming across a server restart` and `A worker keeps consuming across a server that leaves in lame duck mode`
 
 > **Note on `replay_policy`:** the replay policy of a durable consumer is fixed when the consumer is
 > created. NATS rejects an update that changes it, in both directions: once a consumer exists as

@@ -139,11 +139,12 @@ apply only with the option on.
   attempt and one retried pull; repeated 409/503 propagate. Since 5.7.0, `409 Server Shutdown`
   (which also checks the connection next time) and `409 Leadership Change` are empty batches in
   both modes, on the first and the retried pull; other 409s keep the handling above. Since #106 a 503, on
-  either pull, is first followed by one CONSUMER.INFO (`pullMetAServerGoingAway()`): any answer keeps the
-  handling above; no answer with the connection gone meanwhile (Closed, Connecting, or the reconnect count
-  moved) is an empty batch and checks the connection next time; no answer on a connection that stays keeps
-  the handling above too (a user allowed to pull but not to ask for consumer info must not poll a missing
-  consumer forever). The client's own unanswered-pull
+  either pull, is first diagnosed by the client (`pullMetAServerGoingAway()` calls `diagnoseNoResponders()`,
+  client `^2.29`, which asks one CONSUMER.INFO while it watches the connection): any answer keeps the handling
+  above; `ServerGoingAway` (no answer, with the connection closed, being recovered or replaced, or its server
+  in lame duck mode) is an empty batch and checks the connection next time; `NoAnswer`, on a connection that
+  stays, keeps the handling above too (a user allowed to pull but not to ask for consumer info must not poll a
+  missing consumer forever) and checks the connection next time. The client's own unanswered-pull
   deadline is also a JetStream 408, distinguished by the prefix `No messages received within
   timeout`. It triggers a check next time. A server-answered empty pull counts as connection use.
 - **Delivery identity:** outgoing `TransportMessageIdStamp` is a UUID; incoming it holds the
@@ -456,13 +457,17 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   2962 assertions, also stopped at random moments; coverage 99.80 % (1016/1018); Infection killed 1158 of 1176 mutants, with the 18
   survivors `docs/TESTS.md` lists; Behat 93 of 93 on each PHP job and 89 of 89 on NATS 2.10.29; 14 of 14 examples in each job.
 
-## #106: a pull's 503 during a graceful stop (2026-11-09)
+## #106: a pull's 503 during a graceful stop or lame duck mode (2026-11-09, 2026-11-12)
 
-- **Where it belongs: the transport.** nats-server answers a pull with 503 (no responders) whenever nothing is subscribed to
-  the consumer's `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`: for a missing consumer, and for one a stopping server has
-  already stopped. The client reports that faithfully (`JetStream pull request ended with status 503`, no err_code), and
-  no client can tell the two apart from the pull alone. The misreading was `recoverFromFetchFailure()`'s, so the fix is
-  here (`pullMetAServerGoingAway()`), with the client's public API only.
+- **Where it lives: the client tells, the transport decides.** nats-server answers a pull with 503 (no responders)
+  whenever nothing is subscribed to the consumer's `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`: for a missing
+  consumer, and for one a server going away has already stopped. The pull alone cannot tell them apart. PR #108 first
+  asked CONSUMER.INFO in the transport and polled the connection every 50 ms; a review on 2026-11-12 found lame duck mode
+  uncovered, and the asking moved into client 2.29.0 (`JetStreamContext::diagnoseNoResponders()`, client PR #253),
+  which watches the connection itself (state, connection generation, `serverInfo()->lameDuckMode`) and returns a
+  `NoRespondersCause`. `pullMetAServerGoingAway()` maps it: `ServerGoingAway` is an empty batch, `NoAnswer` keeps the
+  503 and arms the check, every answer keeps the 503. The same client release reports a JetStream API call nothing
+  answers as `JetStreamException(503)` (it was a bare `NatsException` from `requestJson()`).
 - **Why an unanswered CONSUMER.INFO means "going away".** `Server.Shutdown()` at v2.15.2 runs `signalPullConsumers()` (the
   `409 Server Shutdown`), `stepdownRaftNodes()`, `shutdownEventing()` (`s.sys = nil`), then `shutdownJetStream()` (streams and
   consumers stop), then closes the clients. JetStream API replies go out through `sendInternalAccountMsg()`, which sends
@@ -471,8 +476,19 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   pulls got 503 from 75 to 105 ms until the close at 227 to 233 ms; none answered after a 503.
 - **The client keeps a request across its reconnect.** With reconnect on, a CONSUMER.INFO sent during the stop waited the
   whole request timeout (3 s of 3 s) though the client had reconnected long before; with reconnect off it failed with
-  `Reconnect is disabled` at the close. So the transport's wait looks at the connection every 50 ms (Closed, Connecting,
-  or the reconnect count moved) instead of awaiting the reply.
+  `Reconnect is disabled` at the close. So the diagnosis watches the connection (every 20 ms, in the client) instead of
+  only awaiting the reply.
+- **Lame duck mode (SIGUSR2, `nats-server --signal ldm`) is the larger case.** `lameDuckMode()` stops JetStream at once,
+  keeps the client connections for `lame_duck_grace_period` (10 s by default; tests/nats/nats.conf sets 10 s), closes them
+  over the rest of `lame_duck_duration` (30 s at least) and exits. Pulls get 503 for the whole grace period, CONSUMER.INFO is
+  never answered, and the connection stays open, so the 2026-11-09 transport waited out request_timeout and the 503 ended
+  the worker. Measured on 2.15.2 with 48 consumers: pulls got 503 from 50 ms after the signal, CONSUMER.INFO went silent
+  from 45 ms, the `ldm` INFO reached the client at about 515 ms (after JetStream's shutdown). The client's diagnosis waits
+  for that INFO, then answers `ServerGoingAway` at once for every later 503 without asking.
+- **Docker trap for lame duck tests:** `docker kill --signal=SIGUSR2` marks the container stopped by hand, and docker does
+  not start it again under `restart: always` once nats-server exits. Signal from inside: `docker exec <c> kill -USR2 1`
+  (nats-server is PID 1 in the image). The Behat step `the NATS server leaves in lame duck mode and starts again` waits for
+  the container's RestartCount to move.
 - **Not hidden: a missing consumer.** Any answer keeps the 503's reading; no answer on a connection that stays (a user
   without permission for consumer info: the server reports a permissions violation and never answers) keeps it too.
 - **Worker loop like Symfony's** (`--sleep=1`, reconnect on, 48 consumers, restart at a random moment, 30 rounds each):
@@ -481,7 +497,8 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   Rehearse with `curl --unix-socket /var/run/docker.sock -X POST .../containers/<name>/restart` from a child process and
   many consumers on the file stream; Docker's CLI here is too slow to hit the moment. In such a script, register an
   autoloader for another `src/` after requiring Composer's, which puts itself first.
-- **Client follow-ups, not filed:** `PullConsumerIterator::handle()` polls forever on a 503 from a deleted consumer (the
-  mirror image), and a request whose server went away waits out `request_timeout` after the reconnect.
-- **Not measured:** a cluster (another server may answer CONSUMER.INFO for an R3 consumer, and the 503 then keeps its old
-  reading), and lame duck mode.
+- **Client follow-up, not done:** `PullConsumerIterator::handle()` and `consumePipelined()` still read a 503 as transient,
+  so on a consumer deleted while no pull waited an infinite run polls forever; `diagnoseNoResponders()` could end it, but
+  that changes the iterator's default behaviour and is the maintainer's call.
+- **Not measured:** a cluster (another server may answer CONSUMER.INFO for an R3 consumer while the local one stops, and
+  the 503 then keeps its old reading).

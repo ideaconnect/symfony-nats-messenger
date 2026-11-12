@@ -7,24 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Requires `idct/php-nats-jetstream-client` `^2.29`.** Client 2.29.0 adds `JetStreamContext::diagnoseNoResponders()`,
+  which the fix below uses, and reports a JetStream API call that nothing answers (a server or account without
+  JetStream) as `JetStreamException` code 503, as it already reported a pull or a publish, where it let a bare
+  `NatsException` through.
+
 ### Fixed
-- **A pull in the last moments of a graceful stop of NATS 2.15 no longer ends the worker (#106).** A server that stops
-  gracefully answers a pull with 503 for a consumer it has already stopped, until it closes the connection, the same 503 it
-  gives for a consumer that does not exist; NATS 2.15 stops each durable consumer on a file stream in about 10 ms, so the
-  moment grows with the consumers. The transport read that 503 as a missing consumer, and a worker ended with
-  `JetStream pull request ended with status 503` or, with `auto_setup`, with `Failed to setup NATS stream` after a request
-  timeout, as `setup()` ran against the server that was going away, with or without `reconnect: true`. After a 503 the
-  transport now asks for the consumer once (CONSUMER.INFO). A server that stays answers at once, with the consumer or with
-  404, and the 503 keeps its reading: `auto_setup` provisions the consumer again, and without it the 503 propagates. A
-  server that is going away leaves the question unanswered, as nats-server drops every JetStream API reply once it has shut
-  its eventing down, which `Server.Shutdown()` does before it stops the first consumer, and then closes the connection:
-  that pull is an empty batch, and the operation after it checks the connection first, as after `409 Server Shutdown`. With
-  `reconnect: true` the client keeps an unanswered request waiting across its reconnect until `request_timeout`, so the
-  transport stops waiting as soon as the client is recovering the connection or has replaced it. A question that goes
-  unanswered on a connection that stays, as for a user allowed to pull but not to ask for consumer info, keeps the 503's
-  reading as well, so a missing consumer still ends the worker instead of hiding behind empty pulls. A 503 costs one
-  round trip more; no other status asks anything. The restart scenarios of the functional suite no longer pause 300 ms
-  after the worker connects to stay out of that moment.
+- **A pull while the server is going away, in the last moments of a graceful stop or in lame duck mode, no longer ends
+  the worker (#106).** A server that is going away answers a pull with 503 for a consumer it has already stopped, until
+  it closes the connection, the same 503 it gives for a consumer that does not exist. In a graceful stop of NATS 2.15
+  that moment lasts about 10 ms for each durable consumer on a file stream; in lame duck mode, on every version, it
+  lasts the whole grace period (`lame_duck_grace_period`, 10 s by default), as the server stops JetStream at once and
+  keeps the connections open. The transport read that 503 as a missing consumer, and a worker ended with
+  `JetStream pull request ended with status 503` or, with `auto_setup`, with `Failed to setup NATS stream` after a
+  request timeout, as `setup()` ran against the server that was going away, with or without `reconnect: true`. After a
+  503 the transport now asks the client why (`diagnoseNoResponders()`), which asks for the consumer once
+  (CONSUMER.INFO) while it watches the connection. A server that stays answers at once, with the consumer or with 404,
+  and the 503 keeps its reading: `auto_setup` provisions the consumer again, and without it the 503 propagates. A
+  server that is going away leaves the question unanswered: a graceful stop shuts the server's eventing down, which
+  drops every JetStream API reply, before it stops the first consumer, and lame duck mode stops JetStream before it
+  tells the clients it is going away. Once the connection is closed, being recovered or replaced by a reconnect, or
+  its server announced lame duck mode, that pull is an empty batch, and the operation after it checks the connection
+  first, as after `409 Server Shutdown`. A question that goes unanswered on a connection that stays, as for a user
+  allowed to pull but not to ask for consumer info, keeps the 503's reading as well, so a missing consumer still ends
+  the worker instead of hiding behind empty pulls. A 503 costs one round trip more; no other status asks anything, and
+  once the server has announced lame duck mode nothing is asked. The restart scenarios of the functional suite no
+  longer pause 300 ms after the worker connects to stay out of that moment, and a new scenario keeps a worker going
+  across a server that leaves in lame duck mode.
 
 ## [5.8.0] - 2026-11-07
 

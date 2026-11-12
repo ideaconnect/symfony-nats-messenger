@@ -138,10 +138,12 @@ composer nats:stop               # Stop NATS
   Give an operation that has to succeed a budget it never uses up and only one that has to time out a short one, hold a
   recovery until the test releases it rather than for a time, and keep a bound on a duration far from what it normally
   takes. `composer test:unit:paused`, in CI, fails a test that breaks this.
-- A pull's 503 has two causes: a missing consumer, and a graceful stop, during which nats-server answers 503 for a consumer
-  it has already stopped (NATS 2.15 takes about 10 ms for each durable consumer on a file stream). After a 503 the transport
-  asks for the consumer (`pullMetAServerGoingAway()`, #106): any answer keeps the 503's reading as a missing consumer, and
-  no answer with the connection gone meanwhile is an empty batch. A restart scenario on CI that fails with
+- A pull's 503 has two causes: a missing consumer, and a server that is going away, which answers 503 for a consumer it has
+  already stopped: in the last moments of a graceful stop (NATS 2.15 takes about 10 ms for each durable consumer on a file
+  stream) and for the whole grace period of lame duck mode. After a 503 the transport asks the client why
+  (`pullMetAServerGoingAway()`, the client's `diagnoseNoResponders()`, `^2.29`, #106): any answer keeps the 503's reading
+  as a missing consumer, and `ServerGoingAway` (no answer, with the connection closed, being recovered or replaced, or in
+  lame duck mode) is an empty batch. A restart or lame duck scenario on CI that fails with
   `JetStream pull request ended with status 503` is a real failure now.
 - Behat step definitions and hooks are **attributes** (`#[Given]`, `#[When]`, `#[Then]`, `#[AfterScenario]`), and the
   Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
