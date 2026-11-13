@@ -149,7 +149,9 @@ composer nats:stop               # stop NATS
   which holds a closure) before encoding, as Symfony's own serializers do.
 - **Scheduled messages:** only when `scheduled_messages=true` does a `DelayStamp` route to
   `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored.
-- **Publish subject:** a `NatsSubjectStamp` (non-sendable) wins; then, for Symfony's retry, the subject `get()`
+- **Publish subject:** a `NatsSubjectStamp` (non-sendable) wins when the transport's consumer reads its subject
+  (the topic, or a match of an `additional_subjects` pattern), as Symfony hands every transport a message is routed
+  to the same envelope; then, for Symfony's retry, the subject `get()`
   recorded in `NatsReceivedSubjectStamp`, always (the consumer delivered it from there); then the topic. One
   rule, `isSymfonyRetry()`, says what a retry is for the subject and for the copy nats mode leaves out: a
   `ReceivedStamp` from the worker and a retry count above 0. A failure-transport copy has a retry count of 0

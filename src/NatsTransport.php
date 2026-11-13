@@ -415,7 +415,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private function resolvePublishSubject(Envelope $envelope): string
     {
         $stamp = $envelope->last(NatsSubjectStamp::class);
-        if ($stamp !== null) {
+        if ($stamp !== null && $this->consumerReads($stamp->subject)) {
             return $stamp->subject;
         }
 
@@ -435,6 +435,42 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private function consumerFilterSubjects(): array
     {
         return [$this->topic, ...$this->configuration->additionalSubjects()];
+    }
+
+    private function consumerReads(string $subject): bool
+    {
+        foreach ($this->consumerFilterSubjects() as $filter) {
+            if (self::filterMatchesSubject($filter, $subject)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * NATS subject matching: `*` stands for one token, `>` for one or more at the end.
+     */
+    private static function filterMatchesSubject(string $filter, string $subject): bool
+    {
+        $filterTokens = explode('.', $filter);
+        $subjectTokens = explode('.', $subject);
+
+        foreach ($filterTokens as $position => $token) {
+            if (!isset($subjectTokens[$position])) {
+                return false;
+            }
+
+            if ($token === '>') {
+                return true;
+            }
+
+            if ($token !== '*' && $token !== $subjectTokens[$position]) {
+                return false;
+            }
+        }
+
+        return count($subjectTokens) === count($filterTokens);
     }
 
     /**
@@ -553,7 +589,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 throw $e;
             }
 
-            yield $decoded->with(new TransportMessageIdStamp($replyTo), new NatsReceivedSubjectStamp($message->subject));
+            $stamps = [new TransportMessageIdStamp($replyTo)];
+            if ($this->configuration->additionalSubjects() !== []) {
+                $stamps[] = new NatsReceivedSubjectStamp($message->subject);
+            }
+
+            yield $decoded->with(...$stamps);
         }
     }
 

@@ -64,6 +64,8 @@ final class NatsSubjectStampTest extends TestCase
         yield 'a * token' => ['orders.*.42'];
         yield 'a > token' => ['orders.>'];
         yield 'only a wildcard' => ['>'];
+        yield 'a * inside a token' => ['orders.up*dated.1'];
+        yield 'a > inside a token' => ['orders.up>dated.1'];
     }
 
     public function testNamesTheSubjectItRefuses(): void

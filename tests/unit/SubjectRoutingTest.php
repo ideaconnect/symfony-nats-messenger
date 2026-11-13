@@ -18,11 +18,15 @@ use IDCT\NatsMessenger\Stamp\NatsSubjectStamp;
 use IDCT\NatsMessenger\Tests\Support\JetStreamInjectedNatsTransport;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\MessageBus;
+use Symfony\Component\Messenger\Middleware\SendMessageMiddleware;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Stamp\SentToFailureTransportStamp;
+use Symfony\Component\Messenger\Transport\Sender\SendersLocator;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 
 /**
@@ -56,20 +60,43 @@ final class SubjectRoutingTest extends TestCase
         $transport->send(new Envelope(new \stdClass(), [new NatsSubjectStamp('test-topic')]));
     }
 
-    /**
-     * Who reads the subject is the application's to set up: here another transport's topic on a shared stream.
-     */
-    public function testSendPublishesAStampedSubjectThisConsumerDoesNotRead(): void
+    #[DataProvider('subjectsTheConsumerReadsProvider')]
+    public function testSendPublishesToAStampedSubjectTheConsumerReads(string $additionalSubjects, string $subject): void
     {
-        $transport = $this->transportExpectingPublishTo('other-topic.updated.1');
+        $transport = $this->transportExpectingPublishTo($subject, ['additional_subjects' => $additionalSubjects]);
 
-        $transport->send(new Envelope(new \stdClass(), [new NatsSubjectStamp('other-topic.updated.1')]));
+        $transport->send(new Envelope(new \stdClass(), [new NatsSubjectStamp($subject)]));
     }
 
     /**
-     * Symfony's retry of a received message goes back to the subject it arrived on, so a stamped message keeps its
-     * subject although the stamp itself is not sent with it.
+     * @return iterable<string, array{string, string}>
      */
+    public static function subjectsTheConsumerReadsProvider(): iterable
+    {
+        yield '> for one token' => ['test-topic.updated.>', 'test-topic.updated.42'];
+        yield '> for several tokens' => ['test-topic.updated.>', 'test-topic.updated.42.price'];
+        yield '* for one token' => ['test-topic.*.updated', 'test-topic.42.updated'];
+    }
+
+    #[DataProvider('subjectsTheConsumerDoesNotReadProvider')]
+    public function testSendPublishesToTheTopicWhenTheConsumerDoesNotReadTheStampedSubject(?string $additionalSubjects, string $subject): void
+    {
+        $transport = $this->transportExpectingPublishTo('test-topic', ['additional_subjects' => $additionalSubjects]);
+
+        $transport->send(new Envelope(new \stdClass(), [new NatsSubjectStamp($subject)]));
+    }
+
+    /**
+     * @return iterable<string, array{?string, string}>
+     */
+    public static function subjectsTheConsumerDoesNotReadProvider(): iterable
+    {
+        yield 'no pattern matches' => [self::EXTRA, 'other-topic.updated.1'];
+        yield 'no additional_subjects' => [null, 'test-topic.updated.42'];
+        yield '> stands for at least one token' => ['test-topic.updated.>', 'test-topic.updated'];
+        yield '* stands for one token, not two' => ['test-topic.updated.*', 'test-topic.updated.42.price'];
+    }
+
     /**
      * Symfony's retry listener re-sends the envelope the worker received, with its ReceivedStamp and the
      * subject stamp get() added, plus a retry count.
@@ -193,6 +220,23 @@ final class SubjectRoutingTest extends TestCase
         $transport->send(new Envelope(new \stdClass(), [new NatsSubjectStamp('test-topic.updated.42'), new DelayStamp(5000)]));
     }
 
+    public function testSendSchedulesADelayedMessageForTheTopicWhenTheConsumerDoesNotReadTheStampedSubject(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('publish')
+            ->with(
+                self::matchesRegularExpression('/^test-topic\.delayed\.[0-9a-f-]{36}$/'),
+                'encoded',
+                self::callback(static fn (array $headers): bool => ($headers['Nats-Schedule-Target'] ?? null) === 'test-topic'
+                    && str_starts_with((string) ($headers['Nats-Schedule'] ?? ''), '@at ')),
+            )
+            ->willReturn(Future::complete());
+        $transport = $this->transport($jetStream, ['scheduled_messages' => true]);
+
+        $transport->send(new Envelope(new \stdClass(), [new NatsSubjectStamp('other-topic.updated.1'), new DelayStamp(5000)]));
+    }
+
     /**
      * JetStream deduplicates per stream whatever the subject, so a Nats-Msg-Id naming the topic dropped the copy
      * one transport sent to a second stamped subject under the same deduplication id.
@@ -207,10 +251,7 @@ final class SubjectRoutingTest extends TestCase
         self::assertSame(['order-42:test-topic.updated.1:0', 'order-42:test-topic.updated.2:0'], $messageIds);
     }
 
-    /**
-     * Two transports publishing the same stamped message to the same subject store it once.
-     */
-    public function testSendGivesTwoTransportsPublishingToOneStampedSubjectTheSameMessageId(): void
+    public function testSendGivesATransportThatDoesNotReadTheStampedSubjectAMessageIdOfItsOwn(): void
     {
         $orders = $this->transport($this->jetStreamRecordingMessageIds($ordersIds));
         $audit = new JetStreamInjectedNatsTransport('nats://localhost:4222/test-stream/audit-topic', [], $this->encodingSerializer());
@@ -219,7 +260,35 @@ final class SubjectRoutingTest extends TestCase
         $audit->send($orders->send(new Envelope(new \stdClass(), [new DeduplicationIdStamp('order-42'), new NatsSubjectStamp('test-topic.updated.42')])));
 
         self::assertSame(['order-42:test-topic.updated.42:0'], $ordersIds);
-        self::assertSame($ordersIds, $auditIds);
+        self::assertSame(['order-42:audit-topic:0'], $auditIds);
+    }
+
+    #[DataProvider('deduplicateProvider')]
+    public function testAStampedMessageRoutedToTwoTransportsGoesToItsSubjectFromOneAndToTheTopicFromTheOther(bool $deduplicate): void
+    {
+        $orders = $this->transportExpectingPublishTo('test-topic.updated.42', ['deduplicate' => $deduplicate]);
+        $auditJetStream = $this->createMock(JetStreamContext::class);
+        $auditJetStream->expects(self::once())
+            ->method('publish')
+            ->with('audit-topic', 'encoded', [])
+            ->willReturn(Future::complete());
+        $audit = new JetStreamInjectedNatsTransport('nats://localhost:4222/audit-stream/audit-topic', ['deduplicate' => $deduplicate], $this->encodingSerializer());
+        $audit->setJetStreamContext($auditJetStream);
+        $bus = new MessageBus([new SendMessageMiddleware(new SendersLocator(
+            [\stdClass::class => ['orders', 'audit']],
+            new ServiceLocator(['orders' => static fn () => $orders, 'audit' => static fn () => $audit]),
+        ))]);
+
+        $bus->dispatch(new Envelope(new \stdClass(), [new NatsSubjectStamp('test-topic.updated.42')]));
+    }
+
+    /**
+     * @return iterable<string, array{bool}>
+     */
+    public static function deduplicateProvider(): iterable
+    {
+        yield 'deduplicate off' => [false];
+        yield 'deduplicate on' => [true];
     }
 
     /**
@@ -282,6 +351,20 @@ final class SubjectRoutingTest extends TestCase
 
         self::assertCount(1, $envelopes);
         self::assertSame('test-topic.updated.42', $envelopes[0]->last(NatsReceivedSubjectStamp::class)?->subject);
+    }
+
+    public function testGetAddsNoReceivedSubjectStampWithoutAdditionalSubjects(): void
+    {
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'encoded'),
+        ]));
+        $transport = $this->transport($jetStream, ['additional_subjects' => null]);
+
+        $envelopes = [...$transport->get()];
+
+        self::assertCount(1, $envelopes);
+        self::assertNull($envelopes[0]->last(NatsReceivedSubjectStamp::class));
     }
 
     public function testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects(): void

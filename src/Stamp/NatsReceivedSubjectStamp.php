@@ -7,7 +7,8 @@ namespace IDCT\NatsMessenger\Stamp;
 use Symfony\Component\Messenger\Stamp\NonSendableStampInterface;
 
 /**
- * The subject a message arrived on, which get() adds to every envelope it yields.
+ * The subject a message arrived on, which get() adds to every envelope it yields on a transport with
+ * `additional_subjects`.
  *
  * The retry Symfony sends of a failed message goes back to this subject, so a message published with a
  * {@see NatsSubjectStamp} keeps its subject across retries.

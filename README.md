@@ -999,7 +999,7 @@ subject, or for Symfony's retry the subject the message arrived on; for a delaye
 schedule delivers to. JetStream deduplicates per stream whatever the subject, and Symfony hands each transport a
 message is routed to the envelope the one before returned, id included, so transports that share a stream (see
 [Multi-Subject Streams](#multi-subject-streams)) each keep their copy, and so does each stamped subject you send
-one id to. Two transports that publish the same stamped message to the same subject store it once.
+one id to.
 
 ```yaml
 options:
@@ -1010,7 +1010,7 @@ With [`reconnect: true`](#automatic-reconnect), `resend_on_reconnect: true` puts
 server went away after it took the message and before it answered goes out once more on the recovered connection,
 where JetStream drops it if the first copy was stored.
 
-> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, `testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn`, `testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn`, `testSendGivesTheCopiesForTwoStampedSubjectsMessageIdsOfTheirOwn`, `testSendGivesTwoTransportsPublishingToOneStampedSubjectTheSameMessageId`, `testSendNamesTheScheduleTargetInTheMessageIdOfADelayedStampedMessage`, `testSendNamesTheReceivedSubjectInTheMessageIdOfARetry`, `testSendNamesTheTopicInTheMessageIdOfAFailureTransportCopy`, Behat scenarios `A message dispatched again with the same deduplication id is stored once`, `Distinct messages are all stored with the deduplicate option` and `A message routed to two deduplicating transports on one stream is stored for each`
+> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, `testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn`, `testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn`, `testSendGivesTheCopiesForTwoStampedSubjectsMessageIdsOfTheirOwn`, `testSendGivesATransportThatDoesNotReadTheStampedSubjectAMessageIdOfItsOwn`, `testSendNamesTheScheduleTargetInTheMessageIdOfADelayedStampedMessage`, `testSendNamesTheReceivedSubjectInTheMessageIdOfARetry`, `testSendNamesTheTopicInTheMessageIdOfAFailureTransportCopy`, Behat scenarios `A message dispatched again with the same deduplication id is stored once`, `Distinct messages are all stored with the deduplicate option` and `A message routed to two deduplicating transports on one stream is stored for each`
 
 ### Losing the Connection
 
@@ -1729,13 +1729,12 @@ $bus->dispatch(new Envelope(new OrderUpdated($orderId), [
 
 - **Stream and consumer.** `setup()` adds the patterns to the stream's subjects. The consumer filters on the topic
   and the patterns with `filter_subjects`, which needs NATS 2.10 or later. Without `additional_subjects` the
-  consumer keeps the single `filter_subject` it always had. A stamped subject that none of the patterns covers is
-  not read by this consumer: if another stream, or another subject of this stream, covers it, the message is
-  stored there, and if no stream covers it, `send()` fails with `No responders for subject ...`, since JetStream
-  has nothing to store it in.
+  consumer keeps the single `filter_subject` it always had. A transport uses the stamp only for a subject its
+  consumer reads, the topic or one a pattern matches, and publishes any other stamped message to its topic, so a
+  message routed to several transports reaches each of them once.
 - **The stamp checks its subject.** A subject a message cannot be published to, one that is empty, contains
-  whitespace or an empty token, or has a `*` or `>` token, is refused with an `InvalidArgumentException` when the
-  stamp is made, at dispatch, instead of breaking the connection's protocol frame later.
+  whitespace or an empty token, or has a `*` or `>` in a token, is refused with an `InvalidArgumentException` when
+  the stamp is made, at dispatch, instead of breaking the connection's protocol frame later.
 - **Keep the patterns clear of `{topic}.delayed.>` with `scheduled_messages`.** A pattern such as `orders.>` also
   matches the subjects scheduled messages wait on (`orders.delayed.{uuid}`). JetStream refuses a stream whose
   subjects overlap each other, so `setup()` fails with the server's error naming the two subjects, `orders.>` and
@@ -1762,7 +1761,7 @@ $bus->dispatch(new Envelope(new OrderUpdated($orderId), [
   transport sharing it). The transport cannot remove the subject for you: on a stream that several transports
   share, or one an operator edited, it cannot tell its own old pattern from a subject someone else needs.
 
-> **Tested by:** `testAcceptsASubjectAMessageCanBePublishedTo`, `testRefusesASubjectAMessageCannotBePublishedTo`, `testSendPublishesToTheStampedSubject`, `testSendPublishesAStampedSubjectThisConsumerDoesNotRead`, `testSendPublishesARetryToTheSubjectTheMessageArrivedOn`, `testSendPublishesAFailureTransportCopyToTheTopic`, `testSendPublishesARetryOnTheFailureTransportToTheSubjectItArrivedOn`, `testSendIgnoresTheReceivedSubjectWithoutAReceivedStamp`, `testSendPublishesARetryToTheReceivedSubjectEvenWhenTheOptionsDoNotListIt`, `testSendSchedulesADelayedStampedMessageUnderTheTopicForTheStampedSubject`, `testGetStampsTheSubjectTheMessageArrivedOn`, `testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects`, `testSetupAddsTheAdditionalSubjectsToAnExistingStream`, `testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects`, `testSetupComparesTheFilterSubjectsAsStrings`, Behat scenarios `One consumer reads messages published to the topic and to a stamped subject`, `A delayed stamped message is delivered once, to its subject, after the scheduled time`, `Symfony's retry of a stamped message keeps its subject`, `Setup widens the filters of an existing consumer when a pattern is added`, `Setup narrows the filters of an existing consumer when a pattern is removed` and `A pattern added after the consumer moved past its stored messages does not replay them`
+> **Tested by:** `testAcceptsASubjectAMessageCanBePublishedTo`, `testRefusesASubjectAMessageCannotBePublishedTo`, `testSendPublishesToTheStampedSubject`, `testSendPublishesToAStampedSubjectTheConsumerReads`, `testSendPublishesToTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testAStampedMessageRoutedToTwoTransportsGoesToItsSubjectFromOneAndToTheTopicFromTheOther`, `testSendPublishesARetryToTheSubjectTheMessageArrivedOn`, `testSendPublishesAFailureTransportCopyToTheTopic`, `testSendPublishesARetryOnTheFailureTransportToTheSubjectItArrivedOn`, `testSendIgnoresTheReceivedSubjectWithoutAReceivedStamp`, `testSendPublishesARetryToTheReceivedSubjectEvenWhenTheOptionsDoNotListIt`, `testSendSchedulesADelayedStampedMessageUnderTheTopicForTheStampedSubject`, `testSendSchedulesADelayedMessageForTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testGetStampsTheSubjectTheMessageArrivedOn`, `testGetAddsNoReceivedSubjectStampWithoutAdditionalSubjects`, `testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects`, `testSetupAddsTheAdditionalSubjectsToAnExistingStream`, `testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects`, `testSetupComparesTheFilterSubjectsAsStrings`, Behat scenarios `One consumer reads messages published to the topic and to a stamped subject`, `A delayed stamped message is delivered once, to its subject, after the scheduled time`, `Symfony's retry of a stamped message keeps its subject`, `A stamped message routed to two transports is handled once by each`, `Setup widens the filters of an existing consumer when a pattern is added`, `Setup narrows the filters of an existing consumer when a pattern is removed` and `A pattern added after the consumer moved past its stored messages does not replay them`
 
 ### Provisioning the Stream & Consumer
 

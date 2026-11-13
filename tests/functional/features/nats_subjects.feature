@@ -53,6 +53,27 @@ Feature: Per-message subjects
     And the NATS stream should hold 0 messages on subject "test.messages"
     And the failure transport should contain 0 messages
 
+  # Only the transport whose consumer reads the stamped subject publishes there; the other publishes to its topic.
+  @subjects
+  Scenario: A stamped message routed to two transports is handled once by each
+    Given I have a messenger transport configured with additional subjects "test.messages.updated.>" and a second transport on stream "audit" with topic "audit.messages", the test message routed to both
+    When I run the messenger setup command for both transports
+    Then the setup should complete successfully
+    And the test files directory is clean
+    When I send 1 messages to the subject "test.messages.updated.42" starting at message 1
+    Then the NATS stream should hold 1 messages on subject "test.messages.updated.42"
+    And the NATS stream should hold 0 messages on subject "test.messages"
+    And the NATS stream "audit" should hold 1 messages on subject "audit.messages"
+    When I start 1 consumer that processes 1 messages
+    And I wait for the consumers to finish
+    Then 1 messages should have been processed by the consumers
+    And the test files directory should contain exactly 1 files
+    Given the test files directory is clean
+    When I start a consumer of the second transport that processes 1 messages
+    And I wait for the consumers to finish
+    Then 1 messages should have been processed by the consumers
+    And the test files directory should contain exactly 1 files
+
   # CONSUMER.CREATE is an upsert on NATS 2.10 and later: setup() of a transport whose durable consumer already
   # exists rewrites its filters to the topic plus additional_subjects, in both directions, and nothing fails.
   @subjects
@@ -89,12 +110,12 @@ Feature: Per-message subjects
     Given I have a messenger transport configured with additional subjects "test.messages.updated.>"
     And the NATS stream is set up
     And the test files directory is clean
+    When I send 3 messages to the subject "test.messages.updated.42" starting at message 1
     Given I have a messenger transport configured with max age of 15 minutes using "messenger.transport.native_php_serializer"
     When I run the messenger setup command
     Then the setup should complete successfully
     And the durable consumer "client" should filter on "test.messages"
-    When I send 3 messages to the subject "test.messages.updated.42" starting at message 1
-    And I send 3 messages to the transport
+    When I send 3 messages to the transport
     Then the messenger stats should show 3 messages waiting
     When I start 1 consumer that processes 3 messages
     And I wait for the consumers to finish
