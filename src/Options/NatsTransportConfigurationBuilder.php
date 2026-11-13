@@ -78,6 +78,8 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_PLACEMENT_CLUSTER->value => null,
         TransportOption::STREAM_PLACEMENT_TAGS->value => null,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
+        TransportOption::RETRY_DELAY_SOURCE->value => RetryDelaySource::NATS->value,
+        TransportOption::NO_RETRY_ACTION->value => NoRetryAction::NAK->value,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
         TransportOption::MAX_DELIVER->value => null,
@@ -336,6 +338,32 @@ final class NatsTransportConfigurationBuilder
 
         $configuration[TransportOption::RETRY_HANDLER->value] = $retryHandler->value;
 
+        $retryDelaySource = RetryDelaySource::tryFrom(TypeCoercion::stringValue($configuration[TransportOption::RETRY_DELAY_SOURCE->value] ?? RetryDelaySource::NATS->value));
+        if ($retryDelaySource === null) {
+            throw new InvalidArgumentException(sprintf(
+                "Invalid retry_delay_source option%s. Allowed values are 'nats' or 'symfony'.",
+                $this->quotedIfPlain(TypeCoercion::stringValue($configuration[TransportOption::RETRY_DELAY_SOURCE->value] ?? null)),
+            ));
+        }
+
+        // With retry_handler=symfony the retry copy is published and Symfony's delay already applies (through
+        // scheduled_messages), so the option would only mislead there.
+        if ($retryDelaySource === RetryDelaySource::SYMFONY && $retryHandler !== RetryHandler::NATS) {
+            throw new InvalidArgumentException("The retry_delay_source option can be 'symfony' only with retry_handler 'nats'.");
+        }
+
+        $configuration[TransportOption::RETRY_DELAY_SOURCE->value] = $retryDelaySource->value;
+
+        $noRetryAction = NoRetryAction::tryFrom(TypeCoercion::stringValue($configuration[TransportOption::NO_RETRY_ACTION->value] ?? NoRetryAction::NAK->value));
+        if ($noRetryAction === null) {
+            throw new InvalidArgumentException(sprintf(
+                "Invalid no_retry_action option%s. Allowed values are 'nak' or 'term'.",
+                $this->quotedIfPlain(TypeCoercion::stringValue($configuration[TransportOption::NO_RETRY_ACTION->value] ?? null)),
+            ));
+        }
+
+        $configuration[TransportOption::NO_RETRY_ACTION->value] = $noRetryAction->value;
+
         $consumer = trim(TypeCoercion::stringValue($configuration[TransportOption::CONSUMER->value] ?? null));
         if ($consumer === '') {
             throw new InvalidArgumentException('The consumer option must be a non-empty string.');
@@ -379,6 +407,13 @@ final class NatsTransportConfigurationBuilder
         $this->assertPositiveNumber($configuration, TransportOption::INACTIVE_THRESHOLD);
         $this->assertBackoff($configuration);
         $this->assertMaxDeliverExceedsBackoff($configuration);
+
+        // A delivery Symfony does not retry is NAKed without a delay, so without max_deliver a message that keeps
+        // failing would come back at once, forever. max_deliver is also what leaves the message in the stream
+        // with a MAX_DELIVERIES advisory once Symfony's retries are used up: it has to be max_retries + 1.
+        if ($retryDelaySource === RetryDelaySource::SYMFONY && ($configuration[TransportOption::MAX_DELIVER->value] ?? null) === null) {
+            throw new InvalidArgumentException("retry_delay_source 'symfony' needs max_deliver: set it to the retry strategy's max_retries + 1.");
+        }
         $this->assertDuplicateWindowNotExceedingMaxAge($configuration);
         $this->assertResendOnReconnect($configuration);
         $this->normalizeStorageBackend($configuration);

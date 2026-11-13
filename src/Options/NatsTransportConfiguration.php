@@ -403,6 +403,32 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns where the delay before a redelivery comes from when NATS redelivers.
+     *
+     * Read as {@see RetryDelaySource::NATS} unless {@see RetryHandler::NATS} is active: with Symfony's retry
+     * handling the copy is published and no delivery is NAKed for a retry.
+     */
+    public function retryDelaySource(): RetryDelaySource
+    {
+        if (!$this->natsRetryHandlerEnabled) {
+            return RetryDelaySource::NATS;
+        }
+
+        return RetryDelaySource::tryFrom(TypeCoercion::stringValue($this->options[TransportOption::RETRY_DELAY_SOURCE->value] ?? null))
+            ?? RetryDelaySource::NATS;
+    }
+
+    /**
+     * Returns what happens, with {@see RetryDelaySource::SYMFONY}, to a delivery Symfony does not retry although
+     * max_deliver allows more.
+     */
+    public function noRetryAction(): NoRetryAction
+    {
+        return NoRetryAction::tryFrom(TypeCoercion::stringValue($this->options[TransportOption::NO_RETRY_ACTION->value] ?? null))
+            ?? NoRetryAction::NAK;
+    }
+
+    /**
      * Returns true when retry handling is delegated to NATS (NAK mode).
      */
     public function isNatsRetryHandlerEnabled(): bool
