@@ -637,6 +637,43 @@ final class NatsTransportTest extends TestCase
         self::assertSame([], array_values(iterator_to_array($transport->get())));
     }
 
+    /**
+     * A pull that finds no messages ends with an exception raised in the event loop while get() waits for it. With
+     * zend.exception_ignore_args off, the default without a php.ini, the trace of that exception records the
+     * arguments of every frame waiting on it, so it must not record the pull's Future, which holds the exception:
+     * such a cycle is freed only by the cycle collector, and an idle worker pulls about once a second.
+     */
+    public function testAPullThatFindsNoMessagesLeavesNoReferenceCycle(): void
+    {
+        if (function_exists('xdebug_info') && in_array('develop', (array) xdebug_info('mode'), true)) {
+            self::markTestSkipped('Xdebug\'s develop mode keeps thrown exceptions of its own, so the cycles collected here do not tell whether the transport leaves any.');
+        }
+
+        $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+
+        try {
+            $jetStream = $this->createStub(JetStreamContext::class);
+            $jetStream->method('fetchBatch')->willReturnCallback(static function (): Future {
+                $pull = new DeferredFuture();
+                EventLoop::defer(static fn () => $pull->error(new JetStreamException('Request Timeout', 408)));
+
+                return $pull->getFuture();
+            });
+
+            $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $this->createStub(SerializerInterface::class));
+            $transport->setJetStreamContext($jetStream);
+
+            // The first pull also builds the test double's own cycles, which are made once.
+            iterator_to_array($transport->get());
+            gc_collect_cycles();
+
+            self::assertSame([], iterator_to_array($transport->get()));
+            self::assertSame(0, gc_collect_cycles());
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
+        }
+    }
+
     public function testGetRethrowsUnexpectedJetStreamExceptions(): void
     {
         $serializer = $this->createMock(SerializerInterface::class);
