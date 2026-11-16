@@ -20,8 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   waiting on it, while the `Future` held the exception. Each empty pull left about 13 KB of such garbage, about 0.8 MB a
   minute at the default of one pull a second, until the cycle collector ran: after the next handled message (Symfony
   7.3 and later), or once its root buffer filled up, tens of minutes into an idle period. The memory the heap grew to
-  stayed with the process. A failed publish, acknowledgement or setup call left the same kind of cycle. The transport
-  now passes each call to the connection as a closure that starts it, so no trace records its `Future`.
+  stayed with the process. A failed publish, ACK, NAK, TERM, message count or setup call left the same kind of cycle.
+  The transport now passes each call to the connection as a closure that starts it, so no trace records its `Future`.
 - **A pull while the server is going away, in the last moments of a graceful stop or in lame duck mode, no longer ends
   the worker (#106).** A server that is going away answers a pull with 503 for a consumer it has already stopped, until
   it closes the connection, the same 503 it gives for a consumer that does not exist. In a graceful stop of NATS 2.15
