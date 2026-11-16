@@ -172,6 +172,8 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
   missing consumer still ends a worker without `auto_setup`, as before. For a user allowed to pull but not to ask for
   consumer info, it ends it only after `request_timeout`, as the server leaves the question unanswered; allow that
   subject to have it at once.
+- **`additional_subjects` is rolled out in two steps,** as a 5.8.0 process that runs `setup()` narrows the consumer
+  to the topic: see "Rolling it out and back" under [Per-Message Subjects](#per-message-subjects).
 
 > **Tested by:** `testA503KeepsItsReadingWhenTheServerAnswers`, `testA503KeepsItsReadingWhenNothingAnswersOnAConnectionThatStays`, `testWithTheRealClientA503FromAServerThatAnswersTheQuestionPropagates`, `testWithTheRealClientA503WhoseQuestionGoesUnansweredOnAConnectionThatStaysPropagates`
 
@@ -1747,21 +1749,29 @@ $bus->dispatch(new Envelope(new OrderUpdated($orderId), [
 - **Failure transport.** A failed message sent to a failure transport goes to that transport's topic.
 - **Delayed messages.** A delayed stamped message waits under the topic (`{topic}.delayed.{uuid}`) and is delivered
   to the stamped subject when it is due.
-- **Existing consumers.** `setup()` writes the filters to a durable consumer that already exists too: JetStream's
-  consumer create is an update when the durable exists. A changed `additional_subjects` therefore applies on the
-  next `messenger:setup-transports`, or with `auto_setup` on the next worker's first pull or the next sender's first
-  send. The consumer keeps its position in the stream, so a pattern added later covers what is published from then
-  on; messages the stream already held on that pattern are not replayed once the consumer has moved past them.
-- **Removing a pattern.** Drain it first: `setup()` with the pattern gone narrows the consumer's filters at once,
-  and the messages still stored on the old pattern are then neither delivered nor counted by `getMessageCount()`,
-  without any error. Stop publishing to the pattern, let the workers empty it, then remove it from the
-  configuration. The pattern also stays on the stream: `setup()` removes no subject it cannot derive from its own
-  configuration, so the stream goes on storing whatever is still published to it. Remove the subject yourself, for
-  example with `nats stream edit`, which takes the full list of the subjects the stream keeps (those of every
-  transport sharing it). The transport cannot remove the subject for you: on a stream that several transports
-  share, or one an operator edited, it cannot tell its own old pattern from a subject someone else needs.
+- **Existing consumers.** `setup()` adds the patterns to a durable consumer that already exists and keeps the
+  filters it finds there, as it keeps the stream's subjects. A new pattern therefore applies on the next
+  `messenger:setup-transports`, or with `auto_setup` on the next worker's first pull or the next sender's first
+  send, and a process whose configuration lacks a pattern does not narrow the consumer. The consumer keeps its
+  position in the stream, so a pattern added later covers what is published from then on; messages the stream
+  already held on that pattern are not replayed once the consumer has moved past them.
+- **Rolling it out and back.** A release without `additional_subjects` (5.8.0 or older) writes the topic as the
+  consumer's only filter whenever it runs `setup()`: from `messenger:setup-transports`, or with `auto_setup` on each
+  process's first send or pull, which under PHP-FPM is every request that dispatches a message. While the consumer
+  is narrowed, its position moves past the stamped messages, and they are never delivered, without any error. So
+  roll out in two steps: deploy this release with `additional_subjects` everywhere and make sure nothing older runs
+  `setup()`, then deploy the code that stamps messages. Back out in reverse: stop stamping, let the workers drain
+  the patterns, and only then roll back.
+- **Removing a pattern.** Drain it first: stop publishing to the pattern, let the workers empty it, then remove it
+  from the configuration. The pattern stays on the consumer and on the stream: `setup()` removes no filter and no
+  subject it cannot derive from its own configuration, so whatever is still published to the pattern is stored and
+  delivered. Remove it yourself, from the consumer with `nats consumer edit` and from the stream with
+  `nats stream edit`, which takes the full list of the subjects the stream keeps (those of every transport sharing
+  it). Messages still stored on the pattern when it leaves the consumer are neither delivered nor counted by
+  `getMessageCount()`. The transport cannot remove the pattern for you: on a stream that several transports share,
+  or one an operator edited, it cannot tell its own old pattern from a subject someone else needs.
 
-> **Tested by:** `testAcceptsASubjectAMessageCanBePublishedTo`, `testRefusesASubjectAMessageCannotBePublishedTo`, `testSendPublishesToTheStampedSubject`, `testSendPublishesToAStampedSubjectTheConsumerReads`, `testSendPublishesToTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testAStampedMessageRoutedToTwoTransportsGoesToItsSubjectFromOneAndToTheTopicFromTheOther`, `testSendPublishesARetryToTheSubjectTheMessageArrivedOn`, `testSendPublishesAFailureTransportCopyToTheTopic`, `testSendPublishesARetryOnTheFailureTransportToTheSubjectItArrivedOn`, `testSendIgnoresTheReceivedSubjectWithoutAReceivedStamp`, `testSendPublishesARetryToTheReceivedSubjectEvenWhenTheOptionsDoNotListIt`, `testSendSchedulesADelayedStampedMessageUnderTheTopicForTheStampedSubject`, `testSendSchedulesADelayedMessageForTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testGetStampsTheSubjectTheMessageArrivedOn`, `testGetAddsNoReceivedSubjectStampWithoutAdditionalSubjects`, `testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects`, `testSetupAddsTheAdditionalSubjectsToAnExistingStream`, `testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects`, `testSetupComparesTheFilterSubjectsAsStrings`, Behat scenarios `One consumer reads messages published to the topic and to a stamped subject`, `A delayed stamped message is delivered once, to its subject, after the scheduled time`, `Symfony's retry of a stamped message keeps its subject`, `A stamped message routed to two transports is handled once by each`, `Setup widens the filters of an existing consumer when a pattern is added`, `Setup narrows the filters of an existing consumer when a pattern is removed` and `A pattern added after the consumer moved past its stored messages does not replay them`
+> **Tested by:** `testAcceptsASubjectAMessageCanBePublishedTo`, `testRefusesASubjectAMessageCannotBePublishedTo`, `testSendPublishesToTheStampedSubject`, `testSendPublishesToAStampedSubjectTheConsumerReads`, `testSendPublishesToTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testAStampedMessageRoutedToTwoTransportsGoesToItsSubjectFromOneAndToTheTopicFromTheOther`, `testSendPublishesARetryToTheSubjectTheMessageArrivedOn`, `testSendPublishesAFailureTransportCopyToTheTopic`, `testSendPublishesARetryOnTheFailureTransportToTheSubjectItArrivedOn`, `testSendIgnoresTheReceivedSubjectWithoutAReceivedStamp`, `testSendPublishesARetryToTheReceivedSubjectEvenWhenTheOptionsDoNotListIt`, `testSendSchedulesADelayedStampedMessageUnderTheTopicForTheStampedSubject`, `testSendSchedulesADelayedMessageForTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testGetStampsTheSubjectTheMessageArrivedOn`, `testGetAddsNoReceivedSubjectStampWithoutAdditionalSubjects`, `testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects`, `testSetupAddsTheAdditionalSubjectsToAnExistingStream`, `testSetupKeepsTheFiltersOfAnExistingConsumer`, `testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects`, `testSetupComparesTheFilterSubjectsAsStrings`, Behat scenarios `One consumer reads messages published to the topic and to a stamped subject`, `A delayed stamped message is delivered once, to its subject, after the scheduled time`, `Symfony's retry of a stamped message keeps its subject`, `A stamped message routed to two transports is handled once by each`, `Setup widens the filters of an existing consumer when a pattern is added`, `Setup keeps the filters of an existing consumer when its configuration lacks a pattern` and `A pattern added after the consumer moved past its stored messages does not replay them`
 
 ### Provisioning the Stream & Consumer
 

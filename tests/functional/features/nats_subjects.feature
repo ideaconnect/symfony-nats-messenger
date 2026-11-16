@@ -75,7 +75,7 @@ Feature: Per-message subjects
     And the test files directory should contain exactly 1 files
 
   # CONSUMER.CREATE is an upsert on NATS 2.10 and later: setup() of a transport whose durable consumer already
-  # exists rewrites its filters to the topic plus additional_subjects, in both directions, and nothing fails.
+  # exists adds the topic and additional_subjects to the filters the consumer has, and nothing fails.
   @subjects
   Scenario: Setup widens the filters of an existing consumer when a pattern is added
     Given I have a messenger transport configured with max age of 15 minutes using "messenger.transport.native_php_serializer"
@@ -88,23 +88,28 @@ Feature: Per-message subjects
     When I send 3 messages to the subject "test.messages.updated.42" starting at message 1
     Then the messenger stats should show 3 messages waiting
 
-  # The messages stored on the removed pattern stay in the stream, but the narrowed consumer no longer sees them.
+  # A setup() with a configuration that lacks the pattern, as a rollout or a rollback runs it, keeps the filters, so
+  # the messages stamped afterwards are delivered.
   @subjects
-  Scenario: Setup narrows the filters of an existing consumer when a pattern is removed
+  Scenario: Setup keeps the filters of an existing consumer when its configuration lacks a pattern
     Given I have a messenger transport configured with additional subjects "test.messages.updated.>"
     And the NATS stream is set up
-    When I send 3 messages to the subject "test.messages.updated.42" starting at message 1
-    Then the durable consumer "client" should filter on "test.messages, test.messages.updated.>"
-    And the messenger stats should show 3 messages waiting
+    And the test files directory is clean
     Given I have a messenger transport configured with max age of 15 minutes using "messenger.transport.native_php_serializer"
     When I run the messenger setup command
     Then the setup should complete successfully
-    And the durable consumer "client" should filter on "test.messages"
+    And the durable consumer "client" should filter on "test.messages, test.messages.updated.>"
+    Given I have a messenger transport configured with additional subjects "test.messages.updated.>"
+    When I send 3 messages to the subject "test.messages.updated.42" starting at message 2
+    And I send 1 messages to the transport
+    And I start 1 consumer that processes 4 messages
+    And I wait for the consumers to finish
+    Then 4 messages should have been processed by the consumers
     And the messenger stats should show 0 messages waiting
-    And the NATS stream should hold 3 messages on subject "test.messages.updated.42"
 
   # The consumer keeps its position: a pattern added later does not replay the messages the stream already held on
-  # it once the consumer has moved past them.
+  # it once the consumer has moved past them. The consumer is created again without the pattern, as setup() keeps
+  # the filters of one that exists.
   @subjects
   Scenario: A pattern added after the consumer moved past its stored messages does not replay them
     Given I have a messenger transport configured with additional subjects "test.messages.updated.>"
@@ -112,7 +117,8 @@ Feature: Per-message subjects
     And the test files directory is clean
     When I send 3 messages to the subject "test.messages.updated.42" starting at message 1
     Given I have a messenger transport configured with max age of 15 minutes using "messenger.transport.native_php_serializer"
-    When I run the messenger setup command
+    When the durable consumer "client" is deleted from JetStream
+    And I run the messenger setup command
     Then the setup should complete successfully
     And the durable consumer "client" should filter on "test.messages"
     When I send 3 messages to the transport

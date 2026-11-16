@@ -449,7 +449,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * NATS subject matching: `*` stands for one token, `>` for one or more at the end.
+     * NATS subject matching: `*` stands for one token, `>` for one or more at the end. The subject may be a filter
+     * itself, which matches when the first filter covers it.
      */
     private static function filterMatchesSubject(string $filter, string $subject): bool
     {
@@ -465,12 +466,53 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 return true;
             }
 
-            if ($token !== '*' && $token !== $subjectTokens[$position]) {
+            if ($subjectTokens[$position] === '>' || ($token !== '*' && $token !== $subjectTokens[$position])) {
                 return false;
             }
         }
 
         return count($subjectTokens) === count($filterTokens);
+    }
+
+    /**
+     * The filters setup() writes: the configured ones and those the consumer already has, so that a process with
+     * another configuration does not narrow it. A filter that another one covers is left out, as JetStream refuses
+     * overlapping filters.
+     *
+     * @return list<string>
+     */
+    private function filterSubjectsKeepingThoseOf(?ConsumerInfo $existingConsumer): array
+    {
+        $filters = $this->consumerFilterSubjects();
+        if ($existingConsumer !== null) {
+            $filters = array_values(array_unique([...$filters, ...self::filterSubjectsOf($existingConsumer)]));
+        }
+
+        return array_values(array_filter($filters, static function (string $filter) use ($filters): bool {
+            foreach ($filters as $other) {
+                if ($other !== $filter && self::filterMatchesSubject($other, $filter)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function filterSubjectsOf(ConsumerInfo $consumerInfo): array
+    {
+        $config = is_array($consumerInfo->raw['config'] ?? null) ? $consumerInfo->raw['config'] : [];
+        $filterSubjects = $config['filter_subjects'] ?? null;
+        if (is_array($filterSubjects) && $filterSubjects !== []) {
+            return array_values(array_map(TypeCoercion::stringValue(...), $filterSubjects));
+        }
+
+        $filterSubject = TypeCoercion::stringValue($config['filter_subject'] ?? '');
+
+        return $filterSubject === '' ? [] : [$filterSubject];
     }
 
     /**
@@ -893,7 +935,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 ->ackPolicy(AckPolicy::Explicit)
                 ->deliverPolicy(DeliverPolicy::All);
 
-            $filterSubjects = $this->consumerFilterSubjects();
+            // A setup() that changed stream_replicas reaches the consumer while NATS may still be moving it.
+            $existingConsumer = $this->whileTheClusterSettles($this->getExistingConsumer(...));
+
+            $filterSubjects = $this->filterSubjectsKeepingThoseOf($existingConsumer);
             if (count($filterSubjects) === 1) {
                 $consumerConfiguration->filterSubject($filterSubjects[0]);
             } else {
@@ -926,8 +971,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $consumerConfiguration->inactiveThreshold($inactiveThresholdMs);
             }
 
-            // A setup() that changed stream_replicas reaches the consumer while NATS may still be moving it.
-            $replayPolicy = $this->whileTheClusterSettles($this->resolveReplayPolicy(...));
+            $replayPolicy = $this->resolveReplayPolicy($existingConsumer);
             if ($replayPolicy !== null) {
                 $consumerConfiguration->replayPolicy($replayPolicy);
             }
@@ -1487,18 +1531,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         $expectedFilters = $this->consumerFilterSubjects();
-        $filterSubjects = $config['filter_subjects'] ?? null;
-        if (is_array($filterSubjects) && $filterSubjects !== []) {
-            $actualFilters = array_values(array_map(TypeCoercion::stringValue(...), $filterSubjects));
-        } elseif (isset($config['filter_subject'])) {
-            $actualFilters = [TypeCoercion::stringValue($config['filter_subject'])];
-        } else {
-            $actualFilters = [];
-        }
+        $actualFilters = self::filterSubjectsOf($consumerInfo);
 
         sort($expectedFilters, SORT_STRING);
         sort($actualFilters, SORT_STRING);
-        if ($actualFilters !== $expectedFilters) {
+        foreach ($expectedFilters as $expectedFilter) {
+            foreach ($actualFilters as $actualFilter) {
+                if (self::filterMatchesSubject($actualFilter, $expectedFilter)) {
+                    continue 2;
+                }
+            }
+
             throw new RuntimeException(count($expectedFilters) === 1
                 ? 'Consumer filter subject does not match the configured topic.'
                 : sprintf(
@@ -1573,9 +1616,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * a stream that does not exist yet. That keeps setup() idempotent no matter how the option is
      * changed on a live deployment.
      */
-    private function resolveReplayPolicy(): ?ReplayPolicy
+    private function resolveReplayPolicy(?ConsumerInfo $existingConsumer): ?ReplayPolicy
     {
-        $existingConsumer = $this->getExistingConsumer();
         if ($existingConsumer === null) {
             return $this->configuration->replayPolicy();
         }

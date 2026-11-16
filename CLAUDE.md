@@ -135,7 +135,8 @@ composer nats:stop               # stop NATS
   and limit, in `fetchBatchMessages()`. The next operation still PINGs first: the server sends the same error when
   an account's limit is lowered and then closes the connection, so the error does not prove the connection is alive.
 - **`setup()` create-then-update.** On a stream conflict it reads the live config, **merges** subjects,
-  preserves server fields, and updates - it never blindly overwrites an existing stream.
+  preserves server fields, and updates - it never blindly overwrites an existing stream. An existing consumer keeps
+  its filters too: the configured ones are added to them, never written in their place.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
   `retry_handler=nats` → NAK (NATS redelivers), and `send()` skips the copy Symfony's retry sends (a received
   envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode.

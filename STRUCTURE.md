@@ -135,7 +135,7 @@ The heart of the bridge. Responsibilities map almost 1:1 to `TransportInterface`
 | `ack()` | Sends JetStream ACK for the message's reply token. |
 | `reject()` | Delegates to `handleFailedDelivery()` → TERM (Symfony retry) or NAK (NATS retry). |
 | `getMessageCount()` | Tries consumer info (`num_ack_pending` / `num_pending`), falls back to stream `state.messages`, then 0. |
-| `setup()` | Creates the stream with configured retention/storage/replicas; if it already exists, reads the live config, merges subjects, and updates. The stream's subjects are the topic, any `additional_subjects` and, with `scheduled_messages`, `{topic}.delayed.>`. Then creates a durable **pull** consumer with explicit ACK / deliver-all and asserts it matches expectations. The consumer filters on the topic with `filter_subject`, or on the topic plus `additional_subjects` with `filter_subjects`; an existing consumer's filters are updated, since JetStream's consumer create is an update when the durable exists. |
+| `setup()` | Creates the stream with configured retention/storage/replicas; if it already exists, reads the live config, merges subjects, and updates. The stream's subjects are the topic, any `additional_subjects` and, with `scheduled_messages`, `{topic}.delayed.>`. Then creates a durable **pull** consumer with explicit ACK / deliver-all and asserts it matches expectations. The consumer filters on the topic with `filter_subject`, or on the topic plus `additional_subjects` with `filter_subjects`; an existing consumer keeps the filters it has and gets the configured ones added. |
 
 Cross-cutting behavior:
 - **Lazy connection.** No socket is opened in the constructor. `jetStream()` calls `connectIfNeeded()`,

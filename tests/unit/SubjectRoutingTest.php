@@ -414,10 +414,38 @@ final class SubjectRoutingTest extends TestCase
     }
 
     /**
-     * JetStream's consumer create is an update when the durable exists (the Behat scenarios `Setup widens the
-     * filters of an existing consumer when a pattern is added` and `Setup narrows the filters of an existing
-     * consumer when a pattern is removed` show it on a live server), so the reply normally carries the filters
-     * setup() wrote. The check after it is a guard: a server before NATS 2.10 does not know `filter_subjects` and
+     * @param list<string> $existingFilters
+     */
+    #[DataProvider('existingConsumerFiltersProvider')]
+    public function testSetupKeepsTheFiltersOfAnExistingConsumer(?string $additionalSubjects, array $existingFilters): void
+    {
+        $written = ['test-topic', 'test-topic.updated.>'];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete());
+        $jetStream->method('getConsumer')->willReturn(Future::complete($this->consumerInfo(['filter_subjects' => $existingFilters])));
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static fn (ConsumerConfiguration $config): bool => ($config->toArray()['filter_subjects'] ?? null) === $written))
+            ->willReturn(Future::complete($this->consumerInfo(['filter_subjects' => $written])));
+        $transport = $this->transport($jetStream, ['additional_subjects' => $additionalSubjects]);
+
+        $transport->setup();
+    }
+
+    /**
+     * @return iterable<string, array{?string, list<string>}>
+     */
+    public static function existingConsumerFiltersProvider(): iterable
+    {
+        yield 'a pattern the configuration lacks' => [null, ['test-topic', 'test-topic.updated.>']];
+        yield 'a pattern a configured one covers' => ['test-topic.updated.>', ['test-topic', 'test-topic.updated.eu.>']];
+        yield 'a pattern that covers a configured one' => ['test-topic.updated.eu.>', ['test-topic', 'test-topic.updated.>']];
+    }
+
+    /**
+     * JetStream's consumer create is an update when the durable exists (the Behat scenario `Setup widens the
+     * filters of an existing consumer when a pattern is added` shows it on a live server), so the reply normally
+     * carries the filters setup() wrote. The check after it is a guard: a server before NATS 2.10 does not know `filter_subjects` and
      * creates the consumer unfiltered.
      */
     public function testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects(): void

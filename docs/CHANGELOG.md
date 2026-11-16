@@ -20,12 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A retry is an envelope a worker received (its `ReceivedStamp`) re-sent with a retry count, the one rule the
   transport applies to the subject and, in nats mode, to the copy it leaves out. A copy for a failure transport
   goes to that transport's topic. A delayed stamped message waits under the topic
-  and is delivered to the stamped subject. `setup()` writes the filters to an existing durable consumer as well
-  (JetStream's consumer create updates an existing durable), so a changed `additional_subjects` applies on the next
-  setup; a removed pattern narrows the consumer at once, and the messages still stored on it are no longer delivered
-  or counted. The pattern itself stays on the stream, since `setup()` only adds subjects; the README describes
-  draining it first and removing it from the stream by hand. The stamp refuses a subject a message cannot be
-  published to (empty, whitespace, an empty token, a `*` or `>` in a token) with an `InvalidArgumentException`.
+  and is delivered to the stamped subject. `setup()` adds the patterns to an existing durable consumer as well and
+  keeps the filters it finds there, as it keeps the stream's subjects, so a process whose configuration lacks a
+  pattern does not narrow the consumer. A removed pattern stays on the consumer and the stream; the README describes
+  draining it first and removing it by hand. Upgrade note: a 5.8.0 process that runs `setup()` writes the topic as
+  the consumer's only filter, and messages stamped meanwhile are never delivered, so roll the option out before the
+  code that stamps messages and back out in reverse (README, "Rolling it out and back"). The stamp refuses a subject
+  a message cannot be published to (empty, whitespace, an empty token, a `*` or `>` in a token) with an
+  `InvalidArgumentException`.
 
 ### Changed
 - **Requires `idct/php-nats-jetstream-client` `^2.29`.** Client 2.29.0 adds `JetStreamContext::diagnoseNoResponders()`,
