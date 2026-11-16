@@ -1266,9 +1266,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * what the connection holds, and then closes the connection about 20 ms later. The error cannot tell the two
      * apart, so the check stays: an open connection answers the PING and is kept, a closed one is replaced.
      *
-     * The call is passed as a closure that starts it, not as its Future: the trace of an exception raised in the event
-     * loop records the arguments of every frame waiting on it, and a Future recorded there, holding that exception,
-     * makes a cycle that only the cycle collector frees - one per pull that finds no messages.
+     * The call is passed as a closure that starts it, not as its Future (#115). With zend.exception_ignore_args off,
+     * the default without a php.ini, the trace of an exception raised in the event loop records the arguments of
+     * every frame waiting on it, and a Future recorded there, holding that exception, makes a cycle that only the
+     * cycle collector frees: one per pull that finds no messages. So the closure starts the call itself. One that
+     * captures a Future made before it brings the cycle back, and so does a helper that takes the Future as a
+     * parameter. The closure runs before the try, as the argument expression did, so a call that throws before it
+     * returns a Future, such as a refused dial or a name the client refuses, leaves the connection check as it was.
      *
      * @template T
      * @param \Closure(): Future<T> $call
