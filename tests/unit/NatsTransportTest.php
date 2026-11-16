@@ -2056,6 +2056,39 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * A call that throws before it returns its Future, as a refused dial does, did not fail on a connection, so the
+     * operation after the next dial does not check the connection first. awaitOnConnection() starts the call before
+     * its try, as the argument expression did when it took the Future.
+     */
+    public function testARefusedDialDoesNotMakeTheOperationAfterTheNextDialCheckTheConnection(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(3))->method('ack')->willReturn(Future::complete());
+
+        $refused = new ConnectionException('Connection to tcp://localhost:4222 failed');
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::error($refused), Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+        $state = ConnectionState::Closed;
+
+        try {
+            $transport->ack($envelope);
+            self::fail('expected the dial to fail');
+        } catch (ConnectionException $e) {
+            self::assertSame($refused, $e);
+        }
+
+        $transport->ack($envelope);
+        $transport->ack($envelope);
+    }
+
+    /**
      * When the consumer lookup fails on the connection, getMessageCount() checks it before its stream-level
      * fallback, so the fallback runs on a new connection and still reports the stream's messages.
      */
