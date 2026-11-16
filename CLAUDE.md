@@ -76,6 +76,13 @@ composer nats:stop               # stop NATS
 
 - **Async client, sync contract.** Client calls return `Amp\Future`; resolve them with `->await()`.
   Symfony Messenger's transport API is blocking.
+- **No frame that waits on a Future takes it as a parameter (#115).** With `zend.exception_ignore_args` off, the
+  default without a php.ini, the trace of an exception raised in the event loop records the arguments of every frame
+  waiting on it, so a Future taken as a parameter, holding that exception, makes a cycle only the cycle collector frees:
+  one per empty pull in an idle worker. Pass a closure that starts the call, as `awaitOnConnection()` takes, never one
+  that captures a Future made before it. A test of what such an exception leaves behind makes the exception in the event
+  loop (`EventLoop::defer()`), as `testAFailedCallLeavesNoReferenceCycle` does: one passed to `Future::error()` is made
+  before the wait, records no frame that waits on the Future, and passes on the broken code too.
 - **Lazy connection.** No socket opens in the constructor - `jetStream()` connects on first use, and dials
   again once the client has closed (unless `reconnect: true`, it runs with reconnect off, so a lost connection
   leaves it Closed). A
