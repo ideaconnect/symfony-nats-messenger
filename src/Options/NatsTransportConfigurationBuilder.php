@@ -120,6 +120,7 @@ final class NatsTransportConfigurationBuilder
         $configuration = $this->buildConfiguration($components, $options);
 
         [$streamName, $topic] = $this->parseStreamAndTopic($components);
+        $this->assertAdditionalSubjectsAreUsable($topic, $configuration);
 
         $scheme = $this->resolveTransportScheme(TypeCoercion::stringValue($components['scheme'] ?? 'nats', 'nats'));
         $host = $this->requiredString($components, 'host');
@@ -702,6 +703,69 @@ final class NatsTransportConfigurationBuilder
         }
 
         $configuration[TransportOption::ADDITIONAL_SUBJECTS->value] = $normalizedSubjects;
+    }
+
+    /**
+     * Refuses an `additional_subjects` entry that is not a subject pattern, or that overlaps the topic, another entry
+     * or the subjects scheduled messages wait on: JetStream would refuse the stream in setup(), on every send and
+     * pull with auto_setup.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function assertAdditionalSubjectsAreUsable(string $topic, #[\SensitiveParameter] array $configuration): void
+    {
+        $option = TransportOption::ADDITIONAL_SUBJECTS->value;
+        $taken = [[$topic, 'the topic']];
+        if ($this->toBool($configuration[TransportOption::SCHEDULED_MESSAGES->value])) {
+            $taken[] = [$topic . '.delayed.>', sprintf('"%s.delayed.>", the subjects scheduled messages wait on', $topic)];
+        }
+
+        foreach (TypeCoercion::stringListValue($configuration[$option] ?? null) as $subject) {
+            $tokens = explode('.', $subject);
+            foreach ($tokens as $position => $token) {
+                $isWildcard = $token === '*' || ($token === '>' && $position === count($tokens) - 1);
+                if (!$isWildcard && ($token === '' || preg_match('/[\s*>]/', $token) === 1)) {
+                    throw new InvalidArgumentException(sprintf(
+                        'The %s entry%s is not a subject pattern: dot-separated tokens, none empty or with whitespace, with "*" only as a whole token and ">" only as the last one.',
+                        $option,
+                        $this->quotedIfPlain($subject, '"'),
+                    ));
+                }
+            }
+
+            foreach ($taken as [$other, $description]) {
+                if (self::subjectsOverlap($subject, $other)) {
+                    throw new InvalidArgumentException(sprintf('The %s entry%s overlaps %s.', $option, $this->quotedIfPlain($subject, '"'), $description));
+                }
+            }
+
+            $taken[] = [$subject, 'the entry' . $this->quotedIfPlain($subject, '"')];
+        }
+    }
+
+    /**
+     * Whether some subject matches both patterns, which JetStream refuses between two subjects of a stream.
+     */
+    private static function subjectsOverlap(string $first, string $second): bool
+    {
+        $firstTokens = explode('.', $first);
+        $secondTokens = explode('.', $second);
+
+        foreach ($firstTokens as $position => $token) {
+            if (!isset($secondTokens[$position])) {
+                return false;
+            }
+
+            if ($token === '>' || $secondTokens[$position] === '>') {
+                return true;
+            }
+
+            if ($token !== '*' && $secondTokens[$position] !== '*' && $token !== $secondTokens[$position]) {
+                return false;
+            }
+        }
+
+        return count($firstTokens) === count($secondTokens);
     }
 
     /**

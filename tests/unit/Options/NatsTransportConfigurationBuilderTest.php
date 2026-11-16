@@ -2608,6 +2608,37 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('unusableAdditionalSubjectsProvider')]
+    public function testBuildRefusesAnAdditionalSubjectSetupCouldNotUse(array $options, string $message): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage($message);
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/stream/t', $options);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function unusableAdditionalSubjectsProvider(): iterable
+    {
+        $notAPattern = 'The additional_subjects entry "%s" is not a subject pattern';
+
+        yield 'the topic itself' => [['additional_subjects' => 't'], 'The additional_subjects entry "t" overlaps the topic.'];
+        yield 'two entries that overlap' => [['additional_subjects' => 't.updated.>,t.updated.42'], 'The additional_subjects entry "t.updated.42" overlaps the entry "t.updated.>".'];
+        yield 'an empty token' => [['additional_subjects' => 't..updated'], sprintf($notAPattern, 't..updated')];
+        yield '> before the last token' => [['additional_subjects' => 't.>.updated'], sprintf($notAPattern, 't.>.updated')];
+        yield 'whitespace in a token' => [['additional_subjects' => ['t.up dated']], sprintf($notAPattern, 't.up dated')];
+        yield 'a wildcard inside a token' => [['additional_subjects' => 't.up*dated'], sprintf($notAPattern, 't.up*dated')];
+        yield 'the subjects scheduled messages wait on' => [
+            ['additional_subjects' => 't.>', 'scheduled_messages' => true],
+            'The additional_subjects entry "t.>" overlaps "t.delayed.>", the subjects scheduled messages wait on.',
+        ];
+    }
+
+    /**
      * @return iterable<string, array{mixed}>
      */
     public static function invalidAdditionalSubjectsShapeProvider(): iterable

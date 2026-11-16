@@ -25,7 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pattern does not narrow the consumer. A removed pattern stays on the consumer and the stream; the README describes
   draining it first and removing it by hand. Upgrade note: a 5.8.0 process that runs `setup()` writes the topic as
   the consumer's only filter, and messages stamped meanwhile are never delivered, so roll the option out before the
-  code that stamps messages and back out in reverse (README, "Rolling it out and back"). The stamp refuses a subject
+  code that stamps messages and back out in reverse (README, "Rolling it out and back"). The entries are checked
+  when the transport is built: one that is not a subject pattern, or that overlaps the topic, another entry or the
+  subjects scheduled messages wait on, is refused by name. `setup()` refuses the option on a server before NATS
+  2.10, which would ignore the filters and leave the consumer reading the whole stream. The stamp refuses a subject
   a message cannot be published to (empty, whitespace, an empty token, a `*` or `>` in a token) with an
   `InvalidArgumentException`.
 

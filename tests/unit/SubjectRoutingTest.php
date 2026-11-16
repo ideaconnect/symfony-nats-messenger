@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace IDCT\NatsMessenger\Tests\Unit;
 
 use Amp\Future;
+use IDCT\NATS\Connection\Enum\ConnectionState;
+use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\JetStreamException;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
@@ -12,6 +14,7 @@ use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
+use IDCT\NATS\Protocol\ServerInfo;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
 use IDCT\NatsMessenger\Stamp\NatsReceivedSubjectStamp;
 use IDCT\NatsMessenger\Stamp\NatsSubjectStamp;
@@ -388,6 +391,30 @@ final class SubjectRoutingTest extends TestCase
         $transport->setup();
     }
 
+    public function testSetupRefusesAdditionalSubjectsOnAServerBeforeNats210(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method(self::anything());
+        $transport = $this->transport($jetStream);
+        $transport->setClient($this->clientOfAServerReporting('2.9.25'));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("The 'additional_subjects' option requires NATS Server >= 2.10, but the connected server reports 2.9.25.");
+
+        $transport->setup();
+    }
+
+    public function testSetupGoesOnWithAdditionalSubjectsOnNats210(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo(['filter_subjects' => ['test-topic', self::EXTRA]])));
+        $transport = $this->transport($jetStream);
+        $transport->setClient($this->clientOfAServerReporting('2.10.0'));
+
+        $transport->setup();
+    }
+
     public function testSetupAddsTheAdditionalSubjectsToAnExistingStream(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -522,6 +549,7 @@ final class SubjectRoutingTest extends TestCase
         yield 'empty filter_subjects next to filter_subject' => [null, ['filter_subjects' => [], 'filter_subject' => 'test-topic']];
         yield 'topic and extra in filter_subjects, in another order' => [self::EXTRA, ['filter_subjects' => [self::EXTRA, 'test-topic']]];
         yield 'empty filter_subject next to filter_subjects' => [self::EXTRA, ['filter_subject' => '', 'filter_subjects' => ['test-topic', self::EXTRA]]];
+        yield 'a filter reported as a number' => ['10', ['filter_subjects' => ['test-topic', 10]]];
     }
 
     public function testSetupRejectsAConsumerReportingNoFilter(): void
@@ -587,6 +615,15 @@ final class SubjectRoutingTest extends TestCase
         );
 
         return $jetStream;
+    }
+
+    private function clientOfAServerReporting(string $version): NatsClient
+    {
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn(new ServerInfo('id', 'name', $version, true, 1048576, true));
+
+        return $client;
     }
 
     private function encodingSerializer(): SerializerInterface

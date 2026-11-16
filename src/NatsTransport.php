@@ -21,6 +21,7 @@ use IDCT\NATS\JetStream\Enum\AckPolicy;
 use IDCT\NATS\JetStream\Enum\DeliverPolicy;
 use IDCT\NATS\JetStream\Enum\NoRespondersCause;
 use IDCT\NATS\JetStream\Enum\ReplayPolicy;
+use IDCT\NATS\JetStream\FeatureSupport;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
@@ -500,14 +501,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * @return list<string>
+     * @return array<string>
      */
     private static function filterSubjectsOf(ConsumerInfo $consumerInfo): array
     {
         $config = is_array($consumerInfo->raw['config'] ?? null) ? $consumerInfo->raw['config'] : [];
         $filterSubjects = $config['filter_subjects'] ?? null;
         if (is_array($filterSubjects) && $filterSubjects !== []) {
-            return array_values(array_map(TypeCoercion::stringValue(...), $filterSubjects));
+            return array_map(TypeCoercion::stringValue(...), $filterSubjects);
         }
 
         $filterSubject = TypeCoercion::stringValue($config['filter_subject'] ?? '');
@@ -900,6 +901,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function setup(): void
     {
         try {
+            $this->assertServerKnowsFilterSubjects();
+
             $subjects = $this->buildDesiredSubjects();
             $streamConfiguration = $this->buildManagedStreamConfiguration($subjects);
 
@@ -1712,9 +1715,43 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * The only such feature this transport enables is `allow_msg_schedules` (via `scheduled_messages`),
      * so that case gets a tailored hint; anything else falls back to a generic message.
      */
+    /**
+     * NATS before 2.10 ignores `filter_subjects` and leaves the consumer unfiltered, so additional_subjects is
+     * refused there before setup() changes anything.
+     */
+    private function assertServerKnowsFilterSubjects(): void
+    {
+        if ($this->configuration->additionalSubjects() === []) {
+            return;
+        }
+
+        $this->jetStream();
+        $required = FeatureSupport::requiredVersion('filter_subjects');
+        $version = $this->client->serverInfo()?->version;
+        if ($required === null || $version === null || preg_match('/^v?(\d+\.\d+)/', $version, $release) !== 1) {
+            return;
+        }
+
+        if (version_compare($release[1], $required, '<')) {
+            throw new UnsupportedFeatureException('filter_subjects', $required, $version, sprintf(
+                'filter_subjects requires NATS Server >= %s, but the connected server reports %s.',
+                $required,
+                $version,
+            ));
+        }
+    }
+
     private function describeUnsupportedFeature(UnsupportedFeatureException $exception): string
     {
         $serverVersion = $exception->serverVersion ?? 'an older version';
+
+        if ($this->configuration->additionalSubjects() !== [] && $exception->feature === 'filter_subjects') {
+            return sprintf(
+                "The 'additional_subjects' option requires NATS Server >= %s, but the connected server reports %s. Remove additional_subjects or upgrade NATS.",
+                $exception->requiredVersion,
+                $serverVersion,
+            );
+        }
 
         if ($this->configuration->isScheduledMessagesEnabled() && $exception->feature === 'allow_msg_schedules') {
             return sprintf(
