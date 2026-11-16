@@ -650,6 +650,7 @@ final class NatsTransportTest extends TestCase
         }
 
         $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+        self::assertNotFalse($ignoreArgs, 'The test needs zend.exception_ignore_args off, the default without a php.ini.');
 
         try {
             $jetStream = $this->createStub(JetStreamContext::class);
@@ -670,7 +671,7 @@ final class NatsTransportTest extends TestCase
             self::assertSame([], iterator_to_array($transport->get()));
             self::assertSame(0, gc_collect_cycles());
         } finally {
-            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
+            ini_set('zend.exception_ignore_args', $ignoreArgs);
         }
     }
 
