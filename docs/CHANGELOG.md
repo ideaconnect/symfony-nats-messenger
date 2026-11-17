@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.8.1] - 2026-11-17
+
+A **patch** release. With `zend.exception_ignore_args` off, the default when PHP loads no php.ini, as in the official Docker
+images, an idle worker no longer grows its heap by about 13 KB on every pull that finds no messages, about 0.8 MB a minute, and
+a failed publish, ACK, NAK, TERM, message count or setup call no longer leaves a reference cycle behind either (#115, found and
+fixed by Matko Anđelinić in #114). A pull while the server is going away, in the last moments of a graceful stop or in lame
+duck mode, no longer ends the worker (#106). It requires client 2.29.0, whose `diagnoseNoResponders()` tells such a server
+apart from a missing consumer. The public PHP API is unchanged.
+
 ### Changed
 - **Requires `idct/php-nats-jetstream-client` `^2.29`.** Client 2.29.0 adds `JetStreamContext::diagnoseNoResponders()`,
   which the fix below uses, and reports a JetStream API call that nothing answers (a server or account without

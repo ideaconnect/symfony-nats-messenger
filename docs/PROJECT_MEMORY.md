@@ -513,3 +513,19 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   that changes the iterator's default behaviour and is the maintainer's call.
 - **Not measured:** a cluster (another server may answer CONSUMER.INFO for an R3 consumer while the local one stops, and
   the 503 then keeps its old reading).
+
+## Dated snapshot: 2026-11-17
+
+- **5.8.1, a patch release,** ships #106 (PR #108, merged as `3e1d140`) and #115 (PR #114 by Matko Anđelinić, merged as
+  `6116173` with the contributor's commits unchanged), with the client floor `^2.29` in both manifests. 2.29.0, the latest
+  client release, is the version tested. The changelog cut went in through a release PR, and the tag is on its merge commit.
+- Open transport issues: #104 (`.creds` files and rotation) and #105 (external signers); #109 (`willRetry()` in nats mode);
+  #110, #111 and #112, the three blockers the review of PR #100 found. Open PRs, both by contributors: #100 (per-message
+  subjects) and #113 (Symfony's retry delay in nats mode, #109). #100 adds changelog items under `[Unreleased]`, which the
+  cut emptied: when it next merges `main`, check that git did not move them into `[5.8.1]` without a conflict marker.
+- Known and not filed: an unanswered PING leaves a cycle through amphp's `TimeoutCancellation` (the #115 entry under
+  "Behavior to preserve"), and the client uses `new TimeoutCancellation` in 26 places, where a timeout that fires may leave
+  the same kind of cycle (not measured).
+- CI on the tree of the #114 merge (run 43913469827, head `5e02bad`): PHPStan clean; 1068 tests, 3122 assertions, also
+  stopped at random moments; coverage 99.80 % (1023/1025); Infection killed 1179 of 1197 mutants, with the 18 survivors
+  `docs/TESTS.md` lists; Behat 94 of 94 on each PHP job and 90 of 90 on NATS 2.10.29; 14 of 14 examples in each job.
