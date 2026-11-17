@@ -145,6 +145,13 @@ composer nats:stop               # Stop NATS
   as a missing consumer, and `ServerGoingAway` (no answer, with the connection closed, being recovered or replaced, or in
   lame duck mode) is an empty batch. A restart or lame duck scenario on CI that fails with
   `JetStream pull request ended with status 503` is a real failure now.
+- No frame that waits on a Future takes it as a parameter (#115). With `zend.exception_ignore_args` off, the default
+  without a php.ini, the trace of an exception raised in the event loop records the arguments of every frame waiting on
+  it, so a Future taken as a parameter, holding that exception, makes a cycle only the cycle collector frees: one per
+  empty pull in an idle worker. Pass a closure that starts the call, as `awaitOnConnection()` takes, never one that
+  captures a Future made before it. A test of what such an exception leaves behind makes the exception in the event loop
+  (`EventLoop::defer()`), as `testAFailedCallLeavesNoReferenceCycle` does: one passed to `Future::error()` is made before
+  the wait, records no frame that waits on the Future, and passes on the broken code too.
 - Behat step definitions and hooks are **attributes** (`#[Given]`, `#[When]`, `#[Then]`, `#[AfterScenario]`), and the
   Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
   configuration is strict, so a scenario with an undefined step fails the run instead of being skipped.

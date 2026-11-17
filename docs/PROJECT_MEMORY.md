@@ -217,6 +217,17 @@ apply only with the option on.
 - **Stats:** consumer `num_pending + num_ack_pending`, falling back to stream messages and then 0.
   Stream count can include already acknowledged messages; outage and empty queue both read as 0.
   A failed initial connection gets one dial attempt, not a second for the fallback (#54).
+- **No frame that waits on a Future takes it as a parameter (#115, PR #114).** With `zend.exception_ignore_args` off,
+  the default without a php.ini (the official `php:*` images load none), the trace of an exception raised in the event
+  loop records the arguments of every frame waiting on it. When `awaitOnConnection()` took the Future, each empty pull
+  (408) left a cycle of about 37 objects and 13 KB that only the cycle collector frees, about 0.8 MB a minute in an idle
+  worker, and every failed publish, ACK, NAK, TERM, message count or setup call left one too. It now takes a closure
+  that starts the call, run before its `try`, so a refused dial still arms no connection check. A closure that captures a
+  Future made before the call, or a helper that takes the Future as a parameter, brings the cycle back; the row per
+  operation in `testAFailedCallLeavesNoReferenceCycle` catches either. Such a test makes the exception in the event loop
+  (`EventLoop::defer()`): one passed to `Future::error()` is made before the wait and passes on the broken code too.
+  Known and left alone: an unanswered PING's `TimeoutCancellation` leaves one cycle (99 objects) per connection that
+  stopped answering, which is then replaced. Measurements: `docs/PRs/PR-114-empty-pull-reference-cycle.md`.
 
 ## Cross-library development and verification
 
