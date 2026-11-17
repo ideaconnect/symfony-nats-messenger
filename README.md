@@ -172,10 +172,13 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
   missing consumer still ends a worker without `auto_setup`, as before. For a user allowed to pull but not to ask for
   consumer info, it ends it only after `request_timeout`, as the server leaves the question unanswered; allow that
   subject to have it at once.
-- **`additional_subjects` is rolled out in two steps,** as a 5.8.0 process that runs `setup()` narrows the consumer
-  to the topic: see "Rolling it out and back" under [Per-Message Subjects](#per-message-subjects).
 
 > **Tested by:** `testA503KeepsItsReadingWhenTheServerAnswers`, `testA503KeepsItsReadingWhenNothingAnswersOnAConnectionThatStays`, `testWithTheRealClientA503FromAServerThatAnswersTheQuestionPropagates`, `testWithTheRealClientA503WhoseQuestionGoesUnansweredOnAConnectionThatStaysPropagates`
+
+### Upgrading from 5.8.1
+
+- **`additional_subjects` is rolled out in two steps,** as a process of 5.8.1 or older that runs `setup()` narrows
+  the consumer to the topic: see "Rolling it out and back" under [Per-Message Subjects](#per-message-subjects).
 
 ### Logging
 
@@ -1755,7 +1758,7 @@ $bus->dispatch(new Envelope(new OrderUpdated($orderId), [
   send, and a process whose configuration lacks a pattern does not narrow the consumer. The consumer keeps its
   position in the stream, so a pattern added later covers what is published from then on; messages the stream
   already held on that pattern are not replayed once the consumer has moved past them.
-- **Rolling it out and back.** A release without `additional_subjects` (5.8.0 or older) writes the topic as the
+- **Rolling it out and back.** A release without `additional_subjects` (5.8.1 or older) writes the topic as the
   consumer's only filter whenever it runs `setup()`: from `messenger:setup-transports`, or with `auto_setup` on each
   process's first send or pull, which under PHP-FPM is every request that dispatches a message. While the consumer
   is narrowed, its position moves past the stamped messages, and they are never delivered, without any error. So

@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and is delivered to the stamped subject. `setup()` adds the patterns to an existing durable consumer as well and
   keeps the filters it finds there, as it keeps the stream's subjects, so a process whose configuration lacks a
   pattern does not narrow the consumer. A removed pattern stays on the consumer and the stream; the README describes
-  draining it first and removing it by hand. Upgrade note: a 5.8.0 process that runs `setup()` writes the topic as
+  draining it first and removing it by hand. Upgrade note: a process of 5.8.1 or older that runs `setup()` writes the topic as
   the consumer's only filter, and messages stamped meanwhile are never delivered, so roll the option out before the
   code that stamps messages and back out in reverse (README, "Rolling it out and back"). The entries are checked
   when the transport is built: one that is not a subject pattern, or that overlaps the topic, another entry or the
