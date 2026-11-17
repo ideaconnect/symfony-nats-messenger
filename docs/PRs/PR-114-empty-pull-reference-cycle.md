@@ -4,8 +4,9 @@
 - **Branch:** `empty-pull-reference-cycle` (contributor fork) → `ideaconnect:main`
 - **PR:** https://github.com/ideaconnect/symfony-nats-messenger/pull/114, fixing
   [#115](https://github.com/ideaconnect/symfony-nats-messenger/issues/115)
-- **Status:** Landed with a merge commit. The contributor's seven commits stay unchanged, one per item of the review; this
-  record and the rule in `CLAUDE.md`, `AGENTS.md` and `docs/PROJECT_MEMORY.md` were added on the same branch before the merge.
+- **Status:** Merged on 2026-11-17 with a merge commit, `6116173`, and released in 5.8.1. The contributor's seven commits stay
+  unchanged: the fix and its docs, then one for each of the five required changes. This record and the rule in `CLAUDE.md`,
+  `AGENTS.md` and `docs/PROJECT_MEMORY.md` were added on the same branch before the merge.
 - **Reviewed at:** commit `14e0fd9` (review on 2026-11-14, decision on 2026-11-16), on `main` at `3e1d140`. Verified again at
   `88ab821`, after the five required changes: 4 files, +190 / -19.
 
@@ -103,6 +104,18 @@ At `88ab821`, PHP 8.5.9, PHPUnit 13.4.7, PHPStan 2.3.6:
   drive publish, ACK, `ack_sync`, NAK, TERM, setup, pulls and the connection check, 42 scenarios and 346 steps, all passed.
 - Not run locally: PHP 8.2 (CI's lowest leg), the Behat features for auth, TLS, stream limits and placement, and the full
   mutation run. CI runs them.
+
+At `5e02bad`, the head that was merged (only docs changed after `88ab821`), PHP 8.5.11, PHPUnit 13.4.6:
+
+- `composer test`, 5 random orders, `composer test:unit:paused` (58 pauses of 250 ms) and coverage (99.80%) all passed.
+- The PR, `main`'s `src/NatsTransport.php`, the call moved inside the `try`, `send()` awaiting a Future made before the call
+  and the helper that takes the Future gave the results in the table above.
+- An idle `Worker` against NATS 2.15.2, with the heap recorded at 10, 30, 60 and 90 empty pulls: +2,184 B, +2,560 B, +2,560 B
+  and +2,560 B, the same with `exception_ignore_args` on and off, and 0 cyclic objects after 90 pulls (`main`: 37 per pull and
+  13,169 B). The heap stops growing after the first pulls.
+- CI on the same head, run 43913469827: 1068 tests on PHP 8.2, with the lowest client release the transport allows (2.29.0),
+  and on PHP 8.5; coverage 99.80%; Infection killed 1179 of 1197 mutants, the 18 survivors being the ones `docs/TESTS.md`
+  lists; Behat 94 of 94 on each PHP job and 90 of 90 on NATS 2.10.29; 14 of 14 examples in each job.
 
 ## Left Open
 
