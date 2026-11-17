@@ -21,6 +21,7 @@ use IDCT\NATS\JetStream\Enum\AckPolicy;
 use IDCT\NATS\JetStream\Enum\DeliverPolicy;
 use IDCT\NATS\JetStream\Enum\NoRespondersCause;
 use IDCT\NATS\JetStream\Enum\ReplayPolicy;
+use IDCT\NATS\JetStream\FeatureSupport;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
@@ -30,6 +31,8 @@ use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
+use IDCT\NatsMessenger\Stamp\NatsReceivedSubjectStamp;
+use IDCT\NatsMessenger\Stamp\NatsSubjectStamp;
 use LogicException;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
@@ -86,7 +89,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /** Lazily initialized JetStream context; null until {@see connectIfNeeded()} runs. */
     protected ?JetStreamContext $jetStream = null;
 
-    /** JetStream subject name that messages are published to and consumed from. */
+    /** JetStream subject messages are published to unless a {@see NatsSubjectStamp} names another */
     protected string $topic;
 
     /** JetStream stream name that backs the transport subject. */
@@ -213,14 +216,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Sends a messenger envelope to JetStream.
      *
      * Assigns a UUID v4 transport message ID, serializes the envelope, and publishes
-     * the payload (with any envelope headers) to the configured subject via
-     * {@see JetStreamContext::publish()}, which validates the JetStream publish
-     * acknowledgement and fails closed on an error or malformed response.
+     * the payload (with any envelope headers) via {@see JetStreamContext::publish()},
+     * which validates the JetStream publish acknowledgement and fails closed on an
+     * error or malformed response. The subject is the topic, or the one
+     * {@see resolvePublishSubject()} picks from the envelope's stamps.
      *
      * When scheduled messages are enabled and the envelope carries a {@see DelayStamp},
-     * the message is published to a unique delayed subject with NATS schedule headers,
-     * causing JetStream to hold it until the scheduled time before delivering it to
-     * the original topic.
+     * the message is published to a unique delayed subject under the topic with NATS
+     * schedule headers, causing JetStream to hold it until the scheduled time before
+     * delivering it to the resolved subject.
      *
      * With retry_handler=nats, the copy Symfony's retry sends of a message this transport received is not
      * published ({@see isRetryNatsRedeliversItself()}): the delivery it belongs to is remembered instead, so that
@@ -274,7 +278,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $payload = TypeCoercion::stringValue($encodedMessage['body']);
         $headers = is_array($encodedMessage['headers'] ?? null) ? $encodedMessage['headers'] : [];
-        $topic = $this->topic;
+        $targetSubject = $this->resolvePublishSubject($envelope);
+        $publishSubject = $targetSubject;
 
         $delayMs = $envelope->last(DelayStamp::class)?->getDelay();
         if ($delayMs > 0 && $this->configuration->isScheduledMessagesEnabled()) {
@@ -287,8 +292,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $deliverAt = $deliverAt->modify('+1 second');
             }
             $headers['Nats-Schedule'] = Schedule::at($deliverAt);
-            $headers['Nats-Schedule-Target'] = $this->topic;
-            $topic = $this->topic . '.delayed.' . $uuid;
+            $headers['Nats-Schedule-Target'] = $targetSubject;
+            // Under the topic whatever the target, so the stream needs only the one delayed pattern and the
+            // consumer, which never reads it, takes the message once it is delivered to its target.
+            $publishSubject = $this->topic . '.delayed.' . $uuid;
         }
 
         $normalizedHeaders = [];
@@ -300,9 +307,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // messages. JetStreamContext::publish() retries transient 503 "no responders" and parses
         // the PubAck, throwing JetStreamException on an empty/malformed reply or a reported error -
         // so the publish fails closed instead of silently accepting an invalid acknowledgement.
-        $messageId = $deduplicationStamp === null ? null : $this->natsMessageId($deduplicationStamp, $envelope);
+        $messageId = $deduplicationStamp === null ? null : $this->natsMessageId($deduplicationStamp, $envelope, $targetSubject);
         try {
-            $this->awaitOnConnection(fn (): Future => $this->jetStream()->publish($topic, $payload, $normalizedHeaders, msgId: $messageId));
+            $this->awaitOnConnection(fn (): Future => $this->jetStream()->publish($publishSubject, $payload, $normalizedHeaders, msgId: $messageId));
         } catch (JetStreamException $reply) {
             if (!$this->reprovisionedForThePublishAfterReconnect($reply)) {
                 throw $reply;
@@ -311,7 +318,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             // The same frame once more: the same subject (the scheduled one of a delayed message), payload, headers
             // and Nats-Msg-Id. A second pass through send() would mint another id and, for a delayed message,
             // another schedule.
-            $this->awaitOnConnection(fn (): Future => $this->jetStream()->publish($topic, $payload, $normalizedHeaders, msgId: $messageId));
+            $this->awaitOnConnection(fn (): Future => $this->jetStream()->publish($publishSubject, $payload, $normalizedHeaders, msgId: $messageId));
         }
 
         return $envelope;
@@ -354,26 +361,35 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /**
      * The Nats-Msg-Id JetStream deduplicates a publish by.
      *
-     * The envelope's deduplication id, then this transport's subject, then Symfony's retry count, and on the
-     * copy for a failure transport, which Symfony sends with a retry count of 0, a marker with the transport
-     * the message failed on. JetStream deduplicates per stream, whatever the subject, and Symfony hands each
-     * transport a message is routed to the envelope the one before returned, stamp included: the subject keeps
-     * apart the copies of transports that share a stream, the retry count keeps each retry a message of its
-     * own, and the marker keeps the failure copies apart from the original and from each other. A copy sent
-     * again, such as the retry of a message NATS redelivered because the worker stopped after a retry send
-     * that timed out, gets the same id as before and is dropped.
+     * The envelope's deduplication id, then the subject the message is delivered to, then Symfony's retry count,
+     * and on the copy for a failure transport, which Symfony sends with a retry count of 0, a marker with the
+     * transport the message failed on. JetStream deduplicates per stream, whatever the subject, and Symfony hands
+     * each transport a message is routed to the envelope the one before returned, stamp included: the subject
+     * keeps apart the copies of transports that share a stream and the copies one transport publishes to
+     * different stamped subjects, the retry count keeps each retry a message of its own, and the marker keeps the
+     * failure copies apart from the original and from each other. The subject is the one the message is
+     * delivered to, the schedule's target for a delayed message, not the `{topic}.delayed.{uuid}` it waits on,
+     * whose fresh uuid would make every id unique. A copy sent again, such as the retry of a message NATS
+     * redelivered because the worker stopped after a retry send that timed out, gets the same id as before and is
+     * dropped, and so does a copy two transports publish to the same stamped subject.
      */
-    private function natsMessageId(DeduplicationIdStamp $stamp, Envelope $envelope): string
+    private function natsMessageId(DeduplicationIdStamp $stamp, Envelope $envelope, string $subject): string
     {
-        $id = sprintf('%s:%s:%d', $stamp->id, $this->topic, RedeliveryStamp::getRetryCountFromEnvelope($envelope));
+        $id = sprintf('%s:%s:%d', $stamp->id, $subject, RedeliveryStamp::getRetryCountFromEnvelope($envelope));
         $failure = $envelope->last(SentToFailureTransportStamp::class);
 
         return $failure === null ? $id : sprintf('%s:failed:%s', $id, $failure->getOriginalReceiverName());
     }
 
+    private function isSymfonyRetry(Envelope $envelope): bool
+    {
+        return $envelope->last(ReceivedStamp::class) !== null
+            && RedeliveryStamp::getRetryCountFromEnvelope($envelope) > 0;
+    }
+
     /**
-     * Whether the envelope is the copy Symfony's retry sends of a message this transport received, while
-     * NATS handles redelivery (retry_handler=nats).
+     * Whether the envelope is the copy Symfony's retry sends of a message this transport received
+     * ({@see isSymfonyRetry()}), while NATS handles redelivery (retry_handler=nats).
      *
      * Symfony's retry listener runs for every transport with a retry strategy, and FrameworkBundle gives each
      * one a strategy by default. It re-sends the failed message with a retry count, and the worker then settles
@@ -394,8 +410,110 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private function isRetryNatsRedeliversItself(Envelope $envelope): bool
     {
         return $this->configuration->retryHandler() === RetryHandler::NATS
-            && $envelope->last(ReceivedStamp::class) !== null
-            && RedeliveryStamp::getRetryCountFromEnvelope($envelope) > 0;
+            && $this->isSymfonyRetry($envelope);
+    }
+
+    private function resolvePublishSubject(Envelope $envelope): string
+    {
+        $stamp = $envelope->last(NatsSubjectStamp::class);
+        if ($stamp !== null && $this->consumerReads($stamp->subject)) {
+            return $stamp->subject;
+        }
+
+        $received = $envelope->last(NatsReceivedSubjectStamp::class);
+        if ($received !== null && $this->isSymfonyRetry($envelope)) {
+            return $received->subject;
+        }
+
+        return $this->topic;
+    }
+
+    /**
+     * The durable consumer's filters: the topic, then `additional_subjects`.
+     *
+     * @return non-empty-list<string>
+     */
+    private function consumerFilterSubjects(): array
+    {
+        return [$this->topic, ...$this->configuration->additionalSubjects()];
+    }
+
+    private function consumerReads(string $subject): bool
+    {
+        foreach ($this->consumerFilterSubjects() as $filter) {
+            if (self::filterMatchesSubject($filter, $subject)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * NATS subject matching: `*` stands for one token, `>` for one or more at the end. The subject may be a filter
+     * itself, which matches when the first filter covers it.
+     */
+    private static function filterMatchesSubject(string $filter, string $subject): bool
+    {
+        $filterTokens = explode('.', $filter);
+        $subjectTokens = explode('.', $subject);
+
+        foreach ($filterTokens as $position => $token) {
+            if (!isset($subjectTokens[$position])) {
+                return false;
+            }
+
+            if ($token === '>') {
+                return true;
+            }
+
+            if ($subjectTokens[$position] === '>' || ($token !== '*' && $token !== $subjectTokens[$position])) {
+                return false;
+            }
+        }
+
+        return count($subjectTokens) === count($filterTokens);
+    }
+
+    /**
+     * The filters setup() writes: the configured ones and those the consumer already has, so that a process with
+     * another configuration does not narrow it. A filter that another one covers is left out, as JetStream refuses
+     * overlapping filters.
+     *
+     * @return list<string>
+     */
+    private function filterSubjectsKeepingThoseOf(?ConsumerInfo $existingConsumer): array
+    {
+        $filters = $this->consumerFilterSubjects();
+        if ($existingConsumer !== null) {
+            $filters = array_values(array_unique([...$filters, ...self::filterSubjectsOf($existingConsumer)]));
+        }
+
+        return array_values(array_filter($filters, static function (string $filter) use ($filters): bool {
+            foreach ($filters as $other) {
+                if ($other !== $filter && self::filterMatchesSubject($other, $filter)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }));
+    }
+
+    /**
+     * @return array<string>
+     */
+    private static function filterSubjectsOf(ConsumerInfo $consumerInfo): array
+    {
+        $config = is_array($consumerInfo->raw['config'] ?? null) ? $consumerInfo->raw['config'] : [];
+        $filterSubjects = $config['filter_subjects'] ?? null;
+        if (is_array($filterSubjects) && $filterSubjects !== []) {
+            return array_map(TypeCoercion::stringValue(...), $filterSubjects);
+        }
+
+        $filterSubject = TypeCoercion::stringValue($config['filter_subject'] ?? '');
+
+        return $filterSubject === '' ? [] : [$filterSubject];
     }
 
     /**
@@ -514,7 +632,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 throw $e;
             }
 
-            yield $decoded->with(new TransportMessageIdStamp($replyTo));
+            $stamps = [new TransportMessageIdStamp($replyTo)];
+            if ($this->configuration->additionalSubjects() !== []) {
+                $stamps[] = new NatsReceivedSubjectStamp($message->subject);
+            }
+
+            yield $decoded->with(...$stamps);
         }
     }
 
@@ -778,6 +901,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function setup(): void
     {
         try {
+            $this->assertServerKnowsFilterSubjects();
+
             $subjects = $this->buildDesiredSubjects();
             $streamConfiguration = $this->buildManagedStreamConfiguration($subjects);
 
@@ -810,9 +935,18 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             $consumerConfiguration = ConsumerConfiguration::create()
                 ->durable($this->configuration->consumer())
-                ->filterSubject($this->topic)
                 ->ackPolicy(AckPolicy::Explicit)
                 ->deliverPolicy(DeliverPolicy::All);
+
+            // A setup() that changed stream_replicas reaches the consumer while NATS may still be moving it.
+            $existingConsumer = $this->whileTheClusterSettles($this->getExistingConsumer(...));
+
+            $filterSubjects = $this->filterSubjectsKeepingThoseOf($existingConsumer);
+            if (count($filterSubjects) === 1) {
+                $consumerConfiguration->filterSubject($filterSubjects[0]);
+            } else {
+                $consumerConfiguration->filterSubjects($filterSubjects);
+            }
 
             // Optional NATS-native redelivery tuning (primarily relevant with retry_handler=nats).
             $ackWaitMs = $this->configuration->ackWaitMs();
@@ -840,8 +974,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $consumerConfiguration->inactiveThreshold($inactiveThresholdMs);
             }
 
-            // A setup() that changed stream_replicas reaches the consumer while NATS may still be moving it.
-            $replayPolicy = $this->whileTheClusterSettles($this->resolveReplayPolicy(...));
+            $replayPolicy = $this->resolveReplayPolicy($existingConsumer);
             if ($replayPolicy !== null) {
                 $consumerConfiguration->replayPolicy($replayPolicy);
             }
@@ -1388,6 +1521,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
     /**
      * Verifies that the configured durable consumer was created with the expected pull settings.
+     *
+     * JetStream's consumer create is an update when the durable exists, so the reply normally carries what
+     * {@see setup()} just wrote. The filter check is a guard for a server that ignored the request's
+     * `filter_subjects` (NATS before 2.10 does not know the field and creates the consumer unfiltered).
      */
     private function assertConsumerMatchesConfiguration(ConsumerInfo $consumerInfo): void
     {
@@ -1406,8 +1543,25 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             throw new RuntimeException('Consumer deliver policy must be all.');
         }
 
-        if (($config['filter_subject'] ?? null) !== $this->topic) {
-            throw new RuntimeException('Consumer filter subject does not match the configured topic.');
+        $expectedFilters = $this->consumerFilterSubjects();
+        $actualFilters = self::filterSubjectsOf($consumerInfo);
+
+        sort($expectedFilters, SORT_STRING);
+        sort($actualFilters, SORT_STRING);
+        foreach ($expectedFilters as $expectedFilter) {
+            foreach ($actualFilters as $actualFilter) {
+                if (self::filterMatchesSubject($actualFilter, $expectedFilter)) {
+                    continue 2;
+                }
+            }
+
+            throw new RuntimeException(count($expectedFilters) === 1
+                ? 'Consumer filter subject does not match the configured topic.'
+                : sprintf(
+                    'Consumer filter subjects [%s] do not match the topic and additional_subjects [%s].',
+                    implode(', ', $actualFilters),
+                    implode(', ', $expectedFilters),
+                ));
         }
 
         if ($consumerInfo->push) {
@@ -1475,9 +1629,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * a stream that does not exist yet. That keeps setup() idempotent no matter how the option is
      * changed on a live deployment.
      */
-    private function resolveReplayPolicy(): ?ReplayPolicy
+    private function resolveReplayPolicy(?ConsumerInfo $existingConsumer): ?ReplayPolicy
     {
-        $existingConsumer = $this->getExistingConsumer();
         if ($existingConsumer === null) {
             return $this->configuration->replayPolicy();
         }
@@ -1572,9 +1725,43 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * The only such feature this transport enables is `allow_msg_schedules` (via `scheduled_messages`),
      * so that case gets a tailored hint; anything else falls back to a generic message.
      */
+    /**
+     * NATS before 2.10 ignores `filter_subjects` and leaves the consumer unfiltered, so additional_subjects is
+     * refused there before setup() changes anything.
+     */
+    private function assertServerKnowsFilterSubjects(): void
+    {
+        if ($this->configuration->additionalSubjects() === []) {
+            return;
+        }
+
+        $this->jetStream();
+        $required = FeatureSupport::requiredVersion('filter_subjects');
+        $version = $this->client->serverInfo()?->version;
+        if ($required === null || $version === null || preg_match('/^v?(\d+\.\d+)/', $version, $release) !== 1) {
+            return;
+        }
+
+        if (version_compare($release[1], $required, '<')) {
+            throw new UnsupportedFeatureException('filter_subjects', $required, $version, sprintf(
+                'filter_subjects requires NATS Server >= %s, but the connected server reports %s.',
+                $required,
+                $version,
+            ));
+        }
+    }
+
     private function describeUnsupportedFeature(UnsupportedFeatureException $exception): string
     {
         $serverVersion = $exception->serverVersion ?? 'an older version';
+
+        if ($this->configuration->additionalSubjects() !== [] && $exception->feature === 'filter_subjects') {
+            return sprintf(
+                "The 'additional_subjects' option requires NATS Server >= %s, but the connected server reports %s. Remove additional_subjects or upgrade NATS.",
+                $exception->requiredVersion,
+                $serverVersion,
+            );
+        }
 
         if ($this->configuration->isScheduledMessagesEnabled() && $exception->feature === 'allow_msg_schedules') {
             return sprintf(
@@ -1699,7 +1886,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function buildDesiredSubjects(): array
     {
-        $subjects = [$this->topic];
+        $subjects = $this->consumerFilterSubjects();
         if ($this->configuration->isScheduledMessagesEnabled()) {
             $subjects[] = $this->delayedSubjectPattern();
         }

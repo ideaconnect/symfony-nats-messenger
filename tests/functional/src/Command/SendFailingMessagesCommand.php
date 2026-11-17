@@ -3,6 +3,7 @@
 namespace App\Command;
 
 use App\Async\FailingMessage;
+use IDCT\NatsMessenger\Stamp\NatsSubjectStamp;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -27,7 +28,8 @@ class SendFailingMessagesCommand extends Command
     {
         $this
             ->addArgument('count', InputArgument::REQUIRED, 'Number of messages to send')
-            ->addOption('retryable', null, InputOption::VALUE_NONE, 'Messages should eventually succeed on retry');
+            ->addOption('retryable', null, InputOption::VALUE_NONE, 'Messages should eventually succeed on retry')
+            ->addOption('subject', null, InputOption::VALUE_REQUIRED, 'Publish to this subject instead of the topic (NatsSubjectStamp)');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -35,6 +37,8 @@ class SendFailingMessagesCommand extends Command
         $io = new SymfonyStyle($input, $output);
         $count = (int) $input->getArgument('count');
         $retryable = $input->getOption('retryable');
+        $subject = $input->getOption('subject');
+        $stamps = is_string($subject) && $subject !== '' ? [new NatsSubjectStamp($subject)] : [];
 
         $io->title('Sending Failing Messages');
         $io->info(sprintf('Sending %d %s failing messages...', $count, $retryable ? 'retryable' : 'always-failing'));
@@ -46,7 +50,7 @@ class SendFailingMessagesCommand extends Command
                 shouldEventuallySucceed: $retryable,
             );
 
-            $this->messageBus->dispatch($message);
+            $this->messageBus->dispatch($message, $stamps);
             $io->text("Sent failing message {$i}/{$count}");
         }
 

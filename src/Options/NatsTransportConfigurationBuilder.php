@@ -77,6 +77,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_ALLOW_ROLLUP_HEADERS->value => null,
         TransportOption::STREAM_PLACEMENT_CLUSTER->value => null,
         TransportOption::STREAM_PLACEMENT_TAGS->value => null,
+        TransportOption::ADDITIONAL_SUBJECTS->value => null,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
@@ -119,6 +120,7 @@ final class NatsTransportConfigurationBuilder
         $configuration = $this->buildConfiguration($components, $options);
 
         [$streamName, $topic] = $this->parseStreamAndTopic($components);
+        $this->assertAdditionalSubjectsAreUsable($topic, $configuration);
 
         $scheme = $this->resolveTransportScheme(TypeCoercion::stringValue($components['scheme'] ?? 'nats', 'nats'));
         $host = $this->requiredString($components, 'host');
@@ -372,6 +374,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertStreamDescriptionLength($configuration);
         $this->assertTriStateBooleans($configuration);
         $this->normalizeStreamPlacement($configuration);
+        $this->normalizeAdditionalSubjects($configuration);
         $this->assertNonNegativeNumber($configuration, TransportOption::NAK_DELAY);
         $this->assertPositiveNumber($configuration, TransportOption::ACK_WAIT);
         $this->assertPositiveNumber($configuration, TransportOption::MAX_DELIVER, true);
@@ -667,6 +670,102 @@ final class NatsTransportConfigurationBuilder
         }
 
         $configuration[TransportOption::STREAM_PLACEMENT_TAGS->value] = $normalizedTags;
+    }
+
+    /**
+     * Validates the shape of `additional_subjects` and stores it back as a normalized list.
+     *
+     * The subjects are added to the stream and to the durable consumer's filters next to the topic, so a message
+     * published to one of them with a {@see \IDCT\NatsMessenger\Stamp\NatsSubjectStamp} reaches the same consumer.
+     * Accepts a list (a YAML list, or `additional_subjects[]=a&additional_subjects[]=b` in a DSN query string) or a
+     * comma-separated string. Each entry is a subject pattern: wildcards are allowed, since the entries are only
+     * stored and filtered on, never published to.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function normalizeAdditionalSubjects(#[\SensitiveParameter] array &$configuration): void
+    {
+        $subjects = $configuration[TransportOption::ADDITIONAL_SUBJECTS->value] ?? null;
+        if ($subjects === null) {
+            return;
+        }
+
+        $elementsAreStrings = !is_array($subjects)
+            || count(array_filter($subjects, static fn (mixed $subject): bool => is_string($subject))) === count($subjects);
+        $normalizedSubjects = $elementsAreStrings && (is_string($subjects) || is_array($subjects))
+            ? TypeCoercion::stringListValue($subjects)
+            : [];
+        if ($normalizedSubjects === []) {
+            throw new InvalidArgumentException(sprintf(
+                'The %s option must be a non-empty list of subjects, or a comma-separated string of them.',
+                TransportOption::ADDITIONAL_SUBJECTS->value,
+            ));
+        }
+
+        $configuration[TransportOption::ADDITIONAL_SUBJECTS->value] = $normalizedSubjects;
+    }
+
+    /**
+     * Refuses an `additional_subjects` entry that is not a subject pattern, or that overlaps the topic, another entry
+     * or the subjects scheduled messages wait on: JetStream would refuse the stream in setup(), on every send and
+     * pull with auto_setup.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function assertAdditionalSubjectsAreUsable(string $topic, #[\SensitiveParameter] array $configuration): void
+    {
+        $option = TransportOption::ADDITIONAL_SUBJECTS->value;
+        $taken = [[$topic, 'the topic']];
+        if ($this->toBool($configuration[TransportOption::SCHEDULED_MESSAGES->value])) {
+            $taken[] = [$topic . '.delayed.>', sprintf('"%s.delayed.>", the subjects scheduled messages wait on', $topic)];
+        }
+
+        foreach (TypeCoercion::stringListValue($configuration[$option] ?? null) as $subject) {
+            $tokens = explode('.', $subject);
+            foreach ($tokens as $position => $token) {
+                $isWildcard = $token === '*' || ($token === '>' && $position === count($tokens) - 1);
+                if (!$isWildcard && ($token === '' || preg_match('/[\s*>]/', $token) === 1)) {
+                    throw new InvalidArgumentException(sprintf(
+                        'The %s entry%s is not a subject pattern: dot-separated tokens, none empty or with whitespace, with "*" only as a whole token and ">" only as the last one.',
+                        $option,
+                        $this->quotedIfPlain($subject, '"'),
+                    ));
+                }
+            }
+
+            foreach ($taken as [$other, $description]) {
+                if (self::subjectsOverlap($subject, $other)) {
+                    throw new InvalidArgumentException(sprintf('The %s entry%s overlaps %s.', $option, $this->quotedIfPlain($subject, '"'), $description));
+                }
+            }
+
+            $taken[] = [$subject, 'the entry' . $this->quotedIfPlain($subject, '"')];
+        }
+    }
+
+    /**
+     * Whether some subject matches both patterns, which JetStream refuses between two subjects of a stream.
+     */
+    private static function subjectsOverlap(string $first, string $second): bool
+    {
+        $firstTokens = explode('.', $first);
+        $secondTokens = explode('.', $second);
+
+        foreach ($firstTokens as $position => $token) {
+            if (!isset($secondTokens[$position])) {
+                return false;
+            }
+
+            if ($token === '>' || $secondTokens[$position] === '>') {
+                return true;
+            }
+
+            if ($token !== '*' && $secondTokens[$position] !== '*' && $token !== $secondTokens[$position]) {
+                return false;
+            }
+        }
+
+        return count($firstTokens) === count($secondTokens);
     }
 
     /**

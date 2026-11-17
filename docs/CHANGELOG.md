@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Per-message subjects: `NatsSubjectStamp` and the `additional_subjects` option.** The topic in the DSN stays the
+  default publish subject. A `NatsSubjectStamp` publishes one message to another subject, such as
+  `orders.updated.42` for one entity. `additional_subjects` lists the patterns those subjects fall under:
+  `setup()` adds them to the stream, and the transport's one durable consumer filters on the topic and the
+  patterns with `filter_subjects` (NATS 2.10+), so every message still goes through one consumer in stream order.
+  Without the option the consumer keeps its single `filter_subject` and nothing changes. A transport uses the stamp
+  only for a subject its consumer reads, the topic or one a pattern matches, and publishes any other stamped message
+  to its topic, so a message routed to several transports reaches each of them once. `get()` records the
+  subject a message arrived on in a `NatsReceivedSubjectStamp`, and Symfony's retry goes back to that subject.
+  A retry is an envelope a worker received (its `ReceivedStamp`) re-sent with a retry count, the one rule the
+  transport applies to the subject and, in nats mode, to the copy it leaves out. A copy for a failure transport
+  goes to that transport's topic. A delayed stamped message waits under the topic
+  and is delivered to the stamped subject. `setup()` adds the patterns to an existing durable consumer as well and
+  keeps the filters it finds there, as it keeps the stream's subjects, so a process whose configuration lacks a
+  pattern does not narrow the consumer. A removed pattern stays on the consumer and the stream; the README describes
+  draining it first and removing it by hand. Upgrade note: a process of 5.8.1 or older that runs `setup()` writes the topic as
+  the consumer's only filter, and messages stamped meanwhile are never delivered, so roll the option out before the
+  code that stamps messages and back out in reverse (README, "Rolling it out and back"). The entries are checked
+  when the transport is built: one that is not a subject pattern, or that overlaps the topic, another entry or the
+  subjects scheduled messages wait on, is refused by name. `setup()` refuses the option on a server before NATS
+  2.10, which would ignore the filters and leave the consumer reading the whole stream. The stamp refuses a subject
+  a message cannot be published to (empty, whitespace, an empty token, a `*` or `>` in a token) with an
+  `InvalidArgumentException`.
+
+### Changed
+- **`Nats-Msg-Id` names the subject the message is delivered to, not the topic:** `<id>:<subject>:<retry count>`.
+  With `NatsSubjectStamp` one transport publishes to many subjects, and an id naming only the topic made JetStream
+  drop the copy one deduplication id sent to a second subject. The subject is the topic, the stamped subject or,
+  for Symfony's retry, the subject the message arrived on; for a delayed message it is the schedule's target.
+  Messages without a stamp keep the ids they had.
+
 ## [5.8.1] - 2026-11-17
 
 A **patch** release. With `zend.exception_ignore_args` off, the default when PHP loads no php.ini, as in the official Docker

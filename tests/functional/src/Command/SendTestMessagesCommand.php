@@ -3,6 +3,7 @@
 namespace App\Command;
 
 use App\Async\TestMessage;
+use IDCT\NatsMessenger\Stamp\NatsSubjectStamp;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -29,6 +30,8 @@ class SendTestMessagesCommand extends Command
         $this->addArgument('count', InputArgument::REQUIRED, 'Number of messages to send');
         $this->addOption('delay', 'd', InputOption::VALUE_REQUIRED, 'Delay in milliseconds before delivery', '0');
         $this->addOption('size', null, InputOption::VALUE_REQUIRED, 'Payload size in KB (pads message content for large-message tests)', '0');
+        $this->addOption('subject', null, InputOption::VALUE_REQUIRED, 'Publish to this subject instead of the topic (NatsSubjectStamp)');
+        $this->addOption('first-id', null, InputOption::VALUE_REQUIRED, 'Message id of the first message, so a second batch does not reuse ids', '1');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -44,6 +47,11 @@ class SendTestMessagesCommand extends Command
             . ($sizeKb > 0 ? " (size: {$sizeKb}KB)" : ''));
 
         $stamps = $delayMs > 0 ? [new DelayStamp($delayMs)] : [];
+        $subject = $input->getOption('subject');
+        if (is_string($subject) && $subject !== '') {
+            $stamps[] = new NatsSubjectStamp($subject);
+        }
+        $firstId = (int) $input->getOption('first-id');
 
         for ($i = 1; $i <= $count; $i++) {
             $message = new TestMessage();
@@ -53,7 +61,7 @@ class SendTestMessagesCommand extends Command
                 $message->content = str_pad($message->content, $sizeKb * 1024, 'X');
             }
             $message->timestamp = time();
-            $message->messageId = $i;
+            $message->messageId = $firstId + $i - 1;
 
             $this->messageBus->dispatch($message, $stamps);
 

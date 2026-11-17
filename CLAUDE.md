@@ -12,7 +12,7 @@ NATS via the async `idct/php-nats-jetstream-client` (`^2.29`, amphp-based). It s
 `IDCTNatsMessengerBundle` (auto-enabled by Flex), which registers the transport factory
 and the igbinary serializer so projects need no manual wiring.
 
-- **PHP:** `^8.2` · **Symfony:** `^7.2 || ^8` · **NATS:** `^2.9` (`^2.12` for scheduled messages)
+- **PHP:** `^8.2` · **Symfony:** `^7.2 || ^8` · **NATS:** `^2.9` (`^2.10` for `additional_subjects`, `^2.12` for scheduled messages)
 - Everything NATS-specific lives behind the `IDCT\NATS\…` client; this library is the synchronous adapter.
 
 ## Project memory
@@ -142,19 +142,30 @@ composer nats:stop               # stop NATS
   and limit, in `fetchBatchMessages()`. The next operation still PINGs first: the server sends the same error when
   an account's limit is lowered and then closes the connection, so the error does not prove the connection is alive.
 - **`setup()` create-then-update.** On a stream conflict it reads the live config, **merges** subjects,
-  preserves server fields, and updates - it never blindly overwrites an existing stream.
+  preserves server fields, and updates - it never blindly overwrites an existing stream. An existing consumer keeps
+  its filters too: the configured ones are added to them, never written in their place.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
   `retry_handler=nats` → NAK (NATS redelivers), and `send()` skips the copy Symfony's retry sends (a received
   envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode.
 - **`keepalive()` queues, never waits.** Symfony calls it from a SIGALRM handler, where fibers cannot switch,
   so it queues `inProgress()->ignore()`, which goes out the next time the event loop runs.
 - **Duplicate protection:** a `DeduplicationIdStamp`, added on the first send with `deduplicate` or by the
-  application, becomes `Nats-Msg-Id` = `<id>:<topic>:<retry count>`, plus `:failed:<receiver>` on a
-  failure-transport copy. JetStream deduplicates per stream, whatever the subject.
+  application, becomes `Nats-Msg-Id` = `<id>:<subject>:<retry count>`, plus `:failed:<receiver>` on a
+  failure-transport copy. The subject is the resolved publish subject (the schedule target for a delayed
+  message, not `{topic}.delayed.{uuid}`). JetStream deduplicates per stream, whatever the subject.
 - **Serializers strip non-sendable stamps** (`NonSendableStampInterface`, such as the worker's `AckStamp`,
   which holds a closure) before encoding, as Symfony's own serializers do.
 - **Scheduled messages:** only when `scheduled_messages=true` does a `DelayStamp` route to
   `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored.
+- **Publish subject:** a `NatsSubjectStamp` (non-sendable) wins when the transport's consumer reads its subject
+  (the topic, or a match of an `additional_subjects` pattern), as Symfony hands every transport a message is routed
+  to the same envelope; then, for Symfony's retry, the subject `get()`
+  recorded in `NatsReceivedSubjectStamp`, always (the consumer delivered it from there); then the topic. One
+  rule, `isSymfonyRetry()`, says what a retry is for the subject and for the copy nats mode leaves out: a
+  `ReceivedStamp` from the worker and a retry count above 0. A failure-transport copy has a retry count of 0
+  (Symfony's listener appends a `RedeliveryStamp(0)`), so it goes to the topic without a stamp check; a message
+  retried on the failure transport is a retry like any other.
+  The consumer filters on the topic plus `additional_subjects` (`filter_subjects` only when there are extras).
 - **Serializer security:** the default `IgbinarySerializer` `unserialize()`s payloads - unsafe on
   untrusted subjects. Don't weaken the README security warnings.
 - **The bundle registers each service under one id, its class name.** An application's own entry under that id
