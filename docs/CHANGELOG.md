@@ -33,17 +33,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `InvalidArgumentException`.
 
 ### Changed
-- **Requires `idct/php-nats-jetstream-client` `^2.29`.** Client 2.29.0 adds `JetStreamContext::diagnoseNoResponders()`,
-  which the fix below uses, and reports a JetStream API call that nothing answers (a server or account without
-  JetStream) as `JetStreamException` code 503, as it already reported a pull or a publish, where it let a bare
-  `NatsException` through.
 - **`Nats-Msg-Id` names the subject the message is delivered to, not the topic:** `<id>:<subject>:<retry count>`.
   With `NatsSubjectStamp` one transport publishes to many subjects, and an id naming only the topic made JetStream
   drop the copy one deduplication id sent to a second subject. The subject is the topic, the stamped subject or,
   for Symfony's retry, the subject the message arrived on; for a delayed message it is the schedule's target.
   Messages without a stamp keep the ids they had.
 
+## [5.8.1] - 2026-11-17
+
+A **patch** release. With `zend.exception_ignore_args` off, the default when PHP loads no php.ini, as in the official Docker
+images, an idle worker no longer grows its heap by about 13 KB on every pull that finds no messages, about 0.8 MB a minute, and
+a failed publish, ACK, NAK, TERM, message count or setup call no longer leaves a reference cycle behind either (#115, found and
+fixed by Matko Anđelinić in #114). A pull while the server is going away, in the last moments of a graceful stop or in lame
+duck mode, no longer ends the worker (#106). It requires client 2.29.0, whose `diagnoseNoResponders()` tells such a server
+apart from a missing consumer. The public PHP API is unchanged.
+
+### Changed
+- **Requires `idct/php-nats-jetstream-client` `^2.29`.** Client 2.29.0 adds `JetStreamContext::diagnoseNoResponders()`,
+  which the fix below uses, and reports a JetStream API call that nothing answers (a server or account without
+  JetStream) as `JetStreamException` code 503, as it already reported a pull or a publish, where it let a bare
+  `NatsException` through.
+
 ### Fixed
+- **A pull that finds no messages no longer leaves a reference cycle behind (#115).** The pull ends with a
+  `JetStreamException` (408) raised in the event loop, and with `zend.exception_ignore_args` off, the default without a
+  php.ini (the official Docker images ship none), its trace recorded the pull's `Future` as an argument of the frame
+  waiting on it, while the `Future` held the exception. Each empty pull left about 13 KB of such garbage, about 0.8 MB a
+  minute at the default of one pull a second, until the cycle collector ran: after the next handled message (Symfony
+  7.3 and later), or once its root buffer filled up, tens of minutes into an idle period. The memory the heap grew to
+  stayed with the process. A failed publish, ACK, NAK, TERM, message count or setup call left the same kind of cycle.
+  The transport now passes each call to the connection as a closure that starts it, so no trace records its `Future`.
 - **A pull while the server is going away, in the last moments of a graceful stop or in lame duck mode, no longer ends
   the worker (#106).** A server that is going away answers a pull with 503 for a consumer it has already stopped, until
   it closes the connection, the same 503 it gives for a consumer that does not exist. In a graceful stop of NATS 2.15

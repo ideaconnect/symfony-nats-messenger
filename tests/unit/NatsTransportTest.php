@@ -637,6 +637,125 @@ final class NatsTransportTest extends TestCase
         self::assertSame([], array_values(iterator_to_array($transport->get())));
     }
 
+    /**
+     * A pull that finds no messages ends with an exception raised in the event loop while get() waits for it. With
+     * zend.exception_ignore_args off, the default without a php.ini, the trace of that exception records the
+     * arguments of every frame waiting on it, so it must not record the pull's Future, which holds the exception:
+     * such a cycle is freed only by the cycle collector, and an idle worker pulls about once a second.
+     */
+    public function testAPullThatFindsNoMessagesLeavesNoReferenceCycle(): void
+    {
+        if (function_exists('xdebug_info') && in_array('develop', (array) xdebug_info('mode'), true)) {
+            self::markTestSkipped('Xdebug\'s develop mode keeps thrown exceptions of its own, so the cycles collected here do not tell whether the transport leaves any.');
+        }
+
+        $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+        self::assertNotFalse($ignoreArgs, 'The test needs zend.exception_ignore_args off, the default without a php.ini.');
+
+        try {
+            $jetStream = $this->createStub(JetStreamContext::class);
+            $jetStream->method('fetchBatch')->willReturnCallback(static function (): Future {
+                $pull = new DeferredFuture();
+                EventLoop::defer(static fn () => $pull->error(new JetStreamException('Request Timeout', 408)));
+
+                return $pull->getFuture();
+            });
+
+            $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $this->createStub(SerializerInterface::class));
+            $transport->setJetStreamContext($jetStream);
+
+            // The first pull also builds the test double's own cycles, which are made once.
+            iterator_to_array($transport->get());
+            gc_collect_cycles();
+
+            self::assertSame([], iterator_to_array($transport->get()));
+            self::assertSame(0, gc_collect_cycles());
+        } finally {
+            ini_set('zend.exception_ignore_args', $ignoreArgs);
+        }
+    }
+
+    /**
+     * A failed call on the connection leaves no reference cycle behind, whichever operation made it, as an empty pull
+     * leaves none (testAPullThatFindsNoMessagesLeavesNoReferenceCycle). awaitOnConnection()'s parameter type keeps a
+     * Future out of its own frame, but not out of a closure that captures one made before the call, which would bring
+     * the cycle back at that call site; only a test of each operation sees that.
+     *
+     * @param array<string, mixed> $options
+     * @param list<string> $failingCalls
+     * @param \Closure(NatsTransport): mixed $operation
+     */
+    #[DataProvider('operationsWhoseCallFails')]
+    public function testAFailedCallLeavesNoReferenceCycle(array $options, array $failingCalls, \Closure $operation): void
+    {
+        if (function_exists('xdebug_info') && in_array('develop', (array) xdebug_info('mode'), true)) {
+            self::markTestSkipped('Xdebug\'s develop mode keeps thrown exceptions of its own, so the cycles collected here do not tell whether the transport leaves any.');
+        }
+
+        $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+        self::assertNotFalse($ignoreArgs, 'The test needs zend.exception_ignore_args off, the default without a php.ini.');
+
+        try {
+            $failed = 0;
+            $jetStream = $this->createStub(JetStreamContext::class);
+            foreach ($failingCalls as $call) {
+                $jetStream->method($call)->willReturnCallback(static function () use (&$failed): Future {
+                    ++$failed;
+                    $reply = new DeferredFuture();
+                    // Made in the event loop while the operation waits, as the client makes the error of a reply: a
+                    // trace is taken where its exception is constructed.
+                    EventLoop::defer(static fn () => $reply->error(new JetStreamException('No responders available for request', 503)));
+
+                    return $reply->getFuture();
+                });
+            }
+
+            $serializer = $this->createStub(SerializerInterface::class);
+            $serializer->method('encode')->willReturn(['body' => 'encoded']);
+            // ping_after_idle 0: the double has no client to answer the PING a failure, or a reject(), asks for.
+            $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options + ['ping_after_idle' => 0], $serializer);
+            $transport->setJetStreamContext($jetStream);
+
+            // The first call also builds the test double's own cycles, which are made once.
+            self::runIgnoringItsFailure($operation, $transport);
+            gc_collect_cycles();
+
+            self::runIgnoringItsFailure($operation, $transport);
+            self::assertSame(2 * count($failingCalls), $failed, 'each call failed, on both runs');
+            self::assertSame(0, gc_collect_cycles());
+        } finally {
+            ini_set('zend.exception_ignore_args', $ignoreArgs);
+        }
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, list<string>, \Closure(NatsTransport): mixed}>
+     */
+    public static function operationsWhoseCallFails(): iterable
+    {
+        $received = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+
+        yield 'send' => [[], ['publish'], static fn (NatsTransport $transport) => $transport->send(new Envelope(new \stdClass()))];
+        yield 'ack' => [[], ['ack'], static fn (NatsTransport $transport) => $transport->ack($received)];
+        yield 'ack with ack_sync' => [['ack_sync' => true], ['ackSync'], static fn (NatsTransport $transport) => $transport->ack($received)];
+        yield 'reject, TERM' => [[], ['term'], static fn (NatsTransport $transport) => $transport->reject($received)];
+        yield 'reject in nats mode, NAK' => [['retry_handler' => 'nats'], ['nak'], static fn (NatsTransport $transport) => $transport->reject($received)];
+        yield 'getMessageCount, both lookups failing' => [[], ['getConsumer', 'getStream'], static fn (NatsTransport $transport) => $transport->getMessageCount()];
+        yield 'setup, the stream refused' => [[], ['addStream', 'getStream'], static fn (NatsTransport $transport) => $transport->setup()];
+    }
+
+    /**
+     * @param \Closure(NatsTransport): mixed $operation
+     */
+    private static function runIgnoringItsFailure(\Closure $operation, NatsTransport $transport): void
+    {
+        try {
+            $operation($transport);
+        } catch (\Throwable) {
+            // What the failure leaves behind is what the test counts.
+        }
+    }
+
     public function testGetRethrowsUnexpectedJetStreamExceptions(): void
     {
         $serializer = $this->createMock(SerializerInterface::class);
@@ -1934,6 +2053,39 @@ final class NatsTransportTest extends TestCase
         } catch (\RuntimeException) {
             // Ignored: the check is off.
         }
+        $transport->ack($envelope);
+    }
+
+    /**
+     * A call that throws before it returns its Future, as a refused dial does, did not fail on a connection, so the
+     * operation after the next dial does not check the connection first. awaitOnConnection() starts the call before
+     * its try, as the argument expression did when it took the Future.
+     */
+    public function testARefusedDialDoesNotMakeTheOperationAfterTheNextDialCheckTheConnection(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(3))->method('ack')->willReturn(Future::complete());
+
+        $refused = new ConnectionException('Connection to tcp://localhost:4222 failed');
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete(), Future::error($refused), Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+        $envelope = (new Envelope(new \stdClass()))->with(new TransportMessageIdStamp('reply-token'));
+        $transport->ack($envelope);
+        $state = ConnectionState::Closed;
+
+        try {
+            $transport->ack($envelope);
+            self::fail('expected the dial to fail');
+        } catch (ConnectionException $e) {
+            self::assertSame($refused, $e);
+        }
+
+        $transport->ack($envelope);
         $transport->ack($envelope);
     }
 

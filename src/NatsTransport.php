@@ -309,7 +309,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // so the publish fails closed instead of silently accepting an invalid acknowledgement.
         $messageId = $deduplicationStamp === null ? null : $this->natsMessageId($deduplicationStamp, $envelope, $targetSubject);
         try {
-            $this->awaitOnConnection($this->jetStream()->publish($publishSubject, $payload, $normalizedHeaders, msgId: $messageId));
+            $this->awaitOnConnection(fn (): Future => $this->jetStream()->publish($publishSubject, $payload, $normalizedHeaders, msgId: $messageId));
         } catch (JetStreamException $reply) {
             if (!$this->reprovisionedForThePublishAfterReconnect($reply)) {
                 throw $reply;
@@ -318,7 +318,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             // The same frame once more: the same subject (the scheduled one of a delayed message), payload, headers
             // and Nats-Msg-Id. A second pass through send() would mint another id and, for a delayed message,
             // another schedule.
-            $this->awaitOnConnection($this->jetStream()->publish($publishSubject, $payload, $normalizedHeaders, msgId: $messageId));
+            $this->awaitOnConnection(fn (): Future => $this->jetStream()->publish($publishSubject, $payload, $normalizedHeaders, msgId: $messageId));
         }
 
         return $envelope;
@@ -673,12 +673,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $nakDelayMs = $this->configuration->nakDelayMs();
 
         if ($nakDelayMs > 0) {
-            $this->awaitOnConnection($this->jetStream()->nakWithDelay($message, $nakDelayMs));
+            $this->awaitOnConnection(fn (): Future => $this->jetStream()->nakWithDelay($message, $nakDelayMs));
 
             return;
         }
 
-        $this->awaitOnConnection($this->jetStream()->nak($message));
+        $this->awaitOnConnection(fn (): Future => $this->jetStream()->nak($message));
     }
 
     /**
@@ -691,7 +691,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     protected function sendTerm(string $id): void
     {
-        $this->awaitOnConnection($this->jetStream()->term($this->buildAckMessage($id)));
+        $this->awaitOnConnection(fn (): Future => $this->jetStream()->term($this->buildAckMessage($id)));
     }
 
     /**
@@ -721,12 +721,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $message = $this->buildAckMessage($id);
 
         if ($this->configuration->isAckSyncEnabled()) {
-            $this->awaitOnConnection($this->jetStream()->ackSync($message));
+            $this->awaitOnConnection(fn (): Future => $this->jetStream()->ackSync($message));
 
             return;
         }
 
-        $this->awaitOnConnection($this->jetStream()->ack($message));
+        $this->awaitOnConnection(fn (): Future => $this->jetStream()->ack($message));
     }
 
     /**
@@ -864,7 +864,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function getMessageCount(): int
     {
         try {
-            $consumerInfo = $this->awaitOnConnection($this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer()));
+            $consumerInfo = $this->awaitOnConnection(fn (): Future => $this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer()));
             $ackPending = TypeCoercion::intValue($consumerInfo->raw['num_ack_pending'] ?? 0);
             $pending = TypeCoercion::intValue($consumerInfo->raw['num_pending'] ?? 0);
 
@@ -878,7 +878,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             try {
-                $streamInfo = $this->awaitOnConnection($this->jetStream()->getStream($this->streamName));
+                $streamInfo = $this->awaitOnConnection(fn (): Future => $this->jetStream()->getStream($this->streamName));
                 $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];
 
                 return TypeCoercion::intValue($state['messages'] ?? 0);
@@ -907,7 +907,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $streamConfiguration = $this->buildManagedStreamConfiguration($subjects);
 
             try {
-                $this->awaitOnConnection($this->jetStream()->addStream($streamConfiguration));
+                $this->awaitOnConnection(fn (): Future => $this->jetStream()->addStream($streamConfiguration));
             } catch (UnsupportedFeatureException $unsupportedFeature) {
                 // A version-gated feature (e.g. allow_msg_schedules) was rejected by an older server.
                 // That is not a pre-existing-stream conflict, so skip the existence check and surface
@@ -930,7 +930,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 unset($managedOptions['name'], $managedOptions['subjects']);
 
                 $updatedConfiguration = $this->buildUpdatedStreamConfiguration($existingStream, $managedOptions, $subjects);
-                $this->awaitOnConnection($this->jetStream()->updateStream($this->streamName, $updatedConfiguration));
+                $this->awaitOnConnection(fn (): Future => $this->jetStream()->updateStream($this->streamName, $updatedConfiguration));
             }
 
             $consumerConfiguration = ConsumerConfiguration::create()
@@ -979,7 +979,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $consumerConfiguration->replayPolicy($replayPolicy);
             }
 
-            $consumerInfo = $this->whileTheClusterSettles(fn (): ConsumerInfo => $this->awaitOnConnection($this->jetStream()->addConsumer($this->streamName, $consumerConfiguration)));
+            $consumerInfo = $this->whileTheClusterSettles(fn (): ConsumerInfo => $this->awaitOnConnection(fn (): Future => $this->jetStream()->addConsumer($this->streamName, $consumerConfiguration)));
             $this->assertConsumerMatchesConfiguration($consumerInfo);
         } catch (UnsupportedFeatureException $unsupportedFeature) {
             throw new RuntimeException($this->describeUnsupportedFeature($unsupportedFeature), 0, $unsupportedFeature);
@@ -1225,7 +1225,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $jetStream = $this->jetStream();
 
         try {
-            return $this->awaitOnConnection($jetStream->fetchBatch(
+            return $this->awaitOnConnection(fn (): Future => $jetStream->fetchBatch(
                 $this->streamName,
                 $this->configuration->consumer(),
                 $this->configuration->batching(),
@@ -1399,14 +1399,24 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * what the connection holds, and then closes the connection about 20 ms later. The error cannot tell the two
      * apart, so the check stays: an open connection answers the PING and is kept, a closed one is replaced.
      *
+     * The call is passed as a closure that starts it, not as its Future (#115). With zend.exception_ignore_args off,
+     * the default without a php.ini, the trace of an exception raised in the event loop records the arguments of
+     * every frame waiting on it, and a Future recorded there, holding that exception, makes a cycle that only the
+     * cycle collector frees: one per pull that finds no messages. So the closure starts the call itself. One that
+     * captures a Future made before it brings the cycle back, and so does a helper that takes the Future as a
+     * parameter. The closure runs before the try, as the argument expression did, so a call that throws before it
+     * returns a Future, such as a refused dial or a name the client refuses, leaves the connection check as it was.
+     *
      * @template T
-     * @param Future<T> $call
+     * @param \Closure(): Future<T> $call
      * @return T
      */
-    private function awaitOnConnection(Future $call): mixed
+    private function awaitOnConnection(\Closure $call): mixed
     {
+        $future = $call();
+
         try {
-            return $call->await();
+            return $future->await();
         } catch (JetStreamException $reply) {
             if (str_starts_with($reply->getMessage(), self::UNANSWERED_PULL)) {
                 $this->checkBeforeNextUse = true;
@@ -1645,7 +1655,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private function getExistingConsumer(): ?ConsumerInfo
     {
         try {
-            return $this->awaitOnConnection($this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer()));
+            return $this->awaitOnConnection(fn (): Future => $this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer()));
         } catch (JetStreamException $exception) {
             if ($exception->getCode() === 404 && $exception->getErrCode() !== self::JS_ERR_STREAM_NOT_FOUND) {
                 return null;
@@ -1665,7 +1675,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private function getExistingStream(): ?StreamInfo
     {
         try {
-            return $this->awaitOnConnection($this->jetStream()->getStream($this->streamName));
+            return $this->awaitOnConnection(fn (): Future => $this->jetStream()->getStream($this->streamName));
         } catch (JetStreamException $exception) {
             if ($exception->getCode() === 404) {
                 return null;
