@@ -1424,6 +1424,8 @@ class NatsSetupContext implements Context
     }
 
     #[Then('the NATS stream should hold exactly :count messages')]
+    #[Then('the NATS stream should hold :count message')]
+    #[Then('the NATS stream should hold :count messages')]
     public function theNatsStreamShouldHoldExactlyMessages(int $count): void
     {
         $client = $this->createNatsClient();
@@ -3193,4 +3195,38 @@ class NatsSetupContext implements Context
         }
     }
 
+    /**
+     * Like the failure-transport setup, with Symfony's retries carried out by NATS: the transport NAKs a failed
+     * delivery with Symfony's delay instead of publishing a retry copy (retry_via=nak).
+     */
+    #[Given('I have a messenger transport configured with NAK retries and a failure transport')]
+    public function iHaveAMessengerTransportConfiguredWithNakRetriesAndAFailureTransport(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_via=nak'\n                serializer: 'messenger.transport.native_php_serializer'\n                retry_strategy:\n                    max_retries: 2\n                    delay: 100\n                    multiplier: 2\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $this->failedStreamName,
+            $this->failedSubject,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    #[When('I send :count unrecoverable failing message')]
+    #[When('I send :count unrecoverable failing messages')]
+    public function iSendUnrecoverableFailingMessages(int $count): void
+    {
+        $this->messagesSent = $count;
+
+        $sendProcess = new Process(['php', 'bin/console', 'app:send-failing-messages', (string) $count, '--unrecoverable', '--env=test'], __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(sprintf('Failed to send failing messages. Exit code: %d. Output: %s. Error: %s', $sendProcess->getExitCode(), $sendProcess->getOutput(), $sendProcess->getErrorOutput()));
+        }
+    }
 }
