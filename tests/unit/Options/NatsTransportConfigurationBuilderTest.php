@@ -1691,6 +1691,12 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
             'audit-topic',
         ];
 
+        yield 'README: retry_via nak' => [
+            'nats-jetstream://localhost:4222/my-stream/my-topic?retry_via=nak',
+            'my-stream',
+            'my-topic',
+        ];
+
         yield 'README: scheduled messages DSN' => [
             'nats-jetstream://localhost/my-stream/my-topic?scheduled_messages=true',
             'my-stream',
