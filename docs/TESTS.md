@@ -572,8 +572,8 @@ does not survive it.
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
-on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.5% MSI and covered
-MSI: 1179 of 1197 mutants killed, none timed out, with 100% mutation code coverage.
+on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.6% MSI and covered
+MSI: 1298 of 1317 mutants killed, none timed out, with 100% mutation code coverage.
 
 Scores reported before, 100% among them, were not real. Infection runs each mutant in a PHPUnit process
 whose bootstrap puts its include interceptor on `file://`; the interceptor dropped the wrapper BypassFinals
@@ -586,7 +586,7 @@ is not hit there.
 Two checks around the run keep the score honest; CI runs both:
 
 - **Before it, `composer test:mutation:canary`** runs Infection with `--noop` and the `TrueValue` and
-  `FalseValue` mutators. Its mutants (63 today) change nothing, so every one must escape;
+  `FalseValue` mutators. Its mutants (67 today) change nothing, so every one must escape;
   `scripts/check-mutation-canary.php` fails when one is detected, when none ran, or when the summary is
   missing or malformed. On the old bootstrap it detected 42 of 46.
 - **After it, `composer test:mutation:check-log`** (`scripts/check-mutation-log.php`) fails when
@@ -602,9 +602,9 @@ mutation step fails.
 
 ### Surviving mutants
 
-Of the 18 mutants that survive:
+Of the 19 mutants that survive:
 
-- **13 are equivalent**: no input makes them behave differently.
+- **14 are equivalent**: no input makes them behave differently.
 - **2 make no difference with the real client**: its acknowledgement calls do not read the `sid` of the
   message `buildAckMessage()` gives them. A test could kill them only by asserting on the `sid` its client
   double receives, which would pin a detail rather than behaviour.
@@ -621,6 +621,7 @@ Of the 18 mutants that survive:
 | `NatsTransportConfiguration`: the defaults of `batching` (0), `stream_max_age` (-1) and `stream_replicas` (0) (3 mutants) | `max()` clamps each to what the original default gives |
 | `assertPositiveNumber()`, `assertNonNegativeNumber()`: `ceil()` or `round()` instead of `floor()` (4 mutants) | All three return the number itself exactly when it is whole |
 | `assertDuplicateWindowNotExceedingMaxAge()`: a null max age read as -1 instead of 0 | Both mean no age limit there |
+| `send()`: a missing `DelayStamp` read as -1 instead of 0 with `retry_via: nak` | `nakForRetry()` sends a plain NAK for any delay of 0 or below |
 | `requiredString()`: `&&` instead of `\|\|` | `parseDsn()` already requires a host, and `parse_url()` never gives an empty one |
 | `resolveNkeySigner()`: `\Error` removed from the catch, and `\|\|` for either `&&` of the condition on the seed advice (3 mutants) | Between them `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError` and `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike` fail on each, but they run in a child process, which the mutant does not reach |
 
