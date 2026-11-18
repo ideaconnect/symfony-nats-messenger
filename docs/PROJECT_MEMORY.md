@@ -554,3 +554,23 @@ These are posted recommendations; the tests and proposed issue-summary edits are
 - CI on the tree of the #114 merge (run 43913469827, head `5e02bad`): PHPStan clean; 1068 tests, 3122 assertions, also
   stopped at random moments; coverage 99.80 % (1023/1025); Infection killed 1179 of 1197 mutants, with the 18 survivors
   `docs/TESTS.md` lists; Behat 94 of 94 on each PHP job and 90 of 90 on NATS 2.10.29; 14 of 14 examples in each job.
+
+## Dated snapshot: 2026-11-18
+
+- **5.9.0, a minor release,** ships `retry_via: nak` (PR #113 by Petar Fedorovsky, adapted and landed through #118 with the
+  contributor's two commits unchanged; it closes #109), the refusal of `scheduled_messages` on a server before NATS 2.12, and
+  `symfony/messenger` `^7.3`. The changelog cut is on the same branch, and the tag is on its merge commit.
+  `docs/PRs/PR-113-symfony-retry-via.md` says what was changed against the proposal, and why.
+- Open transport issues: #104 (`.creds` files and rotation) and #105 (external signers); #110, #111 and #112, the three
+  blockers the review of PR #100 found; #117 (`nak_delay` is accepted in symfony mode, where it has no effect). The one open
+  PR is #100 (per-message subjects), by a contributor. It adds changelog items under `[Unreleased]`, which this cut emptied
+  again: when it next merges `main`, check that git did not move them into `[5.9.0]` without a conflict marker.
+- Known and not filed: the composer floors are not run by CI (the CI notes above), and NATS 2.9's delivery count is
+  documented, not worked around (`docs/symfony_retry_via.md`). As before, an unanswered PING leaves a cycle through amphp's
+  `TimeoutCancellation`.
+- The checks before the merge, on PHP 8.5.11 with client 2.29.0 and Symfony Messenger 8.1.11: PHPStan clean; 1143 tests,
+  3341 assertions, also stopped at random moments; coverage 99.82 % (1114/1116); Infection killed
+  1298 of 1317 mutants, with the 19 survivors `docs/TESTS.md` lists; Behat 97 of 97 on NATS 2.14.2 and
+  93 of 93 on NATS 2.10.29 without the scheduled scenarios; 21 of 21 examples on each.
+  CI on `9a7d1d4` (run 44318707618), before the docs-only commits that follow it, agrees on each count: PHP 8.2 with client
+  2.29.0 and Symfony Messenger 7.4.0 (7.4.21 in the functional app), PHP 8.5 with 8.1.11, and NATS 2.10.29 with 7.4.23.
