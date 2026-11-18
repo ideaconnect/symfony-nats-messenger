@@ -145,7 +145,13 @@ composer nats:stop               # stop NATS
   preserves server fields, and updates - it never blindly overwrites an existing stream.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
   `retry_handler=nats` → NAK (NATS redelivers), and `send()` skips the copy Symfony's retry sends (a received
-  envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode.
+  envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode. In symfony mode,
+  `retry_via: nak` (default `copy`) leaves that copy out as well, and the worker's `ack()` or `reject()` of the
+  delivery NAKs it with the copy's `DelayStamp` delay (0 a plain NAK). A retry no NAK can carry is still
+  published: a copy without its delivery token, and the retry of the last delivery `max_deliver` allows. `get()`
+  adds `numDelivered - 1` to the retry count a message carries. With `nak` the builder refuses a positive
+  `nak_delay` and `backoff`, and in nats mode it refuses any `retry_via`. See
+  [docs/symfony_retry_via.md](docs/symfony_retry_via.md).
 - **`keepalive()` queues, never waits.** Symfony calls it from a SIGALRM handler, where fibers cannot switch,
   so it queues `inProgress()->ignore()`, which goes out the next time the event loop runs.
 - **Duplicate protection:** a `DeduplicationIdStamp`, added on the first send with `deduplicate` or by the
@@ -154,7 +160,9 @@ composer nats:stop               # stop NATS
 - **Serializers strip non-sendable stamps** (`NonSendableStampInterface`, such as the worker's `AckStamp`,
   which holds a closure) before encoding, as Symfony's own serializers do.
 - **Scheduled messages:** only when `scheduled_messages=true` does a `DelayStamp` route to
-  `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored.
+  `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored. A server before 2.12
+  ignores the stream setting without rejecting it, so `setup()` and the send of a delayed message read the
+  server's version from the connection and refuse (`schedulesUnsupportedByTheServer()`).
 - **Serializer security:** the default `IgbinarySerializer` `unserialize()`s payloads - unsafe on
   untrusted subjects. Don't weaken the README security warnings.
 - **The bundle registers each service under one id, its class name.** An application's own entry under that id
@@ -169,6 +177,8 @@ composer nats:stop               # stop NATS
 - `docs/TESTS.md` - update whenever tests are added, removed, or renamed (feature → test map).
 - `docs/CHANGELOG.md` - Keep a Changelog format; add items under `## [Unreleased]` as you go.
 - `docs/PRs/` - when a PR is merged or adapted, add `PR-NNN-short-description.md`.
+- `docs/symfony_retry_via.md` - the reference for `retry_via`: update it when a retry path changes, or when a
+  measurement of the server's behaviour does.
 - Keep README "Tested by:" references pointing at real test method names.
 
 ## Repository facts
@@ -179,3 +189,6 @@ composer nats:stop               # stop NATS
   (#89 through #101). Bring `main` into a branch by merging it, for the same reason.
 - Tasks and findings are tracked as **GitHub issues** (`gh issue …`).
 - CI matrix: PHP `8.2` and `8.5`; functional suite runs against plain / TLS / mTLS / operator-mode / token NATS in Docker.
+  The PHP 8.2 leg runs the lowest client release, and a Symfony Messenger that rejects a message it sent for retry
+  (7.4.0 in the unit tests, 7.4.21 in the functional test app); the PHP 8.5 leg runs one that acknowledges it.
+  `scripts/check-messenger-rejects-a-retry.php` fails the lowest leg if that ever stops being so.
