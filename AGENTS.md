@@ -2,7 +2,7 @@
 
 ## Overview
 
-Symfony Messenger transport for NATS JetStream. PHP 8.2+, Symfony ^7.2 / ^8.0.
+Symfony Messenger transport for NATS JetStream. PHP 8.2+, Symfony ^7.3 / ^8.0.
 Uses `idct/php-nats-jetstream-client` (amphp-based coroutines).
 Ships `IDCTNatsMessengerBundle` (Flex auto-enables it), which registers the transport factory
 and the igbinary serializer - no manual wiring needed. Each service has one id, its class name:
