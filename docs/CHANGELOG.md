@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`retry_via: copy | nak` for `retry_handler: symfony` (#113, closes #109).** With `nak`, the copy Symfony's retry
+  sends is not published. The transport NAKs the failed delivery with the delay Symfony's retry strategy computed,
+  to the millisecond and on any supported server, and NATS redelivers the original. A redelivered message carries
+  its earlier deliveries in its retry count, so `willRetry()`, the multiplier and `max_retries` work, and a message
+  Symfony gives up on is TERMed with one failure-transport copy, as with `copy`, the default. Each waiting retry holds
+  one of the consumer's `max_ack_pending` slots. A retry no NAK can carry is published as a copy: one without its
+  delivery token, and the retry of the last delivery `max_deliver` allows. The builder refuses `retry_via` in nats
+  mode, and a positive `nak_delay` or a `backoff` with `nak`. Based on Petar Fedorovsky's proposal.
+  [docs/symfony_retry_via.md](symfony_retry_via.md) is its reference: the terms, the three retry setups delivery by
+  delivery, what the server does with a NAK, and what was measured.
+- **Seven examples.** `retry-via-nak.php`, `retry-via-nak-edge-cases.php`, `retry-via-nak-past-max-deliver.php`,
+  `retry-via-nak-server-behaviour.php`, `retry-via-nak-across-a-restart.php` and `retry-via-copy-or-nak.php` run
+  `retry_via: nak` against a live server, most of them under Symfony's own Worker with its retry and failure-transport
+  listeners. `delayed-messages.php` shows `scheduled_messages` on a server that has message schedules, and the
+  refusal on one that has none. `nats-retry.php` now checks the warning below.
+
+### Changed
+- **The nats-mode warning that Symfony's retry strategy is on (#94) names `retry_via: nak`,** and says that Symfony
+  still retries a `RecoverableExceptionInterface` with `max_retries: 0`.
+
+### Fixed
+- **`scheduled_messages` on a NATS server before 2.12 is refused instead of losing delayed messages.** Such a
+  server has no message schedules and ignores the stream setting without a word: `setup()` succeeded, and a message
+  sent with a delay, Symfony's retry copy among them, was stored on its delayed subject and never delivered.
+  `setup()` now fails before it creates anything, with "The 'scheduled_messages' option requires NATS Server >=
+  2.12, but the connected server reports ...", and so does the send of a delayed message. A message without a delay
+  is sent as before.
+- **`composer.json` allowed Symfony Messenger 7.2, on which the transport cannot load.** Since 5.0.0
+  `NatsTransport` implements `CloseableTransportInterface`, which Messenger has from 7.3. The requirement is now
+  `^7.3 || ^8.0`.
+- **README: `backoff` does not space out failed messages on its own.** It times the redelivery of a delivery
+  nobody settled. A plain NAK never uses it, and NATS adds `backoff[n] - backoff[0]` to a NAK with a delay.
+
+### Testing & CI
+- **CI's lowest leg runs a Symfony Messenger that rejects a message it sent for retry,** as releases before 7.4.22
+  and 8.1.10 do: 7.4.0 in the unit tests and 7.4.21 in the functional test app. Both legs installed a release
+  that acknowledges it, so the worker's `reject()` of a retried message ran only where a test called it by hand.
+  `scripts/check-messenger-rejects-a-retry.php` fails the leg if that release ever acknowledges instead.
+- **A Behat feature, `nats_retry_via.feature`,** runs `retry_via: nak` through `messenger:consume` with a failure
+  transport: a message that keeps failing, one that fails once and an unrecoverable failure. It is not tagged
+  `@delayed`, so the oldest-server job runs it too.
+
 ## [5.8.1] - 2026-11-17
 
 A **patch** release. With `zend.exception_ignore_args` off, the default when PHP loads no php.ini, as in the official Docker
