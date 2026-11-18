@@ -95,6 +95,29 @@ function deleteExampleStream(string $stream): void
 }
 
 /**
+ * The version of the server the examples run against, as it reports it when a client connects ("2.12.1").
+ */
+function serverVersion(): string
+{
+    $client = (new NatsTransportConfigurationBuilder())->build(exampleDsn('unused'))->client;
+    $client->connect()->await();
+
+    try {
+        return (string) $client->serverInfo()?->version;
+    } finally {
+        $client->disconnect()->await();
+    }
+}
+
+/**
+ * Whether that server has message schedules, which `scheduled_messages` needs: NATS 2.12 and later.
+ */
+function serverHasMessageSchedules(): bool
+{
+    return version_compare(serverVersion(), '2.12', '>=');
+}
+
+/**
  * A PSR-3 logger that keeps what it is given, so an example can show what the NATS client logged. In an
  * application the bundle hands the client the application's `logger` instead (README, "Logging").
  */

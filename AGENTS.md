@@ -2,7 +2,7 @@
 
 ## Overview
 
-Symfony Messenger transport for NATS JetStream. PHP 8.2+, Symfony ^7.2 / ^8.0.
+Symfony Messenger transport for NATS JetStream. PHP 8.2+, Symfony ^7.3 / ^8.0.
 Uses `idct/php-nats-jetstream-client` (amphp-based coroutines).
 Ships `IDCTNatsMessengerBundle` (Flex auto-enables it), which registers the transport factory
 and the igbinary serializer - no manual wiring needed. Each service has one id, its class name:
@@ -39,6 +39,7 @@ src/
 │   ├── NatsTransportConfiguration.php         # Immutable readonly config value object
 │   ├── NatsTransportConfigurationBuilder.php  # DSN + options parsing, validation, builds Configuration
 │   ├── RetryHandler.php                       # Enum: SYMFONY (TERM) | NATS (NAK)
+│   ├── RetryVia.php                           # Enum: COPY | NAK, how a Symfony retry reaches NATS
 │   └── TransportOption.php                    # Enum: all configurable option keys
 └── Serializer/
     ├── AbstractEnveloperSerializer.php         # Base serializer with encode/decode envelope wrapping
@@ -65,6 +66,7 @@ tests/
 │   │   ├── nats_batching.feature               # Batch consumption
 │   │   ├── nats_nak.feature                    # NAK retry handler
 │   │   ├── nats_term.feature                   # TERM failure handler
+│   │   ├── nats_retry_via.feature              # Symfony's retries as NAKs with Symfony's delay (retry_via: nak)
 │   │   ├── nats_delayed.feature                # Scheduled/delayed messages
 │   │   ├── nats_tls.feature                    # TLS connections
 │   │   ├── nats_mtls.feature                   # mTLS with client certificates
@@ -89,8 +91,11 @@ tests/
 - **Replication**: `stream_replicas` for HA
 - **Consumer strategies**: shared (batching=1) or independent consumers
 - **Batching**: configurable `batching` count and `max_batch_timeout`
-- **Retry handling**: `retry_handler` - `symfony` (TERM, default) or `nats` (NAK)
-- **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers
+- **Retry handling**: `retry_handler` - `symfony` (TERM, default) or `nats` (NAK); in symfony mode,
+  `retry_via: nak` NAKs with Symfony's retry delay instead of publishing the retry copy
+  (see [docs/symfony_retry_via.md](docs/symfony_retry_via.md))
+- **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers; refused on a server
+  before NATS 2.12, at `setup()` and at the send of a delayed message
 - **TLS/mTLS**: full TLS config options including client certificates
 - **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`)
 - **Serialization**: igbinary (default with fallback) or custom via `AbstractEnveloperSerializer`
@@ -170,6 +175,11 @@ composer nats:stop               # Stop NATS
 - Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 - Add new items under `## [Unreleased]` as work progresses; move them to a versioned heading at release time.
 - Categorize changes as Added, Changed, Fixed, Deprecated, Removed, or Security.
+
+### Feature Reference (`docs/symfony_retry_via.md`)
+- The reference for `retry_via`: the terms, the three retry setups delivery by delivery, what the server does with a
+  NAK, and what was measured.
+- Update it when a retry path changes, or when a measurement of the server's behaviour does.
 
 ### PR Merge Documentation (`docs/PRs/`)
 - When a PR is merged or its features are adapted, add a file to `docs/PRs/` named `PR-NNN-short-description.md`.

@@ -23,11 +23,13 @@ use IDCT\NATS\JetStream\Enum\NoRespondersCause;
 use IDCT\NATS\JetStream\Enum\ReplayPolicy;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
+use IDCT\NATS\JetStream\Models\JsMessageMetadata;
 use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NATS\JetStream\Schedule;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Options\RetryHandler;
+use IDCT\NatsMessenger\Options\RetryVia;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
 use LogicException;
@@ -141,11 +143,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private bool $checkBeforeNextUse = false;
 
     /**
-     * The delivery token (reply subject) of each received message whose retry copy {@see send()} left out in
-     * nats mode, by message, until the worker settles that delivery ({@see natsRedeliversTheRetryOf()}).
-     * Weak, so a message that is never settled leaves nothing behind.
+     * The longest delay a NAK carries, in milliseconds: the client sends it in nanoseconds, as a PHP integer.
+     * About 292 years, so it only keeps an absurd delay from overflowing.
+     */
+    private const MAX_NAK_DELAY_MS = 9_223_372_036_854;
+
+    /** The first NATS server release with message schedules, which scheduled_messages needs. */
+    private const SCHEDULES_SINCE = '2.12';
+
+    /**
+     * The delivery token (reply subject) of each received message whose retry copy {@see send()} left out, in nats
+     * mode or with retry_via=nak, by message, until the worker settles that delivery
+     * ({@see natsRedeliversTheRetryOf()}). With it, the delay Symfony's retry strategy computed for the retry in
+     * milliseconds with retry_via=nak, or null in nats mode, where nak_delay applies. Weak, so a message that is
+     * never settled leaves nothing behind.
      *
-     * @var \WeakMap<object, string>|null
+     * @var \WeakMap<object, array{id: string, delayMs: int|null}>|null
      */
     private ?\WeakMap $retriesNatsRedelivers = null;
 
@@ -225,7 +238,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * With retry_handler=nats, the copy Symfony's retry sends of a message this transport received is not
      * published ({@see isRetryNatsRedeliversItself()}): the delivery it belongs to is remembered instead, so that
      * the worker's ack() of it NAKs it ({@see natsRedeliversTheRetryOf()}). The first such copy is logged as a
-     * warning that Symfony's retry strategy is on ({@see warnThatSymfonysRetryStrategyIsOn()}).
+     * warning that Symfony's retry strategy is on ({@see warnThatSymfonysRetryStrategyIsOn()}). With retry_via=nak
+     * the copy is left out the same way when a NAK can carry the retry, and the delay Symfony computed for it is
+     * remembered with the delivery, for the NAK to carry; nothing is logged, since the strategy is on by intent.
      *
      * @throws RuntimeException     If serialization fails and the envelope carries an ErrorDetailsStamp.
      * @throws \Throwable           The original serializer exception when serialization fails and the
@@ -238,12 +253,19 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function send(Envelope $envelope): Envelope
     {
         if ($this->isRetryNatsRedeliversItself($envelope)) {
-            $this->warnThatSymfonysRetryStrategyIsOn();
+            // With retry_via=nak Symfony's retry strategy is on by intent: its delay is what the NAK carries.
+            $nakRetry = $this->configuration->retryVia() === RetryVia::NAK;
+            if (!$nakRetry) {
+                $this->warnThatSymfonysRetryStrategyIsOn();
+            }
 
             $delivery = $envelope->last(TransportMessageIdStamp::class);
             if ($delivery !== null) {
                 $this->retriesNatsRedelivers ??= new \WeakMap();
-                $this->retriesNatsRedelivers[$envelope->getMessage()] = TypeCoercion::stringValue($delivery->getId());
+                $this->retriesNatsRedelivers[$envelope->getMessage()] = [
+                    'id' => TypeCoercion::stringValue($delivery->getId()),
+                    'delayMs' => $nakRetry ? $envelope->last(DelayStamp::class)?->getDelay() ?? 0 : null,
+                ];
             }
 
             return $envelope;
@@ -278,6 +300,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $delayMs = $envelope->last(DelayStamp::class)?->getDelay();
         if ($delayMs > 0 && $this->configuration->isScheduledMessagesEnabled()) {
+            // The server's version is known once connected, and an older server would store the message for good.
+            $this->connectIfNeeded();
+            $unsupported = $this->schedulesUnsupportedByTheServer();
+            if ($unsupported !== null) {
+                throw new TransportException($this->describeUnsupportedFeature($unsupported) . ' The delayed message was not sent: this server would store it and never deliver it.', 0, $unsupported);
+            }
+
             $deliverAt = $this->deliveryTime($delayMs);
             // The @at schedule expression has whole-second resolution and truncates any sub-second
             // component. Round up to the next whole second when one is present so a delayed message is
@@ -373,7 +402,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
     /**
      * Whether the envelope is the copy Symfony's retry sends of a message this transport received, while
-     * NATS handles redelivery (retry_handler=nats).
+     * NATS handles redelivery (retry_handler=nats), or one that a NAK carries instead (retry_via=nak).
      *
      * Symfony's retry listener runs for every transport with a retry strategy, and FrameworkBundle gives each
      * one a strategy by default. It re-sends the failed message with a retry count, and the worker then settles
@@ -388,14 +417,49 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * message for good, so ack() NAKs a delivery whose copy was left out ({@see natsRedeliversTheRetryOf()},
      * #90).
      *
+     * With retry_via=nak, Symfony's retry strategy decides and its copy is left out as well: the delivery that
+     * failed is NAKed with the copy's delay, and NATS redelivers the original. Only a retry a NAK can carry is
+     * left out then: the copy has to carry its delivery token, and the delivery must not be the last one
+     * max_deliver allows, after which NATS redelivers nothing ({@see isTheLastDelivery()}). Any other copy is
+     * published, as with retry_via=copy, so a retry Symfony decided on always happens.
+     *
      * A copy for the failure transport carries a retry count of 0 and is still sent, as is anything that was
      * not received in this process.
      */
     private function isRetryNatsRedeliversItself(Envelope $envelope): bool
     {
-        return $this->configuration->retryHandler() === RetryHandler::NATS
-            && $envelope->last(ReceivedStamp::class) !== null
-            && RedeliveryStamp::getRetryCountFromEnvelope($envelope) > 0;
+        if ($envelope->last(ReceivedStamp::class) === null || RedeliveryStamp::getRetryCountFromEnvelope($envelope) <= 0) {
+            return false;
+        }
+
+        if ($this->configuration->retryHandler() === RetryHandler::NATS) {
+            return true;
+        }
+
+        if ($this->configuration->retryVia() !== RetryVia::NAK) {
+            return false;
+        }
+
+        $delivery = $envelope->last(TransportMessageIdStamp::class);
+
+        return $delivery !== null && !$this->isTheLastDelivery(TypeCoercion::stringValue($delivery->getId()));
+    }
+
+    /**
+     * Whether this is the last delivery max_deliver allows: NATS does not redeliver the message after it, whatever
+     * the NAK says, and publishes the MAX_DELIVERIES advisory instead. The deliveries so far come from the
+     * delivery's reply subject. False without max_deliver, and for a token that is no JetStream reply subject.
+     */
+    private function isTheLastDelivery(string $id): bool
+    {
+        $maxDeliver = $this->configuration->maxDeliver();
+        if ($maxDeliver === null) {
+            return false;
+        }
+
+        $delivered = JsMessageMetadata::fromMessage($this->buildAckMessage($id))?->numDelivered;
+
+        return $delivered !== null && $delivered >= $maxDeliver;
     }
 
     /**
@@ -423,7 +487,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $this->symfonysRetryStrategyReported = true;
         $this->logger?->warning(sprintf(
             'retry_handler=nats on stream "%s", subject "%s": Symfony\'s retry strategy retried a message that NATS'
-            . ' redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+            . ' redelivers itself. Set max_retries: 0 on this transport (Symfony still retries a'
+            . ' RecoverableExceptionInterface), or have NATS carry out Symfony\'s retries with retry_handler: symfony'
+            . ' and retry_via: nak (README, "Retry Handler Behavior").',
             $this->streamName,
             $this->topic,
         ));
@@ -514,8 +580,34 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 throw $e;
             }
 
-            yield $decoded->with(new TransportMessageIdStamp($replyTo));
+            yield $this->withDeliveryCountAsRetryCount($decoded->with(new TransportMessageIdStamp($replyTo)), $message);
         }
+    }
+
+    /**
+     * With retry_via=nak, gives a redelivered message the retry count Symfony's retry strategy reads: the count it
+     * was published with, plus the deliveries before this one.
+     *
+     * NATS redelivers the message as it was published, so without this every failure is Symfony's first: the
+     * multiplier never applies and max_retries never ends the retries (#109). The deliveries come from the
+     * delivery's reply subject, so a delivery nobody settled (a crashed worker, an ack_wait that ran out) counts
+     * as a retry too. A message published with a count, such as a retry copy from retry_via=copy that a worker
+     * with retry_via=nak receives after a change of the option, has made those retries already, so they are
+     * added rather than replaced: taking the higher of the two would hold the count while the deliveries catch
+     * up, repeating one delay and allowing that many retries more.
+     */
+    private function withDeliveryCountAsRetryCount(Envelope $envelope, NatsMessage $message): Envelope
+    {
+        if ($this->configuration->retryVia() !== RetryVia::NAK) {
+            return $envelope;
+        }
+
+        $delivered = JsMessageMetadata::fromMessage($message)?->numDelivered;
+        if ($delivered === null || $delivered <= 1) {
+            return $envelope;
+        }
+
+        return $envelope->with(new RedeliveryStamp(RedeliveryStamp::getRetryCountFromEnvelope($envelope) + $delivered - 1));
     }
 
     /**
@@ -559,6 +651,36 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
+     * NAKs a delivery whose retry copy {@see send()} left out, so NATS redelivers it.
+     *
+     * With retry_via=nak the NAK carries the delay Symfony's retry strategy computed, cut only where it would no
+     * longer fit the client's nanoseconds, and a delay of 0 is a plain NAK, which NATS redelivers at once;
+     * nak_delay plays no part. The last delivery max_deliver allows never gets here: send() publishes its retry
+     * copy ({@see isRetryNatsRedeliversItself()}). In nats mode (no delay from Symfony, null) it is
+     * {@see sendNak()}.
+     *
+     * @param string   $id      The replyTo address (JetStream delivery token)
+     * @param int|null $delayMs Symfony's delay in milliseconds, or null in nats mode
+     */
+    private function nakForRetry(string $id, ?int $delayMs): void
+    {
+        if ($delayMs === null) {
+            $this->sendNak($id);
+
+            return;
+        }
+
+        $message = $this->buildAckMessage($id);
+        if ($delayMs > 0) {
+            $this->awaitOnConnection(fn (): Future => $this->jetStream()->nakWithDelay($message, min($delayMs, self::MAX_NAK_DELAY_MS)));
+
+            return;
+        }
+
+        $this->awaitOnConnection(fn (): Future => $this->jetStream()->nak($message));
+    }
+
+    /**
      * Sends TERM to stop JetStream redelivery for a failed delivery.
      *
      * Used when retry handling is delegated to Symfony (the default): the message
@@ -579,8 +701,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * {@see NatsTransportConfiguration::isAckSyncEnabled()} option is on, the ACK waits for
      * server confirmation (double-ack) so a dropped ACK cannot silently cause redelivery.
      *
-     * A delivery whose retry copy {@see send()} left out in nats mode is NAKed instead, so NATS redelivers it:
-     * Symfony Messenger 7.4.22, 8.1.10 and later acknowledge a message they sent for retry (#90).
+     * A delivery whose retry copy {@see send()} left out, in nats mode or with retry_via=nak, is NAKed instead, so
+     * NATS redelivers it: Symfony Messenger 7.4.22, 8.1.10 and later acknowledge a message they sent for retry
+     * (#90). With retry_via=nak the NAK carries Symfony's delay ({@see nakForRetry()}).
      *
      * @throws LogicException If the envelope lacks a TransportMessageIdStamp
      */
@@ -588,9 +711,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
 
-        if ($this->natsRedeliversTheRetryOf($envelope, $id)) {
+        $retry = $this->natsRedeliversTheRetryOf($envelope, $id);
+        if ($retry !== null) {
             $this->checkTheConnectionBeforeSettlingAFailure();
-            $this->sendNak($id);
+            $this->nakForRetry($id, $retry['delayMs']);
 
             return;
         }
@@ -610,16 +734,25 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Rejects a received envelope according to configured retry strategy.
      *
      * Delegates to {@see handleFailedDelivery()}: sends TERM when using Symfony retry
-     * handling or NAK when using NATS-native redelivery.
+     * handling or NAK when using NATS-native redelivery. A delivery whose retry copy {@see send()} left out, which
+     * Symfony Messenger up to 7.4.21 and 8.1.9 rejects, is NAKed, with Symfony's delay under retry_via=nak
+     * ({@see nakForRetry()}).
      *
      * @throws LogicException If the envelope lacks a TransportMessageIdStamp
      */
     public function reject(Envelope $envelope): void
     {
         $id = TypeCoercion::stringValue($this->findReceivedStamp($envelope)->getId());
-        // Forget the delivery whose retry copy send() left out; handleFailedDelivery() NAKs it in nats mode either way.
-        $this->natsRedeliversTheRetryOf($envelope, $id);
+        // The delivery whose retry copy send() left out, which Symfony Messenger up to 7.4.21 / 8.1.9 rejects.
+        $retry = $this->natsRedeliversTheRetryOf($envelope, $id);
         $this->checkTheConnectionBeforeSettlingAFailure();
+
+        if ($retry !== null) {
+            $this->nakForRetry($id, $retry['delayMs']);
+
+            return;
+        }
+
         $this->handleFailedDelivery($id);
     }
 
@@ -645,20 +778,24 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Whether the delivery being settled is one whose retry copy {@see send()} left out in nats mode, which it
-     * then forgets: it is settled once, by the ack() of Symfony Messenger 7.4.22, 8.1.10 and later or the
-     * reject() of earlier releases, and both NAK it. Another delivery of the same message is not that one.
+     * Whether the delivery being settled is one whose retry copy {@see send()} left out, in nats mode or with
+     * retry_via=nak, which it then forgets: it is settled once, by the ack() of Symfony Messenger 7.4.22, 8.1.10
+     * and later or the reject() of earlier releases, and both NAK it. Another delivery of the same message is not
+     * that one.
+     *
+     * @return array{id: string, delayMs: int|null}|null The remembered delivery, or null when this is not it
      */
-    private function natsRedeliversTheRetryOf(Envelope $envelope, string $id): bool
+    private function natsRedeliversTheRetryOf(Envelope $envelope, string $id): ?array
     {
         $message = $envelope->getMessage();
-        if (($this->retriesNatsRedelivers[$message] ?? null) !== $id) {
-            return false;
+        $retry = $this->retriesNatsRedelivers[$message] ?? null;
+        if ($retry === null || $retry['id'] !== $id) {
+            return null;
         }
 
         unset($this->retriesNatsRedelivers[$message]);
 
-        return true;
+        return $retry;
     }
 
     /**
@@ -780,6 +917,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         try {
             $subjects = $this->buildDesiredSubjects();
             $streamConfiguration = $this->buildManagedStreamConfiguration($subjects);
+
+            if ($this->configuration->isScheduledMessagesEnabled()) {
+                $this->connectIfNeeded();
+                $unsupported = $this->schedulesUnsupportedByTheServer();
+                if ($unsupported !== null) {
+                    throw $unsupported;
+                }
+            }
 
             try {
                 $this->awaitOnConnection(fn (): Future => $this->jetStream()->addStream($streamConfiguration));
@@ -1564,6 +1709,35 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             . ' options as they were and the new stream_replicas), wait until "nats stream info" shows'
             . ' every replica as current, then run it again with the other change. With auto_setup every'
             . ' send() and get() repeats this update and fails until the configuration is staged.';
+    }
+
+    /**
+     * The reason the connected server cannot schedule messages, or null when it can.
+     *
+     * NATS before 2.12 has no message schedules, and says nothing about it: it ignores the stream's
+     * allow_msg_schedules setting, so setup() succeeded there, and it stores a message published with the
+     * Nats-Schedule headers on its delayed subject and never delivers it (measured on nats-server 2.9.25, 2.10.29
+     * and 2.11.17). The client reports a feature as unsupported only when the server rejects the setting, which
+     * those servers do not, so the transport reads the version the server gave when the connection opened. A
+     * server that gave none, or one this cannot read, is let through, for the server to decide.
+     */
+    private function schedulesUnsupportedByTheServer(): ?UnsupportedFeatureException
+    {
+        $version = $this->client->serverInfo()?->version;
+        if ($version === null || preg_match('/^v?(\d+)\.(\d+)/', $version, $release) !== 1) {
+            return null;
+        }
+
+        if (version_compare($release[1] . '.' . $release[2], self::SCHEDULES_SINCE, '>=')) {
+            return null;
+        }
+
+        return new UnsupportedFeatureException(
+            'allow_msg_schedules',
+            self::SCHEDULES_SINCE,
+            $version,
+            sprintf('Message schedules require NATS server %s+, but the connected server reports %s.', self::SCHEDULES_SINCE, $version),
+        );
     }
 
     /**

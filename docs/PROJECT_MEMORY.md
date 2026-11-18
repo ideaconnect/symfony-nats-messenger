@@ -37,6 +37,7 @@ point for future sessions, not a replacement for source or current issue status.
 | [docs/TESTS.md](TESTS.md) | Feature-to-test map, examples, mutation testing caveats |
 | [docs/CHANGELOG.md](CHANGELOG.md) | Releases and reasons for behavior changes |
 | [docs/PRs/](PRs/) | Notes on previously adapted PRs |
+| [docs/symfony_retry_via.md](symfony_retry_via.md) | Reference for `retry_via`: terms, the retry setups delivery by delivery, what the server does with a NAK |
 | Client `AGENTS.md`, `README.md`, `TESTS.md`, `CHANGELOG.md` | Upstream workflow, APIs, coverage and changes |
 
 Prefer source and manifests when documentation disagrees. For example, this transport now also
@@ -163,7 +164,23 @@ apply only with the option on.
   delivery; an ACK there lost the message (#90). Any code path that settles a received message
   must keep both Messenger lines in mind. The first copy left out logs a warning, once per transport object,
   that Symfony's retry strategy is on (#94), through the logger the transport now keeps besides handing it to
-  the client; it parses no configuration and cannot fire with `max_retries: 0`.
+  the client; it parses no configuration, and with `max_retries: 0` it fires only for a
+  `RecoverableExceptionInterface`, which Symfony retries whatever `max_retries` says.
+  In symfony mode, `retry_via: nak` (5.9.0, #113) uses the same machinery for Symfony's own retries: the copy is
+  left out, its `DelayStamp` delay is remembered with the delivery token, and the worker's `ack()` or `reject()`
+  NAKs the delivery with it. `get()` then sets the retry count to the count the message carries plus
+  `numDelivered - 1`. A retry no NAK can carry is published instead: a copy without its delivery token, and the
+  retry of the last delivery `max_deliver` allows, after which NATS redelivers nothing. A NAK with a delay holds a
+  `max_ack_pending` slot, survives a server restart, and gets `backoff[n] - backoff[0]` added by the server, which is
+  why the builder refuses `backoff` and a positive `nak_delay` with it (`docs/symfony_retry_via.md` has the
+  measurements). NATS 2.9.25 was seen to report a redelivery as delivery 1 when the NAK's delay equals the pull's
+  expiry, about 1 message in 5: the retry count is then one too low once.
+- **Scheduled messages need a server that has them:** NATS before 2.12 ignores the stream's `allow_msg_schedules`
+  setting without rejecting it, so up to 5.8.1 `setup()` succeeded there and every delayed message was stored on
+  `<topic>.delayed.<uuid>` and never delivered (measured on 2.9.25, 2.10.29 and 2.11.17). The client's
+  `UnsupportedFeatureException` only comes from a server that rejects the setting, so the transport reads
+  `serverInfo()->version` once connected (`schedulesUnsupportedByTheServer()`) and refuses in `setup()` and in the
+  send of a delayed message. A server that gives no version, or one that cannot be read, is let through.
 - **Keepalive:** Symfony invokes it from SIGALRM. It queues `inProgress()->ignore()` without
   awaiting, pinging, or connecting, because a signal handler cannot switch fibers (#48).
   The event loop must run for the queued write to leave. Plain blocking PHP work therefore
@@ -259,6 +276,14 @@ address only. Examples that stop or restart a server with docker start it again.
 server (`servers: [$server]`), so a worker started while that server is down cannot connect. CI runs PHP 8.2 with the lowest
 allowed client and PHP 8.5 with latest, verifies root/app versions match, and also tests NATS 2.10
 without delayed scenarios. README advertises NATS ^2.9; the oldest CI image is actually 2.10.
+The PHP 8.2 leg also lowers `symfony/messenger`: to 7.4.0 for the unit tests, the lowest the Symfony 7.4 packages
+installed there accept, and to 7.4.21 in the functional app, its own floor. Both reject a message they sent for
+retry, where the PHP 8.5 leg's release acknowledges it, so each leg runs one of the transport's two settle paths,
+and `scripts/check-messenger-rejects-a-retry.php` fails the leg if that stops being so. Before 5.9.0 both legs
+installed a release that acknowledges. The composer floors themselves (Messenger 7.3) are not run by CI: lowering
+FrameworkBundle too passes the unit suite on 7.3.0, but PHPStan then reports two errors about the header types an
+older `SerializerInterface` declares. To run a release by hand, copy the checkout without `vendor/` and
+`composer update --with symfony/messenger:7.4.21`.
 Measured on it (2026-11-01, nats 2.10.29): right after a stream update from 2 replicas to 1, consumer requests
 can get err_code 10008 "JetStream system temporarily unavailable", "stream not found" or no answer for a few ms
 while NATS moves the consumer; `setup()` asks again on 10008 and 10059 (up to 5 s) and once more after no answer.
@@ -529,3 +554,23 @@ These are posted recommendations; the tests and proposed issue-summary edits are
 - CI on the tree of the #114 merge (run 43913469827, head `5e02bad`): PHPStan clean; 1068 tests, 3122 assertions, also
   stopped at random moments; coverage 99.80 % (1023/1025); Infection killed 1179 of 1197 mutants, with the 18 survivors
   `docs/TESTS.md` lists; Behat 94 of 94 on each PHP job and 90 of 90 on NATS 2.10.29; 14 of 14 examples in each job.
+
+## Dated snapshot: 2026-11-18
+
+- **5.9.0, a minor release,** ships `retry_via: nak` (PR #113 by Petar Fedorovsky, adapted and landed through #118 with the
+  contributor's two commits unchanged; it closes #109), the refusal of `scheduled_messages` on a server before NATS 2.12, and
+  `symfony/messenger` `^7.3`. The changelog cut is on the same branch, and the tag is on its merge commit.
+  `docs/PRs/PR-113-symfony-retry-via.md` says what was changed against the proposal, and why.
+- Open transport issues: #104 (`.creds` files and rotation) and #105 (external signers); #110, #111 and #112, the three
+  blockers the review of PR #100 found; #117 (`nak_delay` is accepted in symfony mode, where it has no effect). The one open
+  PR is #100 (per-message subjects), by a contributor. It adds changelog items under `[Unreleased]`, which this cut emptied
+  again: when it next merges `main`, check that git did not move them into `[5.9.0]` without a conflict marker.
+- Known and not filed: the composer floors are not run by CI (the CI notes above), and NATS 2.9's delivery count is
+  documented, not worked around (`docs/symfony_retry_via.md`). As before, an unanswered PING leaves a cycle through amphp's
+  `TimeoutCancellation`.
+- The checks before the merge, on PHP 8.5.11 with client 2.29.0 and Symfony Messenger 8.1.11: PHPStan clean; 1143 tests,
+  3341 assertions, also stopped at random moments; coverage 99.82 % (1114/1116); Infection killed
+  1298 of 1317 mutants, with the 19 survivors `docs/TESTS.md` lists; Behat 97 of 97 on NATS 2.14.2 and
+  93 of 93 on NATS 2.10.29 without the scheduled scenarios; 21 of 21 examples on each.
+  CI on `9a7d1d4` (run 44318707618), before the docs-only commits that follow it, agrees on each count: PHP 8.2 with client
+  2.29.0 and Symfony Messenger 7.4.0 (7.4.21 in the functional app), PHP 8.5 with 8.1.11, and NATS 2.10.29 with 7.4.23.

@@ -12,6 +12,7 @@ use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\RetryHandler;
+use IDCT\NatsMessenger\Options\RetryVia;
 use IDCT\NatsMessenger\Options\StreamCompression;
 use IDCT\NatsMessenger\Options\TransportOption;
 use IDCT\NatsMessenger\Tests\Support\PhpProcess;
@@ -1690,6 +1691,12 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
             'audit-topic',
         ];
 
+        yield 'README: retry_via nak' => [
+            'nats-jetstream://localhost:4222/my-stream/my-topic?retry_via=nak',
+            'my-stream',
+            'my-topic',
+        ];
+
         yield 'README: scheduled messages DSN' => [
             'nats-jetstream://localhost/my-stream/my-topic?scheduled_messages=true',
             'my-stream',
@@ -2565,5 +2572,87 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         self::assertSame($logger, $this->extractNatsOptions($withLogger->client)->logger);
         self::assertNull($this->extractNatsOptions($withoutLogger->client)->logger);
+    }
+
+    public function testRetryViaIsCopyUnlessSetToNak(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        self::assertSame(RetryVia::COPY, $builder->build(self::VALID_DSN, [])->retryVia());
+        self::assertSame(RetryVia::COPY, $builder->build(self::VALID_DSN, ['retry_via' => 'copy'])->retryVia());
+        self::assertSame(RetryVia::NAK, $builder->build(self::VALID_DSN, ['retry_via' => 'nak'])->retryVia());
+        self::assertSame(RetryVia::NAK, $builder->build(self::VALID_DSN . '?retry_via=nak', [])->retryVia());
+        // The transport's options win over the DSN's query, as for every option.
+        self::assertSame(RetryVia::COPY, $builder->build(self::VALID_DSN . '?retry_via=nak', ['retry_via' => 'copy'])->retryVia());
+        self::assertNull($builder->build(self::VALID_DSN, ['retry_handler' => 'nats'])->retryVia());
+    }
+
+    public function testBuildWithInvalidRetryViaThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("Invalid retry_via option 'nack'. Allowed values are 'copy' or 'nak'.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_via' => 'nack']);
+    }
+
+    /**
+     * Any value is refused in nats mode, 'copy' included: NATS redelivers every failed message there, so there is no
+     * Symfony retry for the option to route, and 'copy' would read as nats mode retrying by copy.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('retryViaValues')]
+    public function testBuildRefusesRetryViaInNatsMode(string $dsn, array $options): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("The retry_via option needs retry_handler 'symfony': with retry_handler 'nats', NATS redelivers every failed message and Symfony's retry strategy has no effect.");
+
+        (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function retryViaValues(): iterable
+    {
+        yield 'copy' => [self::VALID_DSN, ['retry_handler' => 'nats', 'retry_via' => 'copy']];
+        yield 'nak' => [self::VALID_DSN, ['retry_handler' => 'nats', 'retry_via' => 'nak']];
+        yield 'nak in the DSN' => [self::VALID_DSN . '?retry_handler=nats&retry_via=nak', []];
+    }
+
+    /**
+     * With retry_via 'nak' the NAK carries Symfony's delay, so a positive nak_delay, which only nats mode reads, is
+     * refused; 0, the default, is not.
+     */
+    public function testBuildRefusesAPositiveNakDelayWithNakRetries(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+        self::assertSame(RetryVia::NAK, $builder->build(self::VALID_DSN, ['retry_via' => 'nak', 'nak_delay' => 0])->retryVia());
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("The nak_delay option has no effect with retry_via 'nak': each NAK carries the delay Symfony's retry strategy computed. Set the delay in the retry strategy (delay, multiplier, max_delay) instead.");
+
+        $builder->build(self::VALID_DSN . '?retry_via=nak&nak_delay=0.5', []);
+    }
+
+    public function testBuildRefusesBackoffWithNakRetries(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("The backoff option cannot be combined with retry_via 'nak': NATS would lengthen each NAK retry by the difference between the backoff's current and first step and would replace ack_wait with the first step, so the retries would not wait the delays Symfony's retry strategy computed.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_via' => 'nak', 'backoff' => [1, 2], 'max_deliver' => 5]);
+    }
+
+    /**
+     * Without retry_via, or with 'copy', nak_delay and backoff are accepted as before: refusing them there would break
+     * configurations that work today.
+     */
+    public function testRetryViaCopyStillAcceptsNakDelayAndBackoff(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+        $options = ['nak_delay' => 5, 'backoff' => [1, 2], 'max_deliver' => 5];
+
+        self::assertSame(RetryVia::COPY, $builder->build(self::VALID_DSN, $options)->retryVia());
+        self::assertSame([1000, 2000], $builder->build(self::VALID_DSN, $options + ['retry_via' => 'copy'])->backoffMs());
     }
 }

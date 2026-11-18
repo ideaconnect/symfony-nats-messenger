@@ -3,6 +3,7 @@
 namespace App\Async;
 
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
 
 #[AsMessageHandler]
 class FailingMessageHandler
@@ -31,6 +32,11 @@ class FailingMessageHandler
         $attempt = file_exists($attemptFile) ? (int) file_get_contents($attemptFile) : 0;
         $attempt++;
         file_put_contents($attemptFile, (string) $attempt);
+
+        if ($message->unrecoverable) {
+            echo "[FAIL] Message {$message->messageId} attempt {$attempt} - unrecoverable\n";
+            throw new UnrecoverableMessageHandlingException("Message {$message->messageId} can never be handled.");
+        }
 
         if (!$message->shouldEventuallySucceed) {
             echo "[FAIL] Message {$message->messageId} attempt {$attempt} - always fails\n";
