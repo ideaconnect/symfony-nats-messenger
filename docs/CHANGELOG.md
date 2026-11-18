@@ -7,17 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.9.0] - 2026-11-18
+
+A **minor** release. It adds `retry_via: nak` for symfony mode: Symfony's retry strategy still decides whether and when a
+failed message is retried, and NATS carries the retry out by redelivering the original after a NAK with Symfony's delay, to
+the millisecond and on any supported server (#113, proposed by Petar Fedorovsky; closes #109). `scheduled_messages` on a
+NATS server before 2.12 is now refused instead of losing every delayed message, and `composer.json` no longer allows Symfony
+Messenger 7.2, on which the transport could not load. The public PHP API gains the `RetryVia` enum,
+`TransportOption::RETRY_VIA` and `NatsTransportConfiguration::retryVia()`.
+
 ### Added
-- **`retry_via: copy | nak` for `retry_handler: symfony` (#113, closes #109).** With `nak`, the copy Symfony's retry
-  sends is not published. The transport NAKs the failed delivery with the delay Symfony's retry strategy computed,
-  to the millisecond and on any supported server, and NATS redelivers the original. A redelivered message carries
-  its earlier deliveries in its retry count, so `willRetry()`, the multiplier and `max_retries` work, and a message
-  Symfony gives up on is TERMed with one failure-transport copy, as with `copy`, the default. Each waiting retry holds
-  one of the consumer's `max_ack_pending` slots. A retry no NAK can carry is published as a copy: one without its
-  delivery token, and the retry of the last delivery `max_deliver` allows. The builder refuses `retry_via` in nats
-  mode, and a positive `nak_delay` or a `backoff` with `nak`. Based on Petar Fedorovsky's proposal.
-  [docs/symfony_retry_via.md](symfony_retry_via.md) is its reference: the terms, the three retry setups delivery by
-  delivery, what the server does with a NAK, and what was measured.
+- **`retry_via: copy | nak` for `retry_handler: symfony` (#113, landed through #118; closes #109).** With `nak`, the
+  copy Symfony's retry sends is not published. The transport NAKs the failed delivery with the delay Symfony's retry
+  strategy computed, to the millisecond and on any supported server, and NATS redelivers the original. A redelivered
+  message carries its earlier deliveries in its retry count, so `willRetry()`, the multiplier and `max_retries` work,
+  and a message Symfony gives up on is TERMed with one failure-transport copy, as with `copy`, the default. Each
+  waiting retry holds one of the consumer's `max_ack_pending` slots. A retry no NAK can carry is published as a copy:
+  one without its delivery token, and the retry of the last delivery `max_deliver` allows. The builder refuses
+  `retry_via` in nats mode, and a positive `nak_delay` or a `backoff` with `nak`. Based on Petar Fedorovsky's
+  proposal. [docs/symfony_retry_via.md](symfony_retry_via.md) is its reference: the terms, the three retry setups
+  delivery by delivery, what the server does with a NAK, and what was measured.
 - **Seven examples.** `retry-via-nak.php`, `retry-via-nak-edge-cases.php`, `retry-via-nak-past-max-deliver.php`,
   `retry-via-nak-server-behaviour.php`, `retry-via-nak-across-a-restart.php` and `retry-via-copy-or-nak.php` run
   `retry_via: nak` against a live server, most of them under Symfony's own Worker with its retry and failure-transport
