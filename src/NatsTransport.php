@@ -560,13 +560,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * With retry_via=nak, gives a redelivered message the retry count Symfony's retry strategy reads: the
-     * deliveries before this one.
+     * With retry_via=nak, gives a redelivered message the retry count Symfony's retry strategy reads: the count it
+     * was published with, plus the deliveries before this one.
      *
      * NATS redelivers the message as it was published, so without this every failure is Symfony's first: the
-     * multiplier never applies and max_retries never ends the retries (#109). The count comes from the delivery's
-     * reply subject, so a delivery nobody settled (a crashed worker, an ack_wait that ran out) counts as a retry
-     * too. A count the message already carries stays when it is higher.
+     * multiplier never applies and max_retries never ends the retries (#109). The deliveries come from the
+     * delivery's reply subject, so a delivery nobody settled (a crashed worker, an ack_wait that ran out) counts
+     * as a retry too. A message published with a count, such as a retry copy from retry_via=copy that a worker
+     * with retry_via=nak receives after a change of the option, has made those retries already, so they are
+     * added rather than replaced: taking the higher of the two would hold the count while the deliveries catch
+     * up, repeating one delay and allowing that many retries more.
      */
     private function withDeliveryCountAsRetryCount(Envelope $envelope, NatsMessage $message): Envelope
     {
@@ -575,11 +578,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         $delivered = JsMessageMetadata::fromMessage($message)?->numDelivered;
-        if ($delivered === null || $delivered - 1 <= RedeliveryStamp::getRetryCountFromEnvelope($envelope)) {
+        if ($delivered === null || $delivered <= 1) {
             return $envelope;
         }
 
-        return $envelope->with(new RedeliveryStamp($delivered - 1));
+        return $envelope->with(new RedeliveryStamp(RedeliveryStamp::getRetryCountFromEnvelope($envelope) + $delivered - 1));
     }
 
     /**

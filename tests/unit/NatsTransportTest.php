@@ -7599,15 +7599,15 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * A retry count the message already carries stays when it is higher than the earlier deliveries, and is
-     * replaced by them when it is lower.
+     * The retry count a message was published with, as a retry copy from retry_via=copy is, counts retries it has
+     * made already, so the earlier deliveries are added to it: the count goes on growing with every redelivery.
      */
     #[DataProvider('carriedRetryCounts')]
-    public function testGetKeepsTheHigherOfTheCarriedRetryCountAndTheEarlierDeliveries(int $carried, int $retryCount): void
+    public function testGetAddsTheEarlierDeliveriesToTheRetryCountTheMessageCarries(int $carried, string $replyTo, int $retryCount): void
     {
         $jetStream = $this->createStub(JetStreamContext::class);
         $jetStream->method('fetchBatch')->willReturn(Future::complete([
-            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.3.7.9.0.0', payload: 'payload'),
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: $replyTo, payload: 'payload'),
         ]));
         $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('decode')->willReturn(new Envelope(new \stdClass(), [new RedeliveryStamp($carried)]));
@@ -7620,13 +7620,14 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{int, int}>
+     * @return iterable<string, array{int, string, int}>
      */
     public static function carriedRetryCounts(): iterable
     {
-        yield 'carried 5, two deliveries before' => [5, 5];
-        yield 'carried 2, two deliveries before' => [2, 2];
-        yield 'carried 1, two deliveries before' => [1, 2];
+        yield 'carried 5, two deliveries before' => [5, '$JS.ACK.test-stream.client.3.7.9.0.0', 7];
+        yield 'carried 1, two deliveries before' => [1, '$JS.ACK.test-stream.client.3.7.9.0.0', 3];
+        yield 'carried 0, two deliveries before' => [0, '$JS.ACK.test-stream.client.3.7.9.0.0', 2];
+        yield 'carried 3, first delivery' => [3, '$JS.ACK.test-stream.client.1.7.7.0.0', 3];
     }
 
     /**
