@@ -2568,7 +2568,7 @@ final class NatsTransportTest extends TestCase
 
         self::assertSame([[
             'level' => 'warning',
-            'message' => 'retry_handler=nats on stream "test-stream", subject "test-topic": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+            'message' => 'retry_handler=nats on stream "test-stream", subject "test-topic": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (Symfony still retries a RecoverableExceptionInterface), or have NATS carry out Symfony\'s retries with retry_handler: symfony and retry_via: nak (README, "Retry Handler Behavior").',
         ]], $logger->records);
     }
 
@@ -2657,8 +2657,8 @@ final class NatsTransportTest extends TestCase
         $second->send($retry->with(new RedeliveryStamp(2)));
 
         self::assertSame([
-            'retry_handler=nats on stream "test-stream", subject "test-topic": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
-            'retry_handler=nats on stream "orders", subject "orders.created": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+            'retry_handler=nats on stream "test-stream", subject "test-topic": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (Symfony still retries a RecoverableExceptionInterface), or have NATS carry out Symfony\'s retries with retry_handler: symfony and retry_via: nak (README, "Retry Handler Behavior").',
+            'retry_handler=nats on stream "orders", subject "orders.created": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (Symfony still retries a RecoverableExceptionInterface), or have NATS carry out Symfony\'s retries with retry_handler: symfony and retry_via: nak (README, "Retry Handler Behavior").',
         ], $logger->messagesAt('warning'));
         self::assertCount(2, $logger->records);
     }

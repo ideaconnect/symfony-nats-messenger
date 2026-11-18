@@ -462,7 +462,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $this->symfonysRetryStrategyReported = true;
         $this->logger?->warning(sprintf(
             'retry_handler=nats on stream "%s", subject "%s": Symfony\'s retry strategy retried a message that NATS'
-            . ' redelivers itself. Set max_retries: 0 on this transport (README, "Retry Handler Behavior").',
+            . ' redelivers itself. Set max_retries: 0 on this transport (Symfony still retries a'
+            . ' RecoverableExceptionInterface), or have NATS carry out Symfony\'s retries with retry_handler: symfony'
+            . ' and retry_via: nak (README, "Retry Handler Behavior").',
             $this->streamName,
             $this->topic,
         ));
