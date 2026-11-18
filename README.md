@@ -569,7 +569,7 @@ framework:
                                             # symfony => TERM on failed/rejected message
                                             # nats    => NAK on failed/rejected message
           retry_via: null                   # copy|nak, only with retry_handler: symfony (default: null = copy)
-                                            # copy => publish Symfony's retry copy, TERM the failed delivery
+                                            # copy => publish Symfony's retry copy as a new message
                                             # nak  => NAK the failed delivery with Symfony's delay; NATS
                                             #         redelivers it (see "Retrying through a NAK")
 
@@ -795,8 +795,8 @@ acknowledge it, since the retry was sent ([symfony/symfony#67038](https://github
 The transport NAKs it either way. Set `max_retries: 0` on the transport anyway: with retries left on, Symfony
 still logs each failure as a retry it never makes ("Sending for retry #1") and never treats the message as
 failed for good. To have Symfony's retry strategy decide while NATS redelivers, use `retry_handler: symfony` with
-`retry_via: nak` instead. The transport warns about it through its logger (see [Logging](#logging)), once per
-transport object, so once per worker, the first time it leaves out such a retry:
+`retry_via: nak` instead. The transport warns about retries left on in nats mode through its logger (see
+[Logging](#logging)), once per transport object, so once per worker, the first time it leaves out such a retry:
 
 ```text
 retry_handler=nats on stream "my-stream", subject "my-topic": Symfony's retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (Symfony still retries a RecoverableExceptionInterface), or have NATS carry out Symfony's retries with retry_handler: symfony and retry_via: nak (README, "Retry Handler Behavior").
@@ -834,8 +834,9 @@ framework:
 
 In symfony mode, Symfony's retry strategy decides whether and when a failed message is retried. By default
 (`retry_via: copy`) its retry reaches NATS as a copy: a new message on the same subject, while the failed
-delivery is TERMed. With `retry_via: nak` the copy is not published: the transport NAKs the failed delivery with
-the delay Symfony computed, and NATS redelivers the original.
+delivery is settled for good, with a TERM or, from Symfony Messenger 7.4.22 and 8.1.10 on, an ACK. With
+`retry_via: nak` the copy is not published: the transport NAKs the failed delivery with the delay Symfony
+computed, and NATS redelivers the original.
 
 ```yaml
 framework:
