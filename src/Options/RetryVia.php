@@ -12,7 +12,9 @@ namespace IDCT\NatsMessenger\Options;
  *   rounded up; without it the copy is delivered at once.
  * - **NAK**: the copy is not published. The delivery that failed is NAKed with the delay Symfony computed, to the
  *   millisecond, on any supported server, and NATS redelivers the original. The retry count Symfony reads comes from
- *   the delivery count. Each retry holds one of the consumer's max_ack_pending slots while it waits.
+ *   the delivery count. Each retry holds one of the consumer's max_ack_pending slots while it waits. A retry no NAK
+ *   can carry is published as with COPY: one whose copy lacks its delivery token, and the retry of the last
+ *   delivery max_deliver allows, after which NATS redelivers nothing.
  *
  * A message Symfony gives up on is TERMed with either value, and a failure transport receives one copy of it. The
  * builder refuses the option with {@see RetryHandler::NATS}, where Symfony's retry strategy has no effect.
