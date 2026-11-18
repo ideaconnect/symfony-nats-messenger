@@ -21,6 +21,7 @@ use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
+use IDCT\NATS\Protocol\ServerInfo;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
@@ -4359,6 +4360,248 @@ final class NatsTransportTest extends TestCase
         $this->expectExceptionMessage("'scheduled_messages' option requires NATS Server >= 2.12, but the connected server reports 2.10.0");
 
         $transport->setup();
+    }
+
+    /**
+     * NATS before 2.12 has no message schedules, and never rejects the stream's allow_msg_schedules setting: it
+     * ignores it. So the transport reads the version the server gave when the connection opened, and refuses the
+     * setup itself, before it creates anything.
+     */
+    #[DataProvider('serversWithoutSchedules')]
+    public function testSetupRefusesScheduledMessagesOnAServerWithoutSchedules(string $version): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('addStream');
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true]);
+        $transport->setClient($this->clientOfAServer($version));
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("The 'scheduled_messages' option requires NATS Server >= 2.12, but the connected server reports $version. Disable scheduled_messages or upgrade NATS.");
+
+        $transport->setup();
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function serversWithoutSchedules(): iterable
+    {
+        yield 'NATS 2.9' => ['2.9.25'];
+        yield 'NATS 2.10' => ['2.10.29'];
+        yield 'NATS 2.11, the last release without schedules' => ['2.11.17'];
+        yield 'a version with a leading v' => ['v2.11.0'];
+    }
+
+    /**
+     * From 2.12 on the server schedules messages and the setup goes on. It also goes on when the server gave no
+     * version, or one the transport cannot read: that is left for the server to decide.
+     */
+    #[DataProvider('serversThatMaySchedule')]
+    public function testSetupWithScheduledMessagesGoesOnWhenTheServerMaySchedule(?string $version): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')
+            ->with(self::callback(static fn (StreamConfiguration $config): bool => ($config->toArray()['allow_msg_schedules'] ?? false) === true))
+            ->willReturn(Future::complete());
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete(new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+        )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true]);
+        $transport->setClient($this->clientOfAServer($version));
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    /**
+     * @return iterable<string, array{string|null}>
+     */
+    public static function serversThatMaySchedule(): iterable
+    {
+        yield 'NATS 2.12, the first release with schedules' => ['2.12.0'];
+        yield 'a release candidate of 2.12' => ['2.12.0-RC.1'];
+        yield 'NATS 2.15' => ['2.15.2'];
+        yield 'NATS 3' => ['3.0.0'];
+        yield 'a version with a leading v' => ['v2.12.4'];
+        yield 'a version the transport cannot read' => ['nightly'];
+        yield 'a version that starts with something else' => ['build-2.10.3'];
+        yield 'no server info' => [null];
+    }
+
+    /**
+     * Without scheduled_messages the server's version plays no part: a setup on an older server goes on.
+     */
+    public function testSetupWithoutScheduledMessagesDoesNotLookAtTheServersVersion(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete(new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+        )));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, []);
+        $transport->setClient($this->clientOfAServer('2.10.29'));
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    /**
+     * A delayed message is not published to a server without schedules, which would store it on its delayed subject
+     * and never deliver it: send() throws instead, also when setup() never ran in this process (auto_setup off).
+     */
+    #[DataProvider('serversWithoutSchedules')]
+    public function testSendRefusesToScheduleOnAServerWithoutSchedules(string $version): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('publish');
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true], $serializer);
+        $transport->setClient($this->clientOfAServer($version));
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->send(new Envelope(new \stdClass(), [new DelayStamp(5000)]));
+            self::fail('A delayed message was sent to a server that cannot schedule it.');
+        } catch (TransportException $refusal) {
+            self::assertSame(
+                "The 'scheduled_messages' option requires NATS Server >= 2.12, but the connected server reports $version. Disable scheduled_messages or upgrade NATS."
+                . ' The delayed message was not sent: this server would store it and never deliver it.',
+                $refusal->getMessage(),
+            );
+            self::assertInstanceOf(UnsupportedFeatureException::class, $refusal->getPrevious());
+            self::assertSame(0, $refusal->getCode());
+        }
+    }
+
+    /**
+     * What the refusal leaves alone on a server without schedules: a message without a delay, or with a delay of 0,
+     * is published as always, and so is a delayed one when scheduled_messages is off, where the delay is ignored.
+     *
+     * @param array<string, mixed> $options
+     * @param list<StampInterface> $stamps
+     */
+    #[DataProvider('sendsThatScheduleNothing')]
+    public function testSendWithoutAScheduleDoesNotLookAtTheServersVersion(array $options, array $stamps): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->with('test-topic', 'encoded')->willReturn(Future::complete());
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $serializer);
+        $transport->setClient($this->clientOfAServer('2.10.29'));
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->send(new Envelope(new \stdClass(), $stamps));
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, list<StampInterface>}>
+     */
+    public static function sendsThatScheduleNothing(): iterable
+    {
+        yield 'scheduled_messages, no delay' => [['scheduled_messages' => true], []];
+        yield 'scheduled_messages, a delay of 0' => [['scheduled_messages' => true], [new DelayStamp(0)]];
+        yield 'a delay without scheduled_messages' => [[], [new DelayStamp(5000)]];
+    }
+
+    /**
+     * A delayed message goes out with its schedule to a server from 2.12 on, and to one whose version is unknown.
+     */
+    #[DataProvider('serversThatMaySchedule')]
+    public function testSendSchedulesOnAServerThatMaySchedule(?string $version): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')
+            ->with(self::stringStartsWith('test-topic.delayed.'), 'encoded', self::arrayHasKey('Nats-Schedule'))
+            ->willReturn(Future::complete());
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true], $serializer);
+        $transport->setClient($this->clientOfAServer($version));
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->send(new Envelope(new \stdClass(), [new DelayStamp(5000)]));
+    }
+
+    /**
+     * The server gives its version when the connection opens. So a transport that has not connected yet connects
+     * before it looks: the first delayed send of a process (auto_setup off, nothing sent before) is refused too.
+     */
+    public function testTheFirstDelayedSendConnectsBeforeItLooksAtTheServersVersion(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('publish');
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, ['scheduled_messages' => true], $serializer);
+        $transport->setClient($this->clientThatLearnsItsServersVersionOnConnect('2.10.29', $jetStream));
+
+        $this->expectException(TransportException::class);
+        $this->expectExceptionMessage("The 'scheduled_messages' option requires NATS Server >= 2.12, but the connected server reports 2.10.29.");
+
+        $transport->send(new Envelope(new \stdClass(), [new DelayStamp(5000)]));
+    }
+
+    /**
+     * The same for a setup that is the first thing a process does, as `messenger:setup-transports` is.
+     */
+    public function testSetupConnectsBeforeItLooksAtTheServersVersion(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('addStream');
+
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, ['scheduled_messages' => true]);
+        $transport->setClient($this->clientThatLearnsItsServersVersionOnConnect('2.10.29', $jetStream));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("The 'scheduled_messages' option requires NATS Server >= 2.12, but the connected server reports 2.10.29.");
+
+        $transport->setup();
+    }
+
+    /** A client that has no server info until connect() ran, as the real one. */
+    private function clientThatLearnsItsServersVersionOnConnect(string $version, JetStreamContext $jetStream): NatsClient
+    {
+        $connected = false;
+        $client = $this->createMock(NatsClient::class);
+        $client->expects(self::once())->method('connect')->willReturnCallback(static function () use (&$connected): Future {
+            $connected = true;
+
+            return Future::complete();
+        });
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturnCallback(static function () use (&$connected, $version): ?ServerInfo {
+            return $connected ? new ServerInfo('SERVERID', 'nats-0', $version, true, 1048576, true) : null;
+        });
+
+        return $client;
+    }
+
+    /** A client connected to a server of that version; null for one that has given no server info. */
+    private function clientOfAServer(?string $version): NatsClient
+    {
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn($version === null ? null : new ServerInfo('SERVERID', 'nats-0', $version, true, 1048576, true));
+
+        return $client;
     }
 
     public function testSetupWrapsUnsupportedFeatureGenericallyWhenNotScheduledMessages(): void

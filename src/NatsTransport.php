@@ -148,6 +148,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private const MAX_NAK_DELAY_MS = 9_223_372_036_854;
 
+    /** The first NATS server release with message schedules, which scheduled_messages needs. */
+    private const SCHEDULES_SINCE = '2.12';
+
     /**
      * The delivery token (reply subject) of each received message whose retry copy {@see send()} left out, in nats
      * mode or with retry_via=nak, by message, until the worker settles that delivery
@@ -297,6 +300,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $delayMs = $envelope->last(DelayStamp::class)?->getDelay();
         if ($delayMs > 0 && $this->configuration->isScheduledMessagesEnabled()) {
+            // The server's version is known once connected, and an older server would store the message for good.
+            $this->connectIfNeeded();
+            $unsupported = $this->schedulesUnsupportedByTheServer();
+            if ($unsupported !== null) {
+                throw new TransportException($this->describeUnsupportedFeature($unsupported) . ' The delayed message was not sent: this server would store it and never deliver it.', 0, $unsupported);
+            }
+
             $deliverAt = $this->deliveryTime($delayMs);
             // The @at schedule expression has whole-second resolution and truncates any sub-second
             // component. Round up to the next whole second when one is present so a delayed message is
@@ -907,6 +917,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         try {
             $subjects = $this->buildDesiredSubjects();
             $streamConfiguration = $this->buildManagedStreamConfiguration($subjects);
+
+            if ($this->configuration->isScheduledMessagesEnabled()) {
+                $this->connectIfNeeded();
+                $unsupported = $this->schedulesUnsupportedByTheServer();
+                if ($unsupported !== null) {
+                    throw $unsupported;
+                }
+            }
 
             try {
                 $this->awaitOnConnection(fn (): Future => $this->jetStream()->addStream($streamConfiguration));
@@ -1691,6 +1709,35 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             . ' options as they were and the new stream_replicas), wait until "nats stream info" shows'
             . ' every replica as current, then run it again with the other change. With auto_setup every'
             . ' send() and get() repeats this update and fails until the configuration is staged.';
+    }
+
+    /**
+     * The reason the connected server cannot schedule messages, or null when it can.
+     *
+     * NATS before 2.12 has no message schedules, and says nothing about it: it ignores the stream's
+     * allow_msg_schedules setting, so setup() succeeded there, and it stores a message published with the
+     * Nats-Schedule headers on its delayed subject and never delivers it (measured on nats-server 2.9.25, 2.10.29
+     * and 2.11.17). The client reports a feature as unsupported only when the server rejects the setting, which
+     * those servers do not, so the transport reads the version the server gave when the connection opened. A
+     * server that gave none, or one this cannot read, is let through, for the server to decide.
+     */
+    private function schedulesUnsupportedByTheServer(): ?UnsupportedFeatureException
+    {
+        $version = $this->client->serverInfo()?->version;
+        if ($version === null || preg_match('/^v?(\d+)\.(\d+)/', $version, $release) !== 1) {
+            return null;
+        }
+
+        if (version_compare($release[1] . '.' . $release[2], self::SCHEDULES_SINCE, '>=')) {
+            return null;
+        }
+
+        return new UnsupportedFeatureException(
+            'allow_msg_schedules',
+            self::SCHEDULES_SINCE,
+            $version,
+            sprintf('Message schedules require NATS server %s+, but the connected server reports %s.', self::SCHEDULES_SINCE, $version),
+        );
     }
 
     /**
