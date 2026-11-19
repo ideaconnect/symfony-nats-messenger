@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace IDCT\NatsMessenger;
 
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
+use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
+use Symfony\Component\DependencyInjection\Reference;
 use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
 
 use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
@@ -51,5 +53,42 @@ final class IDCTNatsMessengerBundle extends AbstractBundle
 
         // Under this one id only, see the class comment.
         $services->set(IgbinarySerializer::class);
+    }
+
+    /**
+     * Tells the factory which transports have a failure transport, so that it can refuse give_up_via 'nak' for them
+     * ({@see NatsTransportFactory::createTransport()}): a message such a transport leaves in the stream would be
+     * copied to the failure transport as well.
+     *
+     * FrameworkBundle gives the listener that sends to the failure transports a service locator keyed by the name of
+     * each transport that has one, its own or the global `framework.messenger.failure_transport`. The names are
+     * read from that locator, since the Messenger configuration itself is not available to another bundle. An
+     * application's own factory entry gets the names too, when it is this class.
+     */
+    public function build(ContainerBuilder $container): void
+    {
+        parent::build($container);
+
+        $container->addCompilerPass(new class () implements CompilerPassInterface {
+            private const FAILURE_LISTENER = 'messenger.failure.send_failed_message_to_failure_transport_listener';
+
+            public function process(ContainerBuilder $container): void
+            {
+                if (!$container->hasDefinition(NatsTransportFactory::class) || !$container->hasDefinition(self::FAILURE_LISTENER)) {
+                    return;
+                }
+
+                $factory = $container->getDefinition(NatsTransportFactory::class);
+                $locator = $container->getDefinition(self::FAILURE_LISTENER)->getArguments()[0] ?? null;
+                if ($factory->getClass() !== NatsTransportFactory::class || !$locator instanceof Reference || !$container->hasDefinition((string) $locator)) {
+                    return;
+                }
+
+                $failureTransportsByName = $container->getDefinition((string) $locator)->getArguments()[0] ?? [];
+                $names = is_array($failureTransportsByName) ? array_values(array_filter(array_keys($failureTransportsByName), is_string(...))) : [];
+
+                $factory->setArgument('$transportsWithAFailureTransport', $names);
+            }
+        });
     }
 }

@@ -582,30 +582,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 throw $e;
             }
 
-            yield $this->withoutAFailureTransportCopy($this->withDeliveryCountAsRetryCount($decoded->with(new TransportMessageIdStamp($replyTo)), $message));
+            yield $this->withDeliveryCountAsRetryCount($decoded->with(new TransportMessageIdStamp($replyTo)), $message);
         }
-    }
-
-    /**
-     * With give_up_via=nak, keeps Symfony's failure transport from getting a copy of a message this transport
-     * leaves in the stream, where the message would otherwise exist twice.
-     *
-     * Symfony's SendFailedMessageToFailureTransportListener sends a copy of every message Symfony gives up on, and
-     * a transport cannot stop a listener. The listener itself skips a message that carries a
-     * SentToFailureTransportStamp naming the transport it was received from: Symfony's way for a message to opt
-     * out of the failure transport. So each received message gets that stamp. It needs the transport's name,
-     * which FrameworkBundle passes in the options; a transport built without it adds nothing, and a failure
-     * transport then gets its copy. FailedMessageProcessingMiddleware reads the stamp too, and marks the message
-     * as received from the transport it names, which it was.
-     */
-    private function withoutAFailureTransportCopy(Envelope $envelope): Envelope
-    {
-        $name = $this->configuration->transportName();
-        if ($name === null || $this->configuration->giveUpVia() !== GiveUpVia::NAK) {
-            return $envelope;
-        }
-
-        return $envelope->with(new SentToFailureTransportStamp($name));
     }
 
     /**

@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger;
 
+use IDCT\NatsMessenger\Options\GiveUpVia;
+use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use InvalidArgumentException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\TransportFactoryInterface;
@@ -35,8 +38,11 @@ class NatsTransportFactory implements TransportFactoryInterface
      *                                     The transport also warns through it, once, when Symfony's retry strategy is
      *                                     on in nats mode (max_retries > 0 with retry_handler=nats).
      *                                     The bundle passes the application's `logger` service when there is one.
+     * @param list<string> $transportsWithAFailureTransport The names, in framework.messenger.transports, of the
+     *                                     transports that have a failure transport, their own or the global one.
+     *                                     The bundle fills it in. give_up_via 'nak' is refused for those.
      */
-    public function __construct(private readonly ?LoggerInterface $logger = null)
+    public function __construct(private readonly ?LoggerInterface $logger = null, private readonly array $transportsWithAFailureTransport = [])
     {
     }
 
@@ -62,7 +68,43 @@ class NatsTransportFactory implements TransportFactoryInterface
      */
     public function createTransport(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options, SerializerInterface $serializer): TransportInterface
     {
-        return new NatsTransport($dsn, $options, $serializer, $this->logger);
+        $transport = new NatsTransport($dsn, $options, $serializer, $this->logger);
+        $this->assertNoFailureTransportWhenTheMessageStaysInTheStream($dsn, $options);
+
+        return $transport;
+    }
+
+    /**
+     * Refuses give_up_via 'nak' for a transport that has a failure transport.
+     *
+     * With give_up_via 'nak' a message Symfony gives up on stays in the stream. Symfony's failure transport listener
+     * sends a copy of every such message to the transport's failure transport, and a transport cannot stop a
+     * listener, so the message would exist twice. FrameworkBundle passes each transport's name in its options, and
+     * the bundle passes the names of the transports with a failure transport, so the two can be compared here,
+     * where the DSN is resolved, an environment variable included.
+     *
+     * @param array<string, mixed> $options
+     *
+     * @throws InvalidArgumentException When the transport has a failure transport and give_up_via is 'nak'.
+     */
+    private function assertNoFailureTransportWhenTheMessageStaysInTheStream(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options): void
+    {
+        $name = $options['transport_name'] ?? null;
+        if (!is_string($name) || !in_array($name, $this->transportsWithAFailureTransport, true)) {
+            return;
+        }
+
+        if ((new NatsTransportConfigurationBuilder())->build($dsn, $options)->giveUpVia() !== GiveUpVia::NAK) {
+            return;
+        }
+
+        throw new InvalidArgumentException(sprintf(
+            "The transport \"%s\" has give_up_via 'nak' and a failure transport: a message Symfony gives up on would stay in"
+            . ' the stream and be copied to the failure transport as well. Remove the failure transport from this'
+            . ' transport (a global framework.messenger.failure_transport applies to every transport), or use'
+            . " give_up_via 'term'.",
+            $name,
+        ));
     }
 
     /**

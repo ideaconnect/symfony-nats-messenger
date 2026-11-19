@@ -240,4 +240,68 @@ class NatsTransportFactoryTest extends TestCase
 
         return $options->logger;
     }
+
+    /**
+     * give_up_via 'nak' leaves a message Symfony gives up on in the stream, so a transport that also has a failure
+     * transport would have it twice: the factory refuses the two together, whether the option is in the options or
+     * in the DSN. FrameworkBundle passes the transport's name in the options, and the bundle the names of the
+     * transports with a failure transport.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[Test]
+    #[\PHPUnit\Framework\Attributes\DataProvider('deadInPlaceOptions')]
+    public function createTransport_RefusesGiveUpViaNakForATransportWithAFailureTransport(string $dsn, array $options): void
+    {
+        $factory = new NatsTransportFactory(null, ['other', 'async']);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("The transport \"async\" has give_up_via 'nak' and a failure transport: a message Symfony gives up on would stay in the stream and be copied to the failure transport as well. Remove the failure transport from this transport (a global framework.messenger.failure_transport applies to every transport), or use give_up_via 'term'.");
+
+        $factory->createTransport($dsn, $options + ['transport_name' => 'async'], $this->mockSerializer);
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function deadInPlaceOptions(): iterable
+    {
+        $dsn = 'nats-jetstream://localhost:4222/test-stream/test-topic';
+
+        yield 'in the options' => [$dsn, ['retry_via' => 'nak', 'give_up_via' => 'nak', 'max_deliver' => 4]];
+        yield 'in the DSN' => [$dsn . '?retry_via=nak&give_up_via=nak&max_deliver=4', []];
+    }
+
+    /**
+     * Everything else is created: give_up_via 'nak' on a transport without a failure transport, on one that is not
+     * in the list, on one without a name, and a transport with a failure transport and give_up_via 'term' or unset.
+     *
+     * @param list<string>         $transportsWithAFailureTransport
+     * @param array<string, mixed> $options
+     */
+    #[Test]
+    #[\PHPUnit\Framework\Attributes\DataProvider('combinationsTheFactoryAccepts')]
+    public function createTransport_AcceptsGiveUpViaNakWithoutAFailureTransportAndAFailureTransportWithoutIt(array $transportsWithAFailureTransport, array $options): void
+    {
+        $factory = new NatsTransportFactory(null, $transportsWithAFailureTransport);
+
+        $transport = $factory->createTransport('nats-jetstream://localhost:4222/test-stream/test-topic', $options, $this->mockSerializer);
+
+        $this->assertInstanceOf(NatsTransport::class, $transport);
+    }
+
+    /**
+     * @return iterable<string, array{list<string>, array<string, mixed>}>
+     */
+    public static function combinationsTheFactoryAccepts(): iterable
+    {
+        $deadInPlace = ['retry_via' => 'nak', 'give_up_via' => 'nak', 'max_deliver' => 4];
+
+        yield 'nak, no transport has a failure transport' => [[], $deadInPlace + ['transport_name' => 'async']];
+        yield 'nak, another transport has a failure transport' => [['other'], $deadInPlace + ['transport_name' => 'async']];
+        yield 'nak, a transport without a name' => [['async'], $deadInPlace];
+        yield 'nak, a name that is no string' => [['async'], $deadInPlace + ['transport_name' => 7]];
+        yield 'term, with a failure transport' => [['async'], ['retry_via' => 'nak', 'give_up_via' => 'term', 'transport_name' => 'async']];
+        yield 'not set, with a failure transport' => [['async'], ['retry_via' => 'nak', 'transport_name' => 'async']];
+    }
 }

@@ -82,8 +82,6 @@ final class NatsTransportConfigurationBuilder
         TransportOption::RETRY_VIA->value => null,
         // null reads as 'term'.
         TransportOption::GIVE_UP_VIA->value => null,
-        // FrameworkBundle sets it; null for a transport built without it.
-        TransportOption::TRANSPORT_NAME->value => null,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
         TransportOption::MAX_DELIVER->value => null,

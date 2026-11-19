@@ -2708,13 +2708,4 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_via' => 'nak', 'give_up_via' => 'nak']);
     }
-
-    public function testTransportNameIsTheOneFrameworkBundlePasses(): void
-    {
-        $builder = new NatsTransportConfigurationBuilder();
-
-        self::assertNull($builder->build(self::VALID_DSN, [])->transportName());
-        self::assertNull($builder->build(self::VALID_DSN, ['transport_name' => '  '])->transportName());
-        self::assertSame('async', $builder->build(self::VALID_DSN, ['transport_name' => 'async'])->transportName());
-    }
 }

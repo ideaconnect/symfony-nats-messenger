@@ -476,6 +476,59 @@ final class IDCTNatsMessengerBundleTest extends TestCase
     }
 
     /**
+     * A transport with give_up_via 'nak' leaves a message Symfony gives up on in the stream, so the bundle tells
+     * the factory which transports have a failure transport, and the factory refuses the combination: with a
+     * global failure transport, and with one of the transport's own.
+     *
+     * @param array<string, mixed> $messenger
+     */
+    #[Test]
+    #[DataProvider('deadInPlaceWithAFailureTransport')]
+    public function aTransportThatLeavesMessagesInTheStreamIsRefusedAFailureTransport(array $messenger): void
+    {
+        $kernel = $this->kernel([new IDCTNatsMessengerBundle()], $messenger);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("The transport \"nats\" has give_up_via 'nak' and a failure transport");
+
+        $kernel->testContainer()->get('messenger.transport.nats');
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function deadInPlaceWithAFailureTransport(): iterable
+    {
+        $deadInPlace = ['dsn' => self::NATS_DSN, 'options' => ['retry_via' => 'nak', 'give_up_via' => 'nak', 'max_deliver' => 4]];
+        $failed = 'nats-jetstream://localhost:4222/failed/failed';
+
+        yield 'a global failure transport' => [['failure_transport' => 'failed', 'transports' => ['nats' => $deadInPlace, 'failed' => $failed]]];
+        yield 'a failure transport of its own' => [['transports' => ['nats' => $deadInPlace + ['failure_transport' => 'failed'], 'failed' => $failed]]];
+        yield 'the option in the DSN' => [['failure_transport' => 'failed', 'transports' => [
+            'nats' => self::NATS_DSN . '?retry_via=nak&give_up_via=nak&max_deliver=4',
+            'failed' => $failed,
+        ]]];
+    }
+
+    /**
+     * Without a failure transport such a transport is created, and so is every other transport of an application
+     * that gives only some of its transports a failure transport.
+     */
+    #[Test]
+    public function aTransportThatLeavesMessagesInTheStreamWorksNextToTransportsWithAFailureTransport(): void
+    {
+        $kernel = $this->kernel([new IDCTNatsMessengerBundle()], ['transports' => [
+            'nats' => ['dsn' => self::NATS_DSN, 'options' => ['retry_via' => 'nak', 'give_up_via' => 'nak', 'max_deliver' => 4]],
+            'other' => ['dsn' => 'nats-jetstream://localhost:4222/other/other', 'options' => ['retry_via' => 'nak'], 'failure_transport' => 'failed'],
+            'failed' => 'nats-jetstream://localhost:4222/failed/failed',
+        ]]);
+
+        $this->assertInstanceOf(NatsTransport::class, $kernel->testContainer()->get('messenger.transport.nats'));
+        $this->assertInstanceOf(NatsTransport::class, $kernel->testContainer()->get('messenger.transport.other'));
+        $this->assertInstanceOf(NatsTransport::class, $kernel->testContainer()->get('messenger.transport.failed'));
+    }
+
+    /**
      * @param list<BundleInterface> $bundles
      * @param array<string, mixed>  $messenger
      * @param list<string>          $files

@@ -65,8 +65,6 @@ enum TransportOption: string
     case RETRY_HANDLER = 'retry_handler';
     case RETRY_VIA = 'retry_via';
     case GIVE_UP_VIA = 'give_up_via';
-    /** The transport's name in framework.messenger.transports, which FrameworkBundle adds to every transport's options. */
-    case TRANSPORT_NAME = 'transport_name';
     case NAK_DELAY = 'nak_delay';
     case ACK_WAIT = 'ack_wait';
     case MAX_DELIVER = 'max_deliver';

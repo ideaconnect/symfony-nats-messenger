@@ -16,10 +16,12 @@ namespace IDCT\NatsMessenger\Options;
  *   Symfony gives up on earlier (a failure it never retries, or a max_deliver above max_retries + 1) is TERMed on
  *   a stream with limits retention, which keeps it, and its handler runs once. On a stream configured with
  *   work-queue or interest retention, where a TERM would remove it, it is NAKed too, so its handler runs again
- *   until the last delivery. No failure transport receives a copy, when the transport knows its name
- *   ({@see NatsTransportConfiguration::transportName()}): the message stays where it is instead.
+ *   until the last delivery.
  *
- * The builder refuses NAK without {@see RetryVia::NAK} and without max_deliver.
+ * The builder refuses NAK without {@see RetryVia::NAK} and without max_deliver. A transport with NAK must have no
+ * failure transport: Symfony's failure transport listener sends a copy of every message Symfony gives up on, and
+ * the message would then exist twice. In an application the bundle tells the factory which transports have one,
+ * and {@see \IDCT\NatsMessenger\NatsTransportFactory::createTransport()} refuses the combination.
  *
  * @see NatsTransportConfiguration::giveUpVia() Returns the active value.
  */

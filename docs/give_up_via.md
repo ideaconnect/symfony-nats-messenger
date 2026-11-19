@@ -10,7 +10,7 @@ With `retry_via: nak`, Symfony's retry strategy decides whether and when NATS re
 | `give_up_via` | A message Symfony gives up on |
 |---|---|
 | `term` (default, 5.9.0 behaviour) | TERMed. A failure transport gets one copy. A limits stream keeps it, a work-queue or interest stream removes it. |
-| `nak` | Stays in the stream, whatever its retention. NATS publishes MAX_DELIVERIES. No failure transport gets a copy. |
+| `nak` | Stays in the stream, whatever its retention. NATS publishes MAX_DELIVERIES. The transport must have no failure transport. |
 
 ```yaml
 framework:
@@ -23,6 +23,7 @@ framework:
                     give_up_via: nak
                     max_deliver: 4        # required: the retry strategy's max_retries + 1
                 retry_strategy: { max_retries: 3, delay: 1000, multiplier: 2 }
+                # no failure_transport here, and no global framework.messenger.failure_transport
 ```
 
 With `max_retries: 3` and `max_deliver: 4`: deliveries 1 to 3 are NAKed with Symfony's delay (that is
@@ -35,23 +36,34 @@ the next pull.
 | Place | What it does |
 |---|---|
 | `Options/GiveUpVia.php` | The enum `TERM`, `NAK`. |
-| `Options/TransportOption.php` | The keys `give_up_via` and `transport_name`. |
+| `Options/TransportOption.php` | The key `give_up_via`. |
 | `NatsTransportConfigurationBuilder::resolveGiveUpVia()` | Refuses `nak` without `retry_via: nak`, and without `max_deliver`. |
-| `NatsTransportConfiguration::giveUpVia()`, `transportName()` | The accessors. `transport_name` is the option FrameworkBundle adds to every transport it creates. |
-| `NatsTransport::reject()` → `leavesInTheStreamByANak()` | The one decision point. `reject()` is what Symfony's Worker calls when `willRetry()` is false. A plain NAK instead of the TERM of `handleFailedDelivery()`. |
-| `NatsTransport::get()` → `withoutAFailureTransportCopy()` | Adds a `SentToFailureTransportStamp` naming the transport to every received message. |
+| `NatsTransportConfiguration::giveUpVia()` | The accessor. |
+| `NatsTransport::reject()` → `leavesInTheStreamByANak()` | The one decision point in the transport. `reject()` is what Symfony's Worker calls when `willRetry()` is false. A plain NAK instead of the TERM of `handleFailedDelivery()`. |
+| `IDCTNatsMessengerBundle::build()` | A compiler pass that gives the factory the names of the transports with a failure transport. |
+| `NatsTransportFactory::createTransport()` | Refuses `give_up_via: nak` for a transport on that list. |
 
-Nothing changes in `send()`, `ack()` or `nakForRetry()`: retries work as in 5.9.0.
+Nothing changes in `send()`, `get()`, `ack()` or `nakForRetry()`: retries work as in 5.9.0.
 
 ## The two problems and how each is solved
 
 **1. The failure transport would get a copy too.** This is why upstream kept "dead in place" out of #113:
 Symfony's `SendFailedMessageToFailureTransportListener` sends a copy whenever `willRetry()` is false, and a
-transport cannot stop a listener. But the listener skips a message that carries a `SentToFailureTransportStamp`
-whose receiver name is the transport it came from. Symfony's own comment calls that the way to "opt out of the
-failure transport". So `get()` adds that stamp. It needs the transport's name, which FrameworkBundle passes as the
-option `transport_name`. A transport built by hand without it adds no stamp, and a failure transport then gets its
-copy.
+transport cannot stop a listener. The answer is Messenger's own configuration: such a transport has no failure
+transport. Messenger has no per-transport opt-out from a global `framework.messenger.failure_transport`, so the
+global one has to go, with `failure_transport` set on the other transports one by one.
+
+The bundle enforces it. FrameworkBundle gives the failure listener a service locator keyed by the name of every
+transport that has a failure transport, its own or the global one. The bundle's compiler pass reads those names
+and passes them to `NatsTransportFactory`. FrameworkBundle also adds `transport_name` to each transport's options.
+`createTransport()` compares the two and throws when a transport with `give_up_via: nak` is on the list. The check
+runs when the transport is created, so it also sees an option that comes from a DSN in an environment variable.
+
+A first version added a `SentToFailureTransportStamp` to every received message, which makes the listener skip
+it. That worked, but it marks a message as sent to a failure transport when it was not, and relies on a listener
+detail that is not a public contract. It is gone.
+
+Without the bundle, or with a transport built by hand, nothing checks: the configuration has to be right.
 
 **2. A message Symfony gives up on before the last delivery.** That is a failure Symfony never retries
 (`UnrecoverableMessageHandlingException`), or a `max_deliver` above `max_retries + 1`. Only the last delivery can
@@ -64,6 +76,17 @@ end in MAX_DELIVERIES; a NAK on an earlier one brings the message back.
 The retention is read from the transport's `stream_retention` option. Without the option the stream is taken to
 have limits retention, the server's default.
 
+## What it costs next to Messenger's own way
+
+Messenger's way to keep a message that failed for good is the failure transport, which 5.9.0 supports with
+`give_up_via: term`. With `nak` the message stays in its stream instead, so:
+
+- the `messenger:failed:show`, `:retry` and `:remove` commands do not see it;
+- the exception is in the logs only, not stored with the message;
+- the signal is the MAX_DELIVERIES advisory (or MSG_TERMINATED for an early give-up on a limits stream).
+
+`WorkerMessageFailedEvent` is dispatched as always, with `willRetry()` false at the end.
+
 ## Measured
 
 nats-server 2.15.0 in Docker, client 2.29.0, symfony/messenger 8.1.11, Symfony's own Worker with its retry and
@@ -72,11 +95,11 @@ failure-transport listeners (`examples/give-up-via-nak.php`, 15 s). Retry strate
 
 | Case | Result |
 |---|---|
-| Keeps failing, limits stream | 4 runs, retries 0.21, 0.40, 0.81 s apart. MAX_DELIVERIES. 1 message in the stream, 0 failure-transport copies. |
+| Keeps failing, limits stream | 4 runs, retries 0.21, 0.40, 0.80 s apart. MAX_DELIVERIES. 1 message in the stream. |
 | Keeps failing, work-queue stream | The same: 1 message in the stream. |
-| Unrecoverable, limits stream | 1 run, MSG_TERMINATED. 1 message in the stream, 0 copies. |
-| Unrecoverable, work-queue stream | 4 runs back to back, MAX_DELIVERIES. 1 message in the stream, 0 copies. |
-| Keeps failing, transport without a name | 1 message in the stream, and 1 failure-transport copy. |
+| Unrecoverable, limits stream | 1 run, MSG_TERMINATED. 1 message in the stream. |
+| Unrecoverable, work-queue stream | 4 runs back to back, MAX_DELIVERIES. 1 message in the stream. |
+| The factory, told the transport has a failure transport | Refuses to create it. |
 
 ## Limits
 
@@ -84,7 +107,6 @@ failure-transport listeners (`examples/give-up-via-nak.php`, 15 s). Retry strate
   retry of the last delivery as a copy, and that copy is a new message with its own deliveries. Higher: Symfony
   gives up early, which is case 2 above.
 - A delivery nobody settled (a worker that crashed) counts as a retry and as a delivery.
-- The stamp is on every received message of such a transport, so a failure transport never gets anything from it.
 - The retention is the configured one. A stream that exists with another retention than the option says is not
   detected.
 - No README, CHANGELOG or TESTS.md entries, no Behat feature and no mutation run yet.
