@@ -403,6 +403,31 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns how a message Symfony's retry strategy gives up on is settled in NATS ({@see GiveUpVia}).
+     *
+     * {@see GiveUpVia::TERM} unless give_up_via is 'nak' with {@see RetryVia::NAK}, which the builder requires
+     * for it.
+     */
+    public function giveUpVia(): GiveUpVia
+    {
+        if ($this->retryVia() !== RetryVia::NAK) {
+            return GiveUpVia::TERM;
+        }
+
+        return GiveUpVia::tryFrom(TypeCoercion::stringValue($this->options[TransportOption::GIVE_UP_VIA->value] ?? null))
+            ?? GiveUpVia::TERM;
+    }
+
+    /**
+     * Returns the transport's name in framework.messenger.transports, which FrameworkBundle adds to the options
+     * of every transport it creates; null for a transport built without it.
+     */
+    public function transportName(): ?string
+    {
+        return TypeCoercion::nonBlankStringValue($this->options[TransportOption::TRANSPORT_NAME->value] ?? null);
+    }
+
+    /**
      * Returns how a retry that Symfony's retry strategy decides on reaches NATS ({@see RetryVia}).
      *
      * {@see RetryVia::COPY} when retry_via is not set. Null with {@see RetryHandler::NATS}, where Symfony's retry

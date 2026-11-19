@@ -9,6 +9,7 @@ use IDCT\NATS\JetStream\Enum\DiscardPolicy;
 use IDCT\NATS\JetStream\Enum\ReplayPolicy;
 use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
+use IDCT\NatsMessenger\Options\GiveUpVia;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\RetryHandler;
@@ -2654,5 +2655,66 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         self::assertSame(RetryVia::COPY, $builder->build(self::VALID_DSN, $options)->retryVia());
         self::assertSame([1000, 2000], $builder->build(self::VALID_DSN, $options + ['retry_via' => 'copy'])->backoffMs());
+    }
+
+    public function testGiveUpViaIsTermUnlessSetToNakWithNakRetriesAndMaxDeliver(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        self::assertSame(GiveUpVia::TERM, $builder->build(self::VALID_DSN, [])->giveUpVia());
+        self::assertSame(GiveUpVia::TERM, $builder->build(self::VALID_DSN, ['retry_via' => 'nak'])->giveUpVia());
+        self::assertSame(GiveUpVia::TERM, $builder->build(self::VALID_DSN, ['give_up_via' => 'term'])->giveUpVia());
+        self::assertSame(GiveUpVia::TERM, $builder->build(self::VALID_DSN, ['retry_handler' => 'nats', 'give_up_via' => 'term'])->giveUpVia());
+        self::assertSame(GiveUpVia::NAK, $builder->build(self::VALID_DSN, ['retry_via' => 'nak', 'give_up_via' => 'nak', 'max_deliver' => 4])->giveUpVia());
+        self::assertSame(GiveUpVia::NAK, $builder->build(self::VALID_DSN . '?retry_via=nak&give_up_via=nak&max_deliver=4', [])->giveUpVia());
+        // The transport's options win over the DSN's query, as for every option.
+        self::assertSame(GiveUpVia::TERM, $builder->build(self::VALID_DSN . '?retry_via=nak&give_up_via=nak&max_deliver=4', ['give_up_via' => 'term'])->giveUpVia());
+    }
+
+    public function testBuildWithInvalidGiveUpViaThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("Invalid give_up_via option 'keep'. Allowed values are 'term' or 'nak'.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_via' => 'nak', 'give_up_via' => 'keep', 'max_deliver' => 4]);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('giveUpViaNakWithoutNakRetries')]
+    public function testBuildRefusesGiveUpViaNakWithoutNakRetries(array $options): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("The give_up_via option can be 'nak' only with retry_via 'nak': it relies on the retry count taken from the delivery count.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, $options + ['give_up_via' => 'nak', 'max_deliver' => 4]);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function giveUpViaNakWithoutNakRetries(): iterable
+    {
+        yield 'retry_via not set' => [[]];
+        yield 'retry_via copy' => [['retry_via' => 'copy']];
+        yield 'nats mode' => [['retry_handler' => 'nats']];
+    }
+
+    public function testBuildRefusesGiveUpViaNakWithoutMaxDeliver(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("give_up_via 'nak' needs max_deliver: NATS keeps a message in the stream after the last delivery max_deliver allows. Set it to the retry strategy's max_retries + 1.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_via' => 'nak', 'give_up_via' => 'nak']);
+    }
+
+    public function testTransportNameIsTheOneFrameworkBundlePasses(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        self::assertNull($builder->build(self::VALID_DSN, [])->transportName());
+        self::assertNull($builder->build(self::VALID_DSN, ['transport_name' => '  '])->transportName());
+        self::assertSame('async', $builder->build(self::VALID_DSN, ['transport_name' => 'async'])->transportName());
     }
 }

@@ -21,11 +21,13 @@ use IDCT\NATS\JetStream\Enum\AckPolicy;
 use IDCT\NATS\JetStream\Enum\DeliverPolicy;
 use IDCT\NATS\JetStream\Enum\NoRespondersCause;
 use IDCT\NATS\JetStream\Enum\ReplayPolicy;
+use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\JsMessageMetadata;
 use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NATS\JetStream\Schedule;
+use IDCT\NatsMessenger\Options\GiveUpVia;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Options\RetryHandler;
@@ -580,8 +582,30 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 throw $e;
             }
 
-            yield $this->withDeliveryCountAsRetryCount($decoded->with(new TransportMessageIdStamp($replyTo)), $message);
+            yield $this->withoutAFailureTransportCopy($this->withDeliveryCountAsRetryCount($decoded->with(new TransportMessageIdStamp($replyTo)), $message));
         }
+    }
+
+    /**
+     * With give_up_via=nak, keeps Symfony's failure transport from getting a copy of a message this transport
+     * leaves in the stream, where the message would otherwise exist twice.
+     *
+     * Symfony's SendFailedMessageToFailureTransportListener sends a copy of every message Symfony gives up on, and
+     * a transport cannot stop a listener. The listener itself skips a message that carries a
+     * SentToFailureTransportStamp naming the transport it was received from: Symfony's way for a message to opt
+     * out of the failure transport. So each received message gets that stamp. It needs the transport's name,
+     * which FrameworkBundle passes in the options; a transport built without it adds nothing, and a failure
+     * transport then gets its copy. FailedMessageProcessingMiddleware reads the stamp too, and marks the message
+     * as received from the transport it names, which it was.
+     */
+    private function withoutAFailureTransportCopy(Envelope $envelope): Envelope
+    {
+        $name = $this->configuration->transportName();
+        if ($name === null || $this->configuration->giveUpVia() !== GiveUpVia::NAK) {
+            return $envelope;
+        }
+
+        return $envelope->with(new SentToFailureTransportStamp($name));
     }
 
     /**
@@ -753,7 +777,38 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return;
         }
 
+        if ($this->leavesInTheStreamByANak($id)) {
+            $this->awaitOnConnection(fn (): Future => $this->jetStream()->nak($this->buildAckMessage($id)));
+
+            return;
+        }
+
         $this->handleFailedDelivery($id);
+    }
+
+    /**
+     * Whether, with give_up_via=nak ("dead in place"), a delivery Symfony gives up on is NAKed without a delay
+     * rather than TERMed, so that the message stays in the stream.
+     *
+     * - The last delivery max_deliver allows: always. NATS redelivers nothing after it, keeps the message whatever
+     *   the stream's retention, and publishes the MAX_DELIVERIES advisory at the next pull. A delay on that NAK
+     *   would hold the advisory back for as long.
+     * - An earlier delivery (a failure Symfony never retries, or a max_deliver above max_retries + 1): only on a
+     *   stream configured with work-queue or interest retention, where a TERM removes the message. The NAK brings
+     *   it back at once, and its handler runs again, until the last delivery. On a stream with limits retention a
+     *   TERM keeps the message, so it is TERMed there and its handler runs once.
+     *
+     * The retention is the transport's stream_retention option; without it the stream is taken to have limits
+     * retention, the server's default.
+     */
+    private function leavesInTheStreamByANak(string $id): bool
+    {
+        if ($this->configuration->giveUpVia() !== GiveUpVia::NAK) {
+            return false;
+        }
+
+        return $this->isTheLastDelivery($id)
+            || in_array($this->configuration->streamRetention(), [RetentionPolicy::WorkQueue, RetentionPolicy::Interest], true);
     }
 
     /**

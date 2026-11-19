@@ -8185,4 +8185,195 @@ final class NatsTransportTest extends TestCase
         return version_compare($version, '8.1.10', '>=')
             || (version_compare($version, '8.0.0', '<') && version_compare($version, '7.4.22', '>='));
     }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // give_up_via=nak, "dead in place": a message Symfony gives up on stays in the stream.
+    // ---------------------------------------------------------------------------------------------------------
+
+    /** NAK retries, a message Symfony gives up on left in the stream; max_deliver 4 goes with max_retries 3. */
+    private const DEAD_IN_PLACE = self::NAK_RETRIES + ['give_up_via' => 'nak', 'max_deliver' => 4];
+
+    /**
+     * The last delivery max_deliver allows, which Symfony does not retry, gets a plain NAK and no TERM: NATS
+     * redelivers nothing after it, keeps the message and publishes MAX_DELIVERIES.
+     */
+    public function testDeadInPlaceNaksTheLastDeliverySymfonyGivesUpOn(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::never())->method('nakWithDelay');
+        $jetStream->expects(self::once())->method('nak')
+            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === '$JS.ACK.test-stream.client.4.1.4.0.0'))
+            ->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::DEAD_IN_PLACE);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->reject(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.4.1.4.0.0')]));
+    }
+
+    /**
+     * A delivery Symfony gives up on before the last one (a failure it never retries, or a max_deliver above
+     * max_retries + 1) is TERMed as with give_up_via=term: a NAK would run its handler again. So is one whose
+     * token is no JetStream reply subject, and every delivery without give_up_via=nak, the last one included.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('deliveriesThatAreTermed')]
+    public function testDeadInPlaceTermsWhatIsNotTheLastDelivery(array $options, string $delivery): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('nak');
+        $jetStream->expects(self::never())->method('nakWithDelay');
+        $jetStream->expects(self::once())->method('term')->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->reject(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp($delivery)]));
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function deliveriesThatAreTermed(): iterable
+    {
+        yield 'the delivery before the last' => [self::DEAD_IN_PLACE, '$JS.ACK.test-stream.client.3.1.3.0.0'];
+        yield 'the first delivery' => [self::DEAD_IN_PLACE, '$JS.ACK.test-stream.client.1.1.1.0.0'];
+        yield 'a token that is no JetStream reply subject' => [self::DEAD_IN_PLACE, 'delivery-1'];
+        yield 'the last delivery, give_up_via=term' => [self::NAK_RETRIES + ['give_up_via' => 'term', 'max_deliver' => 4], '$JS.ACK.test-stream.client.4.1.4.0.0'];
+        yield 'the last delivery, give_up_via not set' => [self::NAK_RETRIES + ['max_deliver' => 4], '$JS.ACK.test-stream.client.4.1.4.0.0'];
+        yield 'the first delivery, limits retention named' => [self::DEAD_IN_PLACE + ['stream_retention' => 'limits'], '$JS.ACK.test-stream.client.1.1.1.0.0'];
+        yield 'the first delivery, work-queue retention, give_up_via=term' => [self::NAK_RETRIES + ['give_up_via' => 'term', 'max_deliver' => 4, 'stream_retention' => 'workqueue'], '$JS.ACK.test-stream.client.1.1.1.0.0'];
+    }
+
+    /**
+     * On a stream configured with work-queue or interest retention a TERM would remove the message, so a delivery
+     * Symfony gives up on before the last one is NAKed without a delay too: it comes back at once, until the last
+     * delivery leaves it in the stream.
+     */
+    #[DataProvider('retentionsATermRemovesFrom')]
+    public function testDeadInPlaceNaksAnEarlierDeliveryWhereATermWouldRemoveTheMessage(string $retention): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::never())->method('nakWithDelay');
+        $jetStream->expects(self::once())->method('nak')->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::DEAD_IN_PLACE + ['stream_retention' => $retention]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->reject(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.1.1.1.0.0')]));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function retentionsATermRemovesFrom(): iterable
+    {
+        yield 'work-queue' => ['workqueue'];
+        yield 'interest' => ['interest'];
+    }
+
+    /**
+     * A received message carries a SentToFailureTransportStamp naming the transport, which makes Symfony's failure
+     * transport listener skip it: the message stays in the stream and must not exist a second time. Only with
+     * give_up_via=nak, and only when the transport knows its name, which FrameworkBundle passes in the options.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('failureTransportOptOuts')]
+    public function testDeadInPlaceKeepsTheFailureTransportFromGettingACopy(array $options, ?string $optsOutOf): void
+    {
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.2.7.8.0.0', payload: 'payload'),
+        ]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $this->decodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+        $envelopes = iterator_to_array($transport->get());
+
+        self::assertCount(1, $envelopes);
+        self::assertSame($optsOutOf, $envelopes[0]->last(SentToFailureTransportStamp::class)?->getOriginalReceiverName());
+        // The retry count of retry_via=nak is there either way.
+        self::assertSame(1, RedeliveryStamp::getRetryCountFromEnvelope($envelopes[0]));
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string|null}>
+     */
+    public static function failureTransportOptOuts(): iterable
+    {
+        yield 'give_up_via=nak, named by FrameworkBundle' => [self::DEAD_IN_PLACE + ['transport_name' => 'async'], 'async'];
+        yield 'give_up_via=nak, no name' => [self::DEAD_IN_PLACE, null];
+        yield 'give_up_via=term, named' => [self::NAK_RETRIES + ['give_up_via' => 'term', 'transport_name' => 'async'], null];
+        yield 'give_up_via not set, named' => [self::NAK_RETRIES + ['transport_name' => 'async'], null];
+    }
+
+    /**
+     * Through Symfony's Worker, its retry listener and its failure transport listener, with max_deliver at
+     * max_retries + 1: two NAKs with Symfony's delay, then a plain NAK of the last delivery, and the failure
+     * transport gets nothing. Without the transport's name it gets its copy.
+     */
+    #[DataProvider('namedOrNot')]
+    public function testDeadInPlaceThroughTheWorkerLeavesTheMessageInTheStream(?string $name, int $failureTransportCopies): void
+    {
+        $settled = [];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'p'),
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.2.1.2.0.0', payload: 'p'),
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.3.1.3.0.0', payload: 'p'),
+        ]));
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::never())->method('ack');
+        $jetStream->method('nakWithDelay')->willReturnCallback(static function (NatsMessage $message, int $delayMs) use (&$settled): Future {
+            $settled[] = 'nak ' . $delayMs . ' ' . $message->replyTo;
+
+            return Future::complete();
+        });
+        $jetStream->method('nak')->willReturnCallback(static function (NatsMessage $message) use (&$settled): Future {
+            $settled[] = 'nak ' . $message->replyTo;
+
+            return Future::complete();
+        });
+
+        $options = ['max_deliver' => 3] + self::DEAD_IN_PLACE + ($name === null ? [] : ['transport_name' => $name]);
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $this->decodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+
+        $failed = new \Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport();
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function (): void {
+                throw new \RuntimeException('always fails');
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($transport),
+            self::singleServiceLocator(new MultiplierRetryStrategy(2, 1000, 2, 0, 0.0)),
+        ));
+        $dispatcher->addSubscriber(new \Symfony\Component\Messenger\EventListener\SendFailedMessageToFailureTransportListener(self::singleServiceLocator($failed)));
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(3));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
+
+        self::assertSame([
+            'nak 1000 $JS.ACK.test-stream.client.1.1.1.0.0',
+            'nak 2000 $JS.ACK.test-stream.client.2.1.2.0.0',
+            'nak $JS.ACK.test-stream.client.3.1.3.0.0',
+        ], $settled);
+        self::assertCount($failureTransportCopies, $failed->getSent());
+    }
+
+    /**
+     * @return iterable<string, array{string|null, int}>
+     */
+    public static function namedOrNot(): iterable
+    {
+        yield 'the name FrameworkBundle passes' => ['async', 0];
+        yield 'no name' => [null, 1];
+    }
 }

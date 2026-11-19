@@ -80,6 +80,10 @@ final class NatsTransportConfigurationBuilder
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
         // null reads as 'copy' in symfony mode, and lets the builder tell a value someone set from the default.
         TransportOption::RETRY_VIA->value => null,
+        // null reads as 'term'.
+        TransportOption::GIVE_UP_VIA->value => null,
+        // FrameworkBundle sets it; null for a transport built without it.
+        TransportOption::TRANSPORT_NAME->value => null,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
         TransportOption::MAX_DELIVER->value => null,
@@ -305,6 +309,53 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
+     * Resolves give_up_via: null when it is not set, which reads as {@see GiveUpVia::TERM}.
+     *
+     * 'nak' leaves a message Symfony gives up on in the stream by NAKing the last delivery max_deliver allows. That
+     * needs the retry count and the settling of retry_via 'nak', and a max_deliver: without one no delivery is the
+     * last, and every message would be TERMed as with 'term'.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array, max_deliver already validated
+     *
+     * @throws InvalidArgumentException When the value is unknown, or 'nak' without retry_via 'nak' or max_deliver.
+     */
+    private function resolveGiveUpVia(#[\SensitiveParameter] array $configuration, ?RetryVia $retryVia): ?GiveUpVia
+    {
+        $value = $configuration[TransportOption::GIVE_UP_VIA->value] ?? null;
+        if ($value === null) {
+            return null;
+        }
+
+        $giveUpVia = GiveUpVia::tryFrom(TypeCoercion::stringValue($value));
+        if ($giveUpVia === null) {
+            throw new InvalidArgumentException(sprintf(
+                "Invalid give_up_via option%s. Allowed values are 'term' or 'nak'.",
+                $this->quotedIfPlain(TypeCoercion::stringValue($value)),
+            ));
+        }
+
+        if ($giveUpVia === GiveUpVia::TERM) {
+            return $giveUpVia;
+        }
+
+        if ($retryVia !== RetryVia::NAK) {
+            throw new InvalidArgumentException(
+                "The give_up_via option can be 'nak' only with retry_via 'nak': it relies on the retry count taken from"
+                . ' the delivery count.'
+            );
+        }
+
+        if (($configuration[TransportOption::MAX_DELIVER->value] ?? null) === null) {
+            throw new InvalidArgumentException(
+                "give_up_via 'nak' needs max_deliver: NATS keeps a message in the stream after the last delivery"
+                . " max_deliver allows. Set it to the retry strategy's max_retries + 1."
+            );
+        }
+
+        return $giveUpVia;
+    }
+
+    /**
      * Refuses, with retry_via 'nak', the two options that would change the delay Symfony's retry strategy computed.
      *
      * Only nats mode's NAKs read nak_delay, so it would never apply, although its name suggests it times the NAK
@@ -453,6 +504,11 @@ final class NatsTransportConfigurationBuilder
         $this->assertMaxDeliverExceedsBackoff($configuration);
         if ($retryVia === RetryVia::NAK) {
             $this->assertNoNatsRedeliveryTimingWithNakRetries($configuration);
+        }
+
+        $giveUpVia = $this->resolveGiveUpVia($configuration, $retryVia);
+        if ($giveUpVia !== null) {
+            $configuration[TransportOption::GIVE_UP_VIA->value] = $giveUpVia->value;
         }
         $this->assertDuplicateWindowNotExceedingMaxAge($configuration);
         $this->assertResendOnReconnect($configuration);
