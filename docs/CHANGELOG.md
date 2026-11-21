@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.9.1] - 2026-11-21
+
+A **patch** release with three fixes for 5.9.0, found while reviewing #119, and the client release they need (#120).
+With `retry_via: nak`, the retry of the consumer's last delivery is no longer NAKed and lost when the consumer's
+`max_deliver` is not the option's. `scheduled_messages` is refused on a stream with interest retention where nothing
+has interest in the delayed subjects, which dropped every delayed message, before `setup()` writes the stream. Nats mode
+TERMs a message that cannot be decoded, which NATS brought back for ever. The transport now requires
+`idct/php-nats-jetstream-client` `^2.30`.
+
+### Changed
+
+- **`idct/php-nats-jetstream-client` `^2.30`.** A request the server refuses for lack of permission fails at once with
+  `PermissionViolationException`, instead of a `TimeoutException` after `request_timeout`, and the transport tells
+  such a refusal from a failure of the connection: a worker whose user may not ask for consumer info finished a
+  failing message in 1.2 s instead of 6.2 s (`request_timeout` 5 s). A refusal does not make the next operation check
+  the connection: the server answered it and keeps the connection open.
+
+### Fixed
+
+- **`retry_via: nak` no longer loses a retry when the consumer's `max_deliver` is not the option's.** The transport
+  told the last delivery, whose retry has to go out as a copy, by the `max_deliver` option, while NATS applies the
+  consumer's own limit. With the option unset (the default) or at 5 on a consumer limited to 3, as another
+  configuration's setup or a change by hand leaves it, the retry of the third delivery was NAKed and NATS redelivered
+  nothing: 3 handler runs with `max_retries` 4, no failure-transport copy (measured on nats-server 2.15.2). The
+  transport now reads the consumer's limit at the first retry that needs it and again after a minute, follows it,
+  and warns once when it differs from the option. A user who may not ask for consumer info, whom the server refuses
+  at once (client 2.30.0), leaves the option to decide, with one warning, for that connection; a JetStream error, such
+  as a consumer that does not exist, leaves it to decide for that retry only; a read that fails on the connection, as
+  a dial during a server restart, makes the send of the retry fail, and the delivery comes back after `ack_wait`
+  rather than decided on a guess, which could NAK the retry of a last delivery. Now 5 runs and 1 failure-transport
+  copy. `isTheLastDelivery()`, `consumersMaxDeliver()`.
+- **`scheduled_messages` is refused on a stream with interest retention that nothing listens on.** NATS stores
+  nothing published to a subject no consumer has interest in on such a stream, and the transport's consumer reads the
+  topic alone, so every delayed message, published to `{topic}.delayed.{uuid}`, was dropped though its publish was
+  acknowledged. With `retry_via: copy`, Symfony's retry copy is such a message: a message that failed once ran once
+  and was gone, with no failure-transport copy, on one server and on three replicas (nats-server 2.15.2); with
+  `retry_via: nak` the retry of the last delivery `max_deliver` allows was lost the same way. NATS calls it intended
+  (ADR-51, nats-server issue #7408). `setup()` and a worker's first pull now read the stream's real retention and
+  consumers and refuse it with a `TransportException` that names the ways out, unless a consumer's filter covers the
+  delayed subjects. `setup()` refuses it before it creates or updates the stream, with the retention of the stream that
+  exists or the one it would create: NATS never turns a stream's schedules off once a write turned them on, so a
+  refusal after the write would make the first way out, turning `scheduled_messages` off, fail with "message
+  schedules can not be disabled". `assertTheStreamKeepsDelayedMessages()`, `assertTheStreamToSetUpKeepsDelayedMessages()`.
+
+- **Nats mode TERMs a message that cannot be decoded, instead of NAKing it.** A redelivery cannot decode it either.
+  When `get()` fails on it (this transport's igbinary serializer, and Symfony Messenger before 8.1), the worker stops
+  with the decode error, and NATS brought the NAKed message to every new worker, which stopped again: 6 of 6 worker
+  starts exited without `max_deliver` (nats-server 2.15.2). Symfony Messenger 8.1 delivers it as a
+  `MessageDecodingFailedException` that fails in the handler instead, and the NAK brought it back to the same worker:
+  two workers of 3 s got it 3769 times (Messenger 8.1.9). It is TERMed now in both cases, so only the worker that
+  pulled it stops, and only before 8.1. In symfony mode it was TERMed already, and on 8.1 Symfony's retry strategy
+  and failure transport handle it as any failure. `get()`, `isAMessageNatsModeCannotDecode()`.
+
+### Documentation
+
+- **A message stopped at `max_deliver` does not always stay in the stream.** `docs/symfony_retry_via.md` said it
+  does, and the README told nats mode to rely on NATS's handling of a message that keeps failing. Measured on
+  nats-server 2.10.29 to 2.15.2: NATS deletes it from an interest stream inside a cluster, from a replicated
+  work-queue stream before 2.12.5, and at a restart from an interest stream on a standalone server before 2.12.9. Both
+  documents now give the measured table and what to use on those streams.
+
 ## [5.9.0] - 2026-11-18
 
 A **minor** release. It adds `retry_via: nak` for symfony mode: Symfony's retry strategy still decides whether and when a

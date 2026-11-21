@@ -574,3 +574,21 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   93 of 93 on NATS 2.10.29 without the scheduled scenarios; 21 of 21 examples on each.
   CI on `9a7d1d4` (run 44318707618), before the docs-only commits that follow it, agrees on each count: PHP 8.2 with client
   2.29.0 and Symfony Messenger 7.4.0 (7.4.21 in the functional app), PHP 8.5 with 8.1.11, and NATS 2.10.29 with 7.4.23.
+
+## Dated snapshot: 2026-11-21
+
+- **5.9.1, a patch release** (#120), fixes three bugs of 5.9.0 the review of #119 found: with `retry_via: nak` the
+  consumer's own `max_deliver` decides the last delivery (the option's lost a retry when they differed); `scheduled_messages`
+  is refused on an interest stream nothing has interest in the delayed subjects of, before `setup()` writes the stream; nats
+  mode TERMs a message that cannot be decoded. It requires client `^2.30` (2.30.0, released the same day from
+  php-nats-jetstream-client#255: a request refused for lack of permission fails at once with `PermissionViolationException`).
+  Only that refusal latches the transport's reads of the consumer and the stream; a failure of the connection propagates.
+- **#119 (`give_up_via: nak`) is declined,** with a comment; `docs/PRs/PR-113-symfony-retry-via.md` records why under
+  "Rejected alternatives". 5.10.0 follows with the rest of that review (two plain retry modes, decode failures as Symfony's own
+  transports handle them, unknown options refused, new warnings).
+- Open transport issues: #104, #105, #110, #111, #112, #117. Open PR by a contributor: #100. The nats-server issue about an
+  interest stream deleting a message stopped at `max_deliver` is drafted and held back (Bartosz, 2026-11-21).
+- The checks before the merge, on PHP 8.5 with client 2.30.0 and Symfony Messenger 8.1.11 (8.1.9 in the functional app):
+  PHPStan clean; 1186 tests, also stopped at random moments; coverage 99.76 % (1248/1251); Infection killed 1466 of 1486
+  mutants, with the 20 survivors `docs/TESTS.md` lists; Behat 102 of 102; 21 of 21 examples.
+
