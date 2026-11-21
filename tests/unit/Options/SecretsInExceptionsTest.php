@@ -8,6 +8,7 @@ use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\NatsTransportFactory;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use IDCT\NatsMessenger\Options\TransportOption;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
@@ -138,6 +139,19 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
+     * The options that hold a credential, which the two checks of a DSN query read from TransportOption: a credential
+     * after a second "?" or a ";", and the rest of a credential an unencoded "&" cut into an option name. A new
+     * credential option must be added here and in TransportOption::isCredential(), or neither check knows it.
+     */
+    public function testTheCredentialOptionsAreTheSevenThatHoldASecret(): void
+    {
+        self::assertSame(
+            ['tls_key_passphrase', 'token', 'jwt', 'nkey', 'nkey_seed', 'username', 'password'],
+            array_map(static fn (TransportOption $option): string => $option->value, TransportOption::credentials()),
+        );
+    }
+
+    /**
      * A seed with one character changed fails the client's checksum. Its message is safe to pass on, but the client's
      * exception is not: its frames hold the whole seed as a string argument, and one wrong character is easily repaired.
      */
@@ -263,7 +277,7 @@ final class SecretsInExceptionsTest extends TestCase
      */
     public static function credentialsTypedAfterAnotherOption(): iterable
     {
-        foreach (['nkey_seed', 'nkey', 'jwt', 'token', 'username', 'password', 'tls_key_passphrase'] as $credential) {
+        foreach (array_map(static fn (TransportOption $option): string => $option->value, TransportOption::credentials()) as $credential) {
             yield $credential . ' after a second ?' => [$credential, 'consumer=workers?'];
             yield $credential . ' after a ;' => [$credential, 'consumer=workers;'];
             yield $credential . ' after an encoded ?' => [$credential, 'consumer=workers%3F'];
@@ -443,7 +457,7 @@ final class SecretsInExceptionsTest extends TestCase
      */
     public static function credentialsWithAnUnencodedAmpersand(): iterable
     {
-        foreach (['nkey_seed', 'nkey', 'jwt', 'token', 'username', 'password', 'tls_key_passphrase'] as $credential) {
+        foreach (array_map(static fn (TransportOption $option): string => $option->value, TransportOption::credentials()) as $credential) {
             yield $credential => [$credential, ''];
             yield $credential . ', with an = in the rest' => [$credential, '=x'];
         }

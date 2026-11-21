@@ -39,9 +39,6 @@ final class NatsTransportConfigurationBuilder
     /** Added by Symfony's FrameworkBundle to the options of every transport it creates. */
     private const TRANSPORT_NAME_OPTION = 'transport_name';
 
-    /** The options that hold a credential, whose value an unencoded & would cut into an option name. */
-    private const CREDENTIAL_OPTIONS = ['nkey_seed', 'nkey', 'jwt', 'token', 'username', 'password', 'tls_key_passphrase'];
-
     /**
      * Default option values.
      *
@@ -368,7 +365,8 @@ final class NatsTransportConfigurationBuilder
      */
     private function assertNoCredentialAfterASecondQuery(#[\SensitiveParameter] string $query): void
     {
-        if (preg_match('/[?;]\s*(?:nkey_seed|nkey|jwt|token|username|password|tls_key_passphrase)\s*=/i', urldecode($query)) === 1) {
+        $credentials = implode('|', array_map(static fn (TransportOption $option): string => preg_quote($option->value, '/'), TransportOption::credentials()));
+        if (preg_match('/[?;]\s*(?:' . $credentials . ')\s*=/i', urldecode($query)) === 1) {
             throw new InvalidArgumentException(
                 'The NATS DSN holds a credential after a second "?" or a ";" in its query, where it would be read as a part '
                 . 'of the option before it. Separate the options with "&".'
@@ -415,7 +413,7 @@ final class NatsTransportConfigurationBuilder
 
             $name = (string) $name;
             if ($this->isKnownOption($name)) {
-                $afterACredential = in_array($name, self::CREDENTIAL_OPTIONS, true);
+                $afterACredential = TransportOption::tryFrom($name)?->isCredential() === true;
 
                 continue;
             }
