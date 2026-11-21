@@ -206,6 +206,25 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
 
 > **Tested by:** `testSetupRefusesScheduledMessagesOnAnInterestStreamItWouldCreateWithoutCreatingIt`, `testNakRetryPublishesTheCopyOfTheConsumersLastDeliveryWhateverTheOptionSays`, `testAConsumerThatCannotBeReadLeavesTheOptionAndIsNotAskedAgainOnThatConnection`, the Behat scenarios of `nats_delayed.feature` on an interest stream and `nats_retry_via.feature`.
 
+### Upgrading from 5.9.1
+
+- **An option the transport does not know is refused** when the transport is built, with the closest option named:
+  `Unknown option 'max_delivers' in the DSN query of the NATS transport. Did you mean 'max_deliver'?`. Up to 5.9.x such
+  an option was ignored. Correct or remove the name (see [Configuration Options](#configuration-options)).
+- **A message that cannot be decoded goes to the worker on Symfony Messenger 8.1 and later,** as the decoding failure,
+  as Symfony's own transports hand it on. In symfony mode Symfony's retry strategy and failure transport now see it, so
+  a failure transport receives a copy of it; in nats mode it is TERMed. Before 8.1 nothing changes.
+- **Only a `MessageDecodingFailedException` of the serializer is a decode failure.** Any other exception propagates
+  and leaves the message for redelivery, where 5.9.x TERMed it. A custom serializer should throw a
+  `MessageDecodingFailedException` for a payload it cannot decode; `AbstractEnveloperSerializer` does so for every
+  failure of `deserialize()`.
+- **Nats mode TERMs a failure Symfony marks as unrecoverable,** which ran on every delivery `max_deliver` allowed.
+- **New warnings,** through the transport's logger: a retry published without its delay, and at setup a nats-mode
+  stream from which NATS deletes a message stopped at `max_deliver` (see [Logging](#logging)). A log alert on warnings
+  may fire once per worker where it did not.
+
+> **Tested by:** `testBuildRefusesAnUnknownOption`, `testFromMessenger81AMessageThatCannotBeDecodedGoesOnAsTheDecodingFailure`, `testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testARetryPublishedWithoutItsDelayIsLoggedOnce`, `testSetupInNatsModeWarnsAboutAStreamWhereNatsDeletesWhatMaxDeliverStops`.
+
 ### Logging
 
 The NATS client reports what it does with the connection through a PSR-3 logger: the connection's lifecycle
