@@ -5744,6 +5744,48 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * A setup() run after a send's auto_setup warns: the send's setup leaves the warning on for the setups that follow,
+     * also when it failed.
+     *
+     * @param bool $sendsSetupFails Whether the setup the send runs fails
+     */
+    #[DataProvider('sendsSetupOutcomes')]
+    public function testAnExplicitSetupAfterASendsAutoSetupWarns(bool $sendsSetupFails): void
+    {
+        $stream = StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic'], 'retention' => 'interest', 'num_replicas' => 3], 'cluster' => ['name' => 'east', 'leader' => 'n1']]);
+        $answers = $sendsSetupFails ? [Future::error(new JetStreamException('insufficient resources', 500)), Future::complete($stream)] : [Future::complete($stream), Future::complete($stream)];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturnCallback(static function () use (&$answers): Future {
+            return array_shift($answers) ?? Future::complete();
+        });
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->method('publish')->willReturn(Future::complete());
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn(new ServerInfo('S', 'n', '2.15.2', true, 1_048_576, true));
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + ['max_deliver' => 3, 'auto_setup' => true], $this->encodingSerializer(), $logger);
+        $transport->setClient($client);
+        $transport->setJetStreamContext($jetStream);
+        try {
+            $transport->send(new Envelope(new \stdClass()));
+        } catch (\Throwable) {
+            // The failed setup of the send.
+        }
+        $transport->setup();
+
+        self::assertCount(1, array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'deletes a message that reached max_deliver')));
+    }
+
+    /** @return iterable<string, array{bool}> */
+    public static function sendsSetupOutcomes(): iterable
+    {
+        yield 'the send\'s setup worked' => [false];
+        yield 'the send\'s setup failed' => [true];
+    }
+
+    /**
      * A server whose version the client does not know is taken to be one that deletes the message from an interest
      * stream at a restart, and the warning says the version is unknown.
      */
@@ -8265,6 +8307,45 @@ final class NatsTransportTest extends TestCase
         yield 'deduplicate on' => [['deduplicate' => true], [], 'test-topic', true];
         yield 'application-supplied deduplication id' => [[], [new DeduplicationIdStamp('order-7')], 'test-topic', true];
         yield 'delayed message keeps its scheduled subject' => [['scheduled_messages' => true], [new DelayStamp(5000)], 'test-topic.delayed.', false];
+    }
+
+    /**
+     * The setup a send runs again after a reconnect, when its publish found no responder, is a setup for a send as
+     * well: it does not log the nats-mode warning about the stream either.
+     */
+    public function testThePublishAfterAReconnectReprovisionsWithoutTheSetupWarning(): void
+    {
+        $stream = StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic'], 'retention' => 'interest', 'num_replicas' => 3], 'cluster' => ['name' => 'east', 'leader' => 'n1']]);
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('addStream')->willReturn(Future::complete($stream));
+        $jetStream->expects(self::exactly(2))->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $reconnects = 0;
+        $publishes = 0;
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturnCallback(static function () use (&$publishes, &$reconnects): Future {
+            if (++$publishes === 1) {
+                $reconnects = 1;
+
+                return Future::error(new JetStreamException('No JetStream responder for subject test-topic', 503));
+            }
+
+            return Future::complete();
+        });
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->method('statistics')->willReturnCallback(static function () use (&$reconnects): ConnectionStats {
+            return new ConnectionStats(0, 0, 0, 0, $reconnects);
+        });
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $logger = new RecordingLogger();
+
+        $transport = new class (self::VALID_DSN, ['reconnect' => true, 'auto_setup' => true, 'max_deliver' => 3] + self::NATS_MODE, $serializer, $logger) extends RealConnectNatsTransport {
+        };
+        $transport->setClient($client);
+        $transport->send(new Envelope(new \stdClass()));
+
+        self::assertSame([], array_values(array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'deletes a message that reached max_deliver'))));
     }
 
     /**

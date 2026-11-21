@@ -329,6 +329,7 @@ class AbstractEnveloperSerializerTest extends TestCase
             $this->fail('decode() should have failed');
         } catch (MessageDecodingFailedException $failure) {
             $this->assertSame('Could not decode the envelope: truncated payload', $failure->getMessage());
+            $this->assertSame(0, $failure->getCode(), 'as Symfony\'s PhpSerializer wraps one');
             $this->assertSame($cause, $failure->getPrevious());
         }
     }
@@ -396,6 +397,7 @@ class AbstractEnveloperSerializerTest extends TestCase
             return true;
         };
         set_error_handler($handler);
+        error_clear_last();
 
         try {
             $decoded = $serializer->decode(['body' => 'x']);
@@ -407,6 +409,8 @@ class AbstractEnveloperSerializerTest extends TestCase
 
         $this->assertSame($envelope, $decoded);
         $this->assertSame([[E_USER_DEPRECATED, 'an old format'], [E_USER_DEPRECATED, 'after decode()']], $seen);
+        // The handler there was took it, so PHP's own handler did not run after it.
+        $this->assertNull(error_get_last());
     }
 
     /**

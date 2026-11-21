@@ -59,7 +59,8 @@ abstract class AbstractEnveloperSerializer implements SerializerInterface
     private function deserializeOrFail(string $body): mixed
     {
         $previous = null;
-        $previous = set_error_handler(static function (int $type, string $message, string $file = '', int $line = 0) use (&$previous): bool {
+        // PHP calls an error handler with the error's type, message, file and line.
+        $previous = set_error_handler(static function (int $type, string $message, string $file, int $line) use (&$previous): bool {
             if ($type === E_DEPRECATED || $type === E_USER_DEPRECATED) {
                 return $previous !== null && $previous($type, $message, $file, $line) !== false;
             }
