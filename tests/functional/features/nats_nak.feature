@@ -60,3 +60,19 @@ Feature: NATS-native retry via NAK
     And I start a messenger consumer with high limit
     And I wait for the consumer to finish or timeout
     Then the always-failing message should have been attempted 1 time
+
+  # A message whose __wakeup() raises a warning it suppresses, as legacy code looking for a cache file does, through the
+  # transport's igbinary serializer. The warning is the application's: the message is handled and acknowledged. 5.10.0
+  # made it a decode failure, and the message was TERMed without its handler running (#122).
+  @nak
+  Scenario: A message whose __wakeup raises a suppressed warning is handled and acknowledged in nats mode
+    Given NATS server is running
+    And I have a messenger transport configured with NATS retry handler
+    And the NATS stream is set up
+    And the test files directory is clean
+    And I listen for the TERMs of the transport's consumer
+    When I send 1 message whose __wakeup raises a suppressed warning
+    And I start a messenger consumer
+    And I wait for messages to be consumed
+    Then the message whose __wakeup raised a warning should have been handled once
+    And its one delivery should have been acknowledged, not TERMed
