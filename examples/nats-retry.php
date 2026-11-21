@@ -15,11 +15,11 @@
  * NATS redelivers. It says what to do: set `max_retries: 0`, or, to have Symfony's strategy decide while NATS
  * redelivers, use `retry_handler: symfony` with `retry_via: nak` (examples/retry-via-nak.php).
  *
- * A second case: a message that cannot be decoded is TERMed in nats mode, and the worker keeps running (5.10.0). On
- * Symfony Messenger 8.1 and later the worker gets it as the decoding failure, as Messenger's own serializers hand it
- * on, fails it, and the transport TERMs it when it is rejected; before 8.1 the transport TERMs it
- * when it is received and logs it. Up to 5.9.0 nats mode NAKed it, and NATS brought it to every new worker, which
- * stopped on the decode error, for ever without `max_deliver`; 5.9.1 TERMed it, and still stopped the worker once.
+ * A second case: a message that cannot be decoded is TERMed in nats mode, as Symfony's own transports settle it. On
+ * Symfony Messenger 8.1 and later the worker gets it as the decoding failure, fails it, and the transport TERMs it
+ * when it is rejected, so both workers run (5.10.0); before 8.1 the transport TERMs it and throws the decode error,
+ * which stops the first worker, and the second does not get it (5.9.1). Up to 5.9.0 nats mode NAKed it, and NATS
+ * brought it to every new worker, which stopped on the decode error, for ever without `max_deliver`.
  *
  * A third case: a handler that throws an UnrecoverableMessageHandlingException runs once in nats mode, and the
  * delivery is TERMed (5.10.0). Up to 5.9.x it was NAKed, and NATS ran it again on every delivery `max_deliver`
@@ -156,6 +156,7 @@ try {
     withJetStream($stream, static fn (JetStreamContext $jetStream) => $jetStream->publish($stream . '.messages', (string) igbinary_serialize('not an envelope'))->await());
 
     $failedWith = [];
+    $stops = [];
     foreach ([1, 2] as $start) {
         // A new transport object for each start, as a supervisor starts a new worker.
         $worker = $natsMode();
@@ -172,7 +173,13 @@ try {
             $dispatcher->addListener(WorkerMessageFailedEvent::class, static function (WorkerMessageFailedEvent $event) use (&$failedWith): void {
                 $failedWith[] = $event->getThrowable()::class;
             });
-            (new Worker(['nats' => $worker], new MessageBus($middleware), $dispatcher))->run(['sleep' => 100000]);
+            try {
+                (new Worker(['nats' => $worker], new MessageBus($middleware), $dispatcher))->run(['sleep' => 100000]);
+                $stops[] = 'ran';
+            } catch (MessageDecodingFailedException) {
+                // Before Messenger 8.1, as with Symfony's own transports: the decode error stops the worker.
+                $stops[] = 'stopped on the decode error';
+            }
         } finally {
             $worker->close();
         }
@@ -186,17 +193,17 @@ try {
     }
     if ($passesItOn) {
         // 8.1.11 and later fail it as unrecoverable; 8.1.0 to 8.1.10 throw the decoding failure itself.
-        if (count($failedWith) !== 1 || !in_array($failedWith[0], [UnrecoverableMessageHandlingException::class, MessageDecodingFailedException::class], true) || $errors !== []) {
+        if (count($failedWith) !== 1 || !in_array($failedWith[0], [UnrecoverableMessageHandlingException::class, MessageDecodingFailedException::class], true) || $stops !== ['ran', 'ran'] || $errors !== []) {
             throw new RuntimeException(sprintf('expected the worker to fail the decoding failure once and the transport to log nothing; got failures %s, errors %s', json_encode($failedWith), json_encode($errors)));
         }
 
         printf("OK nats-retry: a message that cannot be decoded went to the worker as the decoding failure (Messenger 8.1 and later), failed once (%s) and was TERMed: it was delivered once, and both workers ran\n", substr(strrchr($failedWith[0], '\\') ?: $failedWith[0], 1));
     } else {
-        if ($failedWith !== [] || count($errors) !== 1 || !str_ends_with($errors[0], ' and TERMed.')) {
-            throw new RuntimeException(sprintf('expected the transport to TERM the message and log it, and the worker never to get it; got failures %s, errors %s', json_encode($failedWith), json_encode($errors)));
+        if ($failedWith !== [] || $stops !== ['stopped on the decode error', 'ran'] || $errors !== []) {
+            throw new RuntimeException(sprintf('expected the transport to TERM the message and the first worker to stop on the decode error, then the second to run; got stops %s, failures %s, errors %s', json_encode($stops), json_encode($failedWith), json_encode($errors)));
         }
 
-        printf("OK nats-retry: a message that cannot be decoded was TERMed and logged when it was received (before Messenger 8.1): it was delivered once, and both workers ran:\n    %s\n", $errors[0]);
+        echo "OK nats-retry: a message that cannot be decoded was TERMed and stopped the first worker with the decode error (before Messenger 8.1, as Symfony's own transports do): it was delivered once, and the second worker ran\n";
     }
 } finally {
     $setUp->close();

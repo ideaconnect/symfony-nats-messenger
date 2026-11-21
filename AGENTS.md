@@ -93,7 +93,7 @@ tests/
 - **Batching**: configurable `batching` count and `max_batch_timeout`
 - **Retry handling**: `retry_handler` - `symfony` (TERM, default: Symfony decides, its failure transport keeps what
   it gives up on) or `nats` (NAK: NATS decides up to `max_deliver`, no failure transport, and an unrecoverable failure
-  or a message that cannot be decoded is TERMed); a message that cannot be decoded never stops the worker; in symfony mode,
+  or a message that cannot be decoded is TERMed); a message that cannot be decoded is handled as Symfony's own transports handle it; in symfony mode,
   `retry_via: nak` NAKs with Symfony's retry delay instead of publishing the retry copy
   (see [docs/symfony_retry_via.md](docs/symfony_retry_via.md))
 - **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers; refused on a server

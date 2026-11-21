@@ -920,7 +920,7 @@ class NatsSetupContext implements Context
 
     /**
      * Two workers, one after the other, each for 3 s, as a supervisor starts a new one after an exit. How each one
-     * ended is kept for {@see neitherMessengerConsumerShouldHaveStoppedOnAnError()}.
+     * ended is kept for {@see onlyAConsumerBeforeSymfonyMessenger81ShouldHaveStoppedOnTheDecodeError()}.
      */
     #[When('two messenger consumers run one after the other for :seconds seconds each')]
     public function twoMessengerConsumersRunOneAfterTheOtherForSecondsEach(int $seconds): void
@@ -938,21 +938,31 @@ class NatsSetupContext implements Context
     }
 
     /**
-     * Both workers ran to their time limit. A message that cannot be decoded no longer stops one: before Symfony
-     * Messenger 8.1 the transport TERMs it when it is received and logs it, and from 8.1 on the worker fails it as the
-     * decoding failure. Up to 5.9.x get() rethrew the decode error before 8.1, and the worker that pulled the message
-     * stopped with it.
+     * How a message that cannot be decoded ends the workers, as with Symfony's own transports: from Symfony Messenger
+     * 8.1 on it goes to the worker as the decoding failure, and both run to their time limit; before 8.1 the first
+     * worker stops on the decode error, after the transport TERMed the message, and the second, which does not get
+     * it, runs to its time limit. In nats mode up to 5.9.0 every worker stopped, as NATS brought the NAKed message back.
      */
-    #[Then('neither messenger consumer should have stopped on an error')]
-    public function neitherMessengerConsumerShouldHaveStoppedOnAnError(): void
+    #[Then('only a consumer before Symfony Messenger 8.1 should have stopped, on the decode error')]
+    public function onlyAConsumerBeforeSymfonyMessenger81ShouldHaveStoppedOnTheDecodeError(): void
     {
-        foreach ($this->consumerRuns as $i => $run) {
-            if ($run['exit code'] !== 0) {
-                throw new \RuntimeException(sprintf('Consumer %d exited with %s: %s', $i + 1, var_export($run['exit code'], true), trim($run['error output'])));
-            }
-        }
         if (count($this->consumerRuns) !== 2) {
             throw new \RuntimeException(sprintf('Expected two consumer runs, got %d', count($this->consumerRuns)));
+        }
+
+        $passesOn = (new \ReflectionClass(\Symfony\Component\Messenger\Exception\MessageDecodingFailedException::class))->hasMethod('wrap');
+        [$first, $second] = $this->consumerRuns;
+        $firstStopped = $first['exit code'] !== 0 && str_contains($first['error output'], 'not a valid Symfony Messenger Envelope');
+        if ($passesOn ? $first['exit code'] !== 0 : !$firstStopped) {
+            throw new \RuntimeException(sprintf(
+                'Expected the first consumer to %s; it exited with %s: %s',
+                $passesOn ? 'run to its time limit (Symfony Messenger 8.1 or later)' : 'stop on the decode error (Symfony Messenger before 8.1)',
+                var_export($first['exit code'], true),
+                trim($first['error output']),
+            ));
+        }
+        if ($second['exit code'] !== 0) {
+            throw new \RuntimeException(sprintf('Expected the second consumer to run to its time limit; it exited with %s: %s', var_export($second['exit code'], true), trim($second['error output'])));
         }
     }
 

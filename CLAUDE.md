@@ -156,11 +156,14 @@ composer nats:stop               # stop NATS
   adds `numDelivered - 1` to the retry count a message carries. With `nak` the builder refuses a positive
   `nak_delay` and `backoff`, and in nats mode it refuses any `retry_via`. See
   [docs/symfony_retry_via.md](docs/symfony_retry_via.md).
-- **A message that cannot be decoded never stops the worker.** The Worker does not catch what `get()` throws, so
-  `get()` must not throw for one message. From Symfony Messenger 8.1 on, a serializer that throws becomes a
-  `MessageDecodingFailedException` message (`wrap()`), as 8.1's `ReceiverInterface` asks; before 8.1 `get()` TERMs
-  it, logs an error and goes on (`messengerPassesOnDecodeFailures()`). Messenger 8.1.11 and later fail a thrown
-  failure once, as unrecoverable; 8.1.0 to 8.1.10 retry it, which the delivery count keeps bounded with `nak`.
+- **A message that cannot be decoded is handled as Symfony's own transports handle it** (Doctrine, Redis, AMQP):
+  only a `MessageDecodingFailedException` counts. From Symfony Messenger 8.1 on it becomes a
+  `MessageDecodingFailedException` message (`decodingFailure()`, made through reflection so that PHPStan passes
+  on 7.4 as well), as 8.1's `ReceiverInterface` asks; before 8.1 `get()` TERMs it and throws, which stops the worker
+  (`messengerPassesOnDecodeFailures()`). Any other exception propagates with the message unsettled. Bartosz asked
+  for this behaviour, not a logger that decides. Messenger 8.1.11 and later fail a thrown failure once, as
+  unrecoverable; 8.1.0 to 8.1.10 retry it, which the delivery count keeps bounded with `nak`. The serializers turn
+  every failure of `deserialize()`, warnings included, into that exception.
 - **`keepalive()` queues, never waits.** Symfony calls it from a SIGALRM handler, where fibers cannot switch,
   so it queues `inProgress()->ignore()`, which goes out the next time the event loop runs.
 - **Duplicate protection:** a `DeduplicationIdStamp`, added on the first send with `deduplicate` or by the

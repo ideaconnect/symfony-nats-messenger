@@ -32,11 +32,11 @@ Feature: NATS-native retry via NAK
     And I wait for messages to be consumed
     Then the retryable message should have been processed successfully
 
-  # A message the transport's igbinary serializer cannot decode: before Symfony Messenger 8.1 the transport TERMs it
-  # when it is received and logs it; from 8.1 on it reaches the worker as a MessageDecodingFailedException message,
-  # which fails and is TERMed when it is rejected. Up to 5.9.0 nats mode NAKed it, and NATS brought it
-  # back at once, to every new worker or to the same one, for ever without max_deliver, and before 8.1 up to 5.9.x
-  # every worker that pulled it stopped on the decode error. Now it is delivered once, and no worker stops.
+  # A message the transport's igbinary serializer cannot decode, handled as Symfony's own transports handle it: before
+  # Symfony Messenger 8.1 the transport TERMs it and throws the decode error, which stops the worker that pulled it;
+  # from 8.1 on it reaches the worker as a MessageDecodingFailedException message, which fails and is TERMed when it
+  # is rejected. Up to 5.9.0 nats mode NAKed it, and NATS brought it back at once, to every new worker or to the same
+  # one, for ever without max_deliver. Now it is delivered once.
   @nak
   Scenario: A message that cannot be decoded is TERMed in nats mode, so no worker gets it again
     Given NATS server is running
@@ -45,7 +45,7 @@ Feature: NATS-native retry via NAK
     And a message the transport cannot decode is published to its subject
     When two messenger consumers run one after the other for 3 seconds each
     Then the message that could not be decoded should have been delivered once and settled
-    And neither messenger consumer should have stopped on an error
+    And only a consumer before Symfony Messenger 8.1 should have stopped, on the decode error
 
   # An UnrecoverableMessageHandlingException can never succeed: nats mode TERMs it. Up to 5.9.x it NAKed it, and NATS
   # ran the handler again on every delivery max_deliver allowed.

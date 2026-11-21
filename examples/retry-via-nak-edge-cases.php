@@ -10,8 +10,8 @@
  * 2. A message that cannot be decoded goes to the worker as the decoding failure on Symfony Messenger 8.1 and later,
  *    as Messenger's own serializers hand it on (5.10.0): one the igbinary serializer cannot decode fails once, as
  *    unrecoverable, since a second decode throws again (8.1.0 to 8.1.10 retry it), and one Symfony's PhpSerializer
- *    cannot decode goes through the retry strategy like any failure. Before 8.1 the transport TERMs it at once and logs it, and the worker
- *    keeps running; up to 5.9.x get() threw, which stopped the worker.
+ *    cannot decode goes through the retry strategy like any failure. Before 8.1 the transport TERMs it at once and
+ *    get() throws the decode error, as Symfony's own transports do.
  * 3. Symfony Messenger 7.4.22, 8.1.10 and later acknowledge a message they sent for retry, and earlier releases
  *    reject it. The transport NAKs the delivery either way. The reject() is made by hand here, so that the
  *    example shows it with any Messenger installed.
@@ -119,15 +119,20 @@ try {
 
         $lines[] = "a message the igbinary serializer could not decode went to the worker as the decoding failure, as Messenger 8.1 and later hand it on, and through the retry strategy (8.1.0 to 8.1.10): 3 runs, then a TERM and 1 copy in the failure transport";
     } else {
+        $thrown = null;
+        try {
+            iterator_to_array($transport->get(), false);
+        } catch (MessageDecodingFailedException $failure) {
+            $thrown = $failure;
+        }
         $later = receiveFor($transport, 1.5);
         $advisories = $advisories();
 
-        assertExpected('deliveries the worker got', 0, count($later));
+        assertExpected('get() threw a MessageDecodingFailedException', true, $thrown !== null);
+        assertExpected('deliveries after the one that could not be decoded', 0, count($later));
         assertExpected('MSG_TERMINATED advisories', 1, $advisories['MSG_TERMINATED'] ?? 0);
-        assertExpected('errors logged', 1, count($logger->linesAt('error')));
-        assertExpected('the error says it was TERMed', true, str_contains($logger->linesAt('error')[0] ?? '', 'could not be decoded (') && str_ends_with($logger->linesAt('error')[0] ?? '', ' and TERMed.'));
 
-        $lines[] = "a message the igbinary serializer could not decode was TERMed at once and logged, before Messenger 8.1: get() went on, and it was not delivered again";
+        $lines[] = "a message the igbinary serializer could not decode was TERMed at once, before Messenger 8.1: get() threw, as Symfony's own transports do, and it was not delivered again";
     }
     assertExpected('deliveries that wait for an acknowledgement', 0, consumerCounts($stream)['ackPending']);
 } finally {
@@ -165,14 +170,20 @@ try {
             secondsList($run->gaps()),
         );
     } else {
+        $thrown = null;
+        try {
+            iterator_to_array($transport->get(), false);
+        } catch (MessageDecodingFailedException $failure) {
+            $thrown = $failure;
+        }
         $later = receiveFor($transport, 1.5);
         $advisories = $advisories();
 
-        assertExpected('deliveries the worker got', 0, count($later));
+        assertExpected('get() threw a MessageDecodingFailedException', true, $thrown !== null);
+        assertExpected('deliveries after the one that could not be decoded', 0, count($later));
         assertExpected('MSG_TERMINATED advisories', 1, $advisories['MSG_TERMINATED'] ?? 0);
-        assertExpected('errors logged', 1, count($logger->linesAt('error')));
 
-        $lines[] = "a payload Symfony's PhpSerializer could not decode was TERMed at once and logged too: before Messenger 8.1 it throws, where 8.1 and later return the failure as a message that goes through the retry strategy";
+        $lines[] = "a payload Symfony's PhpSerializer could not decode was TERMed at once too: before Messenger 8.1 it throws, where 8.1 and later return the failure as a message that goes through the retry strategy";
     }
 } finally {
     $transport->close();

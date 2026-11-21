@@ -32,15 +32,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ErrorDetailsStamp`), instead of NAKing it. It can never succeed, and NATS ran the handler again on every delivery
   `max_deliver` allowed: 3 runs with `max_deliver: 3`, now 1. Ordinary failures are still NAKed, for NATS to redeliver.
   `isAFailureNatsModeCannotRetry()`.
-- **A message that cannot be decoded no longer stops the worker.** Up to 5.9.x `get()` TERMed it and rethrew the
-  decode error, as Symfony's own transports do before Messenger 8.1, and the worker that pulled it stopped: once per
-  such message, so a burst of them could make a supervisor that gives up on fast exits stop restarting it. From
-  Symfony Messenger 8.1 on, a serializer that throws, as this transport's igbinary serializer does, now gives a
-  `MessageDecodingFailedException` message (`MessageDecodingFailedException::wrap()`), as Messenger 8.1's
-  `ReceiverInterface` asks and its own serializers and Doctrine receiver do: the worker fails it, and Symfony's retry
-  strategy and failure transport deal with it in symfony mode (8.1.11 and later fail it once, as unrecoverable), while
-  nats mode TERMs it. Before 8.1 `get()` TERMs it, logs it at error level with its stream sequence, and goes on with
-  the batch. `get()`, `messengerPassesOnDecodeFailures()`, `termAMessageThatCannotBeDecoded()`.
+- **A message that cannot be decoded is handled as Symfony's own transports handle it.** From Symfony Messenger 8.1
+  on, a `MessageDecodingFailedException` the serializer throws, as this transport's igbinary serializer does, now
+  gives a `MessageDecodingFailedException` message, as Messenger 8.1's `ReceiverInterface` asks and its Doctrine,
+  Redis and AMQP receivers do: the worker fails it, and Symfony's retry strategy and failure transport deal with it in
+  symfony mode (8.1.11 and later fail it once, as unrecoverable), while nats mode TERMs it. Up to 5.9.x `get()` TERMed
+  it and threw the decode error on 8.1 as well, which stopped the worker, once per such message. Before 8.1 that stays
+  as it was, and as Symfony's own transports do. `get()`, `messengerPassesOnDecodeFailures()`, `decodingFailure()`.
+- **⚠️ Only a `MessageDecodingFailedException` is a decode failure,** as for Symfony's own transports. Any other
+  exception of the serializer propagates, and the message is left for redelivery after `ack_wait`: a serializer whose
+  store or service failed for a moment may decode it then. Up to 5.9.x the transport took any exception for a decode
+  failure and TERMed the message. The transport's serializers (`AbstractEnveloperSerializer`, `IgbinarySerializer`)
+  now turn every way they fail into a `MessageDecodingFailedException`, as Symfony's `PhpSerializer` does: an
+  exception of `deserialize()`, and a warning or notice it raises, which Symfony's error handler throws as an
+  `ErrorException` in debug mode. igbinary warns about a payload that is not igbinary, so in debug mode such a
+  message stopped the worker without being settled. A custom serializer should throw a
+  `MessageDecodingFailedException` for a payload it cannot decode.
 
 ### Fixed
 

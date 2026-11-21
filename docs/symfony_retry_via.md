@@ -194,9 +194,10 @@ release that rejects, 7.4.0 for the unit tests and 7.4.21 in the functional test
 - **When the serializer throws,** Messenger 8.1.11 and later fail it once, as unrecoverable (symfony/symfony
   commit 9e155bedfc, "Fix infinite retries when a serializer throws a decoding failure"), and 8.1.0 to 8.1.10
   retry it as above.
-- **Before 8.1** the transport TERMs it when it is received, logs it at error level with its stream sequence, and
-  goes on with the rest of the batch. Up to 5.9.x `get()` TERMed it and threw `MessageDecodingFailedException`,
-  as Symfony's own transports do before 8.1, which stopped the worker.
+- **Before 8.1** `get()` TERMs it and throws the `MessageDecodingFailedException`, as Symfony's own transports do
+  before 8.1, which stops the worker.
+- **Any other exception of the serializer** is no decode failure: it propagates, and the message is left for
+  redelivery (5.10.0).
 
 ## What was measured
 
@@ -224,7 +225,7 @@ gave the same results. Some rows name other servers.
 | A 4 s NAK retry, `stream_max_age: 2` | the message leaves the stream before its retry |
 | A 12 s NAK retry, `ack_wait: 2`, the server restarted 1 s after the NAK | redelivered once, with retry count 1, after 11.85 s (2.15.2) and 11.48 s (2.10.29) |
 | A `DelayStamp` of `PHP_INT_MAX` | cut to 9,223,372,036,854 ms, and the message is held |
-| A message that cannot be decoded, with this transport's igbinary serializer | Messenger 8.1.11: fails once as unrecoverable, then a TERM and 1 failure-transport copy; 7.4.21: TERMed when it is received, one error logged, the worker never gets it |
+| A message that cannot be decoded, with this transport's igbinary serializer | Messenger 8.1.11: fails once as unrecoverable, then a TERM and 1 failure-transport copy; 7.4.21: TERMed at once, `get()` throws the decode error, and the worker stops |
 | The same with Symfony's `PhpSerializer` on Messenger 8.1 | through the retry strategy like any failure: NAK retries, then a TERM and 1 failure-transport copy |
 | NATS 2.9.25, a NAK delay equal to `max_batch_timeout` (200, 500 and 1000 ms) | about 1 message in 5 has one redelivery reported as delivery 1 |
 

@@ -209,8 +209,6 @@ The transport writes lines of its own to the same logger, each warning once per 
   (see [Retrying through a NAK](#retrying-through-a-nak-retry_via-nak));
 - a warning from `setup()` in nats mode on a stream from which NATS deletes a message that reached
   `max_deliver`, and with `scheduled_messages` when the stream and its consumers could not be read;
-- an error for each message that could not be decoded, before Symfony Messenger 8.1, with what was done with
-  it (see [Retry Handler Behavior](#retry-handler-behavior)).
 
 With the bundle, the application's `logger` service is handed to the factory, tagged for Monolog's
 `messenger` channel, so the client's lines land next to the worker's. Without that service, or without the
@@ -226,7 +224,7 @@ services:
         tags: [messenger.transport_factory]
 ```
 
-> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testBeforeMessenger81AMessageThatCannotBeDecodedIsTermedLoggedAndSkipped`, the examples `reconnect.php` and `cluster-failover.php`
+> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, the examples `reconnect.php` and `cluster-failover.php`
 
 ### Development Setup
 
@@ -407,7 +405,7 @@ the test server and print `OK` when what they show held:
 |---|---|
 | `send-and-consume.php` | `setup()`, sending, the queue depth, receiving and acknowledging |
 | `duplicate-protection.php` | `DeduplicationIdStamp` and `deduplicate: true`: a message sent again is stored once |
-| `nats-retry.php` | `retry_handler: nats` with Symfony's default retry strategy: NATS redelivers a message whose handler failed, and the transport warns that the strategy is on; a message that cannot be decoded is TERMed, and no worker stops; an unrecoverable failure runs once |
+| `nats-retry.php` | `retry_handler: nats` with Symfony's default retry strategy: NATS redelivers a message whose handler failed, and the transport warns that the strategy is on; a message that cannot be decoded is TERMed, and stops a worker only before Symfony Messenger 8.1; an unrecoverable failure runs once |
 | `retry-via-nak.php` | `retry_via: nak`: Symfony's retry strategy decides, and NATS redelivers the failed message after a NAK with Symfony's delay; a message Symfony gives up on is TERMed, with one copy in the failure transport |
 | `retry-via-nak-edge-cases.php` | `retry_via: nak` at its edges: a delivery nobody settled, a message that cannot be decoded, the `reject()` of older Symfony Messenger releases, a message published with a retry count, what the builder refuses, and a consumer whose `max_deliver` the option does not say |
 | `retry-via-nak-past-max-deliver.php` | `retry_via: nak` with a low `max_deliver`: the retry of the last delivery it allows goes out as a copy, so Symfony's strategy runs to its end |
@@ -791,22 +789,20 @@ In detail:
   the stream.
 - `retry_handler: nats` sends `NAK` when a message is rejected, so NATS redelivers the message itself. A message that cannot be decoded is TERMed in this mode too (5.9.1): a redelivery cannot decode it either. Up to 5.9.0 nats mode NAKed it, and NATS brought it back at once: to every new worker, which stopped again, or on 8.1 to the same worker, about 600 times a second, for ever without `max_deliver`. A failure Symfony marks as unrecoverable (`UnrecoverableExceptionInterface`, such as `UnrecoverableMessageHandlingException`) is TERMed too (5.10.0): it runs once, where NATS ran it again on every delivery `max_deliver` allowed.
 
-**A message that cannot be decoded never stops the worker** (5.10.0), in either mode. On Symfony Messenger 8.1
-and later the worker gets it as the decoding failure, a `MessageDecodingFailedException` message, as Messenger's
-own serializers hand one on, and FrameworkBundle's `DecodeFailedMessageMiddleware` decodes it once more and fails
-it. Symfony's retry strategy and failure transport then deal with it like any failure in symfony mode, and nats
-mode TERMs it. When the serializer throws, as this transport's igbinary serializer does, Messenger 8.1.11 and later
-fail it once, as unrecoverable, and 8.1.0 to 8.1.10 retry it up to `max_retries`. Before 8.1 the transport TERMs it
-when it is received, logs it at error level with its stream sequence (see [Logging](#logging)), and goes on with
-the rest of the batch:
+**A message that cannot be decoded is handled as Symfony's own transports handle it** (Doctrine, Redis, AMQP), in
+either mode. A message that cannot be decoded is one whose serializer throws a `MessageDecodingFailedException`, which
+this transport's serializers throw for every way they fail, warnings included.
 
-```text
-A message on stream "my-stream", sequence 42 could not be decoded (Deserialized data is not a valid Symfony Messenger Envelope.) and TERMed.
-```
-
-Up to 5.9.x `get()` rethrew the decode error there, as Symfony's own transports do before 8.1, and the worker that
-pulled the message stopped: once per such message, so a burst of them could make a supervisor that gives up on
-fast exits stop restarting it.
+- **On Symfony Messenger 8.1 and later** the worker gets it as the decoding failure, a
+  `MessageDecodingFailedException` message (5.10.0), and FrameworkBundle's `DecodeFailedMessageMiddleware` decodes it
+  once more and fails it. Symfony's retry strategy and failure transport then deal with it like any failure in
+  symfony mode, and nats mode TERMs it. When the serializer throws, as this transport's igbinary serializer does,
+  Messenger 8.1.11 and later fail it once, as unrecoverable, and 8.1.0 to 8.1.10 retry it up to `max_retries`.
+- **Before 8.1** the transport TERMs it, since a redelivery cannot decode it either, and throws the decode error,
+  which stops the worker that pulled it, as Symfony's own transports do. The next worker does not get it.
+- **Any other exception of the serializer** propagates, and the message is left for redelivery after `ack_wait` (5.10.0):
+  a serializer whose store or service failed for a moment may decode it then. Up to 5.9.x the transport took any
+  exception for a decode failure and TERMed the message.
 
 In symfony mode, `retry_via` chooses how a retry Symfony decides on reaches NATS: as a copy (the default) or as a
 NAK with Symfony's delay (see [Retrying through a NAK](#retrying-through-a-nak-retry_via-nak)).
@@ -918,7 +914,7 @@ framework:
           max_retries: 0
 ```
 
-> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testBeforeMessenger81AMessageThatCannotBeDecodedIsTermedLoggedAndSkipped`, `testBeforeMessenger81ATermThatFailsIsLoggedAndTheWorkerKeepsRunning`, `testFromMessenger81AMessageThatCannotBeDecodedGoesOnAsTheDecodingFailure`, `testNatsModeTermsAMessageThatCouldNotBeDecodedWhenTheWorkerSettlesIt`, `testSymfonyModeLeavesAMessageThatCouldNotBeDecodedToSymfonysRetryStrategy`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testNatsModeRunsAnUnrecoverableFailureOnceThroughTheWorker`, the Behat scenarios `A message that cannot be decoded is TERMed in nats mode, so no worker gets it again`, `A message that cannot be decoded does not stop the worker in symfony mode` and `An unrecoverable failure runs once in nats mode`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSymfonyModeAcksADeliveryItPublishedTheRetryCopyOf`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testNatsModeWithoutSymfonysRetriesLogsNoWarning`, `testNoWarningWhenSendLeavesOutNoRetryCopy`, `testEachTransportWarnsOnceAboutItsOwnStreamAndSubject`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
+> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testBeforeMessenger81AMessageThatCannotBeDecodedIsTermedAndItsErrorThrown`, `testBeforeMessenger81ATermThatFailsLeavesTheDecodeErrorThrown`, `testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled`, `testFromMessenger81AMessageThatCannotBeDecodedGoesOnAsTheDecodingFailure`, `testNatsModeTermsAMessageThatCouldNotBeDecodedWhenTheWorkerSettlesIt`, `testSymfonyModeLeavesAMessageThatCouldNotBeDecodedToSymfonysRetryStrategy`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testNatsModeRunsAnUnrecoverableFailureOnceThroughTheWorker`, the Behat scenarios `A message that cannot be decoded is TERMed in nats mode, so no worker gets it again`, `A message that cannot be decoded is settled in symfony mode` and `An unrecoverable failure runs once in nats mode`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSymfonyModeAcksADeliveryItPublishedTheRetryCopyOf`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testNatsModeWithoutSymfonysRetriesLogsNoWarning`, `testNoWarningWhenSendLeavesOutNoRetryCopy`, `testEachTransportWarnsOnceAboutItsOwnStreamAndSubject`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
 
 #### Retrying through a NAK (`retry_via: nak`)
 
@@ -986,7 +982,7 @@ it below `stream_max_age`: a message that expires while it waits leaves the stre
 - A message that cannot be decoded goes through the retry strategy like any failure on Symfony Messenger 8.1 and
   later, which hand it to the worker as a message, and each NAK retry carries its earlier deliveries as its retry
   count, so `max_retries` ends the retries. On 8.1.11 and later one the serializer throws on, as this transport's
-  igbinary serializer does, fails once, as unrecoverable. Before 8.1 it is TERMed when it is received, and logged.
+  igbinary serializer does, fails once, as unrecoverable. Before 8.1 it is TERMed at once and the decode error thrown.
 - A retry that waits while the server restarts is still redelivered once, up to a second early: the server
   keeps the time in whole seconds.
 - On NATS 2.9 the server now and then reports a redelivery as a first delivery, when its NAK delay ends just as

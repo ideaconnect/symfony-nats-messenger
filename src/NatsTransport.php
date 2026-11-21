@@ -268,29 +268,33 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * TERMs a message that could not be decoded, before Symfony Messenger 8.1, logs it at error level and leaves the
-     * worker running. A redelivery cannot decode it either. Up to 5.9.x get() rethrew the decode error, as Symfony's
-     * own transports do before 8.1, and that stopped the worker: once per such message, so a burst of them could make
-     * a supervisor that gives up on fast exits stop restarting it; in nats mode, which NAKed it, every new worker got it
-     * again. A TERM that fails is logged too: the message then comes back after ack_wait.
+     * Before Symfony Messenger 8.1, as its own transports do (Doctrine, Redis, AMQP): a message that cannot be decoded
+     * is settled for good, a TERM here, since a redelivery cannot decode it either, and the decode error is thrown,
+     * which stops the worker. In nats mode up to 5.9.0 it was NAKed instead, and NATS brought it to every new worker,
+     * which stopped again, for ever without max_deliver. A TERM that fails, as on a connection that dropped, never
+     * replaces the decode error: that is the cause an operator needs, and the message comes back after ack_wait.
      */
-    private function termAMessageThatCannotBeDecoded(string $replyTo, NatsMessage $message, \Throwable $failure): void
+    private function termAndThrow(string $replyTo, MessageDecodingFailedException $failure): never
     {
-        $sequence = JsMessageMetadata::fromMessage($message)?->streamSequence;
         try {
             $this->sendTerm($replyTo);
-            $settled = 'TERMed';
-        } catch (\Throwable $termFailure) {
-            $settled = sprintf('could not be TERMed (%s), so it comes back after ack_wait', $termFailure->getMessage());
+        } catch (\Throwable) {
+            // The decode error below is the failure to report.
         }
 
-        $this->logger?->error(sprintf(
-            'A message on stream "%s"%s could not be decoded (%s) and %s.',
-            $this->streamName,
-            $sequence === null ? '' : ', sequence ' . $sequence,
-            $failure->getMessage(),
-            $settled,
-        ));
+        throw $failure;
+    }
+
+    /**
+     * MessageDecodingFailedException::wrap() of Symfony Messenger 8.1: an envelope whose message is the failure, with
+     * what was received. Made through reflection, as wrap() and the constructor's encoded envelope exist only from 8.1
+     * on, and the static analysis knows only the release installed with it, Messenger 7.4 on CI's lowest leg.
+     *
+     * @param array<string, mixed> $encoded
+     */
+    private static function decodingFailure(array $encoded, MessageDecodingFailedException $failure): Envelope
+    {
+        return new Envelope((new \ReflectionClass(MessageDecodingFailedException::class))->newInstance($failure->getMessage(), $failure->getCode(), $failure, $encoded));
     }
 
     /**
@@ -749,9 +753,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * rejected); a message with an empty payload is TERMed so JetStream stops redelivering it,
      * since it can never decode into an envelope. A header whose name is a decimal integer, such as
      * `1`, is not passed to the serializer, whose decode() takes string names. A message the serializer
-     * cannot decode does not stop the worker: from Symfony Messenger 8.1 on it goes on as the decoding
-     * failure, which the worker handles and fails, as with Symfony's own serializers; before 8.1 it is
-     * TERMed and logged ({@see termAMessageThatCannotBeDecoded()}).
+     * cannot decode (a MessageDecodingFailedException) is handled as Symfony's own transports handle it:
+     * from Symfony Messenger 8.1 on it goes on as the decoding failure, which the worker handles and
+     * fails; before 8.1 it is TERMed and the decode error thrown ({@see termAndThrow()}). Any other
+     * exception of the serializer propagates, and the message is left for redelivery.
      *
      * With auto_setup enabled, a 404, 409 or 503 (see {@see recoverFromFetchFailure()} for why
      * all three) first triggers one re-provisioning attempt and a second pull. A 409 with which the
@@ -809,17 +814,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $encoded = ['body' => $message->payload, 'headers' => $headers];
             try {
                 $decoded = $this->serializer->decode($encoded);
-            } catch (\Throwable $e) {
+            } catch (MessageDecodingFailedException $e) {
                 if (!$this->messengerPassesOnDecodeFailures()) {
-                    $this->termAMessageThatCannotBeDecoded($replyTo, $message, $e);
-
-                    continue;
+                    $this->termAndThrow($replyTo, $e);
                 }
 
-                // As Symfony Messenger 8.1's own serializers do: the failure goes on as a message, which the worker
-                // handles and fails, so that the retry strategy and the failure transport deal with it (in nats mode
-                // its settling is a TERM, see isAMessageNatsModeCannotDecode()).
-                $decoded = MessageDecodingFailedException::wrap($encoded, $e->getMessage(), is_int($e->getCode()) ? $e->getCode() : 0, $e);
+                // From Symfony Messenger 8.1 on, as its own transports do: the failure goes on as a message, which
+                // the worker handles and fails, so that the retry strategy and the failure transport deal with it (in
+                // nats mode its settling is a TERM, see isAMessageNatsModeCannotDecode()).
+                $decoded = self::decodingFailure($encoded, $e);
             }
 
             yield $this->withDeliveryCountAsRetryCount($decoded->with(new TransportMessageIdStamp($replyTo)), $message);

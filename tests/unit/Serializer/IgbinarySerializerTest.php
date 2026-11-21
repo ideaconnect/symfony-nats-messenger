@@ -208,16 +208,40 @@ class IgbinarySerializerTest extends TestCase
         $this->serializer->decode($encodedEnvelope);
     }
 
+    /**
+     * A body that is not igbinary makes igbinary warn: the warning is the decoding failure, and is not raised.
+     */
     #[Test]
     public function decode_WithInvalidSerializedData_ThrowsMessageDecodingFailed(): void
     {
         $encodedEnvelope = ['body' => 'invalid serialized data'];
 
         $this->expectException(MessageDecodingFailedException::class);
-        $this->expectExceptionMessage('Deserialized data is not a valid Symfony Messenger Envelope.');
+        $this->expectExceptionMessage('Could not decode the envelope: igbinary_unserialize_header: unsupported version');
 
-        // Suppress igbinary warning
-        @$this->serializer->decode($encodedEnvelope);
+        $this->serializer->decode($encodedEnvelope);
+    }
+
+    /**
+     * Symfony's error handler throws a warning as an ErrorException in debug mode, which a transport would not take for
+     * a decode failure, and would leave the message to come back for ever: the warning is a MessageDecodingFailedException
+     * whatever handles errors, as with Symfony's PhpSerializer.
+     */
+    #[Test]
+    public function decode_WithInvalidSerializedDataUnderAnErrorHandlerThatThrows_ThrowsMessageDecodingFailed(): void
+    {
+        set_error_handler(static function (int $type, string $message): never {
+            throw new \ErrorException($message, 0, $type);
+        });
+
+        try {
+            $this->serializer->decode(['body' => 'invalid serialized data']);
+            $this->fail('decode() should have failed');
+        } catch (MessageDecodingFailedException $failure) {
+            $this->assertStringStartsWith('Could not decode the envelope: igbinary_unserialize_header', $failure->getMessage());
+        } finally {
+            restore_error_handler();
+        }
     }
 
     #[Test]

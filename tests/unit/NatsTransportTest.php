@@ -786,27 +786,22 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * Before Symfony Messenger 8.1, a message the serializer cannot decode is TERMed and logged, and the rest of the
-     * batch is still received: the worker keeps running, in every mode. Up to 5.9.x get() rethrew the decode error,
-     * which stopped the worker, and nats mode NAKed the message first, so that every new worker got it again.
+     * Before Symfony Messenger 8.1, a message the serializer cannot decode is TERMed and the decode error thrown, in
+     * every mode, as Symfony's own transports do (Doctrine, Redis and AMQP reject it and throw): the worker stops, and
+     * the next one does not get the message. The 5.10.0 development form TERMed it, logged it and went on; Bartosz
+     * asked for the behaviour of the other transports. In nats mode up to 5.9.0 it was NAKed instead.
      *
      * @param array<string, mixed> $options
      */
     #[DataProvider('modesThatReceiveAMessageThatCannotBeDecoded')]
-    public function testBeforeMessenger81AMessageThatCannotBeDecodedIsTermedLoggedAndSkipped(array $options): void
+    public function testBeforeMessenger81AMessageThatCannotBeDecodedIsTermedAndItsErrorThrown(array $options): void
     {
+        $decodeError = new MessageDecodingFailedException('Deserialized data is not a valid Symfony Messenger Envelope.');
         $serializer = $this->createStub(SerializerInterface::class);
-        $serializer->method('decode')->willReturnCallback(static function (array $encoded): Envelope {
-            if (($encoded['body'] ?? null) === 'broken') {
-                throw new MessageDecodingFailedException('Deserialized data is not a valid Symfony Messenger Envelope.');
-            }
-
-            return new Envelope(new \stdClass());
-        });
+        $serializer->method('decode')->willThrowException($decodeError);
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->method('fetchBatch')->willReturn(Future::complete([
             new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.7.1.0.0', payload: 'broken'),
-            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.8.2.0.0', payload: 'fine'),
         ]));
         $jetStream->expects(self::never())->method('nak');
         $jetStream->expects(self::never())->method('nakWithDelay');
@@ -822,14 +817,14 @@ final class NatsTransportTest extends TestCase
             }
         };
         $transport->setJetStreamContext($jetStream);
-        $envelopes = array_values(iterator_to_array($transport->get(), false));
 
-        self::assertCount(1, $envelopes, 'the message after it in the batch is received');
-        self::assertSame('$JS.ACK.test-stream.client.1.8.2.0.0', $envelopes[0]->last(TransportMessageIdStamp::class)?->getId());
-        self::assertSame([
-            'A message on stream "test-stream", sequence 7 could not be decoded (Deserialized data is not a valid Symfony'
-            . ' Messenger Envelope.) and TERMed.',
-        ], $logger->messagesAt('error'));
+        try {
+            iterator_to_array($transport->get(), false);
+            self::fail('get() should have thrown the decode error');
+        } catch (MessageDecodingFailedException $thrown) {
+            self::assertSame($decodeError, $thrown);
+        }
+        self::assertSame([], $logger->messagesAt('error'));
     }
 
     /**
@@ -843,68 +838,75 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * Before Messenger 8.1, without a logger, the message is still TERMed and the batch goes on.
+     * Before Messenger 8.1, a TERM that fails, as on a connection that dropped, never replaces the decode error: that is
+     * the cause an operator needs, and the message comes back after ack_wait.
      */
-    public function testBeforeMessenger81AMessageThatCannotBeDecodedIsTermedWithoutALogger(): void
+    public function testBeforeMessenger81ATermThatFailsLeavesTheDecodeErrorThrown(): void
     {
         $serializer = $this->createStub(SerializerInterface::class);
-        $serializer->method('decode')->willReturnCallback(static function (array $encoded): Envelope {
-            if (($encoded['body'] ?? null) === 'broken') {
-                throw new MessageDecodingFailedException('not an envelope');
-            }
+        $serializer->method('decode')->willThrowException(new MessageDecodingFailedException('decode failed'));
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([new NatsMessage('test-topic', 1, 'reply-id', 'payload')]));
 
-            return new Envelope(new \stdClass());
-        });
-        $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->method('fetchBatch')->willReturn(Future::complete([
-            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: 'reply-broken', payload: 'broken'),
-            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: 'reply-fine', payload: 'fine'),
-        ]));
-        $jetStream->expects(self::once())->method('term')->willReturn(Future::complete());
-
-        $transport = new class (self::VALID_DSN, [], $serializer) extends RuntimeTestableNatsTransport {
+        $transport = new class (self::VALID_DSN, [], $serializer) extends ThrowingFailureNatsTransport {
             protected function messengerPassesOnDecodeFailures(): bool
             {
                 return false;
             }
         };
         $transport->setJetStreamContext($jetStream);
-        $envelopes = array_values(iterator_to_array($transport->get(), false));
 
-        self::assertCount(1, $envelopes);
-        self::assertSame('reply-fine', $envelopes[0]->last(TransportMessageIdStamp::class)?->getId());
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('decode failed');
+
+        iterator_to_array($transport->get(), false);
+    }
+
+    /** @return iterable<string, array{bool}> */
+    public static function messengerReleasesAroundDecodingFailures(): iterable
+    {
+        yield 'before Messenger 8.1' => [false];
+        yield 'Messenger 8.1 and later' => [true];
     }
 
     /**
-     * Before Messenger 8.1, a TERM that fails, as on a connection that dropped, is logged with the decode error, and
-     * the worker still keeps running: the message comes back after ack_wait.
+     * An exception of the serializer other than a MessageDecodingFailedException is no decode failure, as for Symfony's
+     * own transports: it propagates, and the message is left unsettled, for redelivery after ack_wait. A serializer
+     * whose store or service failed for a moment may decode it then. Up to 5.9.x any exception was taken for a decode
+     * failure, and the message was TERMed. This transport's serializers turn every failure of their own into a
+     * MessageDecodingFailedException.
      */
-    public function testBeforeMessenger81ATermThatFailsIsLoggedAndTheWorkerKeepsRunning(): void
+    #[DataProvider('messengerReleasesAroundDecodingFailures')]
+    public function testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled(bool $passesOn): void
     {
         $serializer = $this->createStub(SerializerInterface::class);
-        $serializer->method('decode')->willThrowException(new \RuntimeException('decode failed'));
-        $jetStream = $this->createStub(JetStreamContext::class);
+        $serializer->method('decode')->willThrowException(new \RuntimeException('the schema registry did not answer'));
+        $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->method('fetchBatch')->willReturn(Future::complete([new NatsMessage('test-topic', 1, 'reply-id', 'payload')]));
-        $logger = new RecordingLogger();
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::never())->method('nak');
+        $jetStream->expects(self::never())->method('ack');
 
-        $transport = new class (self::VALID_DSN, [], $serializer, $logger) extends ThrowingFailureNatsTransport {
+        $transport = new class (self::VALID_DSN, self::NATS_MODE, $serializer) extends RuntimeTestableNatsTransport {
+            public bool $passesOn = false;
+
             protected function messengerPassesOnDecodeFailures(): bool
             {
-                return false;
+                return $this->passesOn;
             }
         };
+        $transport->passesOn = $passesOn;
         $transport->setJetStreamContext($jetStream);
 
-        self::assertSame([], iterator_to_array($transport->get(), false));
-        self::assertSame([
-            'A message on stream "test-stream" could not be decoded (decode failed) and could not be TERMed (term transport'
-            . ' failure), so it comes back after ack_wait.',
-        ], $logger->messagesAt('error'));
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('the schema registry did not answer');
+
+        iterator_to_array($transport->get(), false);
     }
 
     /**
      * From Symfony Messenger 8.1 on, a message the serializer cannot decode goes on as the decoding failure, as with
-     * Symfony's own serializers: an envelope whose message is the MessageDecodingFailedException, carrying what was
+     * Symfony's own transports: an envelope whose message is the MessageDecodingFailedException, carrying what was
      * received and the serializer's exception, with its delivery token, and nothing settled yet. The worker handles
      * and fails it, Symfony's retry strategy and failure transport deal with it, and nats mode TERMs it when it is
      * settled.
@@ -915,7 +917,7 @@ final class NatsTransportTest extends TestCase
             self::markTestSkipped('Symfony Messenger before 8.1 has no MessageDecodingFailedException::wrap().');
         }
 
-        $decodeError = new \RuntimeException('decode failed', 42);
+        $decodeError = new MessageDecodingFailedException('decode failed', 42);
         $serializer = $this->createStub(SerializerInterface::class);
         $serializer->method('decode')->willThrowException($decodeError);
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -937,34 +939,6 @@ final class NatsTransportTest extends TestCase
         self::assertSame($decodeError, $failure->getPrevious());
         self::assertSame(['body' => 'broken', 'headers' => []], $failure->encodedEnvelope);
         self::assertSame('$JS.ACK.test-stream.client.1.7.1.0.0', $envelopes[0]->last(TransportMessageIdStamp::class)?->getId());
-    }
-
-    /**
-     * From Messenger 8.1 on, an exception whose code is not an int, as a PDOException's SQLSTATE, gives a decoding
-     * failure with the code 0, as MessageDecodingFailedException takes an int.
-     */
-    public function testFromMessenger81ADecodeErrorWhoseCodeIsNotAnIntGivesTheCodeZero(): void
-    {
-        if (!(new \ReflectionClass(MessageDecodingFailedException::class))->hasMethod('wrap')) {
-            self::markTestSkipped('Symfony Messenger before 8.1 has no MessageDecodingFailedException::wrap().');
-        }
-
-        $decodeError = new \PDOException('the payload store failed');
-        (new \ReflectionProperty(\Exception::class, 'code'))->setValue($decodeError, 'HY000');
-        $serializer = $this->createStub(SerializerInterface::class);
-        $serializer->method('decode')->willThrowException($decodeError);
-        $jetStream = $this->createStub(JetStreamContext::class);
-        $jetStream->method('fetchBatch')->willReturn(Future::complete([new NatsMessage('test-topic', 1, 'reply-id', 'payload')]));
-
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $serializer);
-        $transport->setJetStreamContext($jetStream);
-        $envelopes = array_values(iterator_to_array($transport->get(), false));
-
-        self::assertCount(1, $envelopes);
-        $failure = $envelopes[0]->getMessage();
-        self::assertInstanceOf(MessageDecodingFailedException::class, $failure);
-        self::assertSame(0, $failure->getCode());
-        self::assertSame($decodeError, $failure->getPrevious());
     }
 
     /**
