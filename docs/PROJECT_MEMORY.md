@@ -593,4 +593,11 @@ These are posted recommendations; the tests and proposed issue-summary edits are
 - The checks before the merge, on PHP 8.5 with client 2.30.0 and Symfony Messenger 8.1.11 (8.1.9 in the functional app):
   PHPStan clean; 1186 tests, also stopped at random moments; coverage 99.76 % (1248/1251); Infection killed 1466 of 1486
   mutants, with the 20 survivors `docs/TESTS.md` lists; Behat 102 of 102; 21 of 21 examples.
+- **5.10.0, a minor release,** follows the same day: the two retry modes stated plainly, nats mode TERMing an
+  unrecoverable failure, decode failures handled as Symfony's Doctrine, Redis and AMQP receivers handle them (Bartosz's
+  rule: a logger never decides whether to throw), unknown options refused, and the two warnings. Its checks: PHPStan clean
+  on Symfony Messenger 8.1.11 and 7.4.21; 1289 tests, also stopped at random moments; coverage 99.78 % (1382/1385);
+  Infection killed 1706 of 1730 mutants, with the 24 survivors `docs/TESTS.md` lists; Behat 105 of 105; 22 of 22
+  examples. The retry matrix, 6 modes by 4 failure scenarios on 8 kinds of stream (a standalone 2.15.2, clusters of
+  2.15.2 and 2.11.17) and on Messenger 7.4.21, gave the expected outcome in all 216 cells.
 

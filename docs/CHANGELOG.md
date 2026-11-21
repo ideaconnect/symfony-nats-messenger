@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.10.0] - 2026-11-21
+
+A **minor** release that makes the two retry modes plain, from the review of #119, whose `give_up_via` is not taken. In
+symfony mode Symfony decides and its failure transport keeps what it gives up on; in nats mode NATS decides, and what
+can never succeed is TERMed: a failure Symfony marks as unrecoverable, and a message that cannot be decoded. A message
+that cannot be decoded is handled as Symfony's own transports handle it, and on Symfony Messenger 8.1 it goes to the
+worker as the decoding failure. ⚠️ An option the transport does not know is refused when the transport is built, and
+only a `MessageDecodingFailedException` of the serializer counts as a decode failure. New warnings say when Symfony's
+retry is published without its delay, and when NATS deletes from a stream what `max_deliver` stops. The public PHP API
+gains `TransportOption::isCredential()` and `TransportOption::credentials()`.
+
 ### Added
 
 - **A warning when Symfony's retry is published without its delay**, once per worker: every retry with `retry_via:
