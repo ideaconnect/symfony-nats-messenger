@@ -5505,6 +5505,8 @@ final class NatsTransportTest extends TestCase
         yield 'one on the delayed token alone' => [[self::consumerFilteredOn('test-topic.delayed')]];
         yield 'one on another topic\'s subjects' => [[self::consumerFilteredOn('other-topic.>')]];
         yield 'one with filter subjects that miss' => [[self::consumerFilteredOn(null, ['test-topic', 'other-topic.delayed.>'])]];
+        // ">" takes one token or more, so it takes nothing after the UUID.
+        yield 'one on a token after the delayed ones' => [[self::consumerFilteredOn('test-topic.delayed.*.>')]];
     }
 
     /**
@@ -5537,6 +5539,8 @@ final class NatsTransportTest extends TestCase
         yield 'with a wildcard for the topic' => [self::consumerFilteredOn('*.delayed.*')];
         yield 'without a filter' => [self::consumerFilteredOn(null)];
         yield 'with filter subjects, one of which matches' => [self::consumerFilteredOn(null, ['test-topic', 'test-topic.delayed.>'])];
+        // Entries that name no subject are no filter, so the consumer takes every subject.
+        yield 'with filter subjects that name no subject' => [self::consumerFilteredOn(null, ['', 5])];
     }
 
     /**
@@ -5589,7 +5593,15 @@ final class NatsTransportTest extends TestCase
                 iterator_to_array($transport->get());
                 self::fail('pull ' . $pull . ' should have been refused');
             } catch (TransportException $refusal) {
-                self::assertStringContainsString('the stream has interest retention and no consumer has interest in "test-topic.delayed.>"', $refusal->getMessage());
+                self::assertSame(
+                    'scheduled_messages on stream "test-stream": the stream has interest retention and no consumer has interest in'
+                    . ' "test-topic.delayed.>", so NATS would store none of the delayed messages this transport publishes there,'
+                    . ' Symfony\'s delayed retries included, and each would be lost. Turn scheduled_messages off (with retry_via:'
+                    . ' nak, retries wait through a NAK instead), use a stream with limits or work-queue retention, or add a'
+                    . ' durable consumer filtered on "test-topic.delayed.>" that nobody pulls from, which keeps the delayed'
+                    . ' messages until they are due.',
+                    $refusal->getMessage(),
+                );
             }
         }
     }
@@ -5635,6 +5647,21 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * Without a logger, a stream that cannot be read is let through as well, and nothing is logged.
+     */
+    public function testAStreamThatCannotBeReadIsLetThroughWithoutALogger(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('getStream')->willReturnCallback(static fn (): Future => Future::error(new JetStreamException('refused', 0)));
+        $jetStream->expects(self::once())->method('fetchBatch')->willReturn(Future::complete([]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true]);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
      * Without scheduled_messages nothing is checked: a pull reads neither the stream nor its consumers.
      */
     public function testWithoutScheduledMessagesAPullChecksNothing(): void
@@ -5663,7 +5690,7 @@ final class NatsTransportTest extends TestCase
     /**
      * A consumer of the transport's stream with the filter $filter, or the filter subjects $filters, or neither.
      *
-     * @param list<string>|null $filters
+     * @param list<mixed>|null $filters
      */
     private static function consumerFilteredOn(?string $filter, ?array $filters = null): ConsumerInfo
     {
@@ -8458,6 +8485,47 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * Without a logger, a consumer whose limit is not the option's is still followed, and nothing is logged.
+     */
+    public function testAConsumerWhoseLimitIsNotTheOptionsIsFollowedWithoutALogger(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('getConsumer')->willReturn(Future::complete(self::consumerLimitedTo(3)));
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $jetStream->method('ack')->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES, $this->encodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.3.1.3.0.0')]);
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(3)));
+        $transport->ack($failed);
+    }
+
+    /**
+     * A consumer that reports max_deliver 0 has no limit, as one that reports -1 does: its first delivery's retry is a
+     * NAK, not a copy.
+     */
+    public function testAConsumerThatReportsMaxDeliverZeroHasNoLimit(): void
+    {
+        $consumer = self::consumerLimitedTo(null);
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('getConsumer')->willReturn(Future::complete(new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => ['max_deliver' => 0] + (is_array($consumer->raw['config'] ?? null) ? $consumer->raw['config'] : [])],
+        )));
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::once())->method('nakWithDelay')->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES, $this->encodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.1.1.1.0.0')]);
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(1)));
+        $transport->ack($failed);
+    }
+
+    /**
      * A consumer that allows more deliveries than the option says redelivers the message after the option's last
      * delivery, so that retry is a NAK with Symfony's delay rather than a copy. Logged once.
      */
@@ -8540,6 +8608,47 @@ final class NatsTransportTest extends TestCase
 
         $transport->close();
         $transport->setJetStreamContext($jetStream);
+        $retryTheLastDelivery();
+
+        self::assertCount(1, array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'could not be read for its max_deliver')), 'the unreadable consumer is logged once per transport object, on the new connection too');
+    }
+
+    /**
+     * A connection that is replaced is asked for the consumer again: the consumer could not be read on the first one,
+     * the client then closed, and the transport dialled again. Three retries of the last delivery read the consumer
+     * twice: on the first connection, not again on it, and on the new one.
+     */
+    public function testAReplacedConnectionAsksForTheConsumerAgain(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static fn (): Future => Future::error(new \RuntimeException('refused')));
+        $jetStream->method('publish')->willReturn(Future::complete());
+        $jetStream->method('ack')->willReturn(Future::complete());
+
+        $state = ConnectionState::Open;
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturnCallback(static function () use (&$state): ConnectionState {
+            return $state;
+        });
+        $client->method('connect')->willReturnCallback(static function () use (&$state): Future {
+            $state = ConnectionState::Open;
+
+            return Future::complete();
+        });
+        $client->method('jetStream')->willReturn($jetStream);
+
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['max_deliver' => 2], $this->encodingSerializer());
+        $transport->setClient($client);
+        $retryTheLastDelivery = static function () use ($transport): void {
+            $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.2.1.2.0.0')]);
+            $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
+            $transport->ack($failed);
+        };
+
+        $retryTheLastDelivery();
+        // The server went away: the next operation finds the client closed and dials again.
+        $state = ConnectionState::Closed;
+        $retryTheLastDelivery();
         $retryTheLastDelivery();
     }
 
