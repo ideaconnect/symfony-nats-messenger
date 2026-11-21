@@ -28,7 +28,9 @@ use function Amp\async;
  *    that found no more messages ends; a pull on an inbox the session does not hold gets nothing, since nothing is
  *    subscribed to deliver to;
  *  - a CONSUMER.INFO request of the consumer gets {@see $consumerInfoReply}, and nothing while that is null; with
- *    {@see $lameDuckOnConsumerInfo} the server says it is going away instead (an INFO that carries `ldm`);
+ *    {@see $lameDuckOnConsumerInfo} the server says it is going away instead (an INFO that carries `ldm`); with
+ *    {@see $refuseConsumerInfo} it is refused with a permissions violation, and {@see $afterTheRefusal} says what the
+ *    server does next;
  *  - a publish to an ack subject is recorded.
  * The stream's messages, the deliveries and the acknowledgements outlive a session, as on a real server.
  *
@@ -48,6 +50,12 @@ use function Amp\async;
 final class SubscriptionLimitNatsServer implements TransportInterface
 {
     public const LIMIT_ERR = "-ERR 'maximum subscriptions exceeded'\r\n";
+
+    /** {@see $afterTheRefusal}: the server closes the connection. */
+    public const CLOSE = 'close';
+
+    /** {@see $afterTheRefusal}: the server announces lame duck mode, naming another server to move to. */
+    public const LAME_DUCK_TO_ANOTHER_SERVER = 'lame duck to another server';
 
     private const INFO = 'INFO {"server_id":"S1","server_name":"n1","version":"2.12.0","proto":1,"jetstream":true,"max_payload":1048576,"headers":true}' . "\r\n";
 
@@ -75,6 +83,23 @@ final class SubscriptionLimitNatsServer implements TransportInterface
      * nothing from then on; the connection stays open (#106).
      */
     public bool $lameDuckOnConsumerInfo = false;
+
+    /**
+     * Whether a CONSUMER.INFO request of the consumer is refused with a permissions violation, ahead of
+     * {@see $consumerInfoReply} and {@see $lameDuckOnConsumerInfo}: nats-server refuses the question of a user who may
+     * pull but not ask for consumer info at once, a server going away as well as one that stays, and keeps the
+     * connection open (#131).
+     */
+    public bool $refuseConsumerInfo = false;
+
+    /**
+     * What the server does, once, on the client's first read after the read that took that refusal: nothing while null;
+     * with {@see CLOSE} it closes the connection, so that the read meets EOF, as a server that stops gracefully does;
+     * with {@see LAME_DUCK_TO_ANOTHER_SERVER} it sends an INFO that carries `ldm` and `connect_urls`, as a server in
+     * lame duck mode does in a cluster. The client reads right after a refused question only to watch the connection
+     * (client 2.30.0 and later), so that read is the diagnosis's watch (#131).
+     */
+    public ?string $afterTheRefusal = null;
 
     private readonly string $pullSubject;
 
@@ -121,6 +146,9 @@ final class SubscriptionLimitNatsServer implements TransportInterface
     /** @var DeferredFuture<null> Completed (and replaced) whenever parked reads must look again. */
     private DeferredFuture $wake;
 
+    /** Whether the client has read the refusal {@see $afterTheRefusal} acts after, on the live session. */
+    private bool $refusalRead = false;
+
     public function __construct(
         private readonly string $streamName,
         private readonly string $topic,
@@ -136,6 +164,7 @@ final class SubscriptionLimitNatsServer implements TransportInterface
         $this->session++;
         $this->live = true;
         $this->subscriptions = [];
+        $this->refusalRead = false;
         $this->reads = [$this->nonce === null ? self::INFO : str_replace('INFO {', 'INFO {"nonce":"' . $this->nonce . '",', self::INFO)];
         $this->wakeReaders();
 
@@ -226,6 +255,17 @@ final class SubscriptionLimitNatsServer implements TransportInterface
         $session = $this->session;
 
         return async(function () use ($cancellation, $session): string {
+            if ($this->refusalRead && $this->live && $this->session === $session) {
+                $this->refusalRead = false;
+                $after = $this->afterTheRefusal;
+                $this->afterTheRefusal = null;
+                if ($after === self::CLOSE) {
+                    $this->endSession();
+                } elseif ($after === self::LAME_DUCK_TO_ANOTHER_SERVER) {
+                    $this->send(str_replace('"headers":true', '"headers":true,"ldm":true,"connect_urls":["127.0.0.1:4333"]', self::INFO));
+                }
+            }
+
             while (true) {
                 if (!$this->live || $this->session !== $session) {
                     throw new TransportClosedException('Socket closed by peer (EOF)');
@@ -234,6 +274,9 @@ final class SubscriptionLimitNatsServer implements TransportInterface
                 if ($this->reads !== []) {
                     $chunk = implode('', $this->reads);
                     $this->reads = [];
+                    if ($this->afterTheRefusal !== null && str_contains($chunk, self::refusalOf($this->consumerInfoSubject))) {
+                        $this->refusalRead = true;
+                    }
                     if ($this->heldWrite !== null && str_contains($chunk, '-ERR ')) {
                         $held = $this->heldWrite;
                         $this->heldWrite = null;
@@ -389,7 +432,9 @@ final class SubscriptionLimitNatsServer implements TransportInterface
 
         $this->record('PUBLISH', $subject);
         if ($subject === $this->consumerInfoSubject && $replyTo !== null) {
-            if ($this->consumerInfoReply !== null) {
+            if ($this->refuseConsumerInfo) {
+                $this->send(self::refusalOf($subject));
+            } elseif ($this->consumerInfoReply !== null) {
                 $this->reply($replyTo, $this->consumerInfoReply);
             } elseif ($this->lameDuckOnConsumerInfo) {
                 $this->send(str_replace('"headers":true', '"headers":true,"ldm":true', self::INFO));
@@ -461,6 +506,12 @@ final class SubscriptionLimitNatsServer implements TransportInterface
                 return;
             }
         }
+    }
+
+    /** The -ERR nats-server answers a publish to $subject with when the user may not publish to it. */
+    private static function refusalOf(string $subject): string
+    {
+        return "-ERR 'Permissions Violation for Publish to \"" . $subject . "\"'\r\n";
     }
 
     private function record(string $op, string $subject): void
