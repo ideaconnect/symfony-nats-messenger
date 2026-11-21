@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`idct/php-nats-jetstream-client` `^2.30`.** A request the server refuses for lack of permission fails at once with
+  `PermissionViolationException`, instead of a `TimeoutException` after `request_timeout`, and the transport tells
+  such a refusal from a failure of the connection: a worker whose user may not ask for consumer info finished a
+  failing message in 1.2 s instead of 6.2 s (`request_timeout` 5 s). A refusal does not make the next operation check
+  the connection: the server answered it and keeps the connection open.
+
 ### Fixed
 
 - **`retry_via: nak` no longer loses a retry when the consumer's `max_deliver` is not the option's.** The transport
@@ -15,8 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration's setup or a change by hand leaves it, the retry of the third delivery was NAKed and NATS redelivered
   nothing: 3 handler runs with `max_retries` 4, no failure-transport copy (measured on nats-server 2.15.2). The
   transport now reads the consumer's limit at the first retry that needs it and again after a minute, follows it,
-  and warns once when it differs from the option; a consumer it may not read leaves the option to decide, with one
-  warning. Now 5 runs and 1 failure-transport copy. `isTheLastDelivery()`, `consumersMaxDeliver()`.
+  and warns once when it differs from the option. A user who may not ask for consumer info, whom the server refuses
+  at once (client 2.30.0), leaves the option to decide, with one warning, for that connection; a JetStream error, such
+  as a consumer that does not exist, leaves it to decide for that retry only; a read that fails on the connection, as
+  a dial during a server restart, makes the send of the retry fail, and the delivery comes back after `ack_wait`
+  rather than decided on a guess, which could NAK the retry of a last delivery. Now 5 runs and 1 failure-transport
+  copy. `isTheLastDelivery()`, `consumersMaxDeliver()`.
 - **`scheduled_messages` is refused on a stream with interest retention that nothing listens on.** NATS stores
   nothing published to a subject no consumer has interest in on such a stream, and the transport's consumer reads the
   topic alone, so every delayed message, published to `{topic}.delayed.{uuid}`, was dropped though its publish was

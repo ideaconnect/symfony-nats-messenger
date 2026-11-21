@@ -13,6 +13,7 @@ use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\AuthenticationException;
 use IDCT\NATS\Exception\ConnectionException;
 use IDCT\NATS\Exception\JetStreamException;
+use IDCT\NATS\Exception\PermissionViolationException;
 use IDCT\NATS\Exception\SubscriptionLimitException;
 use IDCT\NATS\Exception\TimeoutException;
 use IDCT\NATS\Exception\UnsupportedFeatureException;
@@ -5655,12 +5656,57 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * A stream that does not exist yet is not checked before the pull, and not let through for good either: the pull
+     * reports it, and the next pull looks again. Nothing is logged. The first form of 5.9.1 logged it as a stream it
+     * could not read and never checked again.
+     */
+    public function testAStreamThatDoesNotExistYetIsLookedForAgainAtTheNextPull(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getStream')->willReturnCallback(static fn (): Future => Future::error(new JetStreamException('stream not found', 404)));
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([]));
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'ping_after_idle' => 0], null, $logger);
+        $transport->setJetStreamContext($jetStream);
+        iterator_to_array($transport->get(), false);
+        iterator_to_array($transport->get(), false);
+
+        self::assertSame([], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * A read of the stream that fails on the connection propagates from the pull, as the pull's own failure would, and
+     * the stream is checked again at the next one.
+     */
+    public function testAStreamReadThatFailsOnTheConnectionPropagatesFromThePull(): void
+    {
+        $answers = [Future::error(new ConnectionException('Connection refused')), Future::complete(self::streamWithRetention('limits'))];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getStream')->willReturnCallback(static function () use (&$answers): Future {
+            return array_shift($answers) ?? self::fail('the stream was asked more than twice');
+        });
+        $jetStream->expects(self::once())->method('fetchBatch')->willReturn(Future::complete([]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+        try {
+            iterator_to_array($transport->get(), false);
+            self::fail('the pull should have failed with the read of the stream');
+        } catch (\Throwable $thrown) {
+            self::assertStringContainsString('Connection refused', $thrown->getMessage());
+        }
+
+        self::assertSame([], iterator_to_array($transport->get(), false));
+    }
+
+    /**
      * A stream the worker may not read is let through, as up to 5.9.0, with one warning, and not checked again.
      */
     public function testAStreamThatCannotBeReadIsLetThroughWithOneWarning(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::once())->method('getStream')->willReturnCallback(static fn (): Future => Future::error(new JetStreamException('refused', 0)));
+        $jetStream->expects(self::once())->method('getStream')->willReturnCallback(static fn (): Future => Future::error(new PermissionViolationException('refused', subject: '$JS.API.STREAM.INFO.test-stream')));
         $jetStream->expects(self::never())->method('listConsumers');
         $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::complete([]));
         $logger = new RecordingLogger();
@@ -5683,7 +5729,7 @@ final class NatsTransportTest extends TestCase
     public function testAStreamThatCannotBeReadIsLetThroughWithoutALogger(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->method('getStream')->willReturnCallback(static fn (): Future => Future::error(new JetStreamException('refused', 0)));
+        $jetStream->method('getStream')->willReturnCallback(static fn (): Future => Future::error(new PermissionViolationException('refused', subject: '$JS.API.STREAM.INFO.test-stream')));
         $jetStream->expects(self::once())->method('fetchBatch')->willReturn(Future::complete([]));
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true]);
@@ -8316,6 +8362,7 @@ final class NatsTransportTest extends TestCase
             new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'p'),
         ]));
         $jetStream->expects(self::once())->method('nakWithDelay')->with(self::anything(), 2500)->willReturn(Future::complete());
+        $jetStream->method('getConsumer')->willReturn(Future::complete(self::consumerLimitedTo(null)));
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES, $this->decodingSerializer());
         $transport->setJetStreamContext($jetStream);
@@ -8674,7 +8721,7 @@ final class NatsTransportTest extends TestCase
     public function testAConsumerThatCannotBeReadLeavesTheOptionAndIsNotAskedAgainOnThatConnection(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static fn (): Future => Future::error(new \RuntimeException('refused')));
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static fn (): Future => Future::error(new PermissionViolationException('refused', subject: '$JS.API.CONSUMER.INFO.test-stream.client')));
         $jetStream->method('publish')->willReturn(Future::complete());
         $jetStream->method('ack')->willReturn(Future::complete());
         $logger = new RecordingLogger();
@@ -8711,6 +8758,66 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * A read of the consumer that fails on the connection, as a dial during a server restart, propagates from the send
+     * of the retry: the retry of what may be the last delivery is not decided on a guess, and the delivery comes back
+     * after ack_wait. The consumer is asked again at the next retry, which reads its limit. The first form of 5.9.1 took
+     * any failure for a user who may not ask, and never asked again on a connection that was fine: three retries of
+     * last deliveries were NAKed and lost after a server restart, in review.
+     */
+    public function testAConsumerReadThatFailsOnTheConnectionPropagatesAndIsAskedAgain(): void
+    {
+        $answers = [Future::error(new ConnectionException('Connection refused')), Future::complete(self::consumerLimitedTo(2))];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static function () use (&$answers): Future {
+            return array_shift($answers) ?? self::fail('the consumer was asked more than twice');
+        });
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $jetStream->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['ping_after_idle' => 0], $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.2.1.2.0.0')]);
+
+        try {
+            $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
+            self::fail('the send of the retry should have failed with the read of the consumer');
+        } catch (\Throwable $thrown) {
+            self::assertStringContainsString('Connection refused', $thrown->getMessage());
+        }
+
+        // The next retry asks again, reads the limit of 2, and publishes the retry of that last delivery as a copy.
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
+        self::assertSame([], array_values(array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'could not be read'))));
+    }
+
+    /**
+     * A JetStream error, here a consumer that does not exist, leaves the option to decide for this retry only, with one
+     * warning that does not ask for a permission, and the next retry asks again.
+     */
+    public function testAConsumerThatDoesNotExistLeavesTheOptionForThisRetryAndIsAskedAgain(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static fn (): Future => Future::error(new JetStreamException('consumer not found', 404)));
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturn(Future::complete());
+        $jetStream->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['max_deliver' => 2, 'ping_after_idle' => 0], $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        foreach ([1, 2] as $retry) {
+            $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.2.1.2.0.0')]);
+            $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
+        }
+
+        self::assertSame([
+            'retry_via=nak on stream "test-stream": consumer "client" could not be read for its max_deliver (consumer not'
+            . ' found), so the max_deliver option (2) tells which delivery is the last one. It is asked again at the next'
+            . ' retry.',
+        ], array_values(array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'could not be read'))));
+    }
+
+    /**
      * A connection that is replaced is asked for the consumer again: the consumer could not be read on the first one,
      * the client then closed, and the transport dialled again. Three retries of the last delivery read the consumer
      * twice: on the first connection, not again on it, and on the new one.
@@ -8718,7 +8825,7 @@ final class NatsTransportTest extends TestCase
     public function testAReplacedConnectionAsksForTheConsumerAgain(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static fn (): Future => Future::error(new \RuntimeException('refused')));
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static fn (): Future => Future::error(new PermissionViolationException('refused', subject: '$JS.API.CONSUMER.INFO.test-stream.client')));
         $jetStream->method('publish')->willReturn(Future::complete());
         $jetStream->method('ack')->willReturn(Future::complete());
 
@@ -8758,7 +8865,7 @@ final class NatsTransportTest extends TestCase
         $answers = [Future::complete(self::consumerLimitedTo(3))];
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->method('getConsumer')->willReturnCallback(static function () use (&$answers): Future {
-            return array_shift($answers) ?? Future::error(new \RuntimeException('refused'));
+            return array_shift($answers) ?? Future::error(new PermissionViolationException('refused', subject: '$JS.API.CONSUMER.INFO.test-stream.client'));
         });
         $jetStream->method('nakWithDelay')->willReturn(Future::complete());
         $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());

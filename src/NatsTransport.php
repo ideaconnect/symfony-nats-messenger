@@ -12,6 +12,7 @@ use IDCT\NATS\Core\NatsHeaders;
 use IDCT\NATS\Core\NatsMessage;
 use IDCT\NATS\Exception\ConnectionException;
 use IDCT\NATS\Exception\JetStreamException;
+use IDCT\NATS\Exception\PermissionViolationException;
 use IDCT\NATS\Exception\SubscriptionLimitException;
 use IDCT\NATS\Exception\TimeoutException;
 use IDCT\NATS\Exception\UnsupportedFeatureException;
@@ -517,10 +518,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * setup()'s own answer is not taken: another configuration's setup on the same consumer can change its limit right
      * after, as happens when two processes start, and the first retry usually comes later than that.
      *
-     * A consumer that cannot be read, such as for a user who may not ask for consumer info, leaves the last value read,
-     * or the option when there is none, and is logged once; it is not asked again until the connection is replaced or
-     * closed. From client 2.30.0 on, the server's refusal of that request ends it at once; before, it took the
-     * request_timeout.
+     * A user who may not ask for consumer info gets the request refused at once (client 2.30.0): the last value read,
+     * or the option when there is none, decides, the refusal is logged once, and the consumer is not asked again until
+     * the connection is replaced or closed, as the permission is the user's. A JetStream error, such as a consumer
+     * that does not exist, leaves the same value to decide for this retry only, and the next one asks again. A failure
+     * of the connection, or a request that timed out, propagates: the decision would be a guess, which could NAK the
+     * retry of a last delivery, a message lost, and the delivery comes back after ack_wait instead. The first form of
+     * 5.9.1 took any failure for the refusal, a failed dial during a server restart included, and stopped asking on a
+     * connection that was fine.
      */
     private function consumersMaxDeliver(): ?int
     {
@@ -532,9 +537,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                     $this->awaitOnConnection(fn (): Future => $this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer())),
                 );
                 $known = $this->consumersMaxDeliver;
-            } catch (\Throwable $failure) {
+            } catch (PermissionViolationException $refused) {
                 $this->consumerUnreadableOnThisConnection = true;
-                $this->warnThatTheConsumerCouldNotBeRead($failure, $known);
+                $this->warnThatTheConsumerCouldNotBeRead($refused, $known);
+            } catch (JetStreamException $unanswered) {
+                $this->warnThatTheConsumerCouldNotBeRead($unanswered, $known);
             }
         }
 
@@ -580,15 +587,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $this->consumerUnreadableReported = true;
         $this->logger?->warning(sprintf(
             'retry_via=nak on stream "%s": consumer "%s" could not be read for its max_deliver (%s), so %s tells which'
-            . ' delivery is the last one. Let this user ask for consumer info ($JS.API.CONSUMER.INFO.%s.%s).',
+            . ' delivery is the last one.%s',
             $this->streamName,
             $this->configuration->consumer(),
             $failure->getMessage(),
             $known !== null
                 ? 'the value read before (' . self::describeMaxDeliver($known['value']) . ')'
                 : 'the max_deliver option (' . self::describeMaxDeliver($this->configuration->maxDeliver()) . ')',
-            $this->streamName,
-            $this->configuration->consumer(),
+            $failure instanceof PermissionViolationException
+                ? sprintf(' Let this user ask for consumer info ($JS.API.CONSUMER.INFO.%s.%s).', $this->streamName, $this->configuration->consumer())
+                : ' It is asked again at the next retry.',
         ));
     }
 
@@ -1598,7 +1606,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * A pull refused at the subscription limit counts as a failure too (#76). The server refuses a SUB beyond the
      * limit and keeps the connection open, but it sends the same error when an account's limit is lowered below
      * what the connection holds, and then closes the connection about 20 ms later. The error cannot tell the two
-     * apart, so the check stays: an open connection answers the PING and is kept, a closed one is replaced.
+     * apart, so the check stays: an open connection answers the PING and is kept, a closed one is replaced. A
+     * request refused for lack of permission (PermissionViolationException, client 2.30.0) does not count: the server
+     * answered it and keeps the connection open, as it does for every publish of that user it refuses.
      *
      * The call is passed as a closure that starts it, not as its Future (#115). With zend.exception_ignore_args off,
      * the default without a php.ini, the trace of an exception raised in the event loop records the arguments of
@@ -1624,6 +1634,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             throw $reply;
+        } catch (PermissionViolationException $refused) {
+            // The server answered, refusing the publish for lack of permission, and kept the connection open.
+            throw $refused;
         } catch (\Throwable $failure) {
             $this->checkBeforeNextUse = true;
 
@@ -1909,12 +1922,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * was gone, with no failure-transport copy (measured on nats-server 2.15.2, one server and three replicas). NATS
      * calls this intended (ADR-51, "Stream Retention Interaction"; nats-server issue #7408).
      *
-     * Checked by setup(), with the stream it created or updated, and by a worker before its first pull, since a worker
-     * sends Symfony's delayed retries; a process that only publishes is not checked. A stream with limits or
-     * work-queue retention passes, and so does an interest stream with a consumer whose filter covers the delayed
-     * subjects, such as one an operator added that nobody pulls from (ADR-51's pinning consumer). Once it passes it
-     * is not checked again by this transport object. A stream or a consumer list it cannot read is logged once and
-     * let through, as before.
+     * Checked by setup(), before it writes the stream ({@see assertTheStreamToSetUpKeepsDelayedMessages()}), and by a
+     * worker before its first pull, since a worker sends Symfony's delayed retries; a process that only publishes is
+     * not checked. A stream with limits or work-queue retention passes, and so does an interest stream with a consumer
+     * whose filter covers the delayed subjects, such as one an operator added that nobody pulls from (ADR-51's
+     * pinning consumer). Once it passes it is not checked again by this transport object. A stream or consumer list a
+     * user may not read is logged once and let through, as the permission is the user's. A stream that does not exist
+     * is not checked yet: the pull reports it, or auto_setup creates it and checks it. Any other failure propagates, as
+     * the pull's would: the first form of 5.9.1 took a failed dial for an unreadable stream, logged it, dialled again
+     * for the pull, and never checked again on that transport object.
      *
      * @throws TransportException When the stream would drop every delayed message.
      */
@@ -1934,7 +1950,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             $consumers = $this->awaitOnConnection(fn (): Future => $this->jetStream()->listConsumers($this->streamName));
-        } catch (\Throwable $failure) {
+        } catch (JetStreamException $missing) {
+            if ($missing->getCode() !== 404) {
+                throw $missing;
+            }
+
+            // No stream yet: the pull reports it, or auto_setup creates it and checks it then.
+            return;
+        } catch (PermissionViolationException $failure) {
+            // A user who may not read the stream or its consumers: refused again on every connection.
             $this->delayedMessagesChecked = true;
             $this->logger?->warning(sprintf(
                 'scheduled_messages on stream "%s": the stream and its consumers could not be read (%s), so the transport'
