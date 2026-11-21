@@ -201,6 +201,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private bool $maxDeliverMismatchReported = false;
 
     /**
+     * Whether the stream was found to keep the delayed messages scheduled_messages publishes, or could not be checked
+     * ({@see assertTheStreamKeepsDelayedMessages()}): then neither setup() nor a pull checks it again.
+     */
+    private bool $delayedMessagesChecked = false;
+
+    /**
      * Creates a transport instance from DSN/options and optional serializer override.
      *
      * Parses the DSN and options via {@see NatsTransportConfigurationBuilder}, sets up
@@ -677,6 +683,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     public function get(): iterable
     {
         $this->autoSetupIfEnabled();
+        // A worker is the process that sends Symfony's delayed retries, so it checks before its first pull.
+        $this->assertTheStreamKeepsDelayedMessages(null);
 
         try {
             $messages = $this->fetchBatchMessages();
@@ -1077,7 +1085,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             try {
-                $this->awaitOnConnection(fn (): Future => $this->jetStream()->addStream($streamConfiguration));
+                $streamInfo = $this->awaitOnConnection(fn (): Future => $this->jetStream()->addStream($streamConfiguration));
             } catch (UnsupportedFeatureException $unsupportedFeature) {
                 // A version-gated feature (e.g. allow_msg_schedules) was rejected by an older server.
                 // That is not a pre-existing-stream conflict, so skip the existence check and surface
@@ -1100,8 +1108,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 unset($managedOptions['name'], $managedOptions['subjects']);
 
                 $updatedConfiguration = $this->buildUpdatedStreamConfiguration($existingStream, $managedOptions, $subjects);
-                $this->awaitOnConnection(fn (): Future => $this->jetStream()->updateStream($this->streamName, $updatedConfiguration));
+                $streamInfo = $this->awaitOnConnection(fn (): Future => $this->jetStream()->updateStream($this->streamName, $updatedConfiguration));
             }
+
+            // The live stream: an update leaves an existing stream's retention as it was.
+            $this->assertTheStreamKeepsDelayedMessages($streamInfo);
 
             $consumerConfiguration = ConsumerConfiguration::create()
                 ->durable($this->configuration->consumer())
@@ -1860,6 +1871,124 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             . ' options as they were and the new stream_replicas), wait until "nats stream info" shows'
             . ' every replica as current, then run it again with the other change. With auto_setup every'
             . ' send() and get() repeats this update and fails until the configuration is staged.';
+    }
+
+    /**
+     * Refuses scheduled_messages on a stream with interest retention where no consumer has interest in the delayed
+     * subjects, "{topic}.delayed.<uuid>". NATS stores nothing published to a subject that no consumer's filter matches
+     * on such a stream, and a schedule exists only once its message is stored, so every delayed message was lost,
+     * though its publish was acknowledged: with retry_via: copy (the default) a message that failed once ran once and
+     * was gone, with no failure-transport copy (measured on nats-server 2.15.2, one server and three replicas). NATS
+     * calls this intended (ADR-51, "Stream Retention Interaction"; nats-server issue #7408).
+     *
+     * Checked by setup(), with the stream it created or updated, and by a worker before its first pull, since a worker
+     * sends Symfony's delayed retries; a process that only publishes is not checked. A stream with limits or
+     * work-queue retention passes, and so does an interest stream with a consumer whose filter covers the delayed
+     * subjects, such as one an operator added that nobody pulls from (ADR-51's pinning consumer). Once it passes it
+     * is not checked again by this transport object. A stream or a consumer list it cannot read is logged once and
+     * let through, as before.
+     *
+     * @throws TransportException When the stream would drop every delayed message.
+     */
+    private function assertTheStreamKeepsDelayedMessages(?StreamInfo $stream): void
+    {
+        if (!$this->configuration->isScheduledMessagesEnabled() || $this->delayedMessagesChecked) {
+            return;
+        }
+
+        try {
+            $stream ??= $this->awaitOnConnection(fn (): Future => $this->jetStream()->getStream($this->streamName));
+            $config = is_array($stream->raw['config'] ?? null) ? $stream->raw['config'] : [];
+            if (($config['retention'] ?? 'limits') !== 'interest') {
+                $this->delayedMessagesChecked = true;
+
+                return;
+            }
+
+            $consumers = $this->awaitOnConnection(fn (): Future => $this->jetStream()->listConsumers($this->streamName));
+        } catch (\Throwable $failure) {
+            $this->delayedMessagesChecked = true;
+            $this->logger?->warning(sprintf(
+                'scheduled_messages on stream "%s": the stream and its consumers could not be read (%s), so the transport'
+                . ' could not check that the stream keeps delayed messages. A stream with interest retention keeps them'
+                . ' only while a consumer has interest in "%s".',
+                $this->streamName,
+                $failure->getMessage(),
+                $this->delayedSubjectPattern(),
+            ));
+
+            return;
+        }
+
+        // A subject send() could publish to: no filter names a fresh UUID.
+        $delayedSubject = $this->topic . '.delayed.' . Uuid::v4();
+        foreach ($consumers as $consumer) {
+            if (self::consumerFiltersMatch($consumer, $delayedSubject)) {
+                $this->delayedMessagesChecked = true;
+
+                return;
+            }
+        }
+
+        throw new TransportException(sprintf(
+            'scheduled_messages on stream "%s": the stream has interest retention and no consumer has interest in "%s",'
+            . ' so NATS would store none of the delayed messages this transport publishes there, Symfony\'s delayed'
+            . ' retries included, and each would be lost. Turn scheduled_messages off (with retry_via: nak, retries wait'
+            . ' through a NAK instead), use a stream with limits or work-queue retention, or add a durable consumer'
+            . ' filtered on "%s" that nobody pulls from, which keeps the delayed messages until they are due.',
+            $this->streamName,
+            $this->delayedSubjectPattern(),
+            $this->delayedSubjectPattern(),
+        ));
+    }
+
+    /**
+     * Whether a consumer's filters take $subject: a consumer without a filter takes every subject of its stream.
+     */
+    private static function consumerFiltersMatch(ConsumerInfo $consumer, string $subject): bool
+    {
+        $config = is_array($consumer->raw['config'] ?? null) ? $consumer->raw['config'] : [];
+        $filters = [];
+        if (is_string($config['filter_subject'] ?? null) && $config['filter_subject'] !== '') {
+            $filters[] = $config['filter_subject'];
+        }
+        foreach (is_array($config['filter_subjects'] ?? null) ? $config['filter_subjects'] : [] as $filter) {
+            if (is_string($filter) && $filter !== '') {
+                $filters[] = $filter;
+            }
+        }
+
+        if ($filters === []) {
+            return true;
+        }
+
+        foreach ($filters as $filter) {
+            if (self::subjectMatches($filter, $subject)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether the NATS subject filter $filter matches $subject: "*" takes one token, a final ">" one or more.
+     */
+    private static function subjectMatches(string $filter, string $subject): bool
+    {
+        $filterTokens = explode('.', $filter);
+        $subjectTokens = explode('.', $subject);
+        foreach ($filterTokens as $position => $token) {
+            if ($token === '>') {
+                return count($subjectTokens) > $position;
+            }
+
+            if (!isset($subjectTokens[$position]) || ($token !== '*' && $token !== $subjectTokens[$position])) {
+                return false;
+            }
+        }
+
+        return count($filterTokens) === count($subjectTokens);
     }
 
     /**

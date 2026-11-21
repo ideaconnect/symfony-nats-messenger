@@ -15,8 +15,10 @@ use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
+use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
 use IDCT\NATS\JetStream\Enum\AckPolicy;
 use IDCT\NATS\JetStream\Enum\DeliverPolicy;
+use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 
@@ -1885,6 +1887,42 @@ class NatsSetupContext implements Context
 
         file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
         $this->resetSymfonyCache();
+    }
+
+    /**
+     * scheduled_messages on a stream with interest retention. NATS stores nothing published to a subject no consumer
+     * has interest in on such a stream, so the delayed messages the transport publishes to "{topic}.delayed.<uuid>"
+     * were dropped at publish, though acknowledged, up to 5.9.0. setup() and a worker's first pull now refuse it, unless
+     * a consumer has interest in the delayed subjects.
+     */
+    #[Given('I have a messenger transport configured with scheduled messages on a stream with interest retention')]
+    public function iHaveAMessengerTransportConfiguredWithScheduledMessagesOnAStreamWithInterestRetention(): void
+    {
+        $this->writeTransportConfiguration('stream_max_age=900&scheduled_messages=true&stream_retention=interest');
+    }
+
+    /**
+     * Creates the interest stream as setup() would, and a durable consumer on its delayed subjects that nobody pulls
+     * from, which gives them interest (NATS ADR-51 calls it a pinning consumer).
+     */
+    #[Given('the stream already has a consumer on the delayed subjects that nobody pulls from')]
+    public function theStreamAlreadyHasAConsumerOnTheDelayedSubjectsThatNobodyPullsFrom(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $jetStream = $client->jetStream();
+            $jetStream->addStream(StreamConfiguration::create($this->testStreamName)
+                ->subjects($this->testSubject, $this->testSubject . '.delayed.>')
+                ->retention(RetentionPolicy::Interest)
+                ->set('allow_msg_schedules', true))->await();
+            $jetStream->addConsumer($this->testStreamName, ConsumerConfiguration::create()
+                ->durable('delayed_pin')
+                ->filterSubject($this->testSubject . '.delayed.>')
+                ->ackPolicy(AckPolicy::Explicit)
+                ->deliverPolicy(DeliverPolicy::All))->await();
+        } finally {
+            $client->disconnect()->await();
+        }
     }
 
     #[When('I send :count messages with :delay milliseconds delay to the transport')]

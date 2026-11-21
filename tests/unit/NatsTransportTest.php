@@ -5462,6 +5462,222 @@ final class NatsTransportTest extends TestCase
 
     }
 
+    /**
+     * setup() refuses scheduled_messages on a stream with interest retention where no consumer has interest in the
+     * delayed subjects: NATS stores none of the delayed messages there, so each one, Symfony's delayed retries
+     * included, would be lost. The consumer is not created. Up to 5.9.0 setup() passed, and a message that failed
+     * once with retry_via: copy ran once and was gone.
+     *
+     * @param list<ConsumerInfo> $consumers
+     */
+    #[DataProvider('consumersWithoutInterestInTheDelayedSubjects')]
+    public function testSetupRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn(array $consumers): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
+        $jetStream->expects(self::once())->method('listConsumers')->with('test-stream')->willReturn(Future::complete($consumers));
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'stream_retention' => 'interest']);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->setup();
+            self::fail('setup() should have refused scheduled_messages on this stream');
+        } catch (\RuntimeException $refusal) {
+            self::assertStringContainsString(
+                'scheduled_messages on stream "test-stream": the stream has interest retention and no consumer has interest in "test-topic.delayed.>"',
+                $refusal->getMessage(),
+            );
+            self::assertStringContainsString('Turn scheduled_messages off', $refusal->getMessage());
+            self::assertStringContainsString('add a durable consumer filtered on "test-topic.delayed.>" that nobody pulls from', $refusal->getMessage());
+        }
+    }
+
+    /**
+     * @return iterable<string, array{list<ConsumerInfo>}>
+     */
+    public static function consumersWithoutInterestInTheDelayedSubjects(): iterable
+    {
+        yield 'no consumer' => [[]];
+        yield 'one on the topic, as the transport\'s own' => [[self::consumerFilteredOn('test-topic')]];
+        yield 'one on a single delayed subject' => [[self::consumerFilteredOn('test-topic.delayed.abc')]];
+        yield 'one on the delayed token alone' => [[self::consumerFilteredOn('test-topic.delayed')]];
+        yield 'one on another topic\'s subjects' => [[self::consumerFilteredOn('other-topic.>')]];
+        yield 'one with filter subjects that miss' => [[self::consumerFilteredOn(null, ['test-topic', 'other-topic.delayed.>'])]];
+    }
+
+    /**
+     * A consumer whose filter covers the delayed subjects gives them interest, and setup() goes on to create the
+     * transport's consumer: an operator's pinning consumer, one on the stream's subjects, or one without a filter.
+     */
+    #[DataProvider('consumersWithInterestInTheDelayedSubjects')]
+    public function testSetupKeepsScheduledMessagesOnAnInterestStreamWithAConsumerOnTheDelayedSubjects(ConsumerInfo $consumer): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
+        $jetStream->expects(self::once())->method('listConsumers')->willReturn(Future::complete([self::consumerFilteredOn('test-topic'), $consumer]));
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'stream_retention' => 'interest']);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    /**
+     * @return iterable<string, array{ConsumerInfo}>
+     */
+    public static function consumersWithInterestInTheDelayedSubjects(): iterable
+    {
+        yield 'on the delayed subjects' => [self::consumerFilteredOn('test-topic.delayed.>')];
+        yield 'on one token after delayed' => [self::consumerFilteredOn('test-topic.delayed.*')];
+        yield 'on the topic and below' => [self::consumerFilteredOn('test-topic.>')];
+        yield 'on every subject' => [self::consumerFilteredOn('>')];
+        yield 'with a wildcard for the topic' => [self::consumerFilteredOn('*.delayed.*')];
+        yield 'without a filter' => [self::consumerFilteredOn(null)];
+        yield 'with filter subjects, one of which matches' => [self::consumerFilteredOn(null, ['test-topic', 'test-topic.delayed.>'])];
+    }
+
+    /**
+     * A stream with limits or work-queue retention keeps every delayed message: the consumers are not asked for, and
+     * a later pull does not check the stream again.
+     */
+    #[DataProvider('retentionsThatKeepDelayedMessages')]
+    public function testSetupAsksForNoConsumersOnAStreamThatKeepsDelayedMessages(string $retention): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete(self::streamWithRetention($retention)));
+        $jetStream->expects(self::never())->method('listConsumers');
+        $jetStream->expects(self::never())->method('getStream');
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'stream_retention' => $retention]);
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function retentionsThatKeepDelayedMessages(): iterable
+    {
+        yield 'limits' => ['limits'];
+        yield 'work-queue' => ['workqueue'];
+    }
+
+    /**
+     * A worker checks the stream before its first pull, since it sends Symfony's delayed retries, and refuses to pull
+     * from an interest stream nothing has interest in the delayed subjects of, at every pull: the worker stops with
+     * the reason instead of losing its retries. Up to 5.9.0 it pulled.
+     */
+    public function testTheFirstPullRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
+        $jetStream->expects(self::exactly(2))->method('listConsumers')->willReturn(Future::complete([self::consumerFilteredOn('test-topic')]));
+        $jetStream->expects(self::never())->method('fetchBatch');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true]);
+        $transport->setJetStreamContext($jetStream);
+
+        foreach ([1, 2] as $pull) {
+            try {
+                iterator_to_array($transport->get());
+                self::fail('pull ' . $pull . ' should have been refused');
+            } catch (TransportException $refusal) {
+                self::assertStringContainsString('the stream has interest retention and no consumer has interest in "test-topic.delayed.>"', $refusal->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Once the stream passed, later pulls do not check it again.
+     */
+    public function testTheStreamIsCheckedOnceForAWorkerWhosePullsGoOn(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('getStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
+        $jetStream->expects(self::once())->method('listConsumers')->willReturn(Future::complete([self::consumerFilteredOn('test-topic.delayed.>')]));
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::complete([]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true]);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
+     * A stream the worker may not read is let through, as up to 5.9.0, with one warning, and not checked again.
+     */
+    public function testAStreamThatCannotBeReadIsLetThroughWithOneWarning(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('getStream')->willReturnCallback(static fn (): Future => Future::error(new JetStreamException('refused', 0)));
+        $jetStream->expects(self::never())->method('listConsumers');
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::complete([]));
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true], null, $logger);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([
+            'scheduled_messages on stream "test-stream": the stream and its consumers could not be read (refused), so the'
+            . ' transport could not check that the stream keeps delayed messages. A stream with interest retention keeps'
+            . ' them only while a consumer has interest in "test-topic.delayed.>".',
+        ], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * Without scheduled_messages nothing is checked: a pull reads neither the stream nor its consumers.
+     */
+    public function testWithoutScheduledMessagesAPullChecksNothing(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('getStream');
+        $jetStream->expects(self::never())->method('listConsumers');
+        $jetStream->expects(self::once())->method('fetchBatch')->willReturn(Future::complete([]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['stream_retention' => 'interest']);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    private static function streamWithRetention(string $retention): StreamInfo
+    {
+        return StreamInfo::fromArray(['config' => [
+            'name' => 'test-stream',
+            'subjects' => ['test-topic', 'test-topic.delayed.>'],
+            'retention' => $retention,
+            'allow_msg_schedules' => true,
+        ]]);
+    }
+
+    /**
+     * A consumer of the transport's stream with the filter $filter, or the filter subjects $filters, or neither.
+     *
+     * @param list<string>|null $filters
+     */
+    private static function consumerFilteredOn(?string $filter, ?array $filters = null): ConsumerInfo
+    {
+        $config = ['ack_policy' => 'explicit', 'deliver_policy' => 'all'];
+        if ($filter !== null) {
+            $config['filter_subject'] = $filter;
+        }
+        if ($filters !== null) {
+            $config['filter_subjects'] = $filters;
+        }
+
+        return new ConsumerInfo(streamName: 'test-stream', name: 'consumer-' . md5((string) json_encode($config)), push: false, raw: ['config' => $config]);
+    }
+
     public function testSetupUpdateStreamWithScheduledMessagesIncludesDelayedSubject(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -5490,7 +5706,7 @@ final class NatsTransportTest extends TestCase
                     && ($options['allow_msg_schedules'] ?? false) === true
                     && ($options['storage'] ?? null) === 'file';
             }))
-            ->willReturn(Future::complete());
+            ->willReturn(Future::complete($streamInfo));
         $jetStream->expects(self::once())
             ->method('addConsumer')
             ->willReturn(Future::complete(new ConsumerInfo(
@@ -6399,7 +6615,7 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::once())
             ->method('updateStream')
             ->with('test-stream', self::callback(static fn (array $options): bool => ($options['subjects'] ?? null) === $expected))
-            ->willReturn(Future::complete());
+            ->willReturn(Future::complete(StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic'], 'retention' => 'limits']])));
         $jetStream->expects(self::once())
             ->method('addConsumer')
             ->willReturn(Future::complete(new ConsumerInfo(

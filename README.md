@@ -406,7 +406,7 @@ the test server and print `OK` when what they show held:
 | `retry-via-nak-server-behaviour.php` | what the server does with a NAK retry it holds: a delay too long for it, a retry longer than `stream_max_age`, and a consumer with a `backoff` |
 | `retry-via-nak-across-a-restart.php` | a NAK retry that waits while the server restarts is still redelivered, once |
 | `retry-via-copy-or-nak.php` | the same failure under `retry_via: copy` and `nak`: a second consumer on the subject, `max_ack_pending: 1`, and a 0.3 s retry |
-| `delayed-messages.php` | `scheduled_messages`: a delayed message arrives when its time has come, on NATS 2.12 and later; an older server is refused, at `setup()` and at the send |
+| `delayed-messages.php` | `scheduled_messages`: a delayed message arrives when its time has come, on NATS 2.12 and later; an older server is refused, at `setup()` and at the send, and so is an interest stream nothing has interest in the delayed subjects of |
 | `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it |
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
@@ -1933,6 +1933,25 @@ The 'scheduled_messages' option requires NATS Server >= 2.12, but the connected 
 ```
 
 > **Tested by:** `testSetupRefusesScheduledMessagesOnAServerWithoutSchedules`, `testSendRefusesToScheduleOnAServerWithoutSchedules`, `testSetupWithScheduledMessagesGoesOnWhenTheServerMaySchedule`, `testSendSchedulesOnAServerThatMaySchedule`, `testSetupWithoutScheduledMessagesDoesNotLookAtTheServersVersion`, `testSendWithoutAScheduleDoesNotLookAtTheServersVersion`, `testSetupConnectsBeforeItLooksAtTheServersVersion`, `testTheFirstDelayedSendConnectsBeforeItLooksAtTheServersVersion`, the example `delayed-messages.php`, which CI runs on the latest and on the oldest supported server
+
+**Not on a stream with interest retention that nothing listens on.** Such a stream stores nothing published to a
+subject no consumer has interest in, and the transport's consumer reads the topic alone, so a delayed message,
+published to `{topic}.delayed.{uuid}`, was dropped at once though its publish was acknowledged: with `retry_via:
+copy`, a message that failed once ran once and was gone, with no failure-transport copy. NATS calls this intended
+([ADR-51](https://github.com/nats-io/nats-architecture-and-design/blob/main/adr/ADR-51.md#stream-retention-interaction)).
+Since 5.9.1 `messenger:setup-transports` and a worker's first pull refuse it:
+
+```text
+scheduled_messages on stream "my-stream": the stream has interest retention and no consumer has interest in "my-topic.delayed.>", so NATS would store none of the delayed messages this transport publishes there, Symfony's delayed retries included, and each would be lost. Turn scheduled_messages off (with retry_via: nak, retries wait through a NAK instead), use a stream with limits or work-queue retention, or add a durable consumer filtered on "my-topic.delayed.>" that nobody pulls from, which keeps the delayed messages until they are due.
+```
+
+A durable consumer on `{topic}.delayed.>` that nobody pulls from gives the delayed messages interest, and the
+transport then goes on (create it after the first setup, which creates the stream, and run the setup again). ADR-51
+calls it a pinning consumer and prefers a separate work-queue stream for the schedules: the pinning consumer costs
+work on a replicated stream, and the delayed messages are lost again if it is deleted. A process that only publishes
+does not check the stream, and a stream or consumer list the transport may not read is let through with one warning.
+
+> **Tested by:** `testSetupRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testSetupKeepsScheduledMessagesOnAnInterestStreamWithAConsumerOnTheDelayedSubjects`, `testSetupAsksForNoConsumersOnAStreamThatKeepsDelayedMessages`, `testTheFirstPullRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testTheStreamIsCheckedOnceForAWorkerWhosePullsGoOn`, `testAStreamThatCannotBeReadIsLetThroughWithOneWarning`, `testWithoutScheduledMessagesAPullChecksNothing`, the Behat scenarios `scheduled_messages on an interest stream nothing has interest in the delayed subjects of is refused` and `Delayed messages on an interest stream are delivered while a consumer has interest in the delayed subjects` (`nats_delayed.feature`), the example `delayed-messages.php`
 
 Enable `scheduled_messages` in the DSN to use Symfony's `DelayStamp` for deferred delivery:
 

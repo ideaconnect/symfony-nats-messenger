@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transport now reads the consumer's limit at the first retry that needs it and again after a minute, follows it,
   and warns once when it differs from the option; a consumer it may not read leaves the option to decide, with one
   warning. Now 5 runs and 1 failure-transport copy. `isTheLastDelivery()`, `consumersMaxDeliver()`.
+- **`scheduled_messages` is refused on a stream with interest retention that nothing listens on.** NATS stores
+  nothing published to a subject no consumer has interest in on such a stream, and the transport's consumer reads the
+  topic alone, so every delayed message, published to `{topic}.delayed.{uuid}`, was dropped though its publish was
+  acknowledged. With `retry_via: copy`, Symfony's retry copy is such a message: a message that failed once ran once
+  and was gone, with no failure-transport copy, on one server and on three replicas (nats-server 2.15.2); with
+  `retry_via: nak` the retry of the last delivery `max_deliver` allows was lost the same way. NATS calls it intended
+  (ADR-51, nats-server issue #7408). `setup()` and a worker's first pull now read the stream's real retention and
+  consumers and refuse it with a `TransportException` that names the ways out, unless a consumer's filter covers the
+  delayed subjects. `assertTheStreamKeepsDelayedMessages()`.
 
 ## [5.9.0] - 2026-11-18
 

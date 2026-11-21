@@ -53,3 +53,22 @@ Feature: Delayed Messages via NATS Scheduled Messages
     And I wait for the consumers to finish
     Then 12 messages should have been processed by the consumers
     And the test files directory should contain exactly 12 files
+
+  @delayed
+  Scenario: scheduled_messages on an interest stream nothing has interest in the delayed subjects of is refused
+    Given I have a messenger transport configured with scheduled messages on a stream with interest retention
+    When I run the messenger setup command
+    Then the setup should fail saying "the stream has interest retention and no consumer has interest in"
+    And a messenger consumer should fail saying "no consumer has interest in"
+
+  @delayed
+  Scenario: Delayed messages on an interest stream are delivered while a consumer has interest in the delayed subjects
+    Given I have a messenger transport configured with scheduled messages on a stream with interest retention
+    And the stream already has a consumer on the delayed subjects that nobody pulls from
+    And the NATS stream is set up
+    And the test files directory is clean
+    When I send 3 messages with 2000 milliseconds delay to the transport
+    And I start a messenger consumer with high limit
+    And I wait for messages to be consumed
+    Then all 3 messages should be consumed
+    And the test files directory should contain 3 files
