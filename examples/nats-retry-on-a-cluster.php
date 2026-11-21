@@ -6,10 +6,14 @@
  * stream is the only record of it, and NATS does not keep it on every stream (5.10.0, measured on nats-server 2.10.29
  * to 2.15.2, docs/symfony_retry_via.md):
  *
- * 1. On a stream with interest retention and three replicas, NATS deletes it: here within seconds of a later message
- *    being acknowledged, as the stream is new (on a stream that has been running, about two minutes later). setup()
- *    warns about such a stream, once.
- * 2. On a work-queue stream with three replicas it stays, on NATS 2.12.5 and later, and setup() says nothing.
+ * 1. On a stream with interest retention and three replicas, NATS deletes it at the server's next check of the
+ *    stream's interest state. On a stream that has been running that check comes about every two minutes; on a new
+ *    stream, as here, the first one comes 5 to 9 s after the stream starts, so the example waits up to 30 s (7 s on
+ *    NATS 2.14.2). setup() warns about such a stream, once.
+ * 2. On a work-queue stream with three replicas it stays, on NATS 2.12.5 and later, for the 10 s watched, and setup()
+ *    says nothing.
+ *
+ * Both runs together take about 25 s, under the 60 s the example runner allows one example.
  *
  * The test cluster runs the same NATS image as the other servers. Use `retry_via: nak` with a failure transport on a
  * stream like the first one (README, "Retry Handler Behavior").
@@ -105,19 +109,19 @@ assertExpected('interest: the message right after its last delivery', 1, $intere
 assertExpected('interest: setup() warned once', 1, count($interest['warnings']));
 assertExpected('interest: the warning names the stream kind', true, str_contains($interest['warnings'][0] ?? '', 'from a stream with interest retention on a clustered server'));
 if ($interest['deletedAfter'] === null) {
-    throw new RuntimeException(sprintf('expected NATS %s to delete the message from the interest stream within 30 s; it holds %d', $interest['version'], $interest['storedAtTheEnd']));
+    throw new RuntimeException(sprintf('expected NATS %s to delete the message from the interest stream within 30 s, at its first check of the new stream\'s interest state (5 to 9 s after the stream starts); it holds %d', $interest['version'], $interest['storedAtTheEnd']));
 }
 
-$workQueue = $stoppedAtMaxDeliver('workqueue', 12.0);
+$workQueue = $stoppedAtMaxDeliver('workqueue', 10.0);
 $fixed = version_compare(preg_replace('/^v?(\d+\.\d+\.\d+).*$/', '$1', $workQueue['version']) ?? '', '2.12.5', '>=');
 assertExpected('work-queue: setup() warned', $fixed ? 0 : 1, count($workQueue['warnings']));
-assertExpected('work-queue: the message 12 s after its last delivery', $fixed ? 1 : 0, $workQueue['storedAtTheEnd']);
+assertExpected('work-queue: the message 10 s after its last delivery', $fixed ? 1 : 0, $workQueue['storedAtTheEnd']);
 
 printf(
     "OK nats-retry-on-a-cluster: on NATS %s with three replicas, a message stopped at max_deliver in nats mode was deleted from the interest stream %.0f s after the watch began, and setup() had warned about it once:\n    %s\n  and on the work-queue stream it %s, %s\n",
     $interest['version'],
     $interest['deletedAfter'],
     substr($interest['warnings'][0], strlen('warning: ')),
-    $fixed ? 'stayed for the 12 s watched' : 'was deleted, as before NATS 2.12.5',
+    $fixed ? 'stayed for the 10 s watched' : 'was deleted, as before NATS 2.12.5',
     $fixed ? 'and setup() said nothing' : 'and setup() warned',
 );
