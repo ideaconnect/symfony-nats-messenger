@@ -818,6 +818,14 @@ rely on NATS's own handling of a message that keeps failing instead (`max_delive
 `MAX_DELIVERIES` advisory). With [`retry_via: nak`](#retrying-through-a-nak-retry_via-nak), a failure transport
 works as in symfony mode.
 
+That handling keeps the message in the stream after its last delivery only on some streams. NATS keeps it on a
+stream with limits retention, and on a work-queue stream with one replica, or with three on NATS 2.12.5 and later.
+It deletes it from a stream with interest retention inside a cluster, within seconds to about two minutes, and from
+a replicated work-queue stream before 2.12.5; on a standalone server an interest stream loses it at a restart before
+NATS 2.12.9. On those streams a message that kept failing in nats mode leaves nothing behind but the advisory, and
+up to 5.9.0 this section did not say so. Use `retry_via: nak` with a failure transport there, or a stream with
+limits or work-queue retention. [docs/symfony_retry_via.md](docs/symfony_retry_via.md) has the measurements.
+
 ```yaml
 framework:
   messenger:

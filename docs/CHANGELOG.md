@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumers and refuse it with a `TransportException` that names the ways out, unless a consumer's filter covers the
   delayed subjects. `assertTheStreamKeepsDelayedMessages()`.
 
+### Documentation
+
+- **A message stopped at `max_deliver` does not always stay in the stream.** `docs/symfony_retry_via.md` said it
+  does, and the README told nats mode to rely on NATS's handling of a message that keeps failing. Measured on
+  nats-server 2.10.29 to 2.15.2: NATS deletes it from an interest stream inside a cluster, from a replicated
+  work-queue stream before 2.12.5, and at a restart from an interest stream on a standalone server before 2.12.9. Both
+  documents now give the measured table and what to use on those streams.
+
 ## [5.9.0] - 2026-11-18
 
 A **minor** release. It adds `retry_via: nak` for symfony mode: Symfony's retry strategy still decides whether and when a

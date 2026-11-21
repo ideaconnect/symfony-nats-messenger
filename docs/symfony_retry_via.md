@@ -71,7 +71,7 @@ With `nak_delay: 1`, `max_deliver: 3` and, as the README asks for in this mode, 
 |---|---|---|---|---|---|
 | 1 | the message, delivery 1 | 0 | gives up | `-NAK {"delay":1000000000}` | redelivers the message 1 s later |
 | 2 | the message, delivery 2 | 0 | gives up | `-NAK {"delay":1000000000}` | redelivers the message 1 s later |
-| 3 | the message, delivery 3 | 0 | gives up | `-NAK {"delay":1000000000}` | redelivers nothing, keeps the message, publishes MAX_DELIVERIES |
+| 3 | the message, delivery 3 | 0 | gives up | `-NAK {"delay":1000000000}` | redelivers nothing, publishes MAX_DELIVERIES, and keeps the message, except where the list below says it deletes it |
 
 Symfony gives up on every run, so a failure transport gets a copy each time. That is why a failure transport
 does not combine well with nats mode, and why `retry_via: nak` is the setup to use when Symfony's strategy
@@ -134,8 +134,27 @@ Read from the source of nats-server 2.15.0 (`processNak()` and `checkPending()` 
   stream with limits retention, and leaves a work-queue or interest stream as an acknowledged message does.
 - **After the last delivery `max_deliver` allows, NATS redelivers nothing** and publishes
   `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer>`: at the next pull after a plain NAK, and when
-  the delay has passed after a NAK with a delay. The message stays in the stream. This is why the retry of that
-  delivery goes out as a copy.
+  the delay has passed after a NAK with a delay. This is why the retry of that delivery goes out as a copy.
+- **A message stopped at `max_deliver` does not always stay in the stream.** NATS means to keep it (its docs: "Messages
+  that have reached the maximum delivery count will stay in the stream"), and keeps it on a stream with limits
+  retention. On the other two it depends on the retention, the replicas and the server, measured in November 2026
+  with a message NAKed to `max_deliver` and later messages acknowledged:
+
+  | Stream | Kept | Deleted |
+  |---|---|---|
+  | limits | always | never |
+  | work-queue, one server or one replica | on every version tested (2.10.29 to 2.15.2), across a restart too | - |
+  | work-queue, three replicas | from 2.12.5 (2.12.5 to 2.12.15, 2.15.2), across a leader change and a rolling restart | before 2.12.5 (2.10.29, 2.11.17, 2.12.0, 2.12.4) |
+  | interest, a standalone server | until a restart; across it from 2.12.9 and 2.14.1 | at a restart before 2.12.9 (2.10.29, 2.11.17, 2.12.5, 2.12.8) and on 2.14.0 |
+  | interest, inside a cluster | - | with three replicas on every version tested (2.10.29 to 2.15.2), 2 to 8 s after a later message was acknowledged on a fresh stream and about two minutes later on a running one; with one replica at a restart of the cluster (2.15.2) |
+
+  The deletion on interest streams comes from the server's interest check (`checkInterestState()`), which cuts the
+  head of the stream up to the lowest consumer floor without asking whether a message reached `max_deliver`; it runs
+  every two minutes and at leader changes where a stream has replicas, and at a restart on a clustered server. The
+  replicated work-queue case was fixed by nats-server PR #7845 (2.12.5). A message alone in the stream, with nothing
+  acknowledged after it, stayed everywhere. Up to 5.9.0 this document said such a message always stays. In nats mode
+  (`retry_handler: nats`) that message is the only record of a message that kept failing, so on the streams that
+  delete it nothing is left; see the README's "Retry Handler Behavior".
 - **NATS 2.9 now and then reports a redelivery as a first delivery.** It happens when the NAK's delay equals the
   expiry of the pull that is waiting, which is `max_batch_timeout`: with 200, 500 and 1000 ms for both, about 1
   message in 5 had one redelivery reported as delivery 1 (4 of 20, 6 of 30, 4 of 20 and at least 5 of 20). The
