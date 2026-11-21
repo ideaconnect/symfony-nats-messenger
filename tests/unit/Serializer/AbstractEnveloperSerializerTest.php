@@ -5,6 +5,13 @@ declare(strict_types=1);
 namespace IDCT\NatsMessenger\Tests\Unit\Serializer;
 
 use IDCT\NatsMessenger\Serializer\AbstractEnveloperSerializer;
+use IDCT\NatsMessenger\Tests\Support\AutoloadedInvoice;
+use IDCT\NatsMessenger\Tests\Support\NoticeOnWakeup;
+use IDCT\NatsMessenger\Tests\Support\OwnCacheOnWakeup;
+use IDCT\NatsMessenger\Tests\Support\RecordedErrors;
+use IDCT\NatsMessenger\Tests\Support\SuppressedWarningOnWakeup;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\RequiresPhp;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
@@ -58,6 +65,183 @@ class ReadmeExampleSerializer extends AbstractEnveloperSerializer
     {
         // Your custom deserialization logic
         return unserialize($data);
+    }
+}
+
+/**
+ * A message declared in the same file as the README's serializer, whose __wakeup() raises a warning it suppresses.
+ * The warning comes from this file, as the README's unserialize() call does, and is still the application's (#122).
+ */
+final class SameFileSuppressedWarningOnWakeup
+{
+    public function __construct(public readonly string $text)
+    {
+    }
+
+    public function __wakeup(): void
+    {
+        @hex2bin('abc');
+    }
+}
+
+/**
+ * A message declared in the same file as the README's serializer, whose __unserialize() raises a notice (#122).
+ */
+final class SameFileNoticeOnUnserialize
+{
+    public function __construct(public readonly string $text)
+    {
+    }
+
+    /** @return array{text: string} */
+    public function __serialize(): array
+    {
+        return ['text' => $this->text];
+    }
+
+    /** @param array{text: string} $data */
+    public function __unserialize(array $data): void
+    {
+        trigger_error('restored from an older format', E_USER_NOTICE);
+        $this->text = $data['text'];
+    }
+}
+
+/**
+ * The README's serializer, with a deserialize() that calls it through parent::deserialize(): the unserialize() call
+ * runs in the parent's deserialize(), not in the one that runs first.
+ */
+final class ParentCallingSerializer extends ReadmeExampleSerializer
+{
+    protected function deserialize(string $data): mixed
+    {
+        return parent::deserialize($data);
+    }
+}
+
+/**
+ * A codec helper, another object than the serializer, that calls PHP's unserialize() for it.
+ */
+final class PhpCodec
+{
+    public function unserialize(string $data): mixed
+    {
+        return unserialize($data);
+    }
+}
+
+/**
+ * A codec helper that reads the version of the payload from a header its producer did not send, which PHP warns about
+ * as a missing key, and goes on with the payload. Its method is named unserialize(), as PHP's function is.
+ */
+final class HeaderReadingCodec
+{
+    public function unserialize(string $data): mixed
+    {
+        $header = [];
+        $header['version'];
+
+        return unserialize($data);
+    }
+}
+
+/**
+ * A serializer that hands the payload to a codec helper.
+ */
+final class CodecHelperSerializer extends AbstractEnveloperSerializer
+{
+    public function __construct(private readonly PhpCodec|HeaderReadingCodec $codec)
+    {
+    }
+
+    protected function serialize(Envelope $envelope): string
+    {
+        return serialize($envelope);
+    }
+
+    protected function deserialize(string $data): mixed
+    {
+        return $this->codec->unserialize($data);
+    }
+}
+
+/**
+ * A serializer whose deserialize() registers an autoloader of its own for its unserialize() call: a closure declared
+ * inside deserialize(), which looks the class up in a class map a cache left empty, with @, and declares it as an
+ * alias of the class given for it.
+ */
+final class ClassLoadingSerializer extends AbstractEnveloperSerializer
+{
+    /** @param array<string, class-string> $aliases */
+    public function __construct(private readonly array $aliases)
+    {
+    }
+
+    protected function serialize(Envelope $envelope): string
+    {
+        return serialize($envelope);
+    }
+
+    protected function deserialize(string $data): mixed
+    {
+        $loader = function (string $class): void {
+            $classMap = [];
+            @$classMap[$class];
+            if (isset($this->aliases[$class])) {
+                class_alias($this->aliases[$class], $class);
+            }
+        };
+        spl_autoload_register($loader);
+
+        try {
+            return unserialize($data);
+        } finally {
+            spl_autoload_unregister($loader);
+        }
+    }
+}
+
+/**
+ * A serializer whose deserialize() raises a notice itself, about the payload it reads.
+ */
+class NoticingSerializer extends AbstractEnveloperSerializer
+{
+    protected function serialize(Envelope $envelope): string
+    {
+        return serialize($envelope);
+    }
+
+    protected function deserialize(string $data): mixed
+    {
+        trigger_error('offset 3 of 9', E_USER_NOTICE);
+
+        return unserialize($data);
+    }
+}
+
+/**
+ * A serializer that inherits its deserialize() from another.
+ */
+final class InheritingNoticingSerializer extends NoticingSerializer
+{
+}
+
+/**
+ * A serializer that reads a version and a payload, split by "|", from the body: a body without the "|" lacks the
+ * payload, which PHP warns about as a missing key.
+ */
+final class VersionedSerializer extends AbstractEnveloperSerializer
+{
+    protected function serialize(Envelope $envelope): string
+    {
+        return '1|' . serialize($envelope);
+    }
+
+    protected function deserialize(string $data): mixed
+    {
+        [, $payload] = explode('|', $data, 2);
+
+        return unserialize((string) $payload);
     }
 }
 
@@ -437,5 +621,304 @@ class AbstractEnveloperSerializerTest extends TestCase
         $this->expectExceptionMessage('Could not decode the envelope: offset 3 of 9');
 
         $serializer->decode(['body' => 'x']);
+    }
+
+    /**
+     * With the README's serializer, a message whose __wakeup() or __unserialize() raises a warning or a notice decodes,
+     * and the error goes to the error handler there was, also for a message declared in the same file as the
+     * serializer: the error comes from the application's code, not from the decoder's unserialize() call. 5.10.0 made
+     * every such message one that cannot be decoded (#122).
+     */
+    #[DataProvider('messagesWhoseRestoreRaisesAnError')]
+    #[Test]
+    public function readmeCustomSerializerExample_OfAMessageWhoseRestoreRaisesAnError_DecodesAndPassesTheErrorOn(object $message, int $type, string $error): void
+    {
+        $serializer = new ReadmeExampleSerializer();
+        $envelope = new Envelope($message, [new BusNameStamp('readme-bus')]);
+        $encoded = $serializer->encode($envelope);
+
+        [$decoded, $seen] = RecordedErrors::during(static fn (): Envelope => $serializer->decode($encoded));
+
+        $this->assertEquals($envelope, $decoded);
+        $this->assertSame([[$type, $error]], $seen);
+    }
+
+    /**
+     * @return iterable<string, array{object, int, string}>
+     */
+    public static function messagesWhoseRestoreRaisesAnError(): iterable
+    {
+        yield 'a suppressed warning in __wakeup(), the class in the serializer\'s file' => [
+            new SameFileSuppressedWarningOnWakeup('invoice 7'),
+            E_WARNING,
+            'hex2bin(): Hexadecimal input string must have an even length',
+        ];
+        yield 'a notice in __unserialize(), the class in the serializer\'s file' => [
+            new SameFileNoticeOnUnserialize('invoice 8'),
+            E_USER_NOTICE,
+            'restored from an older format',
+        ];
+        yield 'a suppressed warning in __wakeup()' => [
+            new SuppressedWarningOnWakeup('invoice 9'),
+            E_WARNING,
+            'hex2bin(): Hexadecimal input string must have an even length',
+        ];
+        yield 'a notice in __wakeup()' => [new NoticeOnWakeup('invoice 10'), E_USER_NOTICE, 'rebuilt a lazy field'];
+        // An unserialize() call too, but one inside the decoder's: PHP 8.3 made its notice a warning.
+        yield 'an unserialize() of its own cache in __wakeup()' => [
+            new OwnCacheOnWakeup('invoice 11'),
+            PHP_VERSION_ID >= 80300 ? E_WARNING : E_NOTICE,
+            'unserialize(): Error at offset 0 of 20 bytes',
+        ];
+    }
+
+    /**
+     * With the README's serializer, a message whose class an autoloader loads during the decode, raising a warning it
+     * suppresses, decodes, and the warning goes to the error handler there was (#122).
+     */
+    #[Test]
+    public function readmeCustomSerializerExample_OfAMessageWhoseClassAnAutoloaderLoadsWithAWarning_DecodesAndPassesTheWarningOn(): void
+    {
+        $serializer = new ReadmeExampleSerializer();
+        ['body' => $body, 'class' => $class] = AutoloadedInvoice::inABodyUnderANewName('invoice 12', $serializer);
+        $loader = AutoloadedInvoice::loaderWithASuppressedWarning($class);
+        spl_autoload_register($loader);
+
+        try {
+            [$decoded, $seen] = RecordedErrors::during(static fn (): Envelope => $serializer->decode(['body' => $body]));
+        } finally {
+            spl_autoload_unregister($loader);
+        }
+
+        $this->assertEquals(new Envelope(new AutoloadedInvoice('invoice 12')), $decoded);
+        $this->assertSame([[E_WARNING, sprintf('Undefined array key "%s"', $class)]], $seen);
+    }
+
+    /**
+     * PHP's unserialize() warns about bytes after the end of a payload since PHP 8.3, and returns the envelope all the
+     * same: the warning is the decoder's, and the decoding failure, wherever the serializer calls unserialize() from,
+     * an override that calls parent::deserialize() or a codec helper, and though the error handler there was lets
+     * warnings go. A check of the file and lines of the deserialize() that runs first delivered the message (#122).
+     */
+    #[DataProvider('serializersCallingUnserializeElsewhere')]
+    #[RequiresPhp('>= 8.3.0')]
+    #[Test]
+    public function decode_OfAPayloadWithATrailingByte_ThrowsMessageDecodingFailedWhereverUnserializeIsCalled(AbstractEnveloperSerializer $serializer): void
+    {
+        $body = $serializer->encode(new Envelope(new \stdClass()))['body'] . 'X';
+
+        [$failure, $seen] = RecordedErrors::during(static function () use ($serializer, $body): ?MessageDecodingFailedException {
+            try {
+                $serializer->decode(['body' => $body]);
+            } catch (MessageDecodingFailedException $failure) {
+                return $failure;
+            }
+
+            return null;
+        });
+
+        $this->assertInstanceOf(MessageDecodingFailedException::class, $failure);
+        $this->assertSame(
+            sprintf('Could not decode the envelope: unserialize(): Extra data starting at offset %d of %d bytes', strlen($body) - 1, strlen($body)),
+            $failure->getMessage(),
+        );
+        $this->assertSame([], $seen);
+    }
+
+    /**
+     * A payload PHP's unserialize() cannot read is a decoding failure with its warning (a notice before PHP 8.3),
+     * wherever the serializer calls unserialize() from.
+     */
+    #[DataProvider('serializersCallingUnserializeElsewhere')]
+    #[Test]
+    public function decode_OfAPayloadCutShort_ThrowsMessageDecodingFailedWhereverUnserializeIsCalled(AbstractEnveloperSerializer $serializer): void
+    {
+        $body = substr($serializer->encode(new Envelope(new \stdClass()))['body'], 0, -3);
+
+        [$failure, $seen] = RecordedErrors::during(static function () use ($serializer, $body): ?MessageDecodingFailedException {
+            try {
+                $serializer->decode(['body' => $body]);
+            } catch (MessageDecodingFailedException $failure) {
+                return $failure;
+            }
+
+            return null;
+        });
+
+        $this->assertInstanceOf(MessageDecodingFailedException::class, $failure);
+        $this->assertStringStartsWith('Could not decode the envelope: unserialize(): Error at offset', $failure->getMessage());
+        $this->assertSame([], $seen);
+    }
+
+    /**
+     * @return iterable<string, array{AbstractEnveloperSerializer}>
+     */
+    public static function serializersCallingUnserializeElsewhere(): iterable
+    {
+        yield 'an override that calls parent::deserialize()' => [new ParentCallingSerializer()];
+        yield 'a codec helper' => [new CodecHelperSerializer(new PhpCodec())];
+    }
+
+    /**
+     * A message whose class an autoloader loads, the autoloader a closure declared inside deserialize() raising a
+     * warning it suppresses, decodes: the closure runs inside unserialize(), as the application's code. A check of the
+     * file and lines of deserialize() made it a decoding failure (#122).
+     */
+    #[Test]
+    public function decode_OfAMessageWhoseClassAClosureOfDeserializeLoads_DecodesAndPassesTheWarningOn(): void
+    {
+        $probe = new ReadmeExampleSerializer();
+        ['body' => $body, 'class' => $class] = AutoloadedInvoice::inABodyUnderANewName('invoice 13', $probe);
+        $serializer = new ClassLoadingSerializer([$class => AutoloadedInvoice::class]);
+
+        [$decoded, $seen] = RecordedErrors::during(static fn (): Envelope => $serializer->decode(['body' => $body]));
+
+        $this->assertEquals(new Envelope(new AutoloadedInvoice('invoice 13')), $decoded);
+        $this->assertSame([[E_WARNING, sprintf('Undefined array key "%s"', $class)]], $seen);
+    }
+
+    /**
+     * A notice an inherited deserialize() raises itself is the decoder's, and the decoding failure.
+     */
+    #[Test]
+    public function decode_WhoseInheritedDeserializeRaisesANotice_ThrowsMessageDecodingFailed(): void
+    {
+        $serializer = new InheritingNoticingSerializer();
+        $encoded = $serializer->encode(new Envelope(new \stdClass()));
+
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('Could not decode the envelope: offset 3 of 9');
+
+        $serializer->decode($encoded);
+    }
+
+    /**
+     * A warning PHP raises in the code of deserialize() itself, here about a part of the body that is not there, is the
+     * decoder's, and the decoding failure.
+     */
+    #[Test]
+    public function decode_WhoseDeserializeReadsAPartTheBodyLacks_ThrowsMessageDecodingFailed(): void
+    {
+        $serializer = new VersionedSerializer();
+        $this->assertEquals(new Envelope(new \stdClass()), $serializer->decode($serializer->encode(new Envelope(new \stdClass()))));
+
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('Could not decode the envelope: Undefined array key 1');
+
+        $serializer->decode(['body' => 'no version']);
+    }
+
+    /**
+     * A warning the code of a codec helper, another object than the serializer, raises itself is the application's to
+     * handle: it goes to the error handler there was, and the message decodes. A codec helper throws a
+     * MessageDecodingFailedException itself for a payload it cannot decode.
+     */
+    #[Test]
+    public function decode_WhoseCodecHelperRaisesAWarningItself_PassesItOnAndDecodes(): void
+    {
+        $serializer = new CodecHelperSerializer(new HeaderReadingCodec());
+        $envelope = new Envelope(new \stdClass(), [new BusNameStamp('bus')]);
+        $encoded = $serializer->encode($envelope);
+
+        [$decoded, $seen] = RecordedErrors::during(static fn (): Envelope => $serializer->decode($encoded));
+
+        $this->assertEquals($envelope, $decoded);
+        $this->assertSame([[E_WARNING, 'Undefined array key "version"']], $seen);
+    }
+
+    /**
+     * An exception the error handler there was throws for an error of the application's code propagates as it is, not
+     * as a decoding failure, so a transport leaves the message for redelivery. PHP gives that handler back without the
+     * error levels it was set for, so one set for E_WARNING alone is called for the E_USER_NOTICE too (#122).
+     */
+    #[DataProvider('levelsOfAnErrorHandlerThatThrows')]
+    #[Test]
+    public function decode_WhoseErrorHandlerThereWasThrows_PropagatesItsExceptionAsItIs(int $levels): void
+    {
+        $serializer = new ReadmeExampleSerializer();
+        $encoded = $serializer->encode(new Envelope(new NoticeOnWakeup('invoice 14')));
+        $thrown = null;
+        set_error_handler(static function (int $type, string $message) use (&$thrown): never {
+            throw $thrown = new \ErrorException($message, 0, $type);
+        }, $levels);
+
+        try {
+            $serializer->decode($encoded);
+            $this->fail('decode() should have failed');
+        } catch (\Throwable $failure) {
+            $this->assertInstanceOf(\ErrorException::class, $thrown);
+            $this->assertSame($thrown, $failure);
+            $this->assertSame('rebuilt a lazy field', $failure->getMessage());
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    /**
+     * @return iterable<string, array{int}>
+     */
+    public static function levelsOfAnErrorHandlerThatThrows(): iterable
+    {
+        yield 'set for every level' => [E_ALL];
+        yield 'set for E_WARNING alone' => [E_WARNING];
+    }
+
+    /**
+     * An error of the application's code that the error handler there was does not take, returning false, or with no
+     * handler there, goes to PHP's own handler, as without this, and the message decodes.
+     */
+    #[DataProvider('errorHandlersThatLeaveTheErrorToPhp')]
+    #[Test]
+    public function decode_WhoseErrorHandlerThereWasLeavesTheErrorToPhp_DecodesAndPhpRecordsIt(?\Closure $handler): void
+    {
+        $serializer = new ReadmeExampleSerializer();
+        $envelope = new Envelope(new SuppressedWarningOnWakeup('invoice 15'));
+        $encoded = $serializer->encode($envelope);
+        set_error_handler($handler);
+        error_clear_last();
+
+        try {
+            $decoded = $serializer->decode($encoded);
+            $last = error_get_last();
+        } finally {
+            restore_error_handler();
+        }
+
+        $this->assertEquals($envelope, $decoded);
+        $this->assertSame('hex2bin(): Hexadecimal input string must have an even length', $last['message'] ?? null);
+    }
+
+    /**
+     * @return iterable<string, array{\Closure|null}>
+     */
+    public static function errorHandlersThatLeaveTheErrorToPhp(): iterable
+    {
+        yield 'a handler that returns false' => [static fn (): bool => false];
+        yield 'no handler' => [null];
+    }
+
+    /**
+     * The error handler there was is in place again after a decode that failed, as after one that succeeded.
+     */
+    #[Test]
+    public function decode_ThatFailed_RestoresTheErrorHandlerThereWas(): void
+    {
+        $serializer = new NoticingSerializer();
+        $encoded = $serializer->encode(new Envelope(new \stdClass()));
+
+        [$failure, $seen] = RecordedErrors::during(static function () use ($serializer, $encoded): ?MessageDecodingFailedException {
+            try {
+                $serializer->decode($encoded);
+            } catch (MessageDecodingFailedException $failure) {
+                trigger_error('after decode()', E_USER_NOTICE);
+
+                return $failure;
+            }
+
+            return null;
+        });
+
+        $this->assertInstanceOf(MessageDecodingFailedException::class, $failure);
+        $this->assertSame([[E_USER_NOTICE, 'after decode()']], $seen);
     }
 }
