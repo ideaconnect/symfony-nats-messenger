@@ -3381,6 +3381,37 @@ class NatsSetupContext implements Context
         ));
     }
 
+    #[Given('I have a messenger transport configured with the NATS retry handler, max_deliver :maxDeliver and interest retention')]
+    public function iHaveAMessengerTransportConfiguredWithTheNatsRetryHandlerMaxDeliverAndInterestRetention(int $maxDeliver): void
+    {
+        $this->writeTransportConfiguration(sprintf('stream_max_age=900&retry_handler=nats&max_deliver=%d&stream_retention=interest', $maxDeliver));
+    }
+
+    /**
+     * On a standalone server NATS deletes a message stopped at max_deliver from an interest stream at a restart before
+     * 2.12.9, and on 2.14.0 (measured, docs/symfony_retry_via.md); setup() warns on those servers and only there. The
+     * oldest-server job's NATS 2.10 gets the warning, the latest server none.
+     */
+    #[Then('the setup should have warned that NATS deletes a message stopped at max_deliver exactly when the server\'s version does')]
+    public function theSetupShouldHaveWarnedThatNatsDeletesAMessageStoppedAtMaxDeliverExactlyWhenTheServersVersionDoes(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $client->connect()->await();
+            $version = (string) $client->serverInfo()?->version;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $release = preg_replace('/^v?(\d+\.\d+\.\d+).*$/', '$1', $version) ?? '';
+        $deletes = version_compare($release, '2.12.9', '<') || (version_compare($release, '2.14.0', '>=') && version_compare($release, '2.14.1', '<'));
+        $output = $this->setupProcess->getOutput() . $this->setupProcess->getErrorOutput();
+        $warnings = substr_count($output, 'deletes a message that reached max_deliver from a stream with interest retention, at a restart of the server');
+        if ($warnings !== ($deletes ? 1 : 0)) {
+            throw new \RuntimeException(sprintf("Expected %d warning(s) on NATS %s, found %d.\nSetup output: %s", $deletes ? 1 : 0, $version, $warnings, $output));
+        }
+    }
+
     private function assertConsumerLoggedOnce(string $text): void
     {
         if (!$this->consumerProcess) {

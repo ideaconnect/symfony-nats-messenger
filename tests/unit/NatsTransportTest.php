@@ -5524,6 +5524,98 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * In nats mode with max_deliver, setup() warns once when the stream is one where NATS deletes a message that
+     * reached max_deliver, the only record left of a message that kept failing there.
+     *
+     * @param array<string, mixed> $stream
+     */
+    #[DataProvider('streamsNatsModeLosesStoppedMessagesIn')]
+    public function testSetupInNatsModeWarnsAboutAStreamWhereNatsDeletesWhatMaxDeliverStops(array $stream, string $version, string $when): void
+    {
+        $logger = new RecordingLogger();
+        $this->setupWithTheStream(self::NATS_MODE + ['max_deliver' => 3], $stream, $version, $logger);
+
+        self::assertSame([sprintf(
+            'retry_handler=nats on stream "test-stream": NATS %s deletes a message that reached max_deliver from %s, so a'
+            . ' message that keeps failing leaves nothing behind but the MAX_DELIVERIES advisory. Use retry_handler:'
+            . ' symfony and retry_via: nak with a failure transport, or a stream with limits or work-queue retention'
+            . ' (README, "Retry Handler Behavior").',
+            $version,
+            $when,
+        )], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string, string}>
+     */
+    public static function streamsNatsModeLosesStoppedMessagesIn(): iterable
+    {
+        $clustered = ['name' => 'east', 'leader' => 'n1'];
+
+        yield 'interest, three replicas in a cluster' => [['config' => ['retention' => 'interest', 'num_replicas' => 3], 'cluster' => $clustered], '2.15.2', 'a stream with interest retention on a clustered server'];
+        yield 'interest, one replica in a cluster' => [['config' => ['retention' => 'interest', 'num_replicas' => 1], 'cluster' => $clustered], '2.15.2', 'a stream with interest retention on a clustered server'];
+        yield 'interest, a standalone server before 2.12.9' => [['config' => ['retention' => 'interest'], 'cluster' => ['leader' => 'N1']], '2.12.8', 'a stream with interest retention, at a restart of the server'];
+        yield 'interest, a standalone 2.14.0' => [['config' => ['retention' => 'interest']], '2.14.0', 'a stream with interest retention, at a restart of the server'];
+        yield 'work-queue, three replicas, before 2.12.5' => [['config' => ['retention' => 'workqueue', 'num_replicas' => 3], 'cluster' => $clustered], '2.12.4', 'a work-queue stream with 3 replicas'];
+    }
+
+    /**
+     * Nothing is logged on a stream that keeps the message, in symfony mode, or in nats mode without max_deliver,
+     * where NATS redelivers without end and nothing reaches max_deliver.
+     *
+     * @param array<string, mixed> $options
+     * @param array<string, mixed> $stream
+     */
+    #[DataProvider('setupsThatKeepWhatMaxDeliverStops')]
+    public function testSetupLogsNothingWhereNatsKeepsWhatMaxDeliverStops(array $options, array $stream, string $version): void
+    {
+        $logger = new RecordingLogger();
+        $this->setupWithTheStream($options, $stream, $version, $logger);
+
+        self::assertSame([], $logger->records);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, array<string, mixed>, string}>
+     */
+    public static function setupsThatKeepWhatMaxDeliverStops(): iterable
+    {
+        $natsMode = self::NATS_MODE + ['max_deliver' => 3];
+        $clustered = ['name' => 'east', 'leader' => 'n1'];
+
+        yield 'limits, three replicas' => [$natsMode, ['config' => ['retention' => 'limits', 'num_replicas' => 3], 'cluster' => $clustered], '2.10.29'];
+        yield 'work-queue, three replicas, from 2.12.5' => [$natsMode, ['config' => ['retention' => 'workqueue', 'num_replicas' => 3], 'cluster' => $clustered], '2.12.5'];
+        yield 'work-queue, one replica' => [$natsMode, ['config' => ['retention' => 'workqueue', 'num_replicas' => 1]], '2.10.29'];
+        yield 'interest, a standalone 2.12.9' => [$natsMode, ['config' => ['retention' => 'interest'], 'cluster' => ['leader' => 'N1']], '2.12.9'];
+        yield 'interest, a standalone 2.14.1' => [$natsMode, ['config' => ['retention' => 'interest']], '2.14.1'];
+        yield 'symfony mode on an interest stream in a cluster' => [['ping_after_idle' => 0, 'max_deliver' => 3], ['config' => ['retention' => 'interest', 'num_replicas' => 3], 'cluster' => $clustered], '2.15.2'];
+        yield 'nats mode without max_deliver' => [self::NATS_MODE, ['config' => ['retention' => 'interest', 'num_replicas' => 3], 'cluster' => $clustered], '2.15.2'];
+    }
+
+    /**
+     * Runs setup() with $options against a stream the server reports as $stream, on a server of version $version.
+     *
+     * @param array<string, mixed> $options
+     * @param array<string, mixed> $stream
+     */
+    private function setupWithTheStream(array $options, array $stream, string $version, RecordingLogger $logger): void
+    {
+        $stream['config'] = (is_array($stream['config'] ?? null) ? $stream['config'] : []) + ['name' => 'test-stream', 'subjects' => ['test-topic']];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete(StreamInfo::fromArray($stream)));
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn(new ServerInfo('S', 'n', $version, true, 1_048_576, true));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, null, $logger);
+        $transport->setClient($client);
+        $transport->setJetStreamContext($jetStream);
+        $transport->setup();
+    }
+
+    /**
      * setup() refuses scheduled_messages on a stream with interest retention where no consumer has interest in the
      * delayed subjects: NATS stores none of the delayed messages there, so each one, Symfony's delayed retries
      * included, would be lost. The consumer is not created. Up to 5.9.0 setup() passed, and a message that failed

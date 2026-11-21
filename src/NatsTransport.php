@@ -1189,6 +1189,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
             // The live stream: an update leaves an existing stream's retention as it was.
             $this->assertTheStreamKeepsDelayedMessages($streamInfo);
+            $this->warnIfNatsModeLosesWhatMaxDeliverStops($streamInfo);
 
             $consumerConfiguration = ConsumerConfiguration::create()
                 ->durable($this->configuration->consumer())
@@ -1947,6 +1948,64 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             . ' options as they were and the new stream_replicas), wait until "nats stream info" shows'
             . ' every replica as current, then run it again with the other change. With auto_setup every'
             . ' send() and get() repeats this update and fails until the configuration is staged.';
+    }
+
+    /**
+     * Logs, in nats mode with max_deliver, that the stream is one where NATS deletes a message that reached max_deliver.
+     * In that mode the message is the only record of a message that kept failing: Symfony's failure transport gets a
+     * copy of every failed delivery with max_retries: 0, or none with retries left on (README, "Retry Handler
+     * Behavior"). Measured on nats-server 2.10.29 to 2.15.2 (docs/symfony_retry_via.md), NATS deletes it:
+     *
+     * - from a stream with interest retention on a clustered server, which the stream info's cluster name tells: with
+     *   replicas within seconds to about two minutes, with one replica at a restart;
+     * - from one on a standalone server at a restart, before 2.12.9 and on 2.14.0;
+     * - from a work-queue stream with more than one replica before 2.12.5.
+     *
+     * Nats mode keeps its behaviour in 5.x, so this only says so, once per setup(), and names the way out: retry_via:
+     * nak with a failure transport, or a stream with limits or work-queue retention. The version is the connected
+     * server's.
+     */
+    private function warnIfNatsModeLosesWhatMaxDeliverStops(?StreamInfo $stream): void
+    {
+        if ($this->configuration->retryHandler() !== RetryHandler::NATS || $this->configuration->maxDeliver() === null || $stream === null) {
+            return;
+        }
+
+        $config = is_array($stream->raw['config'] ?? null) ? $stream->raw['config'] : [];
+        $cluster = is_array($stream->raw['cluster'] ?? null) ? $stream->raw['cluster'] : [];
+        $retention = is_string($config['retention'] ?? null) ? $config['retention'] : 'limits';
+        $replicas = is_int($config['num_replicas'] ?? null) ? $config['num_replicas'] : 1;
+        $version = $this->client->serverInfo()?->version;
+
+        $when = match (true) {
+            $retention === 'interest' && isset($cluster['name']) => 'a stream with interest retention on a clustered server',
+            $retention === 'interest' && (!self::serverVersionIsAtLeast($version, '2.12.9') || (self::serverVersionIsAtLeast($version, '2.14.0') && !self::serverVersionIsAtLeast($version, '2.14.1'))) => 'a stream with interest retention, at a restart of the server',
+            $retention === 'workqueue' && $replicas > 1 && !self::serverVersionIsAtLeast($version, '2.12.5') => sprintf('a work-queue stream with %d replicas', $replicas),
+            default => null,
+        };
+        if ($when === null) {
+            return;
+        }
+
+        $this->logger?->warning(sprintf(
+            'retry_handler=nats on stream "%s": NATS %s deletes a message that reached max_deliver from %s, so a message'
+            . ' that keeps failing leaves nothing behind but the MAX_DELIVERIES advisory. Use retry_handler: symfony and'
+            . ' retry_via: nak with a failure transport, or a stream with limits or work-queue retention (README, "Retry'
+            . ' Handler Behavior").',
+            $this->streamName,
+            $version ?? 'of an unknown version',
+            $when,
+        ));
+    }
+
+    /** Whether $version, as a server reports it ("2.12.5", "v2.15.0-RC.1"), is $release or later; false when unknown. */
+    private static function serverVersionIsAtLeast(?string $version, string $release): bool
+    {
+        if ($version === null || preg_match('/^v?(\d+\.\d+\.\d+)/', $version, $parts) !== 1) {
+            return false;
+        }
+
+        return version_compare($parts[1], $release, '>=');
     }
 
     /**
