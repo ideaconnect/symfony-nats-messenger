@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumers and refuse it with a `TransportException` that names the ways out, unless a consumer's filter covers the
   delayed subjects. `assertTheStreamKeepsDelayedMessages()`.
 
+- **Nats mode TERMs a message that cannot be decoded, instead of NAKing it.** A redelivery cannot decode it either.
+  When `get()` fails on it (this transport's igbinary serializer, and Symfony Messenger before 8.1), the worker stops
+  with the decode error, and NATS brought the NAKed message to every new worker, which stopped again: 6 of 6 worker
+  starts exited without `max_deliver` (nats-server 2.15.2). Symfony Messenger 8.1 delivers it as a
+  `MessageDecodingFailedException` that fails in the handler instead, and the NAK brought it back to the same worker:
+  two workers of 3 s got it 3769 times (Messenger 8.1.9). It is TERMed now in both cases, so only the worker that
+  pulled it stops, and only before 8.1. In symfony mode it was TERMed already, and on 8.1 Symfony's retry strategy
+  and failure transport handle it as any failure. `get()`, `isAMessageNatsModeCannotDecode()`.
+
 ### Documentation
 
 - **A message stopped at `max_deliver` does not always stay in the stream.** `docs/symfony_retry_via.md` said it

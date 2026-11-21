@@ -36,6 +36,7 @@ use LogicException;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
@@ -663,8 +664,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * rejected); a message with an empty payload is TERMed so JetStream stops redelivering it,
      * since it can never decode into an envelope. A header whose name is a decimal integer, such as
      * `1`, is not passed to the serializer, whose decode() takes string names. On deserialization
-     * failure the message is rejected via {@see handleFailedDelivery()} before the exception
-     * propagates.
+     * failure the message is TERMed, in nats mode too, before the exception propagates.
      *
      * With auto_setup enabled, a 404, 409 or 503 (see {@see recoverFromFetchFailure()} for why
      * all three) first triggers one re-provisioning attempt and a second pull. A 409 with which the
@@ -725,11 +725,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                     'headers' => $headers,
                 ]);
             } catch (\Throwable $e) {
-                // Reject the undecodable message, but never let a NAK/TERM transport failure (e.g. a
-                // dropped connection while acknowledging) replace the decode exception: that original
-                // error is the root cause an operator needs, so it stays the one that propagates.
+                // TERM the undecodable message in both modes: a redelivery cannot decode it either. In nats mode a
+                // NAK brought it back to every new worker, which the exception below then stopped again, for ever
+                // without max_deliver (6 of 6 worker starts exited, measured on nats-server 2.15.2). Never let a
+                // TERM transport failure (e.g. a dropped connection while acknowledging) replace the decode
+                // exception: that original error is the root cause an operator needs, so it stays the one that
+                // propagates.
                 try {
-                    $this->handleFailedDelivery($replyTo);
+                    $this->sendTerm($replyTo);
                 } catch (\Throwable) {
                     // Intentionally swallowed - $e is rethrown below as the primary failure.
                 }
@@ -871,6 +874,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $retry = $this->natsRedeliversTheRetryOf($envelope, $id);
         if ($retry !== null) {
             $this->checkTheConnectionBeforeSettlingAFailure();
+            if ($this->isAMessageNatsModeCannotDecode($envelope)) {
+                $this->sendTerm($id);
+
+                return;
+            }
+
             $this->nakForRetry($id, $retry['delayMs']);
 
             return;
@@ -904,6 +913,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $retry = $this->natsRedeliversTheRetryOf($envelope, $id);
         $this->checkTheConnectionBeforeSettlingAFailure();
 
+        if ($this->isAMessageNatsModeCannotDecode($envelope)) {
+            $this->sendTerm($id);
+
+            return;
+        }
+
         if ($retry !== null) {
             $this->nakForRetry($id, $retry['delayMs']);
 
@@ -911,6 +926,20 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         $this->handleFailedDelivery($id);
+    }
+
+    /**
+     * Whether, in nats mode, the delivery being settled is a message that could not be decoded, as Symfony Messenger
+     * 8.1 and later deliver it: an envelope whose message is the MessageDecodingFailedException, which the worker
+     * handles and fails like any message. It is TERMed rather than NAKed, as {@see get()} TERMs a message whose decode
+     * throws: a redelivery cannot decode it either, and a NAK brought it back at once, for ever without max_deliver: two
+     * workers of 3 s each got it 3769 times (Symfony Messenger 8.1.9, nats-server 2.14.2). In symfony mode Symfony's
+     * retry strategy decides
+     * about such a message as about any other, and its failure transport keeps it.
+     */
+    private function isAMessageNatsModeCannotDecode(Envelope $envelope): bool
+    {
+        return $this->configuration->retryHandler() === RetryHandler::NATS && $envelope->getMessage() instanceof MessageDecodingFailedException;
     }
 
     /**

@@ -15,6 +15,11 @@
  * NATS redelivers. It says what to do: set `max_retries: 0`, or, to have Symfony's strategy decide while NATS
  * redelivers, use `retry_handler: symfony` with `retry_via: nak` (examples/retry-via-nak.php).
  *
+ * A second case: a message that cannot be decoded is TERMed in nats mode too (5.9.1). The worker that pulls it stops
+ * with the decode error, as Symfony's own transports do before Messenger 8.1, and the next worker does not get it.
+ * Up to 5.9.0 nats mode NAKed it, and NATS brought it to every new worker, which stopped again, for ever without
+ * `max_deliver`.
+ *
  * Mirrors the README "Retry Handler Behavior" section. Needs the test server (composer nats:start).
  * Run: php examples/nats-retry.php
  */
@@ -124,5 +129,45 @@ try {
     );
 } finally {
     $transport->close();
+    deleteExampleStream($stream);
+}
+
+// A message that cannot be decoded, in nats mode.
+$stream = exampleStream('nats_retry_undecodable');
+$natsMode = static fn (): NatsTransport => new NatsTransport(exampleDsn($stream, 'retry_handler=nats'), ['max_batch_timeout' => 0.2], new IDCT\NatsMessenger\Serializer\IgbinarySerializer());
+$setUp = $natsMode();
+try {
+    $setUp->setup();
+    // igbinary, but no envelope: what another application's publisher could put on the subject.
+    withJetStream($stream, static fn (JetStreamContext $jetStream) => $jetStream->publish($stream . '.messages', (string) igbinary_serialize('not an envelope'))->await());
+
+    $stops = [];
+    foreach ([1, 2] as $start) {
+        // A new transport object for each start, as a supervisor starts a new worker.
+        $worker = $natsMode();
+        try {
+            $deadline = microtime(true) + 1.5;
+            while (microtime(true) < $deadline) {
+                foreach ($worker->get() as $envelope) {
+                    $worker->ack($envelope);
+                }
+            }
+            $stops[] = 'ran';
+        } catch (Symfony\Component\Messenger\Exception\MessageDecodingFailedException) {
+            $stops[] = 'stopped on the decode error';
+        } finally {
+            $worker->close();
+        }
+    }
+
+    $consumer = withJetStream($stream, static fn (JetStreamContext $jetStream): array => $jetStream->getConsumer($stream, 'client')->await()->raw);
+    $deliveries = is_array($consumer['delivered'] ?? null) ? ($consumer['delivered']['consumer_seq'] ?? null) : null;
+    if ($stops !== ['stopped on the decode error', 'ran'] || $deliveries !== 1 || ($consumer['num_ack_pending'] ?? null) !== 0 || ($consumer['num_pending'] ?? null) !== 0) {
+        throw new RuntimeException(sprintf('expected the first worker to stop on the message and the second to run, with one delivery and nothing left; got %s, %s deliveries', json_encode($stops), json_encode($deliveries)));
+    }
+
+    echo "OK nats-retry: a message that cannot be decoded stopped the first worker and was TERMed: the second worker ran, the message was delivered once, and nothing is pending\n";
+} finally {
+    $setUp->close();
     deleteExampleStream($stream);
 }

@@ -37,6 +37,7 @@ use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
 use Symfony\Component\Messenger\Exception\RecoverableMessageHandlingException;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
+use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Psr\Container\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventDispatcher;
@@ -6667,7 +6668,11 @@ final class NatsTransportTest extends TestCase
         yield 'scheduled messages on' => [true, ['operator.added', 'test-topic', 'test-topic.delayed.>']];
     }
 
-    public function testGetDecodeFailureUsesNakWhenRetryHandlerIsNats(): void
+    /**
+     * A message that cannot be decoded is TERMed in nats mode too: a redelivery cannot decode it either. Up to 5.9.0
+     * nats mode NAKed it, and NATS brought it to every new worker, which the exception then stopped again.
+     */
+    public function testGetDecodeFailureTermsInNatsModeToo(): void
     {
         $serializer = $this->createMock(SerializerInterface::class);
         $serializer->expects(self::once())
@@ -6691,7 +6696,67 @@ final class NatsTransportTest extends TestCase
             self::assertSame('decode failed', $exception->getMessage());
         }
 
-        self::assertSame(['nak:reply-id'], $transport->failureActions);
+        self::assertSame(['term:reply-id'], $transport->failureActions);
+    }
+
+    /**
+     * Symfony Messenger 8.1 and later deliver a message that could not be decoded as an envelope whose message is the
+     * MessageDecodingFailedException, which the worker handles and fails like any message. In nats mode its settling is
+     * a TERM, whether the worker rejects it or, with Symfony's retry strategy on, acknowledges the delivery whose retry
+     * the transport left out: a NAK brought it back at once, for ever without max_deliver.
+     */
+    #[DataProvider('settlingsOfAMessageThatCouldNotBeDecoded')]
+    public function testNatsModeTermsAMessageThatCouldNotBeDecodedWhenTheWorkerSettlesIt(bool $retryLeftOut, string $settlement): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('nak');
+        $jetStream->expects(self::never())->method('nakWithDelay');
+        $jetStream->expects(self::never())->method('ack');
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::once())->method('term')
+            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === '$JS.ACK.test-stream.client.1.1.1.0.0'))
+            ->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new MessageDecodingFailedException('Deserialized data is not a valid Symfony Messenger Envelope.'), [
+            new ReceivedStamp('async'),
+            new TransportMessageIdStamp('$JS.ACK.test-stream.client.1.1.1.0.0'),
+        ]);
+
+        if ($retryLeftOut) {
+            $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(1)));
+        }
+        $transport->{$settlement}($failed);
+    }
+
+    /**
+     * @return iterable<string, array{bool, string}>
+     */
+    public static function settlingsOfAMessageThatCouldNotBeDecoded(): iterable
+    {
+        yield 'rejected, Symfony gave up' => [false, 'reject'];
+        yield 'acknowledged after its retry was left out (Messenger 7.4.22, 8.1.10 and later)' => [true, 'ack'];
+        yield 'rejected after its retry was left out (earlier releases)' => [true, 'reject'];
+    }
+
+    /**
+     * In symfony mode such a message is settled as any other failure: Symfony's retry strategy decides, here with
+     * retry_via=nak, whose retry is a NAK with Symfony's delay, and its failure transport keeps it in the end.
+     */
+    public function testSymfonyModeLeavesAMessageThatCouldNotBeDecodedToSymfonysRetryStrategy(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('getConsumer')->willReturn(Future::complete(self::consumerLimitedTo(null)));
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::once())->method('nakWithDelay')->with(self::anything(), 1000)->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES, $this->encodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new MessageDecodingFailedException('x'), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.1.1.1.0.0')]);
+
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(1)));
+        $transport->ack($failed);
     }
 
     public function testGetWithMultipleValidMessagesReturnsAll(): void

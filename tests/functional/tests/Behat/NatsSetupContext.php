@@ -900,6 +900,65 @@ class NatsSetupContext implements Context
         $this->resetSymfonyCache();
     }
 
+    /**
+     * Publishes to the transport's subject a payload no serializer of this transport decodes, as a producer with
+     * another serializer, or a corrupted message, leaves it.
+     */
+    #[Given('a message the transport cannot decode is published to its subject')]
+    public function aMessageTheTransportCannotDecodeIsPublishedToItsSubject(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            // igbinary, but no envelope: what another application's publisher could put on the subject.
+            $client->jetStream()->publish($this->testSubject, (string) igbinary_serialize('not an envelope'))->await();
+        } finally {
+            $client->disconnect()->await();
+        }
+    }
+
+    /**
+     * Two workers, one after the other, each for 3 s, as a supervisor starts a new one after an exit. Whether a worker
+     * ends on its time limit or on the message it could not decode does not matter here.
+     */
+    #[When('two messenger consumers run one after the other for :seconds seconds each')]
+    public function twoMessengerConsumersRunOneAfterTheOtherForSecondsEach(int $seconds): void
+    {
+        foreach ([1, 2] as $worker) {
+            $process = new Process(
+                ['php', 'bin/console', 'messenger:consume', 'test_transport', '--time-limit=' . $seconds, '--sleep=0.1', '--env=test'],
+                __DIR__ . '/../..'
+            );
+            $process->setTimeout($seconds + 30);
+            $process->run();
+        }
+    }
+
+    /**
+     * The transport's consumer delivered the message once, redelivered nothing, and has nothing left to deliver or to
+     * wait for: it was TERMed. A NAK brought it back at once.
+     */
+    #[Then('the message that could not be decoded should have been delivered once and settled')]
+    public function theMessageThatCouldNotBeDecodedShouldHaveBeenDeliveredOnceAndSettled(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $delivered = is_array($info['delivered'] ?? null) ? ($info['delivered']['consumer_seq'] ?? null) : null;
+        $state = [
+            'deliveries' => $delivered,
+            'redelivered' => $info['num_redelivered'] ?? null,
+            'ack pending' => $info['num_ack_pending'] ?? null,
+            'pending' => $info['num_pending'] ?? null,
+        ];
+        if ($state !== ['deliveries' => 1, 'redelivered' => 0, 'ack pending' => 0, 'pending' => 0]) {
+            throw new \RuntimeException('Expected one delivery and nothing left, got ' . json_encode($state));
+        }
+    }
+
     #[Given('I have a messenger transport with failure transport configured')]
     public function iHaveAMessengerTransportWithFailureTransportConfigured(): void
     {
