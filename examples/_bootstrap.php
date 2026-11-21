@@ -131,6 +131,17 @@ final class ExampleLogger extends AbstractLogger
         $this->lines[] = sprintf('%s: %s', is_string($level) ? $level : 'log', $message);
     }
 
+    /** @return list<string> the messages logged at $level, in order, without the level */
+    public function linesAt(string $level): array
+    {
+        $prefix = $level . ': ';
+
+        return array_values(array_map(
+            static fn (string $line): string => substr($line, strlen($prefix)),
+            array_filter($this->lines, static fn (string $line): bool => str_starts_with($line, $prefix)),
+        ));
+    }
+
     /** Whether a line containing $text was logged. */
     public function logged(string $text): bool
     {

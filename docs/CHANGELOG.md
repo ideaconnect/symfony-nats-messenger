@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ErrorDetailsStamp`), instead of NAKing it. It can never succeed, and NATS ran the handler again on every delivery
   `max_deliver` allowed: 3 runs with `max_deliver: 3`, now 1. Ordinary failures are still NAKed, for NATS to redeliver.
   `isAFailureNatsModeCannotRetry()`.
+- **A message that cannot be decoded no longer stops the worker.** Up to 5.9.x `get()` TERMed it and rethrew the
+  decode error, as Symfony's own transports do before Messenger 8.1, and the worker that pulled it stopped: once per
+  such message, so a burst of them could make a supervisor that gives up on fast exits stop restarting it. From
+  Symfony Messenger 8.1 on, a serializer that throws, as this transport's igbinary serializer does, now gives a
+  `MessageDecodingFailedException` message (`MessageDecodingFailedException::wrap()`), as Messenger 8.1's
+  `ReceiverInterface` asks and its own serializers and Doctrine receiver do: the worker fails it, and Symfony's retry
+  strategy and failure transport deal with it in symfony mode (8.1.11 and later fail it once, as unrecoverable), while
+  nats mode TERMs it. Before 8.1 `get()` TERMs it, logs it at error level with its stream sequence, and goes on with
+  the batch. `get()`, `messengerPassesOnDecodeFailures()`, `termAMessageThatCannotBeDecoded()`.
 
 ### Fixed
 

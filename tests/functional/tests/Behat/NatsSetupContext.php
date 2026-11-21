@@ -64,6 +64,8 @@ class NatsSetupContext implements Context
     private ?Process $consumerProcess = null;
     /** @var Process[] */
     private array $consumerProcesses = [];
+    /** @var list<array{'exit code': int|null, 'error output': string}> How each consumer the last When step ran ended. */
+    private array $consumerRuns = [];
     private string $testStreamName = 'stream';
     private string $testSubject = 'test.messages';
     private ?string $secondaryTestSubject = null;
@@ -917,12 +919,13 @@ class NatsSetupContext implements Context
     }
 
     /**
-     * Two workers, one after the other, each for 3 s, as a supervisor starts a new one after an exit. Whether a worker
-     * ends on its time limit or on the message it could not decode does not matter here.
+     * Two workers, one after the other, each for 3 s, as a supervisor starts a new one after an exit. How each one
+     * ended is kept for {@see neitherMessengerConsumerShouldHaveStoppedOnAnError()}.
      */
     #[When('two messenger consumers run one after the other for :seconds seconds each')]
     public function twoMessengerConsumersRunOneAfterTheOtherForSecondsEach(int $seconds): void
     {
+        $this->consumerRuns = [];
         foreach ([1, 2] as $worker) {
             $process = new Process(
                 ['php', 'bin/console', 'messenger:consume', 'test_transport', '--time-limit=' . $seconds, '--sleep=0.1', '--env=test'],
@@ -930,6 +933,26 @@ class NatsSetupContext implements Context
             );
             $process->setTimeout($seconds + 30);
             $process->run();
+            $this->consumerRuns[] = ['exit code' => $process->getExitCode(), 'error output' => $process->getErrorOutput()];
+        }
+    }
+
+    /**
+     * Both workers ran to their time limit. A message that cannot be decoded no longer stops one: before Symfony
+     * Messenger 8.1 the transport TERMs it when it is received and logs it, and from 8.1 on the worker fails it as the
+     * decoding failure. Up to 5.9.x get() rethrew the decode error before 8.1, and the worker that pulled the message
+     * stopped with it.
+     */
+    #[Then('neither messenger consumer should have stopped on an error')]
+    public function neitherMessengerConsumerShouldHaveStoppedOnAnError(): void
+    {
+        foreach ($this->consumerRuns as $i => $run) {
+            if ($run['exit code'] !== 0) {
+                throw new \RuntimeException(sprintf('Consumer %d exited with %s: %s', $i + 1, var_export($run['exit code'], true), trim($run['error output'])));
+            }
+        }
+        if (count($this->consumerRuns) !== 2) {
+            throw new \RuntimeException(sprintf('Expected two consumer runs, got %d', count($this->consumerRuns)));
         }
     }
 
@@ -956,6 +979,26 @@ class NatsSetupContext implements Context
         ];
         if ($state !== ['deliveries' => 1, 'redelivered' => 0, 'ack pending' => 0, 'pending' => 0]) {
             throw new \RuntimeException('Expected one delivery and nothing left, got ' . json_encode($state));
+        }
+    }
+
+    /**
+     * The transport's consumer has nothing left to deliver or to wait for, however many times Symfony retried the
+     * message: its deliveries were settled.
+     */
+    #[Then('the message that could not be decoded should have been settled')]
+    public function theMessageThatCouldNotBeDecodedShouldHaveBeenSettled(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $state = ['ack pending' => $info['num_ack_pending'] ?? null, 'pending' => $info['num_pending'] ?? null];
+        if ($state !== ['ack pending' => 0, 'pending' => 0]) {
+            throw new \RuntimeException('Expected nothing left, got ' . json_encode($state));
         }
     }
 

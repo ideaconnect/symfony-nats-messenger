@@ -151,8 +151,10 @@ apply only with the option on.
 - **Delivery identity:** outgoing `TransportMessageIdStamp` is a UUID; incoming it holds the
   JetStream reply/ACK subject. ACK, reject and keepalive depend on that incoming token. Messages
   without it are skipped; empty payloads are TERMed to avoid an endless poison-message loop.
-  Decode failures reject according to retry mode and preserve the original decode exception
-  even if rejection fails. Received headers with integer array keys are omitted before decode.
+  A decode failure never stops the worker (5.10.0): from Symfony Messenger 8.1 on, a serializer
+  that throws becomes a `MessageDecodingFailedException` message (`wrap()`), as Messenger's own
+  serializers return one; before 8.1 `get()` TERMs it, logs an error and goes on. Nats mode TERMs
+  such a message when it is settled. Received headers with integer array keys are omitted before decode.
 - **Retry ownership:** default `retry_handler=symfony` sends TERM; Symfony owns retries and the
   failure transport. `retry_handler=nats` sends NAK, optionally delayed; `send()` suppresses
   Symfony's retry copy when it carries `ReceivedStamp` and a positive retry count. NATS owns

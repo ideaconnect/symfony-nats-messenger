@@ -29,3 +29,18 @@ Feature: Symfony failure transport via TERM
     And I start a messenger consumer with high limit
     And I wait for the consumer to finish or timeout
     Then the failure transport should contain 1 message
+
+  # A message the igbinary serializer cannot decode, in symfony mode with a failure transport. Before Symfony Messenger
+  # 8.1 the transport TERMs it when it is received and logs it, and up to 5.9.x it rethrew the decode error, which
+  # stopped the worker. From 8.1 on the worker fails it as the decoding failure and Symfony's retry strategy and
+  # failure transport deal with it: 8.1.11 and later fail it once, as unrecoverable, and 8.1.0 to 8.1.10 retry it.
+  @term
+  Scenario: A message that cannot be decoded does not stop the worker in symfony mode
+    Given NATS server is running
+    And I have a messenger transport with failure transport configured using the "IDCT\NatsMessenger\Serializer\IgbinarySerializer" serializer
+    And the NATS stream is set up
+    And the failure stream is set up
+    And a message the transport cannot decode is published to its subject
+    When two messenger consumers run one after the other for 3 seconds each
+    Then the message that could not be decoded should have been settled
+    And neither messenger consumer should have stopped on an error
