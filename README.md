@@ -636,7 +636,19 @@ framework:
           nkey_seed: null                   # NKey seed (SU...) that signs the server's nonce; see NKey Authentication
 ```
 
-> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (everything above but the redelivery tuning, TLS and authentication options, which the tests after it and the sections below cover), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`
+**An option the transport does not know is refused** (5.10.0), in the `options` and in the DSN query, with the
+closest option when one is near. Up to 5.9.x it was ignored without a word, so a mistyped name left the default in
+place:
+
+```text
+Unknown option 'max_delivers' in the DSN query of the NATS transport. Did you mean 'max_deliver'?
+```
+
+Option names are lowercase. `transport_name`, which FrameworkBundle adds to every transport's options, is accepted.
+The name is not repeated when it is not plain, and never when it follows a credential in the DSN query: an `&` in a
+credential that was not encoded as `%26` makes the rest of it such a name, and the error says so instead.
+
+> **Tested by:** `testBuildRefusesAnUnknownOption`, `testBuildAcceptsWhatNamesNoUnknownOption`, `testTheRestOfACredentialCutByAnAmpersandIsRefusedWithoutRepeatingIt`, `testAnUnknownNameThatIsNotPlainIsNotRepeated`, `testReadmeConfigurationOptionsAreAccepted` (everything above but the redelivery tuning, TLS and authentication options, which the tests after it and the sections below cover), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`
 
 ### NKey Authentication
 

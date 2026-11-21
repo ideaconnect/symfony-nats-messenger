@@ -67,7 +67,9 @@ composer nats:stop               # stop NATS
   Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
   configuration is strict, so a scenario with an undefined step fails the run instead of being skipped.
 - `TransportOption` is the single source of truth for option keys; every case needs a `DEFAULT_OPTIONS`
-  entry in `NatsTransportConfigurationBuilder` (guarded by `testDefaultOptionsCoversAllTransportOptionCases`).
+  entry in `NatsTransportConfigurationBuilder` (guarded by `testDefaultOptionsCoversAllTransportOptionCases`). The
+  builder refuses any other key but `transport_name`, which FrameworkBundle adds (`assertKnownOptions()`), so an
+  option a test or an example passes must be a case.
 - Mark DSN/credential parameters with `#[\SensitiveParameter]`.
 - Use `TypeCoercion` (static helpers) for `mixed → scalar` casting rather than ad-hoc casts.
 - Match the surrounding style: typed properties, readonly value objects, rich doc-comments.

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **⚠️ An option the transport does not know is refused**, in the options and in the DSN query, with an
+  `InvalidArgumentException` that names the closest option when one is near: `Unknown option 'max_delivers' in the DSN
+  query of the NATS transport. Did you mean 'max_deliver'?`. Up to 5.9.x such an option was ignored without a word,
+  so a mistyped name (`max_delivers`, `retry_handeler`, `RETRY_HANDLER`) left the default in place and the setup it
+  was meant to change did not happen. A configuration with such a name now fails when the transport is built: correct
+  or remove the name. `transport_name`, which FrameworkBundle adds, is accepted. The name is not repeated when it is
+  not plain or when it follows a credential in the DSN query, where an `&` that was not encoded as `%26` in the
+  credential makes the rest of it a name. `assertKnownOptions()`.
 - **Nats mode TERMs a failure Symfony marks as unrecoverable** (`UnrecoverableExceptionInterface`, read from Symfony's
   `ErrorDetailsStamp`), instead of NAKing it. It can never succeed, and NATS ran the handler again on every delivery
   `max_deliver` allowed: 3 runs with `max_deliver: 3`, now 1. Ordinary failures are still NAKed, for NATS to redeliver.

@@ -438,6 +438,67 @@ final class SecretsInExceptionsTest extends TestCase
     }
 
     /**
+     * @return iterable<string, array{string, string}> The credential option and what follows the first part of the
+     *                                                 secret, after an & that was not encoded
+     */
+    public static function credentialsWithAnUnencodedAmpersand(): iterable
+    {
+        foreach (['nkey_seed', 'nkey', 'jwt', 'token', 'username', 'password', 'tls_key_passphrase'] as $credential) {
+            yield $credential => [$credential, ''];
+            yield $credential . ', with an = in the rest' => [$credential, '=x'];
+        }
+
+        yield 'two & in the secret' => ['token', '&more'];
+    }
+
+    /**
+     * An & in a credential that was not encoded as %26 ends the credential there, and parse_str() reads the rest as the
+     * name of an option. That name is a part of the secret, so the refusal does not repeat it, or suggest an option
+     * near it.
+     */
+    #[DataProvider('credentialsWithAnUnencodedAmpersand')]
+    public function testTheRestOfACredentialCutByAnAmpersandIsRefusedWithoutRepeatingIt(string $credential, string $after): void
+    {
+        $seed = TestNkeys::seed();
+        $dsn = self::DSN_WITHOUT_CREDENTIALS . '?batching=5&' . $credential . '=' . substr($seed, 0, 20) . '&' . substr($seed, 20) . $after;
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build($dsn);
+            self::fail('A credential cut by an & was accepted.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertSame(
+                'The NATS DSN query holds an option the transport does not know right after a credential, which an "&" in'
+                . ' the credential makes of the rest of it. The name is not repeated. Encode an "&" in a credential as "%26".',
+                $thrown->getMessage(),
+            );
+            self::assertNoSecretIn($thrown, substr($seed, 20));
+        }
+    }
+
+    /**
+     * A name that is not plain is not repeated, as a value that is not plain is not: here one with an encoded ? and =,
+     * and one longer than the limit.
+     *
+     * @return iterable<string, array{string, string}>
+     */
+    public static function unknownNamesThatAreNotPlain(): iterable
+    {
+        yield 'a ? and an =' => [self::DSN_WITHOUT_CREDENTIALS . '?nats%3Fseed%3Dabc=1', "Unknown option in the DSN query of the NATS transport."];
+        yield 'longer than the limit' => [self::DSN_WITHOUT_CREDENTIALS . '?' . str_repeat('x', 51) . '=1', "Unknown option in the DSN query of the NATS transport."];
+    }
+
+    #[DataProvider('unknownNamesThatAreNotPlain')]
+    public function testAnUnknownNameThatIsNotPlainIsNotRepeated(string $dsn, string $expectedStart): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build($dsn);
+            self::fail('An unknown option was accepted.');
+        } catch (\InvalidArgumentException $thrown) {
+            self::assertStringStartsWith($expectedStart, $thrown->getMessage());
+        }
+    }
+
+    /**
      * The end of the pattern must not let a last newline through, as "natz\n" is not a plain value.
      */
     public function testAValueEndingInANewlineIsNotRepeated(): void
@@ -506,6 +567,8 @@ final class SecretsInExceptionsTest extends TestCase
             'normalizeStreamDiscard' => [$dsn, ['stream_discard' => 'nope']],
             'normalizeStreamCompression' => [$dsn, ['stream_compression' => 'nope']],
             'normalizeReplayPolicy' => [$dsn, ['replay_policy' => 'nope']],
+            'assertKnownOptions' => [$dsn, ['max_delivers' => 3]],
+            'unknownOptionMessage' => [$dsn, ['colour' => 'blue']],
         ];
     }
 
