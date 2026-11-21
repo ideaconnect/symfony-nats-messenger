@@ -1017,7 +1017,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * the handler again on every delivery up to max_deliver, for ever without it: 4 runs with max_deliver 4 (measured
      * on nats-server 2.15.2). Ordinary failures are still NAKed, for NATS to redeliver under nak_delay, backoff and
      * max_deliver. The stamp names the first exception a HandlerFailedException wraps, which is the one that failed
-     * when the message has one handler.
+     * when the message has one handler. With several handlers, a failure whose first exception is unrecoverable is
+     * TERMed even when another handler's failure could succeed on a redelivery, where Symfony's own retry strategy
+     * retries a HandlerFailedException unless every exception in it is unrecoverable. Symfony mode leaves that decision
+     * to Symfony.
      */
     private function isAFailureNatsModeCannotRetry(Envelope $envelope): bool
     {

@@ -1268,6 +1268,14 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'a list entry' => [self::VALID_DSN, ['batching' => 5, 7 => 'x'], "Unknown option '7' in the options of the NATS transport." . $none];
         yield 'after a known option in the query' => [self::VALID_DSN . '?batching=5&max_delivers=3', [], "Unknown option 'max_delivers' in the DSN query of the NATS transport. Did you mean 'max_deliver'?"];
         yield 'with no value in the query' => [self::VALID_DSN . '?scheduled', [], "Unknown option 'scheduled' in the DSN query of the NATS transport."];
+        yield 'two letters swapped in a short name' => [self::VALID_DSN, ['bakcoff' => [1]], "Unknown option 'bakcoff' in the options of the NATS transport. Did you mean 'backoff'?"];
+        yield 'a quarter of a long name changed' => [self::VALID_DSN . '?max_recon_attempt=3', [], "Unknown option 'max_recon_attempt' in the DSN query of the NATS transport. Did you mean 'max_reconnect_attempts'?"];
+        yield 'more than a quarter of a long name changed' => [self::VALID_DSN, ['stream_max_msg_per_subj' => 5], "Unknown option 'stream_max_msg_per_subj' in the options of the NATS transport." . $none];
+        yield 'the start of a name, not up to an underscore' => [self::VALID_DSN . '?sched=1', [], "Unknown option 'sched' in the DSN query of the NATS transport." . $none];
+        yield 'the end of a name, not from an underscore' => [self::VALID_DSN, ['eplicas' => 3], "Unknown option 'eplicas' in the options of the NATS transport." . $none];
+        yield 'equally near two options, the first of them' => [self::VALID_DSN . '?ack=1', [], "Unknown option 'ack' in the DSN query of the NATS transport. Did you mean 'ack_wait'?"];
+        yield 'after a parameter with no name' => [self::VALID_DSN . '?=x&max_delivers=3', [], "Unknown option 'max_delivers' in the DSN query of the NATS transport. Did you mean 'max_deliver'?"];
+        yield 'a number as the name in the query' => [self::VALID_DSN . '?7=x', [], "Unknown option '7' in the DSN query of the NATS transport." . $none];
     }
 
     /**
