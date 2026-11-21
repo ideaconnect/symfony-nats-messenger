@@ -299,4 +299,143 @@ class AbstractEnveloperSerializerTest extends TestCase
 
         $serializer->decode(['body' => '']);
     }
+
+    /**
+     * An exception deserialize() throws is a decoding failure, with it as the previous exception: a transport takes only
+     * a MessageDecodingFailedException for a message that cannot be decoded, as Symfony's own transports do.
+     */
+    #[Test]
+    public function decode_WhoseDeserializeThrows_ThrowsMessageDecodingFailedWithTheCause(): void
+    {
+        $cause = new \UnexpectedValueException('truncated payload');
+        $serializer = new class ($cause) extends AbstractEnveloperSerializer {
+            public function __construct(private readonly \Throwable $cause)
+            {
+            }
+
+            protected function serialize(Envelope $envelope): string
+            {
+                return '';
+            }
+
+            protected function deserialize(string $data): mixed
+            {
+                throw $this->cause;
+            }
+        };
+
+        try {
+            $serializer->decode(['body' => 'x']);
+            $this->fail('decode() should have failed');
+        } catch (MessageDecodingFailedException $failure) {
+            $this->assertSame('Could not decode the envelope: truncated payload', $failure->getMessage());
+            $this->assertSame(0, $failure->getCode(), 'as Symfony\'s PhpSerializer wraps one');
+            $this->assertSame($cause, $failure->getPrevious());
+        }
+    }
+
+    /**
+     * A MessageDecodingFailedException deserialize() throws goes out as it is.
+     */
+    #[Test]
+    public function decode_WhoseDeserializeThrowsADecodingFailure_ThrowsItAsItIs(): void
+    {
+        $cause = new MessageDecodingFailedException('a field is missing');
+        $serializer = new class ($cause) extends AbstractEnveloperSerializer {
+            public function __construct(private readonly \Throwable $cause)
+            {
+            }
+
+            protected function serialize(Envelope $envelope): string
+            {
+                return '';
+            }
+
+            protected function deserialize(string $data): mixed
+            {
+                throw $this->cause;
+            }
+        };
+
+        try {
+            $serializer->decode(['body' => 'x']);
+            $this->fail('decode() should have failed');
+        } catch (MessageDecodingFailedException $failure) {
+            $this->assertSame($cause, $failure);
+        }
+    }
+
+    /**
+     * A deprecation deserialize() raises goes to the error handler there was, which is restored afterwards, and the
+     * envelope is decoded.
+     */
+    #[Test]
+    public function decode_WhoseDeserializeRaisesADeprecation_PassesItOnAndDecodes(): void
+    {
+        $envelope = new Envelope(new \stdClass());
+        $serializer = new class ($envelope) extends AbstractEnveloperSerializer {
+            public function __construct(private readonly Envelope $envelope)
+            {
+            }
+
+            protected function serialize(Envelope $envelope): string
+            {
+                return '';
+            }
+
+            protected function deserialize(string $data): mixed
+            {
+                trigger_error('an old format', E_USER_DEPRECATED);
+
+                return $this->envelope;
+            }
+        };
+        $seen = [];
+        $handler = static function (int $type, string $message) use (&$seen): bool {
+            $seen[] = [$type, $message];
+
+            return true;
+        };
+        set_error_handler($handler);
+        error_clear_last();
+
+        try {
+            $decoded = $serializer->decode(['body' => 'x']);
+            // The error handler there was is in place again.
+            trigger_error('after decode()', E_USER_DEPRECATED);
+        } finally {
+            restore_error_handler();
+        }
+
+        $this->assertSame($envelope, $decoded);
+        $this->assertSame([[E_USER_DEPRECATED, 'an old format'], [E_USER_DEPRECATED, 'after decode()']], $seen);
+        // The handler there was took it, so PHP's own handler did not run after it.
+        $this->assertNull(error_get_last());
+    }
+
+    /**
+     * A notice deserialize() raises is a decoding failure, as a warning is.
+     */
+    #[Test]
+    public function decode_WhoseDeserializeRaisesANotice_ThrowsMessageDecodingFailed(): void
+    {
+        $serializer = new class extends AbstractEnveloperSerializer {
+            protected function serialize(Envelope $envelope): string
+            {
+                return '';
+            }
+
+            protected function deserialize(string $data): mixed
+            {
+                trigger_error('offset 3 of 9', E_USER_NOTICE);
+
+                return null;
+            }
+        };
+
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('Could not decode the envelope: offset 3 of 9');
+
+        $serializer->decode(['body' => 'x']);
+    }
 }

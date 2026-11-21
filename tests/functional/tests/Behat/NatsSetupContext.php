@@ -64,6 +64,8 @@ class NatsSetupContext implements Context
     private ?Process $consumerProcess = null;
     /** @var Process[] */
     private array $consumerProcesses = [];
+    /** @var list<array{'exit code': int|null, 'error output': string}> How each consumer the last When step ran ended. */
+    private array $consumerRuns = [];
     private string $testStreamName = 'stream';
     private string $testSubject = 'test.messages';
     private ?string $secondaryTestSubject = null;
@@ -247,6 +249,20 @@ class NatsSetupContext implements Context
         ];
 
         $this->setupProcess = new Process($command, __DIR__ . '/../..');
+        $this->setupProcess->run();
+    }
+
+    /**
+     * The setup command with -v: Symfony's default logger writes only errors to stderr at the normal verbosity, so a
+     * warning of setup() shows only from -v on, as the consumer steps run with -vv.
+     */
+    #[When('I run the messenger setup command with its warnings shown')]
+    public function iRunTheMessengerSetupCommandWithItsWarningsShown(): void
+    {
+        $this->setupProcess = new Process(
+            ['php', 'bin/console', 'messenger:setup-transports', 'test_transport', '--no-interaction', '--env=test', '-v'],
+            __DIR__ . '/../..'
+        );
         $this->setupProcess->run();
     }
 
@@ -917,12 +933,13 @@ class NatsSetupContext implements Context
     }
 
     /**
-     * Two workers, one after the other, each for 3 s, as a supervisor starts a new one after an exit. Whether a worker
-     * ends on its time limit or on the message it could not decode does not matter here.
+     * Two workers, one after the other, each for 3 s, as a supervisor starts a new one after an exit. How each one
+     * ended is kept for {@see onlyAConsumerBeforeSymfonyMessenger81ShouldHaveStoppedOnTheDecodeError()}.
      */
     #[When('two messenger consumers run one after the other for :seconds seconds each')]
     public function twoMessengerConsumersRunOneAfterTheOtherForSecondsEach(int $seconds): void
     {
+        $this->consumerRuns = [];
         foreach ([1, 2] as $worker) {
             $process = new Process(
                 ['php', 'bin/console', 'messenger:consume', 'test_transport', '--time-limit=' . $seconds, '--sleep=0.1', '--env=test'],
@@ -930,6 +947,36 @@ class NatsSetupContext implements Context
             );
             $process->setTimeout($seconds + 30);
             $process->run();
+            $this->consumerRuns[] = ['exit code' => $process->getExitCode(), 'error output' => $process->getErrorOutput()];
+        }
+    }
+
+    /**
+     * How a message that cannot be decoded ends the workers, as with Symfony's own transports: from Symfony Messenger
+     * 8.1 on it goes to the worker as the decoding failure, and both run to their time limit; before 8.1 the first
+     * worker stops on the decode error, after the transport TERMed the message, and the second, which does not get
+     * it, runs to its time limit. In nats mode up to 5.9.0 every worker stopped, as NATS brought the NAKed message back.
+     */
+    #[Then('only a consumer before Symfony Messenger 8.1 should have stopped, on the decode error')]
+    public function onlyAConsumerBeforeSymfonyMessenger81ShouldHaveStoppedOnTheDecodeError(): void
+    {
+        if (count($this->consumerRuns) !== 2) {
+            throw new \RuntimeException(sprintf('Expected two consumer runs, got %d', count($this->consumerRuns)));
+        }
+
+        $passesOn = (new \ReflectionClass(\Symfony\Component\Messenger\Exception\MessageDecodingFailedException::class))->hasMethod('wrap');
+        [$first, $second] = $this->consumerRuns;
+        $firstStopped = $first['exit code'] !== 0 && str_contains($first['error output'], 'not a valid Symfony Messenger Envelope');
+        if ($passesOn ? $first['exit code'] !== 0 : !$firstStopped) {
+            throw new \RuntimeException(sprintf(
+                'Expected the first consumer to %s; it exited with %s: %s',
+                $passesOn ? 'run to its time limit (Symfony Messenger 8.1 or later)' : 'stop on the decode error (Symfony Messenger before 8.1)',
+                var_export($first['exit code'], true),
+                trim($first['error output']),
+            ));
+        }
+        if ($second['exit code'] !== 0) {
+            throw new \RuntimeException(sprintf('Expected the second consumer to run to its time limit; it exited with %s: %s', var_export($second['exit code'], true), trim($second['error output'])));
         }
     }
 
@@ -956,6 +1003,26 @@ class NatsSetupContext implements Context
         ];
         if ($state !== ['deliveries' => 1, 'redelivered' => 0, 'ack pending' => 0, 'pending' => 0]) {
             throw new \RuntimeException('Expected one delivery and nothing left, got ' . json_encode($state));
+        }
+    }
+
+    /**
+     * The transport's consumer has nothing left to deliver or to wait for, however many times Symfony retried the
+     * message: its deliveries were settled.
+     */
+    #[Then('the message that could not be decoded should have been settled')]
+    public function theMessageThatCouldNotBeDecodedShouldHaveBeenSettled(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $state = ['ack pending' => $info['num_ack_pending'] ?? null, 'pending' => $info['num_pending'] ?? null];
+        if ($state !== ['ack pending' => 0, 'pending' => 0]) {
+            throw new \RuntimeException('Expected nothing left, got ' . json_encode($state));
         }
     }
 
@@ -3396,6 +3463,64 @@ class NatsSetupContext implements Context
         $warnings = substr_count($output, $warning);
         if ($warnings !== 1) {
             throw new \RuntimeException(sprintf("Expected the max_deliver warning once, found it %d time(s).\nConsumer output: %s", $warnings, $output));
+        }
+    }
+
+    /**
+     * With retry_via=copy, the default, and no scheduled_messages, Symfony's retry copy is published at once; the
+     * transport warns once per consumer process with the delay it dropped, which carries Symfony's jitter (5.10.0).
+     */
+    #[Then('the consumer should have warned once that Symfony\'s retry was published without its delay')]
+    public function theConsumerShouldHaveWarnedOnceThatSymfonysRetryWasPublishedWithoutItsDelay(): void
+    {
+        $this->assertConsumerLoggedOnce(sprintf(
+            'retry_via=copy on stream "%s", subject "%s": Symfony\'s retry was published at once, without its delay of',
+            $this->testStreamName,
+            $this->testSubject,
+        ));
+    }
+
+    #[Given('I have a messenger transport configured with the NATS retry handler, max_deliver :maxDeliver and interest retention')]
+    public function iHaveAMessengerTransportConfiguredWithTheNatsRetryHandlerMaxDeliverAndInterestRetention(int $maxDeliver): void
+    {
+        $this->writeTransportConfiguration(sprintf('stream_max_age=900&retry_handler=nats&max_deliver=%d&stream_retention=interest', $maxDeliver));
+    }
+
+    /**
+     * On a standalone server NATS deletes a message stopped at max_deliver from an interest stream at a restart before
+     * 2.12.9, and on 2.14.0 (measured, docs/symfony_retry_via.md); setup() warns on those servers and only there. The
+     * oldest-server job's NATS 2.10 gets the warning, the latest server none.
+     */
+    #[Then('the setup should have warned that NATS deletes a message stopped at max_deliver exactly when the server\'s version does')]
+    public function theSetupShouldHaveWarnedThatNatsDeletesAMessageStoppedAtMaxDeliverExactlyWhenTheServersVersionDoes(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $client->connect()->await();
+            $version = (string) $client->serverInfo()?->version;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $release = preg_replace('/^v?(\d+\.\d+\.\d+).*$/', '$1', $version) ?? '';
+        $deletes = version_compare($release, '2.12.9', '<') || (version_compare($release, '2.14.0', '>=') && version_compare($release, '2.14.1', '<'));
+        $output = $this->setupProcess->getOutput() . $this->setupProcess->getErrorOutput();
+        $warnings = substr_count($output, 'deletes a message that reached max_deliver from a stream with interest retention, at a restart of the server');
+        if ($warnings !== ($deletes ? 1 : 0)) {
+            throw new \RuntimeException(sprintf("Expected %d warning(s) on NATS %s, found %d.\nSetup output: %s", $deletes ? 1 : 0, $version, $warnings, $output));
+        }
+    }
+
+    private function assertConsumerLoggedOnce(string $text): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        $found = substr_count($output, $text);
+        if ($found !== 1) {
+            throw new \RuntimeException(sprintf("Expected the consumer to log \"%s\" once, found it %d time(s).\nConsumer output: %s", $text, $found, $output));
         }
     }
 

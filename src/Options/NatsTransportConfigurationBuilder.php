@@ -36,6 +36,9 @@ final class NatsTransportConfigurationBuilder
     /** Longest stream description NATS accepts. */
     private const MAX_STREAM_DESCRIPTION_LENGTH = 4096;
 
+    /** Added by Symfony's FrameworkBundle to the options of every transport it creates. */
+    private const TRANSPORT_NAME_OPTION = 'transport_name';
+
     /**
      * Default option values.
      *
@@ -362,12 +365,103 @@ final class NatsTransportConfigurationBuilder
      */
     private function assertNoCredentialAfterASecondQuery(#[\SensitiveParameter] string $query): void
     {
-        if (preg_match('/[?;]\s*(?:nkey_seed|nkey|jwt|token|username|password|tls_key_passphrase)\s*=/i', urldecode($query)) === 1) {
+        $credentials = implode('|', array_map(static fn (TransportOption $option): string => preg_quote($option->value, '/'), TransportOption::credentials()));
+        if (preg_match('/[?;]\s*(?:' . $credentials . ')\s*=/i', urldecode($query)) === 1) {
             throw new InvalidArgumentException(
                 'The NATS DSN holds a credential after a second "?" or a ";" in its query, where it would be read as a part '
                 . 'of the option before it. Separate the options with "&".'
             );
         }
+    }
+
+    /**
+     * Refuses an option the transport does not know, in the options map or the DSN query (5.10.0). Up to 5.9.x such an
+     * option was ignored without a word, so a mistyped name (`max_delivers`, `retry_handeler`, `RETRY_HANDLER`) left
+     * the default in place: the setup it was meant to change did not happen, and nothing said so. `transport_name` is
+     * known too, as Symfony's FrameworkBundle adds it to the options of every transport.
+     *
+     * The name is repeated, with the closest option when one is near, if it is plain, as a value is
+     * ({@see quotedIfPlain()}). In the DSN query a name right after a credential, or after unknown names that follow
+     * one, is never repeated: an & in a credential that was not encoded as %26 makes the rest of the credential such a
+     * name.
+     *
+     * @param array<array-key, mixed> $options
+     *
+     * @throws InvalidArgumentException When an option is not one of the transport's.
+     */
+    private function assertKnownOptions(#[\SensitiveParameter] array $options, #[\SensitiveParameter] ?string $query): void
+    {
+        foreach (array_keys($options) as $name) {
+            if (!$this->isKnownOption((string) $name)) {
+                throw new InvalidArgumentException($this->unknownOptionMessage((string) $name, 'options'));
+            }
+        }
+
+        if ($query === null) {
+            return;
+        }
+
+        $afterACredential = false;
+        foreach (explode('&', $query) as $parameter) {
+            // Read as parse_str() reads the whole query, so that a name is the one the build would see.
+            $one = [];
+            parse_str($parameter, $one);
+            $name = array_key_first($one);
+            if ($name === null) {
+                continue;
+            }
+
+            $name = (string) $name;
+            if ($this->isKnownOption($name)) {
+                $afterACredential = TransportOption::tryFrom($name)?->isCredential() === true;
+
+                continue;
+            }
+
+            if ($afterACredential) {
+                throw new InvalidArgumentException(
+                    'The NATS DSN query holds an option the transport does not know right after a credential, which an'
+                    . ' "&" in the credential makes of the rest of it. The name is not repeated. Encode an "&" in a'
+                    . ' credential as "%26".'
+                );
+            }
+
+            throw new InvalidArgumentException($this->unknownOptionMessage($name, 'DSN query'));
+        }
+    }
+
+    private function isKnownOption(#[\SensitiveParameter] string $name): bool
+    {
+        return $name === self::TRANSPORT_NAME_OPTION || TransportOption::tryFrom($name) !== null;
+    }
+
+    /**
+     * The message for an unknown option: its name when it is plain, and the closest option when one is near, by edit
+     * distance (a name typed in another case, or with a letter more or less) or because one is the name with a word
+     * before or after it (`retention` for `stream_retention`).
+     */
+    private function unknownOptionMessage(#[\SensitiveParameter] string $name, string $where): string
+    {
+        $typed = strtolower($name);
+        $closest = null;
+        $closestDistance = PHP_INT_MAX;
+        foreach (TransportOption::cases() as $option) {
+            $distance = levenshtein($typed, $option->value);
+            $near = $distance <= max(2, intdiv(strlen($option->value), 4))
+                || str_starts_with($option->value, $typed . '_')
+                || str_ends_with($option->value, '_' . $typed);
+            if ($near && $distance < $closestDistance) {
+                $closest = $option->value;
+                $closestDistance = $distance;
+            }
+        }
+
+        return sprintf(
+            'Unknown option%s in the %s of the NATS transport.%s',
+            $this->quotedIfPlain($name),
+            $where,
+            $closest === null ? ' See "Configuration Options" in the README for the options it takes.' : sprintf(" Did you mean '%s'?", $closest),
+        );
     }
 
     /**
@@ -384,11 +478,13 @@ final class NatsTransportConfigurationBuilder
     private function buildConfiguration(#[\SensitiveParameter] array $components, #[\SensitiveParameter] array $options): array
     {
         $query = [];
-        if (isset($components['query']) && is_string($components['query'])) {
-            $this->assertNoCredentialAfterASecondQuery($components['query']);
+        $rawQuery = isset($components['query']) && is_string($components['query']) ? $components['query'] : null;
+        if ($rawQuery !== null) {
+            $this->assertNoCredentialAfterASecondQuery($rawQuery);
             /** @var array<string, mixed> $query */
-            parse_str($components['query'], $query);
+            parse_str($rawQuery, $query);
         }
+        $this->assertKnownOptions($options, $rawQuery);
 
         /** @var array<string, mixed> $configuration */
         $configuration = $options + $query + self::DEFAULT_OPTIONS;

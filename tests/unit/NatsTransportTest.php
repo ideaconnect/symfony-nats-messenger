@@ -34,6 +34,8 @@ use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
 use Revolt\EventLoop;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\EventListener\AddErrorDetailsStampListener;
+use Symfony\Component\Messenger\Exception\HandlerFailedException;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
 use Symfony\Component\Messenger\Exception\RecoverableMessageHandlingException;
@@ -784,59 +786,191 @@ final class NatsTransportTest extends TestCase
         iterator_to_array($transport->get());
     }
 
-    public function testGetDecodeFailureUsesTermWhenReplySubjectExists(): void
+    /**
+     * Before Symfony Messenger 8.1, a message the serializer cannot decode is TERMed and the decode error thrown, in
+     * every mode, as Symfony's own transports do (Doctrine, Redis and AMQP reject it and throw): the worker stops, and
+     * the next one does not get the message. The 5.10.0 development form TERMed it, logged it and went on; Bartosz
+     * asked for the behaviour of the other transports. In nats mode up to 5.9.0 it was NAKed instead.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('modesThatReceiveAMessageThatCannotBeDecoded')]
+    public function testBeforeMessenger81AMessageThatCannotBeDecodedIsTermedAndItsErrorThrown(array $options): void
     {
-        $serializer = $this->createMock(SerializerInterface::class);
-        $serializer->expects(self::once())
-            ->method('decode')
-            ->willThrowException(new \RuntimeException('decode failed'));
-
+        $decodeError = new MessageDecodingFailedException('Deserialized data is not a valid Symfony Messenger Envelope.');
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willThrowException($decodeError);
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::once())
-            ->method('fetchBatch')
-            ->willReturn(Future::complete([
-                new NatsMessage('test-topic', 1, 'reply-id', 'payload'),
-            ]));
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.7.1.0.0', payload: 'broken'),
+        ]));
+        $jetStream->expects(self::never())->method('nak');
+        $jetStream->expects(self::never())->method('nakWithDelay');
+        $jetStream->expects(self::once())->method('term')
+            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === '$JS.ACK.test-stream.client.1.7.1.0.0'))
+            ->willReturn(Future::complete());
+        $logger = new RecordingLogger();
 
-        $transport = new RuntimeRetryHandlerNatsTransport(self::VALID_DSN, [], $serializer);
+        $transport = new class (self::VALID_DSN, $options, $serializer, $logger) extends RuntimeTestableNatsTransport {
+            protected function messengerPassesOnDecodeFailures(): bool
+            {
+                return false;
+            }
+        };
         $transport->setJetStreamContext($jetStream);
 
         try {
-            iterator_to_array($transport->get());
-            self::fail('Expected decode exception was not thrown.');
-        } catch (\RuntimeException $exception) {
-            self::assertSame('decode failed', $exception->getMessage());
+            iterator_to_array($transport->get(), false);
+            self::fail('get() should have thrown the decode error');
+        } catch (MessageDecodingFailedException $thrown) {
+            self::assertSame($decodeError, $thrown);
         }
-
-        self::assertSame(['term:reply-id'], $transport->failureActions);
+        self::assertSame([], $logger->messagesAt('error'));
     }
 
-    public function testGetDecodeFailureKeepsOriginalErrorWhenRejectAlsoFails(): void
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function modesThatReceiveAMessageThatCannotBeDecoded(): iterable
     {
-        $serializer = $this->createMock(SerializerInterface::class);
-        $serializer->expects(self::once())
-            ->method('decode')
-            ->willThrowException(new \RuntimeException('decode failed'));
+        yield 'symfony mode' => [[]];
+        yield 'retry_via=nak' => [self::NAK_RETRIES];
+        yield 'nats mode' => [self::NATS_MODE];
+    }
 
-        $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::once())
-            ->method('fetchBatch')
-            ->willReturn(Future::complete([
-                new NatsMessage('test-topic', 1, 'reply-id', 'payload'),
-            ]));
+    /**
+     * Before Messenger 8.1, a TERM that fails, as on a connection that dropped, never replaces the decode error: that is
+     * the cause an operator needs, and the message comes back after ack_wait.
+     */
+    public function testBeforeMessenger81ATermThatFailsLeavesTheDecodeErrorThrown(): void
+    {
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willThrowException(new MessageDecodingFailedException('decode failed'));
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([new NatsMessage('test-topic', 1, 'reply-id', 'payload')]));
 
-        $transport = new ThrowingFailureNatsTransport(self::VALID_DSN, [], $serializer);
+        $transport = new class (self::VALID_DSN, [], $serializer) extends ThrowingFailureNatsTransport {
+            protected function messengerPassesOnDecodeFailures(): bool
+            {
+                return false;
+            }
+        };
         $transport->setJetStreamContext($jetStream);
 
-        // The reject (TERM) transport call throws, but the decode error is the root cause an operator
-        // needs, so it - not the secondary acknowledgement failure - must be the exception that escapes.
-        try {
-            iterator_to_array($transport->get());
-            self::fail('Expected the original decode exception to propagate.');
-        } catch (\RuntimeException $exception) {
-            self::assertSame('decode failed', $exception->getMessage());
-        }
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('decode failed');
+
+        iterator_to_array($transport->get(), false);
     }
+
+    /** @return iterable<string, array{bool}> */
+    public static function messengerReleasesAroundDecodingFailures(): iterable
+    {
+        yield 'before Messenger 8.1' => [false];
+        yield 'Messenger 8.1 and later' => [true];
+    }
+
+    /**
+     * An exception of the serializer other than a MessageDecodingFailedException is no decode failure, as for Symfony's
+     * own transports: it propagates, and the message is left unsettled, for redelivery after ack_wait. A serializer
+     * whose store or service failed for a moment may decode it then. Up to 5.9.x any exception was taken for a decode
+     * failure, and the message was TERMed. This transport's serializers turn every failure of their own into a
+     * MessageDecodingFailedException.
+     */
+    #[DataProvider('messengerReleasesAroundDecodingFailures')]
+    public function testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled(bool $passesOn): void
+    {
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willThrowException(new \RuntimeException('the schema registry did not answer'));
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([new NatsMessage('test-topic', 1, 'reply-id', 'payload')]));
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::never())->method('nak');
+        $jetStream->expects(self::never())->method('ack');
+
+        $transport = new class (self::VALID_DSN, self::NATS_MODE, $serializer) extends RuntimeTestableNatsTransport {
+            public bool $passesOn = false;
+
+            protected function messengerPassesOnDecodeFailures(): bool
+            {
+                return $this->passesOn;
+            }
+        };
+        $transport->passesOn = $passesOn;
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('the schema registry did not answer');
+
+        iterator_to_array($transport->get(), false);
+    }
+
+    /**
+     * From Symfony Messenger 8.1 on, a message the serializer cannot decode goes on as the decoding failure, as with
+     * Symfony's own transports: an envelope whose message is the MessageDecodingFailedException, carrying what was
+     * received and the serializer's exception, with its delivery token, and nothing settled yet. The worker handles
+     * and fails it, Symfony's retry strategy and failure transport deal with it, and nats mode TERMs it when it is
+     * settled.
+     */
+    public function testFromMessenger81AMessageThatCannotBeDecodedGoesOnAsTheDecodingFailure(): void
+    {
+        if (!(new \ReflectionClass(MessageDecodingFailedException::class))->hasMethod('wrap')) {
+            self::markTestSkipped('Symfony Messenger before 8.1 has no MessageDecodingFailedException::wrap().');
+        }
+
+        $decodeError = new MessageDecodingFailedException('decode failed', 42);
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willThrowException($decodeError);
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.7.1.0.0', payload: 'broken'),
+        ]));
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::never())->method('nak');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $serializer);
+        $transport->setJetStreamContext($jetStream);
+        $envelopes = array_values(iterator_to_array($transport->get(), false));
+
+        self::assertCount(1, $envelopes);
+        $failure = $envelopes[0]->getMessage();
+        self::assertInstanceOf(MessageDecodingFailedException::class, $failure);
+        self::assertSame('decode failed', $failure->getMessage());
+        self::assertSame(42, $failure->getCode());
+        self::assertSame($decodeError, $failure->getPrevious());
+        self::assertSame(['body' => 'broken', 'headers' => []], $failure->encodedEnvelope);
+        self::assertSame('$JS.ACK.test-stream.client.1.7.1.0.0', $envelopes[0]->last(TransportMessageIdStamp::class)?->getId());
+    }
+
+    /**
+     * With retry_via=nak, the decoding failure of a redelivered message carries its earlier deliveries as its retry
+     * count, as a decoded message does. Symfony Messenger 8.1.0 to 8.1.10 retry a failure a serializer threw (8.1.11
+     * fails it as unrecoverable), and a NAK retry redelivers the same bytes, which fail again: without the count, every
+     * failure would be Symfony's first, and max_retries would never end the retries.
+     */
+    public function testFromMessenger81TheDecodingFailureOfARedeliveryCarriesItsRetryCount(): void
+    {
+        if (!(new \ReflectionClass(MessageDecodingFailedException::class))->hasMethod('wrap')) {
+            self::markTestSkipped('Symfony Messenger before 8.1 has no MessageDecodingFailedException::wrap().');
+        }
+
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willThrowException(new MessageDecodingFailedException('not an envelope'));
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.3.7.3.0.0', payload: 'broken'),
+        ]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES, $serializer);
+        $transport->setJetStreamContext($jetStream);
+        $envelopes = array_values(iterator_to_array($transport->get(), false));
+
+        self::assertCount(1, $envelopes);
+        self::assertInstanceOf(MessageDecodingFailedException::class, $envelopes[0]->getMessage());
+        self::assertSame(2, RedeliveryStamp::getRetryCountFromEnvelope($envelopes[0]));
+    }
+
+
 
     public function testGetSkipsMessagesWithoutReplySubject(): void
     {
@@ -2598,9 +2732,10 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * Nothing is logged when send() leaves out no retry copy: in symfony mode, where Symfony's retry copy is
-     * published, and in nats mode for a copy for the failure transport, a message not received in this process and
-     * a plain dispatch (#94).
+     * No warning that Symfony's retry strategy is on is logged when send() leaves out no retry copy: in symfony mode,
+     * where Symfony's retry copy is published, and in nats mode for a copy for the failure transport, a message not
+     * received in this process and a plain dispatch (#94). A retry copy published without its delay logs a warning of
+     * its own ({@see testARetryPublishedWithoutItsDelayIsLoggedOnce()}).
      *
      * @param array<string, mixed> $options
      * @param list<StampInterface> $stamps
@@ -2618,7 +2753,90 @@ final class NatsTransportTest extends TestCase
         $transport->setJetStreamContext($jetStream);
         $transport->send(new Envelope(new \stdClass(), $stamps));
 
+        self::assertSame([], array_values(array_filter(
+            $logger->messagesAt('warning'),
+            static fn (string $message): bool => str_contains($message, 'retry strategy retried a message that NATS redelivers itself'),
+        )));
+    }
+
+    /**
+     * With retry_via=copy and no scheduled_messages, Symfony's retry is published at once, without the delay its
+     * strategy computed: the retries of a message that keeps failing all run within milliseconds. The transport says
+     * so once per transport object, at the first such retry, with the delay it dropped.
+     */
+    public function testARetryPublishedWithoutItsDelayIsLoggedOnce(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('publish')->with('test-topic')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        foreach ([[1000, 1], [2000, 2]] as [$delayMs, $retry]) {
+            $transport->send(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-' . $retry), new DelayStamp($delayMs), new RedeliveryStamp($retry)]));
+        }
+
+        self::assertSame([
+            'retry_via=copy on stream "test-stream", subject "test-topic": Symfony\'s retry was published at once, without'
+            . ' its delay of 1000 ms: a copy waits only with scheduled_messages. Set retry_via: nak to have NATS wait, or'
+            . ' scheduled_messages: true (NATS 2.12+, not on an interest stream).',
+        ], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * With retry_via: nak, a retry copy that carries no delivery token is published at once too, and the warning says
+     * so, instead of the last delivery and max_deliver, which have nothing to do with it.
+     */
+    public function testNakRetryWarnsAboutACopyWithoutADeliveryTokenByItsOwnCause(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES, $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        $transport->send(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new DelayStamp(700), new RedeliveryStamp(1)]));
+
+        self::assertSame([
+            'retry_via=nak on stream "test-stream", subject "test-topic": Symfony\'s retry was published as a copy at once,'
+            . ' without its delay of 700 ms, as it carried no delivery token for a NAK to settle: something between the'
+            . ' worker and the transport removed its TransportMessageIdStamp. scheduled_messages: true (NATS 2.12+, not on'
+            . ' an interest stream) makes such a copy wait.',
+        ], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * Nothing is logged for a retry that waits as a schedule, a retry without a delay, a failure transport's copy and
+     * an application's own delayed message, which carries no retry count.
+     *
+     * @param array<string, mixed> $options
+     * @param list<StampInterface> $stamps
+     */
+    #[DataProvider('sendsThatKeepTheirDelayOrHaveNone')]
+    public function testASendThatKeepsItsDelayOrHasNoneIsNotLogged(array $options, array $stamps): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        $transport->send(new Envelope(new \stdClass(), $stamps));
+
         self::assertSame([], $logger->records);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, list<StampInterface>}>
+     */
+    public static function sendsThatKeepTheirDelayOrHaveNone(): iterable
+    {
+        yield 'a retry scheduled with scheduled_messages' => [['scheduled_messages' => true], [new ReceivedStamp('async'), new DelayStamp(1000), new RedeliveryStamp(1)]];
+        yield 'a retry without a delay' => [[], [new ReceivedStamp('async'), new DelayStamp(0), new RedeliveryStamp(1)]];
+        yield 'a failure transport\'s copy' => [[], [new ReceivedStamp('async'), new DelayStamp(0), new RedeliveryStamp(0)]];
+        yield 'an application\'s own delayed message' => [[], [new DelayStamp(5000)]];
+        yield 'a received message sent again with a delay and no retry count' => [[], [new ReceivedStamp('async'), new DelayStamp(1000), new RedeliveryStamp(0)]];
+        yield 'a delayed message with a retry count, not received here' => [[], [new DelayStamp(1000), new RedeliveryStamp(1)]];
     }
 
     /**
@@ -4396,6 +4614,7 @@ final class NatsTransportTest extends TestCase
         yield 'NATS 2.10' => ['2.10.29'];
         yield 'NATS 2.11, the last release without schedules' => ['2.11.17'];
         yield 'a version with a leading v' => ['v2.11.0'];
+        yield 'a version without its patch number' => ['2.11'];
     }
 
     /**
@@ -4433,6 +4652,7 @@ final class NatsTransportTest extends TestCase
         yield 'NATS 2.15' => ['2.15.2'];
         yield 'NATS 3' => ['3.0.0'];
         yield 'a version with a leading v' => ['v2.12.4'];
+        yield 'a version without its patch number' => ['2.12'];
         yield 'a version the transport cannot read' => ['nightly'];
         yield 'a version that starts with something else' => ['build-2.10.3'];
         yield 'no server info' => [null];
@@ -5463,6 +5683,220 @@ final class NatsTransportTest extends TestCase
 
         $transport->setup();
 
+    }
+
+    /**
+     * In nats mode with max_deliver, setup() warns once when the stream is one where NATS deletes a message that
+     * reached max_deliver, the only record left of a message that kept failing there.
+     *
+     * @param array<string, mixed> $stream
+     */
+    #[DataProvider('streamsNatsModeLosesStoppedMessagesIn')]
+    public function testSetupInNatsModeWarnsAboutAStreamWhereNatsDeletesWhatMaxDeliverStops(array $stream, string $version, string $when): void
+    {
+        $logger = new RecordingLogger();
+        $this->setupWithTheStream(self::NATS_MODE + ['max_deliver' => 3], $stream, $version, $logger);
+
+        self::assertSame([sprintf(
+            'retry_handler=nats on stream "test-stream": NATS %s deletes a message that reached max_deliver from %s, so a'
+            . ' message that keeps failing leaves nothing behind but the MAX_DELIVERIES advisory. Use retry_handler:'
+            . ' symfony and retry_via: nak with a failure transport, or a stream with limits or work-queue retention'
+            . ' (README, "Retry Handler Behavior").',
+            $version,
+            $when,
+        )], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * With auto_setup, the setup a send runs does not warn: a process that only sends sets the stream up once per
+     * transport object, once per request under PHP-FPM, and would log the warning each time. The setup a worker's first
+     * pull runs warns, once, as messenger:setup-transports does.
+     */
+    public function testAutoSetupWarnsAboutAStreamThatLosesWhatMaxDeliverStopsForAWorkerOnly(): void
+    {
+        $stream = StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic'], 'retention' => 'interest', 'num_replicas' => 3], 'cluster' => ['name' => 'east', 'leader' => 'n1']]);
+        $logs = [];
+        foreach (['send', 'get'] as $operation) {
+            $jetStream = $this->createStub(JetStreamContext::class);
+            $jetStream->method('addStream')->willReturn(Future::complete($stream));
+            $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+            $jetStream->method('publish')->willReturn(Future::complete());
+            $jetStream->method('fetchBatch')->willReturn(Future::complete([]));
+            $client = $this->createStub(NatsClient::class);
+            $client->method('state')->willReturn(ConnectionState::Open);
+            $client->method('serverInfo')->willReturn(new ServerInfo('S', 'n', '2.15.2', true, 1_048_576, true));
+            $logger = new RecordingLogger();
+
+            $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + ['max_deliver' => 3, 'auto_setup' => true], $this->encodingSerializer(), $logger);
+            $transport->setClient($client);
+            $transport->setJetStreamContext($jetStream);
+            if ($operation === 'send') {
+                $transport->send(new Envelope(new \stdClass()));
+                $transport->send(new Envelope(new \stdClass()));
+            } else {
+                iterator_to_array($transport->get(), false);
+                iterator_to_array($transport->get(), false);
+            }
+            $logs[$operation] = count($logger->messagesAt('warning'));
+        }
+
+        self::assertSame(['send' => 0, 'get' => 1], $logs);
+    }
+
+    /**
+     * A setup() run after a send's auto_setup warns: the send's setup leaves the warning on for the setups that follow,
+     * also when it failed.
+     *
+     * @param bool $sendsSetupFails Whether the setup the send runs fails
+     */
+    #[DataProvider('sendsSetupOutcomes')]
+    public function testAnExplicitSetupAfterASendsAutoSetupWarns(bool $sendsSetupFails): void
+    {
+        $stream = StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic'], 'retention' => 'interest', 'num_replicas' => 3], 'cluster' => ['name' => 'east', 'leader' => 'n1']]);
+        $answers = $sendsSetupFails ? [Future::error(new JetStreamException('insufficient resources', 500)), Future::complete($stream)] : [Future::complete($stream), Future::complete($stream)];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturnCallback(static function () use (&$answers): Future {
+            return array_shift($answers) ?? Future::complete();
+        });
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->method('publish')->willReturn(Future::complete());
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn(new ServerInfo('S', 'n', '2.15.2', true, 1_048_576, true));
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + ['max_deliver' => 3, 'auto_setup' => true], $this->encodingSerializer(), $logger);
+        $transport->setClient($client);
+        $transport->setJetStreamContext($jetStream);
+        try {
+            $transport->send(new Envelope(new \stdClass()));
+        } catch (\Throwable) {
+            // The failed setup of the send.
+        }
+        $transport->setup();
+
+        self::assertCount(1, array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'deletes a message that reached max_deliver')));
+    }
+
+    /** @return iterable<string, array{bool}> */
+    public static function sendsSetupOutcomes(): iterable
+    {
+        yield 'the send\'s setup worked' => [false];
+        yield 'the send\'s setup failed' => [true];
+    }
+
+    /**
+     * A server whose version the client does not know is taken to be one that deletes the message from an interest
+     * stream at a restart, and the warning says the version is unknown.
+     */
+    public function testSetupInNatsModeWarnsWhenTheServersVersionIsUnknown(): void
+    {
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete(StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic'], 'retention' => 'interest']])));
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn(null);
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + ['max_deliver' => 3], null, $logger);
+        $transport->setClient($client);
+        $transport->setJetStreamContext($jetStream);
+        $transport->setup();
+
+        self::assertCount(1, $logger->messagesAt('warning'));
+        self::assertStringStartsWith('retry_handler=nats on stream "test-stream": NATS of an unknown version deletes a message that reached max_deliver from a stream with interest retention, at a restart of the server,', $logger->messagesAt('warning')[0]);
+    }
+
+    /**
+     * Without a logger the warning goes nowhere, and setup() still works.
+     */
+    public function testSetupInNatsModeWithoutALoggerStillSetsUpAStreamThatLosesWhatMaxDeliverStops(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete(StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic'], 'retention' => 'interest', 'num_replicas' => 3], 'cluster' => ['name' => 'east', 'leader' => 'n1']])));
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn(new ServerInfo('S', 'n', '2.15.2', true, 1_048_576, true));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + ['max_deliver' => 3]);
+        $transport->setClient($client);
+        $transport->setJetStreamContext($jetStream);
+        $transport->setup();
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string, string}>
+     */
+    public static function streamsNatsModeLosesStoppedMessagesIn(): iterable
+    {
+        $clustered = ['name' => 'east', 'leader' => 'n1'];
+
+        yield 'interest, three replicas in a cluster' => [['config' => ['retention' => 'interest', 'num_replicas' => 3], 'cluster' => $clustered], '2.15.2', 'a stream with interest retention on a clustered server'];
+        yield 'interest, one replica in a cluster' => [['config' => ['retention' => 'interest', 'num_replicas' => 1], 'cluster' => $clustered], '2.15.2', 'a stream with interest retention on a clustered server'];
+        yield 'interest, a standalone server before 2.12.9' => [['config' => ['retention' => 'interest'], 'cluster' => ['leader' => 'N1']], '2.12.8', 'a stream with interest retention, at a restart of the server'];
+        yield 'interest, a standalone 2.14.0' => [['config' => ['retention' => 'interest']], '2.14.0', 'a stream with interest retention, at a restart of the server'];
+        yield 'interest, a standalone 2.12 without its patch number, which is 2.12.0' => [['config' => ['retention' => 'interest']], '2.12', 'a stream with interest retention, at a restart of the server'];
+        yield 'work-queue, three replicas, before 2.12.5' => [['config' => ['retention' => 'workqueue', 'num_replicas' => 3], 'cluster' => $clustered], '2.12.4', 'a work-queue stream with 3 replicas'];
+    }
+
+    /**
+     * Nothing is logged on a stream that keeps the message, in symfony mode, or in nats mode without max_deliver,
+     * where NATS redelivers without end and nothing reaches max_deliver.
+     *
+     * @param array<string, mixed> $options
+     * @param array<string, mixed> $stream
+     */
+    #[DataProvider('setupsThatKeepWhatMaxDeliverStops')]
+    public function testSetupLogsNothingWhereNatsKeepsWhatMaxDeliverStops(array $options, array $stream, string $version): void
+    {
+        $logger = new RecordingLogger();
+        $this->setupWithTheStream($options, $stream, $version, $logger);
+
+        self::assertSame([], $logger->records);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, array<string, mixed>, string}>
+     */
+    public static function setupsThatKeepWhatMaxDeliverStops(): iterable
+    {
+        $natsMode = self::NATS_MODE + ['max_deliver' => 3];
+        $clustered = ['name' => 'east', 'leader' => 'n1'];
+
+        yield 'limits, three replicas' => [$natsMode, ['config' => ['retention' => 'limits', 'num_replicas' => 3], 'cluster' => $clustered], '2.10.29'];
+        yield 'work-queue, three replicas, from 2.12.5' => [$natsMode, ['config' => ['retention' => 'workqueue', 'num_replicas' => 3], 'cluster' => $clustered], '2.12.5'];
+        yield 'work-queue, one replica' => [$natsMode, ['config' => ['retention' => 'workqueue', 'num_replicas' => 1]], '2.10.29'];
+        yield 'interest, a standalone 2.12.9' => [$natsMode, ['config' => ['retention' => 'interest'], 'cluster' => ['leader' => 'N1']], '2.12.9'];
+        yield 'interest, a standalone 2.14.1' => [$natsMode, ['config' => ['retention' => 'interest']], '2.14.1'];
+        yield 'interest, a standalone v2.12.9, a version with a v' => [$natsMode, ['config' => ['retention' => 'interest']], 'v2.12.9'];
+        yield 'work-queue without a replica count, which is one, before 2.12.5' => [$natsMode, ['config' => ['retention' => 'workqueue']], '2.12.4'];
+        yield 'symfony mode on an interest stream in a cluster' => [['ping_after_idle' => 0, 'max_deliver' => 3], ['config' => ['retention' => 'interest', 'num_replicas' => 3], 'cluster' => $clustered], '2.15.2'];
+        yield 'nats mode without max_deliver' => [self::NATS_MODE, ['config' => ['retention' => 'interest', 'num_replicas' => 3], 'cluster' => $clustered], '2.15.2'];
+    }
+
+    /**
+     * Runs setup() with $options against a stream the server reports as $stream, on a server of version $version.
+     *
+     * @param array<string, mixed> $options
+     * @param array<string, mixed> $stream
+     */
+    private function setupWithTheStream(array $options, array $stream, string $version, RecordingLogger $logger): void
+    {
+        $stream['config'] = (is_array($stream['config'] ?? null) ? $stream['config'] : []) + ['name' => 'test-stream', 'subjects' => ['test-topic']];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete(StreamInfo::fromArray($stream)));
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn(new ServerInfo('S', 'n', $version, true, 1_048_576, true));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, null, $logger);
+        $transport->setClient($client);
+        $transport->setJetStreamContext($jetStream);
+        $transport->setup();
     }
 
     /**
@@ -6780,36 +7214,6 @@ final class NatsTransportTest extends TestCase
         yield 'scheduled messages on' => [true, ['operator.added', 'test-topic', 'test-topic.delayed.>']];
     }
 
-    /**
-     * A message that cannot be decoded is TERMed in nats mode too: a redelivery cannot decode it either. Up to 5.9.0
-     * nats mode NAKed it, and NATS brought it to every new worker, which the exception then stopped again.
-     */
-    public function testGetDecodeFailureTermsInNatsModeToo(): void
-    {
-        $serializer = $this->createMock(SerializerInterface::class);
-        $serializer->expects(self::once())
-            ->method('decode')
-            ->willThrowException(new \RuntimeException('decode failed'));
-
-        $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::once())
-            ->method('fetchBatch')
-            ->willReturn(Future::complete([
-                new NatsMessage('test-topic', 1, 'reply-id', 'payload'),
-            ]));
-
-        $transport = new RuntimeRetryHandlerNatsTransport(self::VALID_DSN, ['retry_handler' => 'nats'], $serializer);
-        $transport->setJetStreamContext($jetStream);
-
-        try {
-            iterator_to_array($transport->get());
-            self::fail('Expected decode exception was not thrown.');
-        } catch (\RuntimeException $exception) {
-            self::assertSame('decode failed', $exception->getMessage());
-        }
-
-        self::assertSame(['term:reply-id'], $transport->failureActions);
-    }
 
     /**
      * Symfony Messenger 8.1 and later deliver a message that could not be decoded as an envelope whose message is the
@@ -6869,6 +7273,116 @@ final class NatsTransportTest extends TestCase
 
         $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(1)));
         $transport->ack($failed);
+    }
+
+    /**
+     * In nats mode a failure Symfony marks as unrecoverable is TERMed when the worker rejects it: it can never succeed.
+     * Up to 5.9.x it was NAKed, and NATS ran the handler again on every delivery up to max_deliver. An ordinary failure
+     * is still NAKed, and so is a delivery without Symfony's error details.
+     *
+     * @param list<StampInterface> $stamps
+     */
+    #[DataProvider('failuresNatsModeRejects')]
+    public function testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest(array $stamps, string $settledWith): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        foreach (['term', 'nak'] as $method) {
+            if ($method === $settledWith) {
+                $jetStream->expects(self::once())->method($method)->willReturn(Future::complete());
+            } else {
+                $jetStream->expects(self::never())->method($method);
+            }
+        }
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
+        $transport->setJetStreamContext($jetStream);
+        $transport->reject(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.1.1.1.0.0'), ...$stamps]));
+    }
+
+    /**
+     * @return iterable<string, array{list<StampInterface>, string}>
+     */
+    public static function failuresNatsModeRejects(): iterable
+    {
+        yield 'unrecoverable' => [[ErrorDetailsStamp::create(new UnrecoverableMessageHandlingException('never'))], 'term'];
+        yield 'unrecoverable, wrapped by the handler failure' => [[ErrorDetailsStamp::create(new HandlerFailedException(new Envelope(new \stdClass()), [new UnrecoverableMessageHandlingException('never')]))], 'term'];
+        yield 'an ordinary failure' => [[ErrorDetailsStamp::create(new \RuntimeException('not now'))], 'nak'];
+        yield 'recoverable' => [[ErrorDetailsStamp::create(new RecoverableMessageHandlingException('later'))], 'nak'];
+        yield 'no error details' => [[], 'nak'];
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function settlementsOfARetriedDelivery(): iterable
+    {
+        yield 'acknowledged, as Messenger 7.4.22, 8.1.10 and later settle it' => ['ack'];
+        yield 'rejected, as Messenger 7.4.21, 8.1.9 and earlier settle it' => ['reject'];
+    }
+
+    /**
+     * In nats mode with Symfony's retries left on, two handlers, the first failing as unrecoverable and the second not:
+     * Symfony retries the message, and the stamp names the first exception. The delivery is NAKed however the worker
+     * settles it. The first form of 5.10.0 TERMed it when the worker rejected it, as Messenger 7.4.21 and 8.1.9 do,
+     * and NAKed it when it acknowledged it, as later releases do, so the same failure ended differently with the release.
+     */
+    #[DataProvider('settlementsOfARetriedDelivery')]
+    public function testNatsModeNaksAFailureSymfonyRetriedWhoseFirstExceptionIsUnrecoverable(string $settlement): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::once())->method('nak')
+            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === 'delivery-1'))
+            ->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
+        $transport->setJetStreamContext($jetStream);
+        $received = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
+        $failed = $received->with(ErrorDetailsStamp::create(new HandlerFailedException($received, [
+            'first' => new UnrecoverableMessageHandlingException('never'),
+            'second' => new \RuntimeException('not yet'),
+        ])));
+
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(1)));
+        $transport->{$settlement}($failed);
+    }
+
+    /**
+     * Through Symfony's Worker with its error-details and retry listeners, in nats mode with max_retries 0: an
+     * unrecoverable failure runs once and is TERMed. Up to 5.9.x it ran on every delivery max_deliver allowed.
+     */
+    public function testNatsModeRunsAnUnrecoverableFailureOnceThroughTheWorker(): void
+    {
+        $settled = [];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'p'),
+        ]));
+        foreach (['term', 'nak', 'ack'] as $method) {
+            $jetStream->method($method)->willReturnCallback(static function (NatsMessage $message) use (&$settled, $method): Future {
+                $settled[] = $method;
+
+                return Future::complete();
+            });
+        }
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + ['max_deliver' => 4], $this->decodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function (): void {
+                throw new UnrecoverableMessageHandlingException('the invoice does not exist');
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($transport),
+            self::singleServiceLocator(new MultiplierRetryStrategy(0)),
+        ));
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
+
+        self::assertSame(['term'], $settled);
     }
 
     public function testGetWithMultipleValidMessagesReturnsAll(): void
@@ -7830,6 +8344,45 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * The setup a send runs again after a reconnect, when its publish found no responder, is a setup for a send as
+     * well: it does not log the nats-mode warning about the stream either.
+     */
+    public function testThePublishAfterAReconnectReprovisionsWithoutTheSetupWarning(): void
+    {
+        $stream = StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic'], 'retention' => 'interest', 'num_replicas' => 3], 'cluster' => ['name' => 'east', 'leader' => 'n1']]);
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('addStream')->willReturn(Future::complete($stream));
+        $jetStream->expects(self::exactly(2))->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $reconnects = 0;
+        $publishes = 0;
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturnCallback(static function () use (&$publishes, &$reconnects): Future {
+            if (++$publishes === 1) {
+                $reconnects = 1;
+
+                return Future::error(new JetStreamException('No JetStream responder for subject test-topic', 503));
+            }
+
+            return Future::complete();
+        });
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->method('statistics')->willReturnCallback(static function () use (&$reconnects): ConnectionStats {
+            return new ConnectionStats(0, 0, 0, 0, $reconnects);
+        });
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('encode')->willReturn(['body' => 'encoded']);
+        $logger = new RecordingLogger();
+
+        $transport = new class (self::VALID_DSN, ['reconnect' => true, 'auto_setup' => true, 'max_deliver' => 3] + self::NATS_MODE, $serializer, $logger) extends RealConnectNatsTransport {
+        };
+        $transport->setClient($client);
+        $transport->send(new Envelope(new \stdClass()));
+
+        self::assertSame([], array_values(array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'deletes a message that reached max_deliver'))));
+    }
+
+    /**
      * The retry is one setup() and one publish: a second 503 propagates, as the client's exception.
      */
     public function testReconnectModeReprovisionsOnlyOnceForAPublishWithoutAResponder(): void
@@ -7946,6 +8499,18 @@ final class NatsTransportTest extends TestCase
             name: 'client',
             push: false,
             raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+        );
+    }
+
+    /** The warning of a last delivery's retry copy published without its delay of $delayMs, with retry_via=nak. */
+    private static function lastDeliveryCopyWithoutItsDelay(int $delayMs): string
+    {
+        return sprintf(
+            'retry_via=nak on stream "test-stream", subject "test-topic": the retry of the last delivery the consumer'
+            . ' allows was published as a copy at once, without its delay of %d ms. NATS redelivers nothing after that'
+            . ' delivery, so no NAK can carry this retry. scheduled_messages: true (NATS 2.12+, not on an interest stream)'
+            . ' makes the copy wait, and a max_deliver above the retries Symfony makes keeps it from being needed.',
+            $delayMs,
         );
     }
 
@@ -8220,28 +8785,6 @@ final class NatsTransportTest extends TestCase
         $transport->reject(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.4.1.4.0.0')]));
     }
 
-    /**
-     * A message that cannot be decoded never reaches Symfony's retry strategy, so it is TERMed, as in symfony mode
-     * without the option.
-     */
-    public function testNakRetryTermsAnUndecodableMessage(): void
-    {
-        $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->method('fetchBatch')->willReturn(Future::complete([
-            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'broken'),
-        ]));
-        $jetStream->expects(self::never())->method('nak');
-        $jetStream->expects(self::never())->method('nakWithDelay');
-        $jetStream->expects(self::once())->method('term')->willReturn(Future::complete());
-        $serializer = $this->createStub(SerializerInterface::class);
-        $serializer->method('decode')->willThrowException(new \RuntimeException('cannot decode'));
-
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES, $serializer);
-        $transport->setJetStreamContext($jetStream);
-
-        $this->expectExceptionMessage('cannot decode');
-        iterator_to_array($transport->get());
-    }
 
     /**
      * A redelivered message carries the deliveries before it as Symfony's retry count, read from either form of
@@ -8417,6 +8960,31 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * With two handlers, one failing as unrecoverable and the other not, Symfony retries the message, and the stamp
+     * names the first exception. Symfony mode follows Symfony's decision: the delivery Messenger 7.4.21 and earlier
+     * reject after the retry is NAKed with its delay, not TERMed as nats mode TERMs an unrecoverable failure.
+     */
+    public function testNakRetryNaksAFailureSymfonyRetriesWhoseFirstExceptionIsUnrecoverable(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::once())->method('nakWithDelay')
+            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === 'delivery-1'), 1000)
+            ->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES);
+        $transport->setJetStreamContext($jetStream);
+        $received = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
+        $failed = $received->with(ErrorDetailsStamp::create(new HandlerFailedException($received, [
+            'first' => new UnrecoverableMessageHandlingException('never'),
+            'second' => new \RuntimeException('not yet'),
+        ])));
+
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(1)));
+        $transport->reject($failed);
+    }
+
+    /**
      * An UnrecoverableMessageHandlingException is not retried: its first delivery is TERMed, and the failure transport
      * receives one copy.
      */
@@ -8482,7 +9050,8 @@ final class NatsTransportTest extends TestCase
         $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
         $transport->{$settlement}($failed);
 
-        self::assertSame([], $logger->records);
+        self::assertSame([self::lastDeliveryCopyWithoutItsDelay(1000)], $logger->messagesAt('warning'));
+        self::assertCount(1, $logger->records);
     }
 
     /**
@@ -8616,7 +9185,8 @@ final class NatsTransportTest extends TestCase
         ], $settled);
         self::assertSame([true, true, true, false], $willRetry);
         self::assertCount(1, $failureTransport->getSent());
-        self::assertSame([], $logger->records);
+        self::assertSame([self::lastDeliveryCopyWithoutItsDelay(2000)], $logger->messagesAt('warning'));
+        self::assertCount(1, $logger->records);
     }
 
     /**
@@ -8650,6 +9220,7 @@ final class NatsTransportTest extends TestCase
             'retry_via=nak on stream "test-stream": consumer "client" has max_deliver 3 and the max_deliver option is '
             . $optionDescribed . '. The transport follows the consumer, whose limit NATS applies. Run'
             . ' messenger:setup-transports to give the consumer the option\'s value.',
+            self::lastDeliveryCopyWithoutItsDelay(1000),
         ], $logger->messagesAt('warning'));
     }
 
@@ -8782,6 +9353,7 @@ final class NatsTransportTest extends TestCase
             'retry_via=nak on stream "test-stream": consumer "client" could not be read for its max_deliver (refused), so the'
             . ' max_deliver option (2) tells which delivery is the last one. Let this user ask for consumer info'
             . ' ($JS.API.CONSUMER.INFO.test-stream.client).',
+            self::lastDeliveryCopyWithoutItsDelay(1000),
         ], $logger->messagesAt('warning'));
 
         $transport->close();
@@ -8916,9 +9488,10 @@ final class NatsTransportTest extends TestCase
         }
 
         $warnings = $logger->messagesAt('warning');
-        self::assertCount(2, $warnings);
+        self::assertCount(3, $warnings);
         self::assertStringContainsString('consumer "client" has max_deliver 3 and the max_deliver option is unset (no limit)', $warnings[0]);
         self::assertStringContainsString('could not be read for its max_deliver (refused), so the value read before (3) tells', $warnings[1]);
+        self::assertSame(self::lastDeliveryCopyWithoutItsDelay(1000), $warnings[2]);
     }
 
     /**
@@ -8948,7 +9521,12 @@ final class NatsTransportTest extends TestCase
         $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(3)));
         $transport->ack($failed);
 
-        self::assertCount(1, $logger->messagesAt('warning'), 'the consumer\'s 3 against the option\'s 5');
+        self::assertSame([
+            'retry_via=nak on stream "test-stream": consumer "client" has max_deliver 3 and the max_deliver option is 5. The'
+            . ' transport follows the consumer, whose limit NATS applies. Run messenger:setup-transports to give the'
+            . ' consumer the option\'s value.',
+            self::lastDeliveryCopyWithoutItsDelay(1000),
+        ], $logger->messagesAt('warning'));
     }
 
     /**

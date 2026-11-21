@@ -67,7 +67,9 @@ composer nats:stop               # stop NATS
   Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
   configuration is strict, so a scenario with an undefined step fails the run instead of being skipped.
 - `TransportOption` is the single source of truth for option keys; every case needs a `DEFAULT_OPTIONS`
-  entry in `NatsTransportConfigurationBuilder` (guarded by `testDefaultOptionsCoversAllTransportOptionCases`).
+  entry in `NatsTransportConfigurationBuilder` (guarded by `testDefaultOptionsCoversAllTransportOptionCases`). The
+  builder refuses any other key but `transport_name`, which FrameworkBundle adds (`assertKnownOptions()`), so an
+  option a test or an example passes must be a case.
 - Mark DSN/credential parameters with `#[\SensitiveParameter]`.
 - Use `TypeCoercion` (static helpers) for `mixed → scalar` casting rather than ad-hoc casts.
 - Match the surrounding style: typed properties, readonly value objects, rich doc-comments.
@@ -145,13 +147,23 @@ composer nats:stop               # stop NATS
   preserves server fields, and updates - it never blindly overwrites an existing stream.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
   `retry_handler=nats` → NAK (NATS redelivers), and `send()` skips the copy Symfony's retry sends (a received
-  envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode. In symfony mode,
+  envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode. Nats mode TERMs what can
+  never succeed: a failure Symfony marks as unrecoverable (its `ErrorDetailsStamp`) and a message that cannot be
+  decoded; a failure transport is not for that mode (README). In symfony mode,
   `retry_via: nak` (default `copy`) leaves that copy out as well, and the worker's `ack()` or `reject()` of the
   delivery NAKs it with the copy's `DelayStamp` delay (0 a plain NAK). A retry no NAK can carry is still
   published: a copy without its delivery token, and the retry of the last delivery `max_deliver` allows. `get()`
   adds `numDelivered - 1` to the retry count a message carries. With `nak` the builder refuses a positive
   `nak_delay` and `backoff`, and in nats mode it refuses any `retry_via`. See
   [docs/symfony_retry_via.md](docs/symfony_retry_via.md).
+- **A message that cannot be decoded is handled as Symfony's own transports handle it** (Doctrine, Redis, AMQP):
+  only a `MessageDecodingFailedException` counts. From Symfony Messenger 8.1 on it becomes a
+  `MessageDecodingFailedException` message (`decodingFailure()`, made through reflection so that PHPStan passes
+  on 7.4 as well), as 8.1's `ReceiverInterface` asks; before 8.1 `get()` TERMs it and throws, which stops the worker
+  (`messengerPassesOnDecodeFailures()`). Any other exception propagates with the message unsettled. Bartosz asked
+  for this behaviour, not a logger that decides. Messenger 8.1.11 and later fail a thrown failure once, as
+  unrecoverable; 8.1.0 to 8.1.10 retry it, which the delivery count keeps bounded with `nak`. The serializers turn
+  every failure of `deserialize()`, warnings included, into that exception.
 - **`keepalive()` queues, never waits.** Symfony calls it from a SIGALRM handler, where fibers cannot switch,
   so it queues `inProgress()->ignore()`, which goes out the next time the event loop runs.
 - **Duplicate protection:** a `DeduplicationIdStamp`, added on the first send with `deduplicate` or by the

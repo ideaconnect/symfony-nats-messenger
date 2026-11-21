@@ -88,4 +88,26 @@ enum TransportOption: string
     case NKEY_SEED = 'nkey_seed';
     case USERNAME = 'username';
     case PASSWORD = 'password';
+
+    /**
+     * Whether the option holds a credential: a value no error repeats, and that an "&" not encoded as "%26" would cut
+     * into the name of another option in the DSN query.
+     */
+    public function isCredential(): bool
+    {
+        return match ($this) {
+            self::TLS_KEY_PASSPHRASE, self::TOKEN, self::JWT, self::NKEY, self::NKEY_SEED, self::USERNAME, self::PASSWORD => true,
+            default => false,
+        };
+    }
+
+    /**
+     * The options that hold a credential ({@see isCredential()}), in the order of the cases.
+     *
+     * @return list<self>
+     */
+    public static function credentials(): array
+    {
+        return array_values(array_filter(self::cases(), static fn (self $option): bool => $option->isCredential()));
+    }
 }

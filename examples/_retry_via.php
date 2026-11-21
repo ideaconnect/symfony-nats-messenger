@@ -23,6 +23,7 @@ use Symfony\Component\Messenger\EventListener\SendFailedMessageForRetryListener;
 use Symfony\Component\Messenger\EventListener\SendFailedMessageToFailureTransportListener;
 use Symfony\Component\Messenger\Handler\HandlersLocator;
 use Symfony\Component\Messenger\MessageBus;
+use Symfony\Component\Messenger\Middleware\DecodeFailedMessageMiddleware;
 use Symfony\Component\Messenger\Middleware\HandleMessageMiddleware;
 use Symfony\Component\Messenger\Retry\RetryStrategyInterface;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
@@ -71,6 +72,9 @@ final class WorkerRun
 
     /** @var list<bool> willRetry() of each failure, in order */
     public array $willRetry = [];
+
+    /** @var list<class-string<\Throwable>> the class of what each failure threw, in order */
+    public array $failedWith = [];
 
     /** @var list<array{at: float, text: string}> each message the handler finished, in order */
     public array $handled = [];
@@ -129,12 +133,18 @@ final class WorkerRun
 function runWorker(NatsTransport $transport, RetryStrategyInterface $strategy, \Closure $handler, \Closure $done, float $quiet = 0.0, float $seconds = 20.0): WorkerRun
 {
     $run = new WorkerRun();
-    $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+    $middleware = [new HandleMessageMiddleware(new HandlersLocator([
         ExampleMessage::class => [static function (ExampleMessage $message) use ($handler, $run): void {
             $handler($message, $run);
             $run->handled[] = ['at' => microtime(true), 'text' => $message->text];
         }],
-    ]))]);
+    ]))];
+    if (class_exists(DecodeFailedMessageMiddleware::class)) {
+        // FrameworkBundle 8.1 puts it in every bus: it decodes a message that could not be decoded once more, with the
+        // transport's serializer, and fails it.
+        array_unshift($middleware, new DecodeFailedMessageMiddleware(locatorOf((new ReflectionProperty(NatsTransport::class, 'serializer'))->getValue($transport))));
+    }
+    $bus = new MessageBus($middleware);
 
     $dispatcher = new EventDispatcher();
     $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(locatorOf($transport), locatorOf($strategy)));
@@ -146,6 +156,9 @@ function runWorker(NatsTransport $transport, RetryStrategyInterface $strategy, \
             'retryCount' => RedeliveryStamp::getRetryCountFromEnvelope($event->getEnvelope()),
             'text' => $message instanceof ExampleMessage ? $message->text : $message::class,
         ];
+    });
+    $dispatcher->addListener(WorkerMessageFailedEvent::class, static function (WorkerMessageFailedEvent $event) use ($run): void {
+        $run->failedWith[] = $event->getThrowable()::class;
     });
     // After the retry listener, which is the one that decides.
     $dispatcher->addListener(WorkerMessageFailedEvent::class, static function (WorkerMessageFailedEvent $event) use ($run): void {

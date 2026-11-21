@@ -7,9 +7,11 @@
  *
  * 1. A delivery nobody settled, as a crashed worker leaves it, comes back when `ack_wait` has run out, and counts
  *    as a retry: the retry count is the count the message was published with plus its earlier deliveries.
- * 2. A message that cannot be decoded is TERMed at once with this transport's igbinary serializer. Symfony
- *    Messenger 8.1's own serializers return such a failure as a message instead, which goes through the retry
- *    strategy like any failure; with Messenger 7.4 and 8.0 they throw, and the message is TERMed at once too.
+ * 2. A message that cannot be decoded goes to the worker as the decoding failure on Symfony Messenger 8.1 and later,
+ *    as Messenger's own serializers hand it on (5.10.0): one the igbinary serializer cannot decode fails once, as
+ *    unrecoverable, since a second decode throws again (8.1.0 to 8.1.10 retry it), and one Symfony's PhpSerializer
+ *    cannot decode goes through the retry strategy like any failure. Before 8.1 the transport TERMs it at once and
+ *    get() throws the decode error, as Symfony's own transports do.
  * 3. Symfony Messenger 7.4.22, 8.1.10 and later acknowledge a message they sent for retry, and earlier releases
  *    reject it. The transport NAKs the delivery either way. The reject() is made by hand here, so that the
  *    example shows it with any Messenger installed.
@@ -65,8 +67,10 @@ try {
 }
 
 // 2. A message that cannot be decoded, first with the transport's own serializer, then with Symfony's.
+$passesItOn = (new ReflectionClass(MessageDecodingFailedException::class))->hasMethod('wrap');
 $stream = exampleStream('retry_via_edges');
-$transport = new NatsTransport(exampleDsn($stream, 'retry_via=nak'), ['max_batch_timeout' => 0.2]);
+$logger = new ExampleLogger();
+$transport = new NatsTransport(exampleDsn($stream, 'retry_via=nak'), ['max_batch_timeout' => 0.2], null, $logger);
 try {
     $transport->setup();
     $advisories = consumerAdvisories($stream);
@@ -74,28 +78,71 @@ try {
     $payload = (string) igbinary_serialize('not an envelope');
     withJetStream($stream, static fn (JetStreamContext $jetStream): mixed => $jetStream->publish($stream . '.messages', $payload)->await());
 
-    $thrown = null;
-    try {
-        iterator_to_array($transport->get(), false);
-    } catch (MessageDecodingFailedException $failure) {
-        $thrown = $failure;
+    if ($passesItOn && version_compare($messenger, '8.1.11', '>=')) {
+        // The igbinary serializer throws, and the transport hands the failure on as a message, as Symfony's own
+        // serializers do. The middleware decodes it once more, which throws again, and fails it as unrecoverable.
+        $run = runWorker(
+            $transport,
+            new MultiplierRetryStrategy(2, 200, 2, 0, 0.0),
+            static function (): void {
+            },
+            static fn (WorkerRun $run): bool => $run->willRetry !== [],
+            quiet: 1.0,
+        );
+        $advisories = $advisories();
+
+        assertExpected('runs', 1, count($run->received));
+        assertExpected('what the failure threw', [Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException::class], $run->failedWith);
+        assertExpected('willRetry() of the failure', [false], $run->willRetry);
+        assertExpected('copies in the failure transport', 1, $run->failureCopies());
+        assertExpected('MSG_TERMINATED advisories', 1, $advisories['MSG_TERMINATED'] ?? 0);
+        assertExpected('errors logged', [], $logger->linesAt('error'));
+
+        $lines[] = "a message the igbinary serializer could not decode went to the worker as the decoding failure, as Messenger 8.1 and later hand it on: it failed once as unrecoverable (8.1.11 and later), was TERMed and has 1 copy in the failure transport";
+    } elseif ($passesItOn) {
+        // Messenger 8.1.0 to 8.1.10 retry a decoding failure a serializer threw: each NAK retry redelivers the same
+        // bytes, which fail again, and the delivery count keeps the retry count, so max_retries ends it.
+        $run = runWorker(
+            $transport,
+            new MultiplierRetryStrategy(2, 200, 2, 0, 0.0),
+            static function (): void {
+            },
+            static fn (WorkerRun $run): bool => in_array(false, $run->willRetry, true),
+            quiet: 1.0,
+        );
+        $advisories = $advisories();
+
+        assertExpected('the retry count of each run', [0, 1, 2], $run->retryCounts());
+        assertExpected('willRetry() of each failure', [true, true, false], $run->willRetry);
+        assertExpected('copies in the failure transport', 1, $run->failureCopies());
+        assertExpected('MSG_TERMINATED advisories', 1, $advisories['MSG_TERMINATED'] ?? 0);
+
+        $lines[] = "a message the igbinary serializer could not decode went to the worker as the decoding failure, as Messenger 8.1 and later hand it on, and through the retry strategy (8.1.0 to 8.1.10): 3 runs, then a TERM and 1 copy in the failure transport";
+    } else {
+        $thrown = null;
+        try {
+            iterator_to_array($transport->get(), false);
+        } catch (MessageDecodingFailedException $failure) {
+            $thrown = $failure;
+        }
+        $later = receiveFor($transport, 1.5);
+        $advisories = $advisories();
+
+        assertExpected('get() threw a MessageDecodingFailedException', true, $thrown !== null);
+        assertExpected('deliveries after the one that could not be decoded', 0, count($later));
+        assertExpected('MSG_TERMINATED advisories', 1, $advisories['MSG_TERMINATED'] ?? 0);
+
+        $lines[] = "a message the igbinary serializer could not decode was TERMed at once, before Messenger 8.1: get() threw, as Symfony's own transports do, and it was not delivered again";
     }
-    $later = receiveFor($transport, 1.0);
-    $advisories = $advisories();
-
-    assertExpected('get() threw a MessageDecodingFailedException', true, $thrown !== null);
-    assertExpected('deliveries after the one that could not be decoded', 0, count($later));
-    assertExpected('MSG_TERMINATED advisories', 1, $advisories['MSG_TERMINATED'] ?? 0);
     assertExpected('deliveries that wait for an acknowledgement', 0, consumerCounts($stream)['ackPending']);
-
-    $lines[] = "a message the igbinary serializer could not decode was TERMed at once: get() threw, and it was not delivered again";
 } finally {
     $transport->close();
     deleteExampleStream($stream);
 }
 
 $stream = exampleStream('retry_via_edges');
-$transport = retryTransport($stream, 'retry_via=nak');
+$logger = new ExampleLogger();
+$transport = retryTransport($stream, 'retry_via=nak', $logger);
 try {
     $transport->setup();
     $advisories = consumerAdvisories($stream);
@@ -129,7 +176,7 @@ try {
         } catch (MessageDecodingFailedException $failure) {
             $thrown = $failure;
         }
-        $later = receiveFor($transport, 1.0);
+        $later = receiveFor($transport, 1.5);
         $advisories = $advisories();
 
         assertExpected('get() threw a MessageDecodingFailedException', true, $thrown !== null);

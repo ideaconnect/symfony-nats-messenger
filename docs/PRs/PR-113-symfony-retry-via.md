@@ -79,6 +79,14 @@ the user's guide.
 - **The retry count in nats mode too (#109 as filed).** A transport that leaves Symfony's retries on in nats mode, the
   #94 misconfiguration, would give up after `max_retries` and then send a failure-transport copy on every later
   redelivery. So nats mode stays as documented, and `retry_via: nak` is the answer to #109.
+- **`give_up_via: nak` ([#119](https://github.com/ideaconnect/symfony-nats-messenger/pull/119), by Petar Fedorovsky,
+  reviewed for 5.10.0).** With `retry_via: nak` it would NAK, instead of TERM, the delivery Symfony gives up on, so that
+  NATS keeps the message after its last delivery and publishes MAX_DELIVERIES. Symfony's failure transport keeps that
+  message already, so the stream would hold a second copy, and only on some streams: NATS deletes such a message from an
+  interest stream inside a cluster, from a replicated work-queue stream before 2.12.5, and at a restart from an interest
+  stream on a standalone server before 2.12.9 (measured on nats-server 2.10.29 to 2.15.2). The option would have needed
+  the stream's retention, replicas and server version to decide, and a warning wherever it could not keep the message. The
+  modes stay two: in symfony mode Symfony decides, in nats mode NATS does, and what can never succeed is TERMed in both.
 - **Applying Symfony's retry options to the consumer in nats mode.** The transport never sees the strategy:
   FrameworkBundle keeps it in a service of its own. A consumer cannot express most of it either: `backoff` does not delay
   a plain NAK, and it replaces `ack_wait` with its first step. And `max_retries: 0`, which the README asks for in nats
@@ -182,5 +190,6 @@ CI runs again on the head that lands, and the merge waits for it.
   one test skipped, but PHPStan reports two errors about the header types an older `SerializerInterface` declares.
 - NATS 2.9's delivery count is documented, not worked around: `retry_via: nak` stays allowed there.
 - The serializers of Symfony Messenger 8.1 and later return a message that cannot be decoded as a message of its own,
-  so with them it goes through the retry strategy before it is TERMed. This transport's igbinary serializer throws, and
-  the message is TERMed at once.
+  so with them it goes through the retry strategy before it is TERMed. Since 5.10.0 the transport makes one of a
+  serializer that throws too, as this transport's igbinary serializer does, and before Messenger 8.1 it TERMs the
+  message and logs it instead of stopping the worker.

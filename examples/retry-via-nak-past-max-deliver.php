@@ -14,7 +14,7 @@
  * 1. A message that keeps failing, with max_retries 3. It runs 4 times, at retry counts 0 to 3: the retry of the
  *    second delivery goes out as a copy, which runs at once, and that copy's own retry is a NAK again. Then
  *    Symfony gives up, with one copy in the failure transport. NATS publishes no MAX_DELIVERIES advisory, since
- *    no delivery ended that way, and the transport logs no warning.
+ *    no delivery ended that way. The transport warns once that the copy went out without its delay (5.10.0).
  * 2. A message whose handler throws a RecoverableMessageHandlingException until the service it needs is back, on
  *    the fifth run. Symfony retries such an exception past max_retries, so no `max_deliver` would be high enough.
  *    It is handled on the fifth run.
@@ -67,10 +67,15 @@ try {
     assertExpected('messages in the stream', 2, storedMessages($stream));
     assertExpected('MAX_DELIVERIES advisories', 0, $advisories['MAX_DELIVERIES'] ?? 0);
     assertExpected('a TERM for the delivery Symfony gave up on', true, ($advisories['MSG_TERMINATED'] ?? 0) >= 1);
-    assertExpected('warnings logged', [], warningsLogged($logger));
+    assertExpected('warnings logged', 1, count(warningsLogged($logger)));
+    assertExpected(
+        'the warning that the copy went out without its delay of 400 ms',
+        true,
+        str_contains(warningsLogged($logger)[0] ?? '', 'the retry of the last delivery the consumer allows was published as a copy at once, without its delay of 400 ms'),
+    );
 
     $lines[] = sprintf(
-        'with max_retries 3, a message that keeps failing ran 4 times, at retry counts 0 to 3, the retries %s after the failure before: the second one, of the last delivery max_deliver allows, went out as a copy and ran at once; then a TERM and 1 copy in the failure transport, 2 messages in the stream, no MAX_DELIVERIES advisory, no warning logged',
+        'with max_retries 3, a message that keeps failing ran 4 times, at retry counts 0 to 3, the retries %s after the failure before: the second one, of the last delivery max_deliver allows, went out as a copy and ran at once; then a TERM and 1 copy in the failure transport, 2 messages in the stream, no MAX_DELIVERIES advisory, and one warning that the copy lost its delay',
         secondsList($gaps),
     );
 } finally {

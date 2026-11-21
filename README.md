@@ -3,7 +3,7 @@
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.3%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
 [![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.82%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
-[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-98.7%25-brightgreen)](https://infection.github.io/)
+[![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-98.6%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/ideaconnect/symfony-nats-messenger/actions/workflows/ci.yml)
@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1186 unit tests, ~99.8% coverage, mutation-tested (98.7% MSI)
+- 🧪 **Thoroughly Tested** - 1289 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -206,6 +206,25 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
 
 > **Tested by:** `testSetupRefusesScheduledMessagesOnAnInterestStreamItWouldCreateWithoutCreatingIt`, `testNakRetryPublishesTheCopyOfTheConsumersLastDeliveryWhateverTheOptionSays`, `testAConsumerThatCannotBeReadLeavesTheOptionAndIsNotAskedAgainOnThatConnection`, the Behat scenarios of `nats_delayed.feature` on an interest stream and `nats_retry_via.feature`.
 
+### Upgrading from 5.9.1
+
+- **An option the transport does not know is refused** when the transport is built, with the closest option named:
+  `Unknown option 'max_delivers' in the DSN query of the NATS transport. Did you mean 'max_deliver'?`. Up to 5.9.x such
+  an option was ignored. Correct or remove the name (see [Configuration Options](#configuration-options)).
+- **A message that cannot be decoded goes to the worker on Symfony Messenger 8.1 and later,** as the decoding failure,
+  as Symfony's own transports hand it on. In symfony mode Symfony's retry strategy and failure transport now see it, so
+  a failure transport receives a copy of it; in nats mode it is TERMed. Before 8.1 nothing changes.
+- **Only a `MessageDecodingFailedException` of the serializer is a decode failure.** Any other exception propagates
+  and leaves the message for redelivery, where 5.9.x TERMed it. A custom serializer should throw a
+  `MessageDecodingFailedException` for a payload it cannot decode; `AbstractEnveloperSerializer` does so for every
+  failure of `deserialize()`.
+- **Nats mode TERMs a failure Symfony marks as unrecoverable,** which ran on every delivery `max_deliver` allowed.
+- **New warnings,** through the transport's logger: a retry published without its delay, and at setup a nats-mode
+  stream from which NATS deletes a message stopped at `max_deliver` (see [Logging](#logging)). A log alert on warnings
+  may fire once per worker where it did not.
+
+> **Tested by:** `testBuildRefusesAnUnknownOption`, `testFromMessenger81AMessageThatCannotBeDecodedGoesOnAsTheDecodingFailure`, `testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testARetryPublishedWithoutItsDelayIsLoggedOnce`, `testSetupInNatsModeWarnsAboutAStreamWhereNatsDeletesWhatMaxDeliverStops`.
+
 ### Logging
 
 The NATS client reports what it does with the connection through a PSR-3 logger: the connection's lifecycle
@@ -214,9 +233,17 @@ errors at error level. Among the errors is the only trace of acknowledgements lo
 [`reconnect: true`](#automatic-reconnect): `Reconnect exhausted: N bytes of buffered publishes were discarded`.
 There is no debug-level chatter, so a wired logger costs a few lines per connection.
 
-The transport writes one line of its own to the same logger: a warning, once per transport object, when a
-transport in nats mode leaves out a retry Symfony's retry strategy sent, i.e. when `max_retries` is above 0 with
-`retry_handler: nats` (see [Retry Handler Behavior](#retry-handler-behavior)).
+The transport writes lines of its own to the same logger, each warning once per transport object:
+
+- a warning when a transport in nats mode leaves out a retry Symfony's retry strategy sent, i.e. when
+  `max_retries` is above 0 with `retry_handler: nats` (see [Retry Handler Behavior](#retry-handler-behavior));
+- a warning when a retry of Symfony's goes out without its delay, naming why (no `scheduled_messages`, the last
+  delivery `max_deliver` allows, or a retry that lost its delivery token), and with `retry_via: nak` when the
+  consumer's `max_deliver` differs from the option or cannot be read
+  (see [Retrying through a NAK](#retrying-through-a-nak-retry_via-nak));
+- a warning from `setup()` in nats mode on a stream from which NATS deletes a message that reached
+  `max_deliver`, though not from the setup `auto_setup` runs for a send, which a PHP-FPM process runs once per
+  request; and with `scheduled_messages` a warning when the stream and its consumers could not be read;
 
 With the bundle, the application's `logger` service is handed to the factory, tagged for Monolog's
 `messenger` channel, so the client's lines land next to the worker's. Without that service, or without the
@@ -413,7 +440,7 @@ the test server and print `OK` when what they show held:
 |---|---|
 | `send-and-consume.php` | `setup()`, sending, the queue depth, receiving and acknowledging |
 | `duplicate-protection.php` | `DeduplicationIdStamp` and `deduplicate: true`: a message sent again is stored once |
-| `nats-retry.php` | `retry_handler: nats` with Symfony's default retry strategy: NATS redelivers a message whose handler failed, and the transport warns that the strategy is on; a message that cannot be decoded is TERMed, so only the worker that pulled it stops |
+| `nats-retry.php` | `retry_handler: nats` with Symfony's default retry strategy: NATS redelivers a message whose handler failed, and the transport warns that the strategy is on; a message that cannot be decoded is TERMed, and stops a worker only before Symfony Messenger 8.1; an unrecoverable failure runs once |
 | `retry-via-nak.php` | `retry_via: nak`: Symfony's retry strategy decides, and NATS redelivers the failed message after a NAK with Symfony's delay; a message Symfony gives up on is TERMed, with one copy in the failure transport |
 | `retry-via-nak-edge-cases.php` | `retry_via: nak` at its edges: a delivery nobody settled, a message that cannot be decoded, the `reject()` of older Symfony Messenger releases, a message published with a retry count, what the builder refuses, and a consumer whose `max_deliver` the option does not say |
 | `retry-via-nak-past-max-deliver.php` | `retry_via: nak` with a low `max_deliver`: the retry of the last delivery it allows goes out as a copy, so Symfony's strategy runs to its end |
@@ -431,6 +458,7 @@ the test server and print `OK` when what they show held:
 | `cluster-failover.php` | `reconnect: true` on a cluster: a worker carries on through another server when the one it is connected to stops |
 | `handler-failing-during-failover.php` | both retry modes on a cluster: a handler fails while the worker's server stops, and the worker carries on through another server; the message comes back at once as Symfony's retry copy, or `nak_delay` later in nats mode |
 | `handler-succeeding-during-failover.php` | both retry modes on a cluster: a handler succeeds while the worker's server stops, and its ACK reaches the cluster through another server, so the message is not handled again |
+| `nats-retry-on-a-cluster.php` | `retry_handler: nats` with `max_deliver` on a cluster: NATS deletes a message stopped at `max_deliver` from an interest stream, and `setup()` warns about it; a work-queue stream keeps it |
 | `stream-placement.php` | `stream_placement_tags` and `stream_placement_cluster` on a cluster, and staging a move with a replica change |
 
 `composer nats:start` runs a three-server JetStream cluster for the last four next to the single test servers;
@@ -642,7 +670,19 @@ framework:
           nkey_seed: null                   # NKey seed (SU...) that signs the server's nonce; see NKey Authentication
 ```
 
-> **Tested by:** `testReadmeConfigurationOptionsAreAccepted` (everything above but the redelivery tuning, TLS and authentication options, which the tests after it and the sections below cover), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`
+**An option the transport does not know is refused** (5.10.0), in the `options` and in the DSN query, with the
+closest option when one is near. Up to 5.9.x it was ignored without a word, so a mistyped name left the default in
+place:
+
+```text
+Unknown option 'max_delivers' in the DSN query of the NATS transport. Did you mean 'max_deliver'?
+```
+
+Option names are lowercase. `transport_name`, which FrameworkBundle adds to every transport's options, is accepted.
+The name is not repeated when it is not plain, and never when it follows a credential in the DSN query: an `&` in a
+credential that was not encoded as `%26` makes the rest of it such a name, and the error says so instead.
+
+> **Tested by:** `testBuildRefusesAnUnknownOption`, `testBuildAcceptsWhatNamesNoUnknownOption`, `testTheRestOfACredentialCutByAnAmpersandIsRefusedWithoutRepeatingIt`, `testAnUnknownNameThatIsNotPlainIsNotRepeated`, `testReadmeConfigurationOptionsAreAccepted` (everything above but the redelivery tuning, TLS and authentication options, which the tests after it and the sections below cover), `testReadmeBatchingExamplesAreAccepted`, `testReadmeTimeoutExamplesAreAccepted`, `testReadmeStreamRetentionExamplesAreAccepted`, `testBuildAcceptsAndNormalizesNewStreamAndConsumerOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testBuildWithTlsAndAuthOptionsPropagatesToNatsOptions`, `testTlsVerifyPeerStaysOnUnlessExplicitlyDisabled`, `testTlsVerifyPeerInTheDsnStaysOnUnlessExplicitlyDisabled`, `testBuildAcceptsStreamPlacementOptions`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`
 
 ### NKey Authentication
 
@@ -759,7 +799,19 @@ framework:
 
 ### Retry Handler Behavior
 
-- `retry_handler: symfony` (default) sends `TERM` when a message fails during transport decoding or is rejected. Symfony's retry/failure transport then handles redelivery.
+The transport has two modes, set by `retry_handler`:
+
+- **`symfony` (the default): Symfony decides.** Symfony's retry strategy (`max_retries`, `delay`, `multiplier`)
+  decides whether and when a failed message runs again, and Symfony's failure transport keeps a message it gives
+  up on. `retry_via` chooses how a retry reaches NATS: as a copy (the default) or as a NAK with Symfony's delay.
+- **`nats`: NATS decides.** The transport NAKs a failed delivery, and NATS redelivers it after `nak_delay`, up to
+  `max_deliver`. Symfony's retry strategy has no effect, and a failure transport is not for this mode (see
+  below). What can never succeed is TERMed instead: a failure Symfony marks as unrecoverable, and a message that
+  cannot be decoded.
+
+In detail:
+
+- `retry_handler: symfony` (default) sends `TERM` when a message is rejected. Symfony's retry/failure transport then handles redelivery.
 
   Which failed messages the worker rejects depends on the Symfony Messenger release. Up to 7.4.21 and 8.1.9 it
   also rejects a message it sends for retry, so that message is TERMed next to its retry copy. From 7.4.22 and
@@ -770,7 +822,25 @@ framework:
   configured) or a message that could not be decoded. Counts or alerts built on those advisories therefore drop
   after such a Symfony upgrade, although the transport did not change. No message is lost: the retry copy is in
   the stream.
-- `retry_handler: nats` sends `NAK` when a message is rejected, so NATS redelivers the message itself. A message that cannot be decoded is TERMed in this mode too (5.9.1), whether `get()` fails on it, as with this transport's igbinary serializer, or Symfony Messenger 8.1 delivers it as a `MessageDecodingFailedException` that fails: a redelivery cannot decode it either. Up to 5.9.0 nats mode NAKed it, and NATS brought it back at once: to every new worker, which stopped again, or on 8.1 to the same worker, about 600 times a second, for ever without `max_deliver`.
+- `retry_handler: nats` sends `NAK` when a message is rejected, so NATS redelivers the message itself. A message that cannot be decoded is TERMed in this mode too (5.9.1): a redelivery cannot decode it either. Up to 5.9.0 nats mode NAKed it, and NATS brought it back at once: to every new worker, which stopped again, or on 8.1 to the same worker, about 600 times a second, for ever without `max_deliver`. A failure Symfony marks as unrecoverable (`UnrecoverableExceptionInterface`, such as `UnrecoverableMessageHandlingException`) is TERMed too (5.10.0): it runs once, where NATS ran it again on every delivery `max_deliver` allowed.
+
+**A message that cannot be decoded is handled as Symfony's own transports handle it** (Doctrine, Redis, AMQP), in
+either mode. A message that cannot be decoded is one whose serializer throws a `MessageDecodingFailedException`, which
+this transport's serializers throw for every way they fail, warnings included.
+
+- **On Symfony Messenger 8.1 and later** the worker gets it as the decoding failure, a
+  `MessageDecodingFailedException` message (5.10.0), and FrameworkBundle's `DecodeFailedMessageMiddleware` decodes it
+  once more and fails it. Symfony's retry strategy and failure transport then deal with it like any failure in
+  symfony mode, and nats mode TERMs it. When the serializer throws, as this transport's igbinary serializer does,
+  Messenger 8.1.11 and later fail it once, as unrecoverable, and 8.1.0 to 8.1.10 retry it up to `max_retries`.
+  FrameworkBundle puts that middleware in every bus. A bus built without it has no handler for the decoding failure,
+  as with Symfony's own transports: with `allow_no_handlers` the worker acknowledges it and it is gone, and without,
+  it fails as a missing handler and goes through the retry strategy.
+- **Before 8.1** the transport TERMs it, since a redelivery cannot decode it either, and throws the decode error,
+  which stops the worker that pulled it, as Symfony's own transports do. The next worker does not get it.
+- **Any other exception of the serializer** propagates, and the message is left for redelivery after `ack_wait` (5.10.0):
+  a serializer whose store or service failed for a moment may decode it then. Up to 5.9.x the transport took any
+  exception for a decode failure and TERMed the message.
 
 In symfony mode, `retry_via` chooses how a retry Symfony decides on reaches NATS: as a copy (the default) or as a
 NAK with Symfony's delay (see [Retrying through a NAK](#retrying-through-a-nak-retry_via-nak)).
@@ -779,8 +849,15 @@ NAK with Symfony's delay (see [Retrying through a NAK](#retrying-through-a-nak-r
 (1, 2 and 4 seconds with the framework's default strategy) by re-sending the failed message with a
 `DelayStamp`. The transport applies a `DelayStamp` only when `scheduled_messages` is enabled, which needs
 NATS 2.12 or later, and otherwise publishes the message at once. So with the defaults, each retry runs right
-after the failure, all of them are used up within milliseconds, and nothing reports that the delays were
-dropped. To keep the delays:
+after the failure, and all of them are used up within milliseconds. Up to 5.9.x nothing reported that the delays
+were dropped; since 5.10.0 the transport says so once per worker, through its logger (see [Logging](#logging)), at
+the first retry it publishes without its delay:
+
+```text
+retry_via=copy on stream "my-stream", subject "my-topic": Symfony's retry was published at once, without its delay of 1000 ms: a copy waits only with scheduled_messages. Set retry_via: nak to have NATS wait, or scheduled_messages: true (NATS 2.12+, not on an interest stream).
+```
+
+To keep the delays:
 
 - on NATS 2.12 or later, enable `scheduled_messages` (see [Delayed / Scheduled Messages](#delayed--scheduled-messages));
 - on any server, set `retry_via: nak`: the transport NAKs the failed delivery with Symfony's delay, to the
@@ -791,7 +868,7 @@ dropped. To keep the delays:
 NATS 2.9 to 2.11 have no message schedules, and the transport refuses `scheduled_messages` there (see
 [Delayed / Scheduled Messages](#delayed--scheduled-messages)): use `retry_via: nak` on those servers.
 
-> **Tested by:** `testSendWithDelayStampButScheduledMessagesDisabledPublishesNormally`, `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders`, `testNakRetryNaksWithTheDelaySymfonyComputed`, `testSetupRefusesScheduledMessagesOnAServerWithoutSchedules`
+> **Tested by:** `testSendWithDelayStampButScheduledMessagesDisabledPublishesNormally`, `testARetryPublishedWithoutItsDelayIsLoggedOnce`, `testASendThatKeepsItsDelayOrHasNoneIsNotLogged`, the scenario `Failed message routed to Symfony failure transport via TERM` (one warning), `testSendWithDelayStampPublishesToDelayedSubjectWithScheduleHeaders`, `testNakRetryNaksWithTheDelaySymfonyComputed`, `testSetupRefusesScheduledMessagesOnAServerWithoutSchedules`
 
 When NATS manages redelivery (`retry_handler: nats`), tune it with `nak_delay`, `ack_wait`, `max_deliver`, and `backoff`:
 
@@ -825,20 +902,45 @@ it appears only when a handler throws a `RecoverableExceptionInterface`, which S
 > and earlier passed that ACK on to NATS: with retries left on, a message whose handler failed once was gone,
 > neither redelivered nor in a failure transport (#90). Later releases NAK it.
 
-A failure transport does not combine well with nats mode. Symfony sends a message there each time it treats a
-failure as final: with `max_retries: 0` that is every failed delivery, so a message that keeps failing lands
-there up to `max_deliver` times, and with retries left on it never lands there. For a transport in nats mode,
-rely on NATS's own handling of a message that keeps failing instead (`max_deliver`, and the JetStream
-`MAX_DELIVERIES` advisory). With [`retry_via: nak`](#retrying-through-a-nak-retry_via-nak), a failure transport
-works as in symfony mode.
+**A failure transport is not for nats mode.** Symfony sends a message there each time it treats a failure as
+final: with `max_retries: 0` that is every failed delivery, so a message that keeps failing lands there up to
+`max_deliver` times, and with retries left on only an unrecoverable failure lands there. In nats mode NATS's own
+handling of a message that keeps failing takes its place: `max_deliver`, and the JetStream `MAX_DELIVERIES`
+advisory. To keep a copy of each message given up on, use [`retry_via: nak`](#retrying-through-a-nak-retry_via-nak)
+with a failure transport, which works as in symfony mode while NATS still redelivers the original (see the steps
+below).
 
-That handling keeps the message in the stream after its last delivery only on some streams. NATS keeps it on a
+A later release may give nats mode one failure-transport copy, at the last delivery `max_deliver` allows: an event
+subscriber can add Symfony's `SentToFailureTransportStamp` to every earlier failed delivery, which Symfony's
+`SendFailedMessageToFailureTransportListener` then skips, with `max_retries: 0` so that Symfony retries nothing
+itself. Symfony Messenger 7.4.6 to 7.4.8 and 8.0.6 to 8.0.8 ignore that stamp, and send every failed delivery. No
+such subscriber exists yet.
+
+NATS's handling keeps the message in the stream after its last delivery only on some streams. NATS keeps it on a
 stream with limits retention, and on a work-queue stream with one replica, or with three on NATS 2.12.5 and later.
 It deletes it from a stream with interest retention inside a cluster, within seconds to about two minutes, and from
 a replicated work-queue stream before 2.12.5; on a standalone server an interest stream loses it at a restart before
-NATS 2.12.9. On those streams a message that kept failing in nats mode leaves nothing behind but the advisory, and
-up to 5.9.0 this section did not say so. Use `retry_via: nak` with a failure transport there, or a stream with
-limits or work-queue retention. [docs/symfony_retry_via.md](docs/symfony_retry_via.md) has the measurements.
+NATS 2.12.9 and on 2.14.0. On those streams a message that kept failing in nats mode leaves nothing behind but the
+advisory, and up to 5.9.0 this section did not say so. Use `retry_via: nak` with a failure transport there, or a
+stream with limits or work-queue retention. [docs/symfony_retry_via.md](docs/symfony_retry_via.md) has the
+measurements. Since 5.10.0 `setup()` in nats mode with `max_deliver` warns once when the stream is one of those:
+
+```text
+retry_handler=nats on stream "my-stream": NATS 2.15.2 deletes a message that reached max_deliver from a stream with interest retention on a clustered server, so a message that keeps failing leaves nothing behind but the MAX_DELIVERIES advisory. Use retry_handler: symfony and retry_via: nak with a failure transport, or a stream with limits or work-queue retention (README, "Retry Handler Behavior").
+```
+
+To move a transport from nats mode to `retry_via: nak`:
+
+1. Set `retry_handler: symfony` (or drop it, it is the default) and `retry_via: nak`.
+2. Give the transport the `retry_strategy` that `nak_delay` and `max_deliver` stood for (`max_retries`, `delay`,
+   `multiplier`, `max_delay`), and drop `nak_delay` and `backoff`: the builder refuses both with `nak`.
+3. Set `max_deliver` above `max_retries + 1`, or leave it unset. At `max_retries + 1` or below, the retry of the
+   last delivery it allows goes out as a copy, without its delay (logged once).
+4. Add a failure transport for the messages Symfony gives up on.
+5. Run `messenger:setup-transports`: the consumer keeps its `backoff` and its `max_deliver` until setup writes the
+   new ones, and messages redelivered meanwhile still go by them.
+
+> **Tested by:** `testSetupInNatsModeWarnsAboutAStreamWhereNatsDeletesWhatMaxDeliverStops`, `testSetupLogsNothingWhereNatsKeepsWhatMaxDeliverStops`, the scenario `In nats mode, setup warns about an interest stream when the server deletes a message stopped at max_deliver` (`nats_max_deliver.feature`), the example `nats-retry-on-a-cluster.php`
 
 ```yaml
 framework:
@@ -850,7 +952,7 @@ framework:
           max_retries: 0
 ```
 
-> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testGetDecodeFailureTermsInNatsModeToo`, `testNatsModeTermsAMessageThatCouldNotBeDecodedWhenTheWorkerSettlesIt`, the Behat scenario `A message that cannot be decoded is TERMed in nats mode, so no worker gets it again`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSymfonyModeAcksADeliveryItPublishedTheRetryCopyOf`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testNatsModeWithoutSymfonysRetriesLogsNoWarning`, `testNoWarningWhenSendLeavesOutNoRetryCopy`, `testEachTransportWarnsOnceAboutItsOwnStreamAndSubject`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
+> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testBeforeMessenger81AMessageThatCannotBeDecodedIsTermedAndItsErrorThrown`, `testBeforeMessenger81ATermThatFailsLeavesTheDecodeErrorThrown`, `testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled`, `testFromMessenger81AMessageThatCannotBeDecodedGoesOnAsTheDecodingFailure`, `testNatsModeTermsAMessageThatCouldNotBeDecodedWhenTheWorkerSettlesIt`, `testSymfonyModeLeavesAMessageThatCouldNotBeDecodedToSymfonysRetryStrategy`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testNatsModeRunsAnUnrecoverableFailureOnceThroughTheWorker`, the Behat scenarios `A message that cannot be decoded is TERMed in nats mode, so no worker gets it again`, `A message that cannot be decoded is settled in symfony mode` and `An unrecoverable failure runs once in nats mode`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSymfonyModeAcksADeliveryItPublishedTheRetryCopyOf`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testNatsModeWithoutSymfonysRetriesLogsNoWarning`, `testNoWarningWhenSendLeavesOutNoRetryCopy`, `testEachTransportWarnsOnceAboutItsOwnStreamAndSubject`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
 
 #### Retrying through a NAK (`retry_via: nak`)
 
@@ -872,10 +974,13 @@ framework:
 | | `retry_via: copy` (default) | `retry_via: nak` | `retry_handler: nats` |
 |---|---|---|---|
 | Decides whether to retry | Symfony's retry strategy | Symfony's retry strategy | NATS, up to `max_deliver` |
-| Waits before a retry | Symfony's delay with `scheduled_messages` (NATS 2.12+), at a whole second rounded up; otherwise not at all | Symfony's delay, to the millisecond, on any server | `nak_delay` |
+| Waits before a retry | Symfony's delay with `scheduled_messages` (NATS 2.12+), at a whole second rounded up; otherwise not at all (logged once) | Symfony's delay, to the millisecond, on any server | `nak_delay` |
 | A retry is | a new message in the stream | the same message, redelivered | the same message, redelivered |
 | `willRetry()` and the retry count | right | right, from the delivery count | false and 0, with `max_retries: 0` |
-| Given up on, or unrecoverable | a TERM, one failure-transport copy | a TERM, one failure-transport copy | a NAK, until `max_deliver` |
+| Given up on | a TERM, one failure-transport copy | a TERM, one failure-transport copy | NATS redelivers nothing after `max_deliver` and publishes `MAX_DELIVERIES`; the message stays on some streams only |
+| An unrecoverable failure | 1 run, a TERM, one failure-transport copy | 1 run, a TERM, one failure-transport copy | 1 run, a TERM (5.10.0; up to `max_deliver` runs before) |
+| A message that cannot be decoded | Symfony's retry strategy and failure transport on Messenger 8.1 and later; before, a TERM and an error logged | the same | a TERM |
+| Failure transport | keeps what Symfony gives up on | keeps what Symfony gives up on | not for this mode |
 | Other consumers on the subject | handle each retry copy as well | see nothing extra | see nothing extra |
 | While a retry waits | holds nothing | holds one of the consumer's `max_ack_pending` slots | holds a slot for `nak_delay` |
 | `max_deliver` | caps deliveries nobody settles | the same; past it a retry goes on as a copy | caps every redelivery |
@@ -895,8 +1000,9 @@ it below `stream_max_age`: a message that expires while it waits leaves the stre
   the retry of the last delivery `max_deliver` allows: NATS redelivers nothing after that delivery, so a NAK
   would end the message there, handled by nobody and in no failure transport. The copy goes on as a new
   message, with the retry count Symfony gave it and deliveries of its own, so Symfony's strategy runs to its
-  end whatever `max_deliver` is. That one retry does not wait for its delay unless `scheduled_messages` is on,
-  it adds a message to the stream, and other consumers on the subject receive it. `max_deliver` is optional:
+  end whatever `max_deliver` is. That one retry does not wait for its delay unless `scheduled_messages` is on
+  (logged once per worker, since 5.10.0), it adds a message to the stream, and other consumers on the subject
+  receive it. `max_deliver` is optional:
   leave it unset, or set it above the retries you expect, and it only caps deliveries nobody settles.
 - The last delivery is the one the consumer's own `max_deliver` allows, which is what NATS applies, not the
   option's: the option takes effect only once `setup()` writes it to the consumer. The transport reads the
@@ -914,8 +1020,10 @@ it below `stream_max_age`: a message that expires while it waits leaves the stre
   `messenger:setup-transports` after taking a `backoff` out: a consumer that still has one keeps adding it.
 - `scheduled_messages` still schedules a `DelayStamp` the application sets itself. Symfony's retries are not
   scheduled with `nak`, except the two retries above that go out as a copy.
-- A message this transport's igbinary serializer can't decode is TERMed at once. Symfony Messenger 8.1's own
-  serializers return such a failure as a message, which goes through the retry strategy like any failure.
+- A message that cannot be decoded goes through the retry strategy like any failure on Symfony Messenger 8.1 and
+  later, which hand it to the worker as a message, and each NAK retry carries its earlier deliveries as its retry
+  count, so `max_retries` ends the retries. On 8.1.11 and later one the serializer throws on, as this transport's
+  igbinary serializer does, fails once, as unrecoverable. Before 8.1 it is TERMed at once and the decode error thrown.
 - A retry that waits while the server restarts is still redelivered once, up to a second early: the server
   keeps the time in whole seconds.
 - On NATS 2.9 the server now and then reports a redelivery as a first delivery, when its NAK delay ends just as
@@ -926,7 +1034,7 @@ it below `stream_max_age`: a message that expires while it waits leaves the stre
 [docs/symfony_retry_via.md](docs/symfony_retry_via.md) is the reference: the terms, the three setups delivery by
 delivery, what the server does with a NAK, and what was measured.
 
-> **Tested by:** `testRetryViaIsCopyUnlessSetToNak`, `testBuildWithInvalidRetryViaThrowsException`, `testBuildRefusesRetryViaInNatsMode`, `testBuildRefusesAPositiveNakDelayWithNakRetries`, `testBuildRefusesBackoffWithNakRetries`, `testRetryViaCopyStillAcceptsNakDelayAndBackoff`, `testNakRetryNaksWithTheDelaySymfonyComputed`, `testNakRetryNaksPlainlyForADelayOfZero`, `testNakRetryNaksWithTheDelayOfARecoverableException`, `testNakRetryCutsADelayThatWouldOverflow`, `testNakRetryFollowsSymfonysRetryStrategyThroughTheWorker`, `testNakRetryTermsADeliverySymfonyDoesNotRetry`, `testNakRetryTermsAnUnrecoverableFailure`, `testNakRetryTermsAnUndecodableMessage`, `testNakRetryPublishesTheCopyOfTheLastDeliveryMaxDeliverAllows`, `testNakRetryNaksADeliveryThatIsNotKnownToBeTheLast`, `testNakRetryRunsSymfonysStrategyToItsEndPastMaxDeliver`, `testNakRetryPublishesTheCopyOfTheConsumersLastDeliveryWhateverTheOptionSays`, `testNakRetryNaksADeliveryTheConsumerStillRedelivers`, `testTheConsumersMaxDeliverIsReadAgainOnceItIsAMinuteOld`, `testAConsumerThatCannotBeReadLeavesTheOptionAndIsNotAskedAgainOnThatConnection`, `testAConsumerUnreadableLaterLeavesTheValueReadBefore`, `testARetryAfterSetupAsksForTheConsumersLimitAgain`, `testGetGivesARedeliveredMessageItsEarlierDeliveriesAsRetryCount`, `testGetAddsTheEarlierDeliveriesToTheRetryCountTheMessageCarries`, the Behat feature `nats_retry_via.feature`, and the examples `retry-via-nak.php`, `retry-via-nak-edge-cases.php`, `retry-via-nak-past-max-deliver.php`, `retry-via-nak-server-behaviour.php`, `retry-via-nak-across-a-restart.php` and `retry-via-copy-or-nak.php`. CI's lowest leg runs them on a Symfony Messenger that rejects a retried message (7.4.0 in the unit tests, 7.4.21 in the functional test app), the PHP 8.5 leg on one that acknowledges it.
+> **Tested by:** `testRetryViaIsCopyUnlessSetToNak`, `testBuildWithInvalidRetryViaThrowsException`, `testBuildRefusesRetryViaInNatsMode`, `testBuildRefusesAPositiveNakDelayWithNakRetries`, `testBuildRefusesBackoffWithNakRetries`, `testRetryViaCopyStillAcceptsNakDelayAndBackoff`, `testNakRetryNaksWithTheDelaySymfonyComputed`, `testNakRetryNaksPlainlyForADelayOfZero`, `testNakRetryNaksWithTheDelayOfARecoverableException`, `testNakRetryCutsADelayThatWouldOverflow`, `testNakRetryFollowsSymfonysRetryStrategyThroughTheWorker`, `testNakRetryTermsADeliverySymfonyDoesNotRetry`, `testNakRetryTermsAnUnrecoverableFailure`, `testFromMessenger81TheDecodingFailureOfARedeliveryCarriesItsRetryCount`, `testNakRetryPublishesTheCopyOfTheLastDeliveryMaxDeliverAllows`, `testNakRetryNaksADeliveryThatIsNotKnownToBeTheLast`, `testNakRetryRunsSymfonysStrategyToItsEndPastMaxDeliver`, `testNakRetryPublishesTheCopyOfTheConsumersLastDeliveryWhateverTheOptionSays`, `testNakRetryNaksADeliveryTheConsumerStillRedelivers`, `testTheConsumersMaxDeliverIsReadAgainOnceItIsAMinuteOld`, `testAConsumerThatCannotBeReadLeavesTheOptionAndIsNotAskedAgainOnThatConnection`, `testAConsumerUnreadableLaterLeavesTheValueReadBefore`, `testARetryAfterSetupAsksForTheConsumersLimitAgain`, `testGetGivesARedeliveredMessageItsEarlierDeliveriesAsRetryCount`, `testGetAddsTheEarlierDeliveriesToTheRetryCountTheMessageCarries`, the Behat feature `nats_retry_via.feature`, and the examples `retry-via-nak.php`, `retry-via-nak-edge-cases.php`, `retry-via-nak-past-max-deliver.php`, `retry-via-nak-server-behaviour.php`, `retry-via-nak-across-a-restart.php` and `retry-via-copy-or-nak.php`. CI's lowest leg runs them on a Symfony Messenger that rejects a retried message (7.4.0 in the unit tests, 7.4.21 in the functional test app), the PHP 8.5 leg on one that acknowledges it.
 
 ### Long-Running Handlers (`--keepalive`)
 
@@ -1715,7 +1823,7 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 98.7% (1466 of 1486 mutants killed, with 100% mutation code coverage).
+95%; the suite scores 98.6% (1706 of 1730 mutants killed, with 100% mutation code coverage).
 [docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 19 mutants that survive, with the reason for each:
 13 are equivalent, two make no difference with the real client, and three are caught by tests in a child process,
 which a mutant does not reach. CI runs all three commands on the PHP 8.5 job and

@@ -86,7 +86,8 @@ should decide while NATS redelivers.
 - **A NAK cannot carry every retry.** A copy without its delivery token is published as with `copy`. So is the
   retry of the last delivery `max_deliver` allows: a NAK would end the message there, handled by nobody and in no
   failure transport. The copy is a new message with deliveries of its own, so Symfony's strategy runs to its end
-  whatever `max_deliver` is.
+  whatever `max_deliver` is. It goes out at once without `scheduled_messages`, and since 5.10.0 the first such copy
+  is logged once per worker as a warning, with the delay it lost.
 - **The last delivery is the consumer's.** NATS applies the consumer's `max_deliver`, which is the option's only
   once `setup()` has written it. So the transport asks for the consumer's info at the first retry that needs it,
   and again once the answer is a minute old: one request a minute at most, only while deliveries fail. A limit
@@ -104,7 +105,8 @@ should decide while NATS redelivers.
 - **`get()`** sets the retry count of a redelivered message: the count it was published with, plus its
   deliveries before this one. A delivery nobody settled, after a crash or an `ack_wait` that ran out, counts.
 - **A message Symfony gives up on** is TERMed by symfony mode's existing code, as with `copy`. So is a message
-  the transport's serializer cannot decode.
+  the transport's serializer cannot decode, at once before Symfony Messenger 8.1 and after its retries from 8.1 on
+  (see below).
 - **The builder** refuses any `retry_via` with `retry_handler: nats`, and with `nak` a positive `nak_delay` and
   any `backoff`. Without `nak` both stay accepted.
 
@@ -185,12 +187,19 @@ release that rejects, 7.4.0 for the unit tests and 7.4.21 in the functional test
 
 ## A message that cannot be decoded
 
-- With this transport's igbinary serializer, `get()` TERMs the delivery and throws
-  `MessageDecodingFailedException`, as in symfony mode without `retry_via`.
-- The serializers of Symfony Messenger 8.1 and later (`PhpSerializer`, `Serializer`) return such a failure as a
-  message of its own instead of throwing. The worker fails it like any message, so it goes through the retry
-  strategy: NAK retries, then a TERM and one failure-transport copy. With Messenger 7.4 and 8.0 those serializers
-  throw, and the message is TERMed at once.
+- **Symfony Messenger 8.1 and later** hand such a failure to the worker as a message of its own, a
+  `MessageDecodingFailedException`: their serializers (`PhpSerializer`, `Serializer`) return one, and the
+  transport makes one when a serializer throws, as this transport's igbinary serializer does (5.10.0).
+  FrameworkBundle's `DecodeFailedMessageMiddleware` decodes it once more and fails it, so it goes through the
+  retry strategy like any failure: NAK retries, then a TERM and one failure-transport copy. Each redelivery
+  carries its earlier deliveries as its retry count, as a decoded message does, so `max_retries` ends them.
+- **When the serializer throws,** Messenger 8.1.11 and later fail it once, as unrecoverable (symfony/symfony
+  commit 9e155bedfc, "Fix infinite retries when a serializer throws a decoding failure"), and 8.1.0 to 8.1.10
+  retry it as above.
+- **Before 8.1** `get()` TERMs it and throws the `MessageDecodingFailedException`, as Symfony's own transports do
+  before 8.1, which stops the worker.
+- **Any other exception of the serializer** is no decode failure: it propagates, and the message is left for
+  redelivery (5.10.0).
 
 ## What was measured
 
@@ -218,7 +227,7 @@ gave the same results. Some rows name other servers.
 | A 4 s NAK retry, `stream_max_age: 2` | the message leaves the stream before its retry |
 | A 12 s NAK retry, `ack_wait: 2`, the server restarted 1 s after the NAK | redelivered once, with retry count 1, after 11.85 s (2.15.2) and 11.48 s (2.10.29) |
 | A `DelayStamp` of `PHP_INT_MAX` | cut to 9,223,372,036,854 ms, and the message is held |
-| A message that cannot be decoded, with this transport's igbinary serializer | TERMed at once |
+| A message that cannot be decoded, with this transport's igbinary serializer | Messenger 8.1.11: fails once as unrecoverable, then a TERM and 1 failure-transport copy; 7.4.21: TERMed at once, `get()` throws the decode error, and the worker stops |
 | The same with Symfony's `PhpSerializer` on Messenger 8.1 | through the retry strategy like any failure: NAK retries, then a TERM and 1 failure-transport copy |
 | NATS 2.9.25, a NAK delay equal to `max_batch_timeout` (200, 500 and 1000 ms) | about 1 message in 5 has one redelivery reported as delivery 1 |
 

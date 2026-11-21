@@ -173,7 +173,8 @@ NatsTransportConfiguration  ← immutable, typed accessors apply clamping/unit c
 ```
 
 - **`TransportOption`** is the single source of truth for option keys; `DEFAULT_OPTIONS` must have an
-  entry for every case (enforced by `testDefaultOptionsCoversAllTransportOptionCases`).
+  entry for every case (enforced by `testDefaultOptionsCoversAllTransportOptionCases`). The builder refuses any
+  other key but `transport_name`, which FrameworkBundle adds (`assertKnownOptions()`).
 - **`NatsTransportConfiguration`** never returns raw option values - accessors normalize (e.g.
   `maxBatchTimeoutMs()` converts seconds→ms and clamps to ≥1, `streamMaxAgeSeconds()` clamps to ≥0).
 - **`RetryHandler`** encodes the TERM-vs-NAK failure strategy.

@@ -1235,6 +1235,76 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
+     * An option the transport does not know is refused, with the closest one when one is near (5.10.0). Up to 5.9.x it
+     * was ignored without a word, and the default stayed in place.
+     *
+     * @param array<array-key, mixed> $options
+     */
+    #[DataProvider('unknownOptions')]
+    public function testBuildRefusesAnUnknownOption(string $dsn, array $options, string $expected): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage($expected);
+
+        (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+    }
+
+    /**
+     * @return iterable<string, array{string, array<array-key, mixed>, string}>
+     */
+    public static function unknownOptions(): iterable
+    {
+        $none = ' See "Configuration Options" in the README for the options it takes.';
+
+        yield 'a letter more, in the options' => [self::VALID_DSN, ['max_delivers' => 3], "Unknown option 'max_delivers' in the options of the NATS transport. Did you mean 'max_deliver'?"];
+        yield 'a letter more, in the DSN query' => [self::VALID_DSN . '?retry_handeler=nats', [], "Unknown option 'retry_handeler' in the DSN query of the NATS transport. Did you mean 'retry_handler'?"];
+        yield 'two letters swapped' => [self::VALID_DSN . '?bacthing=5', [], "Unknown option 'bacthing' in the DSN query of the NATS transport. Did you mean 'batching'?"];
+        yield 'in capitals' => [self::VALID_DSN . '?RETRY_HANDLER=nats', [], "Unknown option 'RETRY_HANDLER' in the DSN query of the NATS transport. Did you mean 'retry_handler'?"];
+        yield 'without the word before it' => [self::VALID_DSN . '?retention=interest', [], "Unknown option 'retention' in the DSN query of the NATS transport. Did you mean 'stream_retention'?"];
+        yield 'without the word after it' => [self::VALID_DSN, ['tls_peer' => 'nats.internal'], "Unknown option 'tls_peer' in the options of the NATS transport. Did you mean 'tls_peer_name'?"];
+        yield 'the nearest of several' => [self::VALID_DSN, ['stream_max_message' => 5], "Unknown option 'stream_max_message' in the options of the NATS transport. Did you mean 'stream_max_messages'?"];
+        yield 'nothing near' => [self::VALID_DSN, ['colour' => 'blue'], "Unknown option 'colour' in the options of the NATS transport." . $none];
+        yield 'three letters more than a short name' => [self::VALID_DSN, ['tokenxyz' => 'x'], "Unknown option 'tokenxyz' in the options of the NATS transport." . $none];
+        yield 'a list entry' => [self::VALID_DSN, ['batching' => 5, 7 => 'x'], "Unknown option '7' in the options of the NATS transport." . $none];
+        yield 'after a known option in the query' => [self::VALID_DSN . '?batching=5&max_delivers=3', [], "Unknown option 'max_delivers' in the DSN query of the NATS transport. Did you mean 'max_deliver'?"];
+        yield 'with no value in the query' => [self::VALID_DSN . '?scheduled', [], "Unknown option 'scheduled' in the DSN query of the NATS transport."];
+        yield 'two letters swapped in a short name' => [self::VALID_DSN, ['bakcoff' => [1]], "Unknown option 'bakcoff' in the options of the NATS transport. Did you mean 'backoff'?"];
+        yield 'a quarter of a long name changed' => [self::VALID_DSN . '?max_recon_attempt=3', [], "Unknown option 'max_recon_attempt' in the DSN query of the NATS transport. Did you mean 'max_reconnect_attempts'?"];
+        yield 'more than a quarter of a long name changed' => [self::VALID_DSN, ['stream_max_msg_per_subj' => 5], "Unknown option 'stream_max_msg_per_subj' in the options of the NATS transport." . $none];
+        yield 'the start of a name, not up to an underscore' => [self::VALID_DSN . '?sched=1', [], "Unknown option 'sched' in the DSN query of the NATS transport." . $none];
+        yield 'the end of a name, not from an underscore' => [self::VALID_DSN, ['eplicas' => 3], "Unknown option 'eplicas' in the options of the NATS transport." . $none];
+        yield 'equally near two options, the first of them' => [self::VALID_DSN . '?ack=1', [], "Unknown option 'ack' in the DSN query of the NATS transport. Did you mean 'ack_wait'?"];
+        yield 'after a parameter with no name' => [self::VALID_DSN . '?=x&max_delivers=3', [], "Unknown option 'max_delivers' in the DSN query of the NATS transport. Did you mean 'max_deliver'?"];
+        yield 'a number as the name in the query' => [self::VALID_DSN . '?7=x', [], "Unknown option '7' in the DSN query of the NATS transport." . $none];
+    }
+
+    /**
+     * What Symfony adds to the options, and what parse_str() makes nothing of, are accepted.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('queriesAndOptionsWithNothingUnknown')]
+    public function testBuildAcceptsWhatNamesNoUnknownOption(string $dsn, array $options): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+
+        self::assertSame(5, $configuration->batching());
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function queriesAndOptionsWithNothingUnknown(): iterable
+    {
+        yield 'transport_name, which FrameworkBundle adds' => [self::VALID_DSN, ['batching' => 5, 'transport_name' => 'async']];
+        yield 'transport_name in the query' => [self::VALID_DSN . '?batching=5&transport_name=async', []];
+        yield 'empty parameters' => [self::VALID_DSN . '?&batching=5&&', []];
+        yield 'a parameter with no name' => [self::VALID_DSN . '?=x&batching=5', []];
+        yield 'a list in the query' => [self::VALID_DSN . '?batching=5&backoff[]=1&backoff[]=2', []];
+        yield 'a known option after a credential' => [self::VALID_DSN . '?token=abc&batching=5', []];
+    }
+
+    /**
      * Off unless asked for, from the options or from the DSN query (#53).
      */
     public function testDeduplicateIsOffByDefaultAndCanBeEnabled(): void
