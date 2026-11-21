@@ -3367,6 +3367,33 @@ class NatsSetupContext implements Context
         }
     }
 
+    /**
+     * With retry_via=copy, the default, and no scheduled_messages, Symfony's retry copy is published at once; the
+     * transport warns once per consumer process with the delay it dropped, which carries Symfony's jitter (5.10.0).
+     */
+    #[Then('the consumer should have warned once that Symfony\'s retry was published without its delay')]
+    public function theConsumerShouldHaveWarnedOnceThatSymfonysRetryWasPublishedWithoutItsDelay(): void
+    {
+        $this->assertConsumerLoggedOnce(sprintf(
+            'retry_via=copy on stream "%s", subject "%s": Symfony\'s retry was published at once, without its delay of',
+            $this->testStreamName,
+            $this->testSubject,
+        ));
+    }
+
+    private function assertConsumerLoggedOnce(string $text): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        $found = substr_count($output, $text);
+        if ($found !== 1) {
+            throw new \RuntimeException(sprintf("Expected the consumer to log \"%s\" once, found it %d time(s).\nConsumer output: %s", $text, $found, $output));
+        }
+    }
+
     #[When('I send :count unrecoverable failing message')]
     #[When('I send :count unrecoverable failing messages')]
     public function iSendUnrecoverableFailingMessages(int $count): void

@@ -111,7 +111,8 @@ if ($schedules) {
 $waited = [];
 foreach ($variants as $name => $query) {
     $stream = exampleStream('retry_via_compare');
-    $worker = retryTransport($stream, $query);
+    $logger = new ExampleLogger();
+    $worker = retryTransport($stream, $query, $logger);
     try {
         $worker->setup();
         $worker->send(new Envelope(new ExampleMessage('invoice 7')));
@@ -119,6 +120,12 @@ foreach ($variants as $name => $query) {
         $run = runWorker($worker, new MultiplierRetryStrategy(3, 300, 2, 0, 0.0), $failsOnce, static fn (WorkerRun $run): bool => $run->handled !== []);
 
         assertExpected('messages handled, ' . $name, 1, count($run->handled));
+        // Only the copy without scheduled_messages loses its delay, and the transport says so once (5.10.0).
+        assertExpected(
+            'the warning that the retry lost its delay, ' . $name,
+            $name === 'copy' ? 1 : 0,
+            count(array_filter($logger->lines, static fn (string $line): bool => str_contains($line, "Symfony's retry was published at once, without its delay of 300 ms"))),
+        );
         $waited[$name] = $run->gaps()[0];
     } finally {
         $worker->close();

@@ -208,6 +208,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private bool $delayedMessagesChecked = false;
 
     /**
+     * Whether {@see warnIfARetryLosesItsDelay()} has logged, which it does once.
+     */
+    private bool $retryDelayDroppedReported = false;
+
+    /**
      * Creates a transport instance from DSN/options and optional serializer override.
      *
      * Parses the DSN and options via {@see NatsTransportConfigurationBuilder}, sets up
@@ -335,6 +340,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $topic = $this->topic;
 
         $delayMs = $envelope->last(DelayStamp::class)?->getDelay();
+        if ($delayMs > 0 && !$this->configuration->isScheduledMessagesEnabled()) {
+            $this->warnIfARetryLosesItsDelay($envelope, $delayMs);
+        }
+
         if ($delayMs > 0 && $this->configuration->isScheduledMessagesEnabled()) {
             // The server's version is known once connected, and an older server would store the message for good.
             $this->connectIfNeeded();
@@ -380,6 +389,44 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         return $envelope;
+    }
+
+    /**
+     * Logs, the first time it happens on this transport object, that Symfony's retry of a received message is published
+     * at once, without the delay its retry strategy computed: a message published on JetStream waits only as a
+     * schedule, with scheduled_messages. With retry_via: copy that is every retry: the retries of a message that keeps
+     * failing all run within milliseconds, whatever the strategy's delay and multiplier. With retry_via: nak it is
+     * the retry no NAK can carry, the one of the last delivery the consumer allows, which goes out as a copy.
+     *
+     * Logged once per transport object, so once per worker, through the logger the transport was given. A failure
+     * transport's copy carries no delay and an application's own delayed message no retry count, so neither is
+     * concerned.
+     */
+    private function warnIfARetryLosesItsDelay(Envelope $envelope, int $delayMs): void
+    {
+        if ($this->retryDelayDroppedReported || $envelope->last(ReceivedStamp::class) === null || RedeliveryStamp::getRetryCountFromEnvelope($envelope) <= 0) {
+            return;
+        }
+
+        $this->retryDelayDroppedReported = true;
+        $this->logger?->warning($this->configuration->retryVia() === RetryVia::NAK
+            ? sprintf(
+                'retry_via=nak on stream "%s", subject "%s": the retry of the last delivery the consumer allows was published'
+                . ' as a copy at once, without its delay of %d ms. NATS redelivers nothing after that delivery, so no NAK'
+                . ' can carry this retry. scheduled_messages: true (NATS 2.12+, not on an interest stream) makes the copy'
+                . ' wait, and a max_deliver above the retries Symfony makes keeps it from being needed.',
+                $this->streamName,
+                $this->topic,
+                $delayMs,
+            )
+            : sprintf(
+                'retry_via=copy on stream "%s", subject "%s": Symfony\'s retry was published at once, without its delay of'
+                . ' %d ms: a copy waits only with scheduled_messages. Set retry_via: nak to have NATS wait, or'
+                . ' scheduled_messages: true (NATS 2.12+, not on an interest stream).',
+                $this->streamName,
+                $this->topic,
+                $delayMs,
+            ));
     }
 
     /**

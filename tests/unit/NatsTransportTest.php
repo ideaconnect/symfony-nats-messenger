@@ -2597,9 +2597,10 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * Nothing is logged when send() leaves out no retry copy: in symfony mode, where Symfony's retry copy is
-     * published, and in nats mode for a copy for the failure transport, a message not received in this process and
-     * a plain dispatch (#94).
+     * No warning that Symfony's retry strategy is on is logged when send() leaves out no retry copy: in symfony mode,
+     * where Symfony's retry copy is published, and in nats mode for a copy for the failure transport, a message not
+     * received in this process and a plain dispatch (#94). A retry copy published without its delay logs a warning of
+     * its own ({@see testARetryPublishedWithoutItsDelayIsLoggedOnce()}).
      *
      * @param array<string, mixed> $options
      * @param list<StampInterface> $stamps
@@ -2617,7 +2618,66 @@ final class NatsTransportTest extends TestCase
         $transport->setJetStreamContext($jetStream);
         $transport->send(new Envelope(new \stdClass(), $stamps));
 
+        self::assertSame([], array_values(array_filter(
+            $logger->messagesAt('warning'),
+            static fn (string $message): bool => str_contains($message, 'retry strategy retried a message that NATS redelivers itself'),
+        )));
+    }
+
+    /**
+     * With retry_via=copy and no scheduled_messages, Symfony's retry is published at once, without the delay its
+     * strategy computed: the retries of a message that keeps failing all run within milliseconds. The transport says
+     * so once per transport object, at the first such retry, with the delay it dropped.
+     */
+    public function testARetryPublishedWithoutItsDelayIsLoggedOnce(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('publish')->with('test-topic')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        foreach ([[1000, 1], [2000, 2]] as [$delayMs, $retry]) {
+            $transport->send(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-' . $retry), new DelayStamp($delayMs), new RedeliveryStamp($retry)]));
+        }
+
+        self::assertSame([
+            'retry_via=copy on stream "test-stream", subject "test-topic": Symfony\'s retry was published at once, without'
+            . ' its delay of 1000 ms: a copy waits only with scheduled_messages. Set retry_via: nak to have NATS wait, or'
+            . ' scheduled_messages: true (NATS 2.12+, not on an interest stream).',
+        ], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * Nothing is logged for a retry that waits as a schedule, a retry without a delay, a failure transport's copy and
+     * an application's own delayed message, which carries no retry count.
+     *
+     * @param array<string, mixed> $options
+     * @param list<StampInterface> $stamps
+     */
+    #[DataProvider('sendsThatKeepTheirDelayOrHaveNone')]
+    public function testASendThatKeepsItsDelayOrHasNoneIsNotLogged(array $options, array $stamps): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        $transport->send(new Envelope(new \stdClass(), $stamps));
+
         self::assertSame([], $logger->records);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, list<StampInterface>}>
+     */
+    public static function sendsThatKeepTheirDelayOrHaveNone(): iterable
+    {
+        yield 'a retry scheduled with scheduled_messages' => [['scheduled_messages' => true], [new ReceivedStamp('async'), new DelayStamp(1000), new RedeliveryStamp(1)]];
+        yield 'a retry without a delay' => [[], [new ReceivedStamp('async'), new DelayStamp(0), new RedeliveryStamp(1)]];
+        yield 'a failure transport\'s copy' => [[], [new ReceivedStamp('async'), new DelayStamp(0), new RedeliveryStamp(0)]];
+        yield 'an application\'s own delayed message' => [[], [new DelayStamp(5000)]];
     }
 
     /**
@@ -7837,6 +7897,18 @@ final class NatsTransportTest extends TestCase
         );
     }
 
+    /** The warning of a last delivery's retry copy published without its delay of $delayMs, with retry_via=nak. */
+    private static function lastDeliveryCopyWithoutItsDelay(int $delayMs): string
+    {
+        return sprintf(
+            'retry_via=nak on stream "test-stream", subject "test-topic": the retry of the last delivery the consumer'
+            . ' allows was published as a copy at once, without its delay of %d ms. NATS redelivers nothing after that'
+            . ' delivery, so no NAK can carry this retry. scheduled_messages: true (NATS 2.12+, not on an interest stream)'
+            . ' makes the copy wait, and a max_deliver above the retries Symfony makes keeps it from being needed.',
+            $delayMs,
+        );
+    }
+
     /**
      * The transport's consumer as the server reports it, with max_deliver $maxDeliver; null is a consumer without a
      * limit, which NATS reports as -1.
@@ -8369,7 +8441,8 @@ final class NatsTransportTest extends TestCase
         $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
         $transport->{$settlement}($failed);
 
-        self::assertSame([], $logger->records);
+        self::assertSame([self::lastDeliveryCopyWithoutItsDelay(1000)], $logger->messagesAt('warning'));
+        self::assertCount(1, $logger->records);
     }
 
     /**
@@ -8503,7 +8576,8 @@ final class NatsTransportTest extends TestCase
         ], $settled);
         self::assertSame([true, true, true, false], $willRetry);
         self::assertCount(1, $failureTransport->getSent());
-        self::assertSame([], $logger->records);
+        self::assertSame([self::lastDeliveryCopyWithoutItsDelay(2000)], $logger->messagesAt('warning'));
+        self::assertCount(1, $logger->records);
     }
 
     /**
@@ -8537,6 +8611,7 @@ final class NatsTransportTest extends TestCase
             'retry_via=nak on stream "test-stream": consumer "client" has max_deliver 3 and the max_deliver option is '
             . $optionDescribed . '. The transport follows the consumer, whose limit NATS applies. Run'
             . ' messenger:setup-transports to give the consumer the option\'s value.',
+            self::lastDeliveryCopyWithoutItsDelay(1000),
         ], $logger->messagesAt('warning'));
     }
 
@@ -8669,6 +8744,7 @@ final class NatsTransportTest extends TestCase
             'retry_via=nak on stream "test-stream": consumer "client" could not be read for its max_deliver (refused), so the'
             . ' max_deliver option (2) tells which delivery is the last one. Let this user ask for consumer info'
             . ' ($JS.API.CONSUMER.INFO.test-stream.client).',
+            self::lastDeliveryCopyWithoutItsDelay(1000),
         ], $logger->messagesAt('warning'));
 
         $transport->close();
@@ -8743,9 +8819,10 @@ final class NatsTransportTest extends TestCase
         }
 
         $warnings = $logger->messagesAt('warning');
-        self::assertCount(2, $warnings);
+        self::assertCount(3, $warnings);
         self::assertStringContainsString('consumer "client" has max_deliver 3 and the max_deliver option is unset (no limit)', $warnings[0]);
         self::assertStringContainsString('could not be read for its max_deliver (refused), so the value read before (3) tells', $warnings[1]);
+        self::assertSame(self::lastDeliveryCopyWithoutItsDelay(1000), $warnings[2]);
     }
 
     /**
@@ -8775,7 +8852,12 @@ final class NatsTransportTest extends TestCase
         $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(3)));
         $transport->ack($failed);
 
-        self::assertCount(1, $logger->messagesAt('warning'), 'the consumer\'s 3 against the option\'s 5');
+        self::assertSame([
+            'retry_via=nak on stream "test-stream": consumer "client" has max_deliver 3 and the max_deliver option is 5. The'
+            . ' transport follows the consumer, whose limit NATS applies. Run messenger:setup-transports to give the'
+            . ' consumer the option\'s value.',
+            self::lastDeliveryCopyWithoutItsDelay(1000),
+        ], $logger->messagesAt('warning'));
     }
 
     /**

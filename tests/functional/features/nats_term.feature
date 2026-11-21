@@ -14,6 +14,7 @@ Feature: Symfony failure transport via TERM
     And I start a messenger consumer with high limit
     And I wait for the consumer to finish or timeout
     Then the failure transport should contain 1 message
+    And the consumer should have warned once that Symfony's retry was published without its delay
 
   # The README's recommended IgbinarySerializer on both transports. A worker adds a stamp holding a closure
   # to every message it handles; the serializer used to serialize it with the retry and the send to the
