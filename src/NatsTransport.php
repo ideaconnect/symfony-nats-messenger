@@ -99,6 +99,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /** Resolved immutable transport configuration (consumer, batching, timeouts, etc.). */
     protected NatsTransportConfiguration $configuration;
 
+    /**
+     * Whether the setup() now running warns about a nats-mode stream that loses what max_deliver stops
+     * ({@see warnIfNatsModeLosesWhatMaxDeliverStops()}): not when auto_setup runs it for a send.
+     */
+    private bool $warnAboutWhatMaxDeliverStops = true;
+
     /** Tracks whether the one-shot {@see autoSetupIfEnabled()} provisioning has already run this instance. */
     private bool $autoSetupDone = false;
 
@@ -354,8 +360,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return $envelope;
         }
 
-        $this->autoSetupIfEnabled();
+        $this->autoSetupIfEnabled(toSend: true);
 
+        // Read before the copy gets its own id: with retry_via=nak a retry is published here for want of a token.
+        $hadADeliveryToken = $envelope->last(TransportMessageIdStamp::class) !== null;
         $uuid = (string) Uuid::v4();
         $envelope = $envelope->with(new TransportMessageIdStamp($uuid));
 
@@ -383,7 +391,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         $delayMs = $envelope->last(DelayStamp::class)?->getDelay();
         if ($delayMs > 0 && !$this->configuration->isScheduledMessagesEnabled()) {
-            $this->warnIfARetryLosesItsDelay($envelope, $delayMs);
+            $this->warnIfARetryLosesItsDelay($envelope, $delayMs, $hadADeliveryToken);
         }
 
         if ($delayMs > 0 && $this->configuration->isScheduledMessagesEnabled()) {
@@ -438,20 +446,34 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * at once, without the delay its retry strategy computed: a message published on JetStream waits only as a
      * schedule, with scheduled_messages. With retry_via: copy that is every retry: the retries of a message that keeps
      * failing all run within milliseconds, whatever the strategy's delay and multiplier. With retry_via: nak it is
-     * the retry no NAK can carry, the one of the last delivery the consumer allows, which goes out as a copy.
+     * a retry no NAK can carry, which goes out as a copy: the one of the last delivery the consumer allows, or one that
+     * carries no delivery token, which the message names apart, since raising max_deliver helps only the first.
      *
      * Logged once per transport object, so once per worker, through the logger the transport was given. A failure
      * transport's copy carries no delay and an application's own delayed message no retry count, so neither is
      * concerned.
      */
-    private function warnIfARetryLosesItsDelay(Envelope $envelope, int $delayMs): void
+    private function warnIfARetryLosesItsDelay(Envelope $envelope, int $delayMs, bool $hadADeliveryToken): void
     {
         if ($this->retryDelayDroppedReported || $envelope->last(ReceivedStamp::class) === null || RedeliveryStamp::getRetryCountFromEnvelope($envelope) <= 0) {
             return;
         }
 
         $this->retryDelayDroppedReported = true;
-        $this->logger?->warning($this->configuration->retryVia() === RetryVia::NAK
+        if ($this->configuration->retryVia() !== RetryVia::NAK) {
+            $this->logger?->warning(sprintf(
+                'retry_via=copy on stream "%s", subject "%s": Symfony\'s retry was published at once, without its delay of'
+                . ' %d ms: a copy waits only with scheduled_messages. Set retry_via: nak to have NATS wait, or'
+                . ' scheduled_messages: true (NATS 2.12+, not on an interest stream).',
+                $this->streamName,
+                $this->topic,
+                $delayMs,
+            ));
+
+            return;
+        }
+
+        $this->logger?->warning($hadADeliveryToken
             ? sprintf(
                 'retry_via=nak on stream "%s", subject "%s": the retry of the last delivery the consumer allows was published'
                 . ' as a copy at once, without its delay of %d ms. NATS redelivers nothing after that delivery, so no NAK'
@@ -462,9 +484,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $delayMs,
             )
             : sprintf(
-                'retry_via=copy on stream "%s", subject "%s": Symfony\'s retry was published at once, without its delay of'
-                . ' %d ms: a copy waits only with scheduled_messages. Set retry_via: nak to have NATS wait, or'
-                . ' scheduled_messages: true (NATS 2.12+, not on an interest stream).',
+                'retry_via=nak on stream "%s", subject "%s": Symfony\'s retry was published as a copy at once, without its'
+                . ' delay of %d ms, as it carried no delivery token for a NAK to settle: something between the worker and'
+                . ' the transport removed its TransportMessageIdStamp. scheduled_messages: true (NATS 2.12+, not on an'
+                . ' interest stream) makes such a copy wait.',
                 $this->streamName,
                 $this->topic,
                 $delayMs,
@@ -500,7 +523,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         // autoSetupIfEnabled() provisions again on its own here: the count moved since the last setup().
-        $this->autoSetupIfEnabled();
+        $this->autoSetupIfEnabled(toSend: true);
 
         return true;
     }
@@ -645,7 +668,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function rememberConsumersMaxDeliver(ConsumerInfo $consumerInfo): void
     {
-        $config = is_array($consumerInfo->raw['config'] ?? null) ? $consumerInfo->raw['config'] : [];
+        $config = self::configOf($consumerInfo);
         $maxDeliver = $config['max_deliver'] ?? null;
 
         $this->consumersMaxDeliver = [
@@ -1254,7 +1277,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             // The live stream: an update leaves an existing stream's retention as it was.
-            $this->warnIfNatsModeLosesWhatMaxDeliverStops($streamInfo);
+            if ($this->warnAboutWhatMaxDeliverStops) {
+                $this->warnIfNatsModeLosesWhatMaxDeliverStops($streamInfo);
+            }
 
             $consumerConfiguration = ConsumerConfiguration::create()
                 ->durable($this->configuration->consumer())
@@ -1330,8 +1355,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * stream/consumer must then be provisioned explicitly via `messenger:setup-transports`. The
      * done-flag is set only after {@see setup()} succeeds, so a transient provisioning failure is
      * retried on the next call rather than silently skipped.
+     *
+     * A setup for a send does not warn about a nats-mode stream that loses what max_deliver stops: that warning is
+     * for the operator, who runs `messenger:setup-transports` or a worker, and a process that only sends sets the
+     * stream up once per transport object, which is once per request under PHP-FPM.
      */
-    private function autoSetupIfEnabled(): void
+    private function autoSetupIfEnabled(bool $toSend = false): void
     {
         if (!$this->configuration->isAutoSetupEnabled()) {
             return;
@@ -1346,7 +1375,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return;
         }
 
-        $this->setup();
+        $this->warnAboutWhatMaxDeliverStops = !$toSend;
+        try {
+            $this->setup();
+        } finally {
+            $this->warnAboutWhatMaxDeliverStops = true;
+        }
         $this->autoSetupDone = true;
         $this->reconnectsAtSetup = $this->clientOwnsRecovery() ? $this->client->statistics()->reconnects : null;
     }
@@ -1845,7 +1879,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         /** @var array<string, mixed> $config */
-        $config = is_array($consumerInfo->raw['config'] ?? null) ? $consumerInfo->raw['config'] : [];
+        $config = self::configOf($consumerInfo);
 
         if (($config['ack_policy'] ?? null) !== 'explicit') {
             throw new RuntimeException('Consumer ack policy must be explicit.');
@@ -1932,7 +1966,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         /** @var array<string, mixed> $config */
-        $config = is_array($existingConsumer->raw['config'] ?? null) ? $existingConsumer->raw['config'] : [];
+        $config = self::configOf($existingConsumer);
         $currentPolicy = $config['replay_policy'] ?? null;
 
         // A consumer reporting no replay policy is on the server default, so leaving the field out
@@ -2036,7 +2070,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return;
         }
 
-        $config = is_array($stream->raw['config'] ?? null) ? $stream->raw['config'] : [];
+        $config = self::configOf($stream);
         $cluster = is_array($stream->raw['cluster'] ?? null) ? $stream->raw['cluster'] : [];
         $retention = is_string($config['retention'] ?? null) ? $config['retention'] : 'limits';
         $replicas = is_int($config['num_replicas'] ?? null) ? $config['num_replicas'] : 1;
@@ -2066,11 +2100,32 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /** Whether $version, as a server reports it ("2.12.5", "v2.15.0-RC.1"), is $release or later; false when unknown. */
     private static function serverVersionIsAtLeast(?string $version, string $release): bool
     {
-        if ($version === null || preg_match('/^v?(\d+\.\d+\.\d+)/', $version, $parts) !== 1) {
-            return false;
+        $known = self::serverRelease($version);
+
+        return $known !== null && version_compare($known, $release, '>=');
+    }
+
+    /**
+     * The release a server's version names, as "major.minor.patch" ("v2.15.0-RC.1" is 2.15.0, "2.12" is 2.12.0), or
+     * null when there is none to read. The one reading of a version for every check of one.
+     */
+    private static function serverRelease(?string $version): ?string
+    {
+        if ($version === null || preg_match('/^v?(\d+)\.(\d+)(?:\.(\d+))?/', $version, $parts) !== 1) {
+            return null;
         }
 
-        return version_compare($parts[1], $release, '>=');
+        return $parts[1] . '.' . $parts[2] . '.' . ($parts[3] ?? '0');
+    }
+
+    /**
+     * The config of a stream or consumer info, or none when the server's answer has none.
+     *
+     * @return array<mixed>
+     */
+    private static function configOf(StreamInfo|ConsumerInfo $info): array
+    {
+        return is_array($info->raw['config'] ?? null) ? $info->raw['config'] : [];
     }
 
     /**
@@ -2098,7 +2153,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         try {
             $stream ??= $this->awaitOnConnection(fn (): Future => $this->jetStream()->getStream($this->streamName));
-            $config = is_array($stream->raw['config'] ?? null) ? $stream->raw['config'] : [];
+            $config = self::configOf($stream);
             if (($config['retention'] ?? 'limits') !== 'interest') {
                 $this->delayedMessagesChecked = true;
 
@@ -2184,7 +2239,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private static function consumerFiltersMatch(ConsumerInfo $consumer, string $subject): bool
     {
-        $config = is_array($consumer->raw['config'] ?? null) ? $consumer->raw['config'] : [];
+        $config = self::configOf($consumer);
         $filters = [];
         if (is_string($config['filter_subject'] ?? null) && $config['filter_subject'] !== '') {
             $filters[] = $config['filter_subject'];
@@ -2241,11 +2296,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private function schedulesUnsupportedByTheServer(): ?UnsupportedFeatureException
     {
         $version = $this->client->serverInfo()?->version;
-        if ($version === null || preg_match('/^v?(\d+)\.(\d+)/', $version, $release) !== 1) {
-            return null;
-        }
-
-        if (version_compare($release[1] . '.' . $release[2], self::SCHEDULES_SINCE, '>=')) {
+        // A version the transport cannot read is let through: the server's own refusal of the option still stands.
+        $release = self::serverRelease($version);
+        if ($version === null || $release === null || version_compare($release, self::SCHEDULES_SINCE, '>=')) {
             return null;
         }
 
@@ -2423,7 +2476,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         array $desiredSubjects,
     ): array {
         /** @var array<string, mixed> $serverConfiguration */
-        $serverConfiguration = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+        $serverConfiguration = self::configOf($streamInfo);
         unset($serverConfiguration['name']);
         $serverConfiguration = $this->normalizeStreamConfigurationForUpdate($serverConfiguration);
 

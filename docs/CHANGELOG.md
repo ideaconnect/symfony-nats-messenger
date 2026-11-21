@@ -10,11 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **A warning when Symfony's retry is published without its delay**, once per worker: every retry with `retry_via:
-  copy` and no `scheduled_messages`, and the retry of the last delivery `max_deliver` allows with `retry_via: nak`,
-  which goes out as a copy. Up to 5.9.x the delays were dropped without a word. `warnIfARetryLosesItsDelay()`.
+  copy` and no `scheduled_messages`, and with `retry_via: nak` a retry that goes out as a copy, which the warning
+  tells apart: the retry of the last delivery `max_deliver` allows, or one that carries no delivery token. Up to 5.9.x
+  the delays were dropped without a word. `warnIfARetryLosesItsDelay()`.
 - **A warning at `setup()` in nats mode with `max_deliver`** when the stream is one where NATS deletes a message that
   reached `max_deliver`: interest retention on a clustered server, interest on a standalone server before 2.12.9 or on
-  2.14.0, work-queue with replicas before 2.12.5. Nats mode keeps its behaviour. `warnIfNatsModeLosesWhatMaxDeliverStops()`.
+  2.14.0, work-queue with replicas before 2.12.5. Nats mode keeps its behaviour. Not from the setup `auto_setup` runs
+  for a send: a process that only sends, as each PHP-FPM request does, would log it every time.
+  `warnIfNatsModeLosesWhatMaxDeliverStops()`.
 - **The example `nats-retry-on-a-cluster.php`** shows on the test cluster the warning, NATS deleting a message stopped
   at `max_deliver` from an interest stream with three replicas, and a work-queue stream keeping it.
 

@@ -204,11 +204,13 @@ The transport writes lines of its own to the same logger, each warning once per 
 
 - a warning when a transport in nats mode leaves out a retry Symfony's retry strategy sent, i.e. when
   `max_retries` is above 0 with `retry_handler: nats` (see [Retry Handler Behavior](#retry-handler-behavior));
-- a warning when a retry of Symfony's goes out without its delay, and with `retry_via: nak` when the consumer's
-  `max_deliver` differs from the option or cannot be read
+- a warning when a retry of Symfony's goes out without its delay, naming why (no `scheduled_messages`, the last
+  delivery `max_deliver` allows, or a retry that lost its delivery token), and with `retry_via: nak` when the
+  consumer's `max_deliver` differs from the option or cannot be read
   (see [Retrying through a NAK](#retrying-through-a-nak-retry_via-nak));
 - a warning from `setup()` in nats mode on a stream from which NATS deletes a message that reached
-  `max_deliver`, and with `scheduled_messages` when the stream and its consumers could not be read;
+  `max_deliver`, though not from the setup `auto_setup` runs for a send, which a PHP-FPM process runs once per
+  request; and with `scheduled_messages` a warning when the stream and its consumers could not be read;
 
 With the bundle, the application's `logger` service is handed to the factory, tagged for Monolog's
 `messenger` channel, so the client's lines land next to the worker's. Without that service, or without the
@@ -798,6 +800,9 @@ this transport's serializers throw for every way they fail, warnings included.
   once more and fails it. Symfony's retry strategy and failure transport then deal with it like any failure in
   symfony mode, and nats mode TERMs it. When the serializer throws, as this transport's igbinary serializer does,
   Messenger 8.1.11 and later fail it once, as unrecoverable, and 8.1.0 to 8.1.10 retry it up to `max_retries`.
+  FrameworkBundle puts that middleware in every bus. A bus built without it has no handler for the decoding failure,
+  as with Symfony's own transports: with `allow_no_handlers` the worker acknowledges it and it is gone, and without,
+  it fails as a missing handler and goes through the retry strategy.
 - **Before 8.1** the transport TERMs it, since a redelivery cannot decode it either, and throws the decode error,
   which stops the worker that pulled it, as Symfony's own transports do. The next worker does not get it.
 - **Any other exception of the serializer** propagates, and the message is left for redelivery after `ack_wait` (5.10.0):

@@ -2783,6 +2783,28 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * With retry_via: nak, a retry copy that carries no delivery token is published at once too, and the warning says
+     * so, instead of the last delivery and max_deliver, which have nothing to do with it.
+     */
+    public function testNakRetryWarnsAboutACopyWithoutADeliveryTokenByItsOwnCause(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES, $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        $transport->send(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new DelayStamp(700), new RedeliveryStamp(1)]));
+
+        self::assertSame([
+            'retry_via=nak on stream "test-stream", subject "test-topic": Symfony\'s retry was published as a copy at once,'
+            . ' without its delay of 700 ms, as it carried no delivery token for a NAK to settle: something between the'
+            . ' worker and the transport removed its TransportMessageIdStamp. scheduled_messages: true (NATS 2.12+, not on'
+            . ' an interest stream) makes such a copy wait.',
+        ], $logger->messagesAt('warning'));
+    }
+
+    /**
      * Nothing is logged for a retry that waits as a schedule, a retry without a delay, a failure transport's copy and
      * an application's own delayed message, which carries no retry count.
      *
@@ -4591,6 +4613,7 @@ final class NatsTransportTest extends TestCase
         yield 'NATS 2.10' => ['2.10.29'];
         yield 'NATS 2.11, the last release without schedules' => ['2.11.17'];
         yield 'a version with a leading v' => ['v2.11.0'];
+        yield 'a version without its patch number' => ['2.11'];
     }
 
     /**
@@ -4628,6 +4651,7 @@ final class NatsTransportTest extends TestCase
         yield 'NATS 2.15' => ['2.15.2'];
         yield 'NATS 3' => ['3.0.0'];
         yield 'a version with a leading v' => ['v2.12.4'];
+        yield 'a version without its patch number' => ['2.12'];
         yield 'a version the transport cannot read' => ['nightly'];
         yield 'a version that starts with something else' => ['build-2.10.3'];
         yield 'no server info' => [null];
@@ -5683,6 +5707,42 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * With auto_setup, the setup a send runs does not warn: a process that only sends sets the stream up once per
+     * transport object, once per request under PHP-FPM, and would log the warning each time. The setup a worker's first
+     * pull runs warns, once, as messenger:setup-transports does.
+     */
+    public function testAutoSetupWarnsAboutAStreamThatLosesWhatMaxDeliverStopsForAWorkerOnly(): void
+    {
+        $stream = StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic'], 'retention' => 'interest', 'num_replicas' => 3], 'cluster' => ['name' => 'east', 'leader' => 'n1']]);
+        $logs = [];
+        foreach (['send', 'get'] as $operation) {
+            $jetStream = $this->createStub(JetStreamContext::class);
+            $jetStream->method('addStream')->willReturn(Future::complete($stream));
+            $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+            $jetStream->method('publish')->willReturn(Future::complete());
+            $jetStream->method('fetchBatch')->willReturn(Future::complete([]));
+            $client = $this->createStub(NatsClient::class);
+            $client->method('state')->willReturn(ConnectionState::Open);
+            $client->method('serverInfo')->willReturn(new ServerInfo('S', 'n', '2.15.2', true, 1_048_576, true));
+            $logger = new RecordingLogger();
+
+            $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + ['max_deliver' => 3, 'auto_setup' => true], $this->encodingSerializer(), $logger);
+            $transport->setClient($client);
+            $transport->setJetStreamContext($jetStream);
+            if ($operation === 'send') {
+                $transport->send(new Envelope(new \stdClass()));
+                $transport->send(new Envelope(new \stdClass()));
+            } else {
+                iterator_to_array($transport->get(), false);
+                iterator_to_array($transport->get(), false);
+            }
+            $logs[$operation] = count($logger->messagesAt('warning'));
+        }
+
+        self::assertSame(['send' => 0, 'get' => 1], $logs);
+    }
+
+    /**
      * A server whose version the client does not know is taken to be one that deletes the message from an interest
      * stream at a restart, and the warning says the version is unknown.
      */
@@ -5734,6 +5794,7 @@ final class NatsTransportTest extends TestCase
         yield 'interest, one replica in a cluster' => [['config' => ['retention' => 'interest', 'num_replicas' => 1], 'cluster' => $clustered], '2.15.2', 'a stream with interest retention on a clustered server'];
         yield 'interest, a standalone server before 2.12.9' => [['config' => ['retention' => 'interest'], 'cluster' => ['leader' => 'N1']], '2.12.8', 'a stream with interest retention, at a restart of the server'];
         yield 'interest, a standalone 2.14.0' => [['config' => ['retention' => 'interest']], '2.14.0', 'a stream with interest retention, at a restart of the server'];
+        yield 'interest, a standalone 2.12 without its patch number, which is 2.12.0' => [['config' => ['retention' => 'interest']], '2.12', 'a stream with interest retention, at a restart of the server'];
         yield 'work-queue, three replicas, before 2.12.5' => [['config' => ['retention' => 'workqueue', 'num_replicas' => 3], 'cluster' => $clustered], '2.12.4', 'a work-queue stream with 3 replicas'];
     }
 
