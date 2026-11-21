@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.9.1] - 2026-11-21
+
+A **patch** release with three fixes for 5.9.0, found while reviewing #119, and the client release they need (#120).
+With `retry_via: nak`, the retry of the consumer's last delivery is no longer NAKed and lost when the consumer's
+`max_deliver` is not the option's. `scheduled_messages` is refused on a stream with interest retention where nothing
+has interest in the delayed subjects, which dropped every delayed message, before `setup()` writes the stream. Nats mode
+TERMs a message that cannot be decoded, which NATS brought back for ever. The transport now requires
+`idct/php-nats-jetstream-client` `^2.30`.
+
 ### Changed
 
 - **`idct/php-nats-jetstream-client` `^2.30`.** A request the server refuses for lack of permission fails at once with
