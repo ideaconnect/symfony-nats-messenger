@@ -192,6 +192,20 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
 
 > **Tested by:** `testSetupRefusesScheduledMessagesOnAServerWithoutSchedules`, `testSendRefusesToScheduleOnAServerWithoutSchedules`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, the example `delayed-messages.php` (on the oldest supported server in CI). The unit suite was run by hand on Symfony Messenger 7.3.0, and on 7.2.0 the transport fails to load.
 
+### Upgrading from 5.9.0
+
+- **Client 2.30.0 or later.** The transport requires `idct/php-nats-jetstream-client` `^2.30`, which
+  `composer update` installs. A request the server refuses for lack of permission fails at once there.
+- **`scheduled_messages` on an interest stream nothing has interest in the delayed subjects of is refused,** by
+  `messenger:setup-transports`, before it creates or changes the stream, and by a worker's first pull. Every delayed
+  message was lost there. Remove the option, use a stream with limits or work-queue retention, or create the stream
+  and a consumer on `{topic}.delayed.>` by hand first (see [Delayed / Scheduled Messages](#delayed--scheduled-messages)).
+- **With `retry_via: nak`, the consumer's own `max_deliver` decides the last delivery,** which the transport reads with
+  a consumer info request. Let the transport's user ask for it (`$JS.API.CONSUMER.INFO.<stream>.<consumer>`), or the
+  option decides, as before, with one warning.
+
+> **Tested by:** `testSetupRefusesScheduledMessagesOnAnInterestStreamItWouldCreateWithoutCreatingIt`, `testNakRetryPublishesTheCopyOfTheConsumersLastDeliveryWhateverTheOptionSays`, `testAConsumerThatCannotBeReadLeavesTheOptionAndIsNotAskedAgainOnThatConnection`, the Behat scenarios of `nats_delayed.feature` on an interest stream and `nats_retry_via.feature`.
+
 ### Logging
 
 The NATS client reports what it does with the connection through a PSR-3 logger: the connection's lifecycle
@@ -976,7 +990,10 @@ it below `stream_max_age`: a message that expires while it waits leaves the stre
   consumer's limit at the first retry that needs it, and again after a minute (5.9.1). A consumer whose limit
   differs from the option, such as one another configuration's setup changed, or one with a limit while the option
   is unset, is followed and logged once as a warning. A user who may not ask for consumer info
-  (`$JS.API.CONSUMER.INFO.<stream>.<consumer>`) leaves the option to decide, as up to 5.9.0, with one warning.
+  (`$JS.API.CONSUMER.INFO.<stream>.<consumer>`), whom the server refuses at once, leaves the option to decide, as up
+  to 5.9.0, with one warning, and is not asked again on that connection. A JetStream error, such as a consumer that
+  does not exist, leaves the option to decide for that retry only. A read that fails on the connection, as during a
+  server restart, makes the send of the retry fail: the delivery comes back after `ack_wait` instead of a guess.
   Up to 5.9.0 the option always decided, and such a consumer lost the retry of its last delivery: with the option
   unset or at 5 on a consumer limited to 3, the message ran 3 times and was gone, with no failure-transport copy.
 - The builder refuses `retry_via` with `retry_handler: nats`, and with `nak` a positive `nak_delay` (the NAK
@@ -2048,7 +2065,9 @@ transport then goes on. Create the stream yourself first, with interest retentio
 `{topic}.delayed.>`, then that consumer, then run the setup, which turns the stream's schedules on. ADR-51
 calls it a pinning consumer and prefers a separate work-queue stream for the schedules: the pinning consumer costs
 work on a replicated stream, and the delayed messages are lost again if it is deleted. A process that only publishes
-does not check the stream, and a stream or consumer list the transport may not read is let through with one warning.
+does not check the stream, and a stream or consumer list the transport's user may not read is let through with one
+warning. A stream that does not exist yet is checked at the next pull, and a read that fails on the connection makes
+the pull fail, as the pull's own failure would.
 
 > **Tested by:** `testSetupRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testSetupRefusesScheduledMessagesOnAnInterestStreamItWouldCreateWithoutCreatingIt`, `testSetupKeepsScheduledMessagesOnAnInterestStreamWithAConsumerOnTheDelayedSubjects`, `testSetupAsksForNoConsumersOnAStreamThatKeepsDelayedMessages`, `testTheFirstPullRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testTheStreamIsCheckedOnceForAWorkerWhosePullsGoOn`, `testAStreamThatCannotBeReadIsLetThroughWithOneWarning`, `testWithoutScheduledMessagesAPullChecksNothing`, the Behat scenarios `scheduled_messages on an interest stream nothing has interest in the delayed subjects of is refused` and `Delayed messages on an interest stream are delivered while a consumer has interest in the delayed subjects` (`nats_delayed.feature`), the example `delayed-messages.php`
 
