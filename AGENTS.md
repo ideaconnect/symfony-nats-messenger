@@ -151,7 +151,9 @@ composer nats:stop               # Stop NATS
   stream) and for the whole grace period of lame duck mode. After a 503 the transport asks the client why
   (`pullMetAServerGoingAway()`, the client's `diagnoseNoResponders()`, `^2.29`, #106): any answer keeps the 503's reading
   as a missing consumer, and `ServerGoingAway` (no answer, with the connection closed, being recovered or replaced, or in
-  lame duck mode) is an empty batch. A restart or lame duck scenario on CI that fails with
+  lame duck mode) is an empty batch. The server refuses the question of a user who may not ask for consumer info at once,
+  and the client watches the connection until `request_timeout` all the same; client 2.30.1 (#131) keeps to that with
+  `reconnect: true` too, which `GracefulStopPullTest` checks with the real client and a held dial. A restart or lame duck scenario on CI that fails with
   `JetStream pull request ended with status 503` is a real failure now.
 - No frame that waits on a Future takes it as a parameter (#115). With `zend.exception_ignore_args` off, the default
   without a php.ini, the trace of an exception raised in the event loop records the arguments of every frame waiting on

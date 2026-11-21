@@ -1538,15 +1538,20 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * client's diagnoseNoResponders() (client 2.29) does: it asks for the consumer while it watches the connection. A
      * server that stays answers; one that is going away answers nothing, and closes the connection or announces lame
      * duck mode, which ends the wait without request_timeout, also when the client keeps the question across its
-     * reconnect.
+     * reconnect. A user allowed to pull but not to ask for consumer info gets no answer either: nats-server refuses
+     * that user's question at once, with a permissions violation, a server going away as well as one that stays, and
+     * the client then watches the connection for the rest of the question's budget (request_timeout) all the same. From
+     * client 2.30.1 that watch keeps to the budget with `reconnect: true` too: ServerGoingAway once the connection is
+     * closed, being recovered or replaced, or its server announced lame duck mode, while the client goes on
+     * reconnecting, where 2.30.0 returned only once the reconnect was over and held get() for as long (#131).
      *
      * ServerGoingAway is an empty batch, and the operation after it checks the connection first, as after
      * `409 Server Shutdown` (a recovery the client runs is left to it). Any answer - the consumer, a 404 or another
      * JetStream error - comes from a server that stays, and the 503 keeps its reading as a missing consumer: with
      * auto_setup the consumer is provisioned again and pulled from once more, without it the 503 propagates. So does
-     * NoAnswer, on a connection that stays (a user allowed to pull but not to ask for consumer info, which the server
-     * leaves unanswered), after request_timeout: reading it as empty would hide a missing consumer behind a worker that
-     * never stops polling. The operation after it checks the connection first, as after any that failed on it.
+     * NoAnswer, at the end of request_timeout on a connection that stays (a refused question, a server too busy to
+     * answer): reading it as empty would hide a missing consumer behind a worker that never stops polling. The
+     * operation after it checks the connection first, as after any that failed on it.
      */
     private function pullMetAServerGoingAway(JetStreamException $exception): bool
     {

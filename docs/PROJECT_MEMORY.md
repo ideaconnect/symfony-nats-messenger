@@ -606,4 +606,13 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   Infection killed 1706 of 1730 mutants, with the 24 survivors `docs/TESTS.md` lists; Behat 105 of 105; 22 of 22
   examples. The retry matrix, 6 modes by 4 failure scenarios on 8 kinds of stream (a standalone 2.15.2, clusters of
   2.15.2 and 2.11.17) and on Messenger 7.4.21, gave the expected outcome in all 216 cells.
+- **#131, after 5.10.0:** with `reconnect: true` and a user who may pull but not ask for consumer info, client 2.30.0's
+  `diagnoseNoResponders()` returned only once the reconnect was over, as its watch after the refused question awaited a
+  read that ran the reconnect, or the lame duck failover, itself: `get()` stayed in it for the whole outage, deaf to
+  `messenger:stop-workers` and SIGTERM. Fixed in the client first (2.30.1, php-nats-jetstream-client#257 with #256),
+  then required here as `^2.30.1` in both manifests. `GracefulStopPullTest` drives it with the real client: the scripted
+  server refuses the question (`$refuseConsumerInfo`) and goes away on the watch's next read (`$afterTheRefusal`), and
+  the dial is held until the test has seen `get()` return while the client is `Connecting`. Hold a recovery for such a
+  test, never time it, and give request_timeout far more than the scripted connection's 10 s dial limit, so that a
+  diagnosis that waits for its deadline fails too.
 
