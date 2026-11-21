@@ -44,3 +44,17 @@ Feature: NATS-native retry via NAK
     And a message the transport cannot decode is published to its subject
     When two messenger consumers run one after the other for 3 seconds each
     Then the message that could not be decoded should have been delivered once and settled
+
+  # An UnrecoverableMessageHandlingException can never succeed: nats mode TERMs it. Up to 5.9.x it NAKed it, and NATS
+  # ran the handler again on every delivery max_deliver allowed.
+  @nak
+  Scenario: An unrecoverable failure runs once in nats mode
+    Given NATS server is running
+    And I have a messenger transport configured with NATS retry handler, max deliver of 3 and Symfony's default retry strategy
+    And the NATS stream is set up
+    And the retry state directory is clean
+    And the test files directory is clean
+    When I send 1 unrecoverable failing message
+    And I start a messenger consumer with high limit
+    And I wait for the consumer to finish or timeout
+    Then the always-failing message should have been attempted 1 time

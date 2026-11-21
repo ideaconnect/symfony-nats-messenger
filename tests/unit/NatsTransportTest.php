@@ -33,6 +33,8 @@ use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
 use Revolt\EventLoop;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\EventListener\AddErrorDetailsStampListener;
+use Symfony\Component\Messenger\Exception\HandlerFailedException;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
 use Symfony\Component\Messenger\Exception\RecoverableMessageHandlingException;
@@ -6909,6 +6911,81 @@ final class NatsTransportTest extends TestCase
 
         $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(1)));
         $transport->ack($failed);
+    }
+
+    /**
+     * In nats mode a failure Symfony marks as unrecoverable is TERMed when the worker rejects it: it can never succeed.
+     * Up to 5.9.x it was NAKed, and NATS ran the handler again on every delivery up to max_deliver. An ordinary failure
+     * is still NAKed, and so is a delivery without Symfony's error details.
+     *
+     * @param list<StampInterface> $stamps
+     */
+    #[DataProvider('failuresNatsModeRejects')]
+    public function testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest(array $stamps, string $settledWith): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        foreach (['term', 'nak'] as $method) {
+            if ($method === $settledWith) {
+                $jetStream->expects(self::once())->method($method)->willReturn(Future::complete());
+            } else {
+                $jetStream->expects(self::never())->method($method);
+            }
+        }
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
+        $transport->setJetStreamContext($jetStream);
+        $transport->reject(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.1.1.1.0.0'), ...$stamps]));
+    }
+
+    /**
+     * @return iterable<string, array{list<StampInterface>, string}>
+     */
+    public static function failuresNatsModeRejects(): iterable
+    {
+        yield 'unrecoverable' => [[ErrorDetailsStamp::create(new UnrecoverableMessageHandlingException('never'))], 'term'];
+        yield 'unrecoverable, wrapped by the handler failure' => [[ErrorDetailsStamp::create(new HandlerFailedException(new Envelope(new \stdClass()), [new UnrecoverableMessageHandlingException('never')]))], 'term'];
+        yield 'an ordinary failure' => [[ErrorDetailsStamp::create(new \RuntimeException('not now'))], 'nak'];
+        yield 'recoverable' => [[ErrorDetailsStamp::create(new RecoverableMessageHandlingException('later'))], 'nak'];
+        yield 'no error details' => [[], 'nak'];
+    }
+
+    /**
+     * Through Symfony's Worker with its error-details and retry listeners, in nats mode with max_retries 0: an
+     * unrecoverable failure runs once and is TERMed. Up to 5.9.x it ran on every delivery max_deliver allowed.
+     */
+    public function testNatsModeRunsAnUnrecoverableFailureOnceThroughTheWorker(): void
+    {
+        $settled = [];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'p'),
+        ]));
+        foreach (['term', 'nak', 'ack'] as $method) {
+            $jetStream->method($method)->willReturnCallback(static function (NatsMessage $message) use (&$settled, $method): Future {
+                $settled[] = $method;
+
+                return Future::complete();
+            });
+        }
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + ['max_deliver' => 4], $this->decodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function (): void {
+                throw new UnrecoverableMessageHandlingException('the invoice does not exist');
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($transport),
+            self::singleServiceLocator(new MultiplierRetryStrategy(0)),
+        ));
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
+
+        self::assertSame(['term'], $settled);
     }
 
     public function testGetWithMultipleValidMessagesReturnsAll(): void

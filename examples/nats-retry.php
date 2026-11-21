@@ -15,6 +15,10 @@
  * NATS redelivers. It says what to do: set `max_retries: 0`, or, to have Symfony's strategy decide while NATS
  * redelivers, use `retry_handler: symfony` with `retry_via: nak` (examples/retry-via-nak.php).
  *
+ * A third case: a handler that throws an UnrecoverableMessageHandlingException runs once in nats mode, and the
+ * delivery is TERMed (5.10.0). Up to 5.9.x it was NAKed, and NATS ran it again on every delivery `max_deliver`
+ * allowed.
+ *
  * A second case: a message that cannot be decoded is TERMed in nats mode too (5.9.1). The worker that pulls it stops
  * with the decode error, as Symfony's own transports do before Messenger 8.1, and the next worker does not get it.
  * Up to 5.9.0 nats mode NAKed it, and NATS brought it to every new worker, which stopped again, for ever without
@@ -169,5 +173,64 @@ try {
     echo "OK nats-retry: a message that cannot be decoded stopped the first worker and was TERMed: the second worker ran, the message was delivered once, and nothing is pending\n";
 } finally {
     $setUp->close();
+    deleteExampleStream($stream);
+}
+
+// An unrecoverable failure, in nats mode with max_deliver 3.
+$stream = exampleStream('nats_retry_unrecoverable');
+$transport = new NatsTransport(exampleDsn($stream, 'retry_handler=nats&max_deliver=3'), ['max_batch_timeout' => 0.2], new PhpSerializer());
+try {
+    $transport->setup();
+    $transport->send(new Envelope(new ExampleMessage('an invoice that does not exist')));
+
+    $runs = 0;
+    $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+        ExampleMessage::class => [static function () use (&$runs): void {
+            $runs++;
+
+            throw new Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException('the invoice does not exist');
+        }],
+    ]))]);
+    $dispatcher = new EventDispatcher();
+    $dispatcher->addSubscriber(new Symfony\Component\Messenger\EventListener\AddErrorDetailsStampListener());
+    $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+        new class ($transport) implements ContainerInterface {
+            public function __construct(private NatsTransport $transport)
+            {
+            }
+
+            public function get(string $id): mixed
+            {
+                return $this->transport;
+            }
+
+            public function has(string $id): bool
+            {
+                return true;
+            }
+        },
+        new class () implements ContainerInterface {
+            public function get(string $id): mixed
+            {
+                return new MultiplierRetryStrategy(0);
+            }
+
+            public function has(string $id): bool
+            {
+                return true;
+            }
+        },
+    ));
+    $dispatcher->addSubscriber(new StopWorkerOnTimeLimitListener(3));
+    (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
+
+    $consumer = withJetStream($stream, static fn (JetStreamContext $jetStream): array => $jetStream->getConsumer($stream, 'client')->await()->raw);
+    if ($runs !== 1 || ($consumer['num_ack_pending'] ?? null) !== 0 || ($consumer['num_redelivered'] ?? null) !== 0) {
+        throw new RuntimeException(sprintf('expected one run, TERMed and not redelivered; got %d runs, consumer %s', $runs, json_encode(['ack pending' => $consumer['num_ack_pending'] ?? null, 'redelivered' => $consumer['num_redelivered'] ?? null])));
+    }
+
+    echo "OK nats-retry: an unrecoverable failure ran once and was TERMed, with max_deliver 3\n";
+} finally {
+    $transport->close();
     deleteExampleStream($stream);
 }

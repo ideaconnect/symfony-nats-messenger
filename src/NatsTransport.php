@@ -38,6 +38,7 @@ use RuntimeException;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Exception\TransportException;
+use Symfony\Component\Messenger\Exception\UnrecoverableExceptionInterface;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
@@ -960,7 +961,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $retry = $this->natsRedeliversTheRetryOf($envelope, $id);
         $this->checkTheConnectionBeforeSettlingAFailure();
 
-        if ($this->isAMessageNatsModeCannotDecode($envelope)) {
+        if ($this->isAMessageNatsModeCannotDecode($envelope) || $this->isAFailureNatsModeCannotRetry($envelope)) {
             $this->sendTerm($id);
 
             return;
@@ -973,6 +974,26 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         $this->handleFailedDelivery($id);
+    }
+
+    /**
+     * Whether, in nats mode, the delivery being rejected failed with an exception Symfony marks as unrecoverable
+     * (UnrecoverableExceptionInterface, such as UnrecoverableMessageHandlingException), which Symfony's
+     * ErrorDetailsStamp names. Such a failure can never succeed, so it is TERMed, where nats mode NAKed it and NATS ran
+     * the handler again on every delivery up to max_deliver, for ever without it: 4 runs with max_deliver 4 (measured
+     * on nats-server 2.15.2). Ordinary failures are still NAKed, for NATS to redeliver under nak_delay, backoff and
+     * max_deliver. The stamp names the first exception a HandlerFailedException wraps, which is the one that failed
+     * when the message has one handler.
+     */
+    private function isAFailureNatsModeCannotRetry(Envelope $envelope): bool
+    {
+        if ($this->configuration->retryHandler() !== RetryHandler::NATS) {
+            return false;
+        }
+
+        $failedWith = $envelope->last(ErrorDetailsStamp::class)?->getExceptionClass();
+
+        return $failedWith !== null && is_a($failedWith, UnrecoverableExceptionInterface::class, true);
     }
 
     /**

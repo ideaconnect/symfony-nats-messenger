@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Nats mode TERMs a failure Symfony marks as unrecoverable** (`UnrecoverableExceptionInterface`, read from Symfony's
+  `ErrorDetailsStamp`), instead of NAKing it. It can never succeed, and NATS ran the handler again on every delivery
+  `max_deliver` allowed: 3 runs with `max_deliver: 3`, now 1. Ordinary failures are still NAKed, for NATS to redeliver.
+  `isAFailureNatsModeCannotRetry()`.
+
 ### Fixed
 
 - **`retry_via: nak` no longer loses a retry when the consumer's `max_deliver` is not the option's.** The transport
