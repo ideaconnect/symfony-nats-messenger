@@ -6090,6 +6090,40 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * A worker checks a stream that keeps delayed messages, here one with limits retention, once: a later pull does not
+     * ask for it again.
+     */
+    public function testAPullChecksAStreamThatKeepsDelayedMessagesOnce(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('getStream')->willReturn(Future::complete(self::streamWithRetention('limits')));
+        $jetStream->expects(self::never())->method('listConsumers');
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::complete([]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+        iterator_to_array($transport->get(), false);
+        iterator_to_array($transport->get(), false);
+    }
+
+    /**
+     * A second setup() on the same transport object does not look for the stream again before it writes it: the first
+     * one checked it.
+     */
+    public function testASecondSetupDoesNotCheckTheStreamForDelayedMessagesAgain(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('getStream')->willReturn(Future::error(new JetStreamException('stream not found', 404)));
+        $jetStream->expects(self::exactly(2))->method('addStream')->willReturn(Future::complete(self::streamWithRetention('limits')));
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'stream_retention' => 'limits', 'ping_after_idle' => 0]);
+        $transport->setJetStreamContext($jetStream);
+        $transport->setup();
+        $transport->setup();
+    }
+
+    /**
      * A stream that does not exist yet is not checked before the pull, and not let through for good either: the pull
      * reports it, and the next pull looks again. Nothing is logged. The first form of 5.9.1 logged it as a stream it
      * could not read and never checked again.

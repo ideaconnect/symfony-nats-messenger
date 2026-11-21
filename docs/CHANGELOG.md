@@ -23,11 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`idct/php-nats-jetstream-client` `^2.30`.** A request the server refuses for lack of permission fails at once with
-  `PermissionViolationException`, instead of a `TimeoutException` after `request_timeout`, and the transport tells
-  such a refusal from a failure of the connection: a worker whose user may not ask for consumer info finished a
-  failing message in 1.2 s instead of 6.2 s (`request_timeout` 5 s). A refusal does not make the next operation check
-  the connection: the server answered it and keeps the connection open.
 - **⚠️ An option the transport does not know is refused**, in the options and in the DSN query, with an
   `InvalidArgumentException` that names the closest option when one is near: `Unknown option 'max_delivers' in the DSN
   query of the NATS transport. Did you mean 'max_deliver'?`. Up to 5.9.x such an option was ignored without a word,
@@ -57,6 +52,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ErrorException` in debug mode. igbinary warns about a payload that is not igbinary, so in debug mode such a
   message stopped the worker without being settled. A custom serializer should throw a
   `MessageDecodingFailedException` for a payload it cannot decode.
+
+### Documentation
+
+- **The README's "Retry Handler Behavior" states the two modes plainly:** in symfony mode Symfony decides and its
+  failure transport keeps what it gives up on; in nats mode NATS decides, a failure transport is not for that mode,
+  and what can never succeed is TERMed. The comparison of `copy`, `nak` and nats mode gains rows for an unrecoverable
+  failure, a message that cannot be decoded and the failure transport, and the section gives the steps from nats mode
+  to `retry_via: nak`, and describes a subscriber a later release may add for one failure-transport copy in nats mode.
+  `give_up_via` from PR #119 was not taken: with `retry_via: nak` a message Symfony gives up on is in the failure
+  transport already, and keeping it in the stream too worked only on the streams where NATS keeps such a message
+  (`docs/PRs/PR-113-symfony-retry-via.md`, "Rejected alternatives").
+
+## [5.9.1] - 2026-11-21
+
+A **patch** release with three fixes for 5.9.0, found while reviewing #119, and the client release they need (#120).
+With `retry_via: nak`, the retry of the consumer's last delivery is no longer NAKed and lost when the consumer's
+`max_deliver` is not the option's. `scheduled_messages` is refused on a stream with interest retention where nothing
+has interest in the delayed subjects, which dropped every delayed message, before `setup()` writes the stream. Nats mode
+TERMs a message that cannot be decoded, which NATS brought back for ever. The transport now requires
+`idct/php-nats-jetstream-client` `^2.30`.
+
+### Changed
+
+- **`idct/php-nats-jetstream-client` `^2.30`.** A request the server refuses for lack of permission fails at once with
+  `PermissionViolationException`, instead of a `TimeoutException` after `request_timeout`, and the transport tells
+  such a refusal from a failure of the connection: a worker whose user may not ask for consumer info finished a
+  failing message in 1.2 s instead of 6.2 s (`request_timeout` 5 s). A refusal does not make the next operation check
+  the connection: the server answered it and keeps the connection open.
 
 ### Fixed
 
@@ -96,14 +119,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- **The README's "Retry Handler Behavior" states the two modes plainly:** in symfony mode Symfony decides and its
-  failure transport keeps what it gives up on; in nats mode NATS decides, a failure transport is not for that mode,
-  and what can never succeed is TERMed. The comparison of `copy`, `nak` and nats mode gains rows for an unrecoverable
-  failure, a message that cannot be decoded and the failure transport, and the section gives the steps from nats mode
-  to `retry_via: nak`, and describes a subscriber a later release may add for one failure-transport copy in nats mode.
-  `give_up_via` from PR #119 was not taken: with `retry_via: nak` a message Symfony gives up on is in the failure
-  transport already, and keeping it in the stream too worked only on the streams where NATS keeps such a message
-  (`docs/PRs/PR-113-symfony-retry-via.md`, "Rejected alternatives").
 - **A message stopped at `max_deliver` does not always stay in the stream.** `docs/symfony_retry_via.md` said it
   does, and the README told nats mode to rely on NATS's handling of a message that keeps failing. Measured on
   nats-server 2.10.29 to 2.15.2: NATS deletes it from an interest stream inside a cluster, from a replicated
