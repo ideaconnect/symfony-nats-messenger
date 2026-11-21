@@ -2,7 +2,7 @@
 
 [![PHP Version](https://img.shields.io/badge/PHP-^8.2-787CB5?logo=php&logoColor=white)](https://php.net)
 [![Symfony Version](https://img.shields.io/badge/Symfony-^7.3%20%7C%20^8.0-000000?logo=symfony&logoColor=white)](https://symfony.com)
-[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.82%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
+[![Unit Tests Coverage](https://img.shields.io/badge/Coverage-99.79%25-brightgreen)](https://github.com/ideaconnect/symfony-nats-messenger/actions)
 [![Mutation MSI](https://img.shields.io/badge/Mutation%20MSI-98.6%25-brightgreen)](https://infection.github.io/)
 [![Functional Tests](https://img.shields.io/badge/Functional%20Tests-Behat-blue)](tests/functional)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1330 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1334 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -235,8 +235,14 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
 - **An exception the application's error handler throws for such an error propagates from the transport,** with the
   message left for redelivery after `ack_wait`, as for any exception of a serializer other than a decode failure.
   Symfony's error handler throws a warning or notice that is not suppressed as an `ErrorException` in debug mode.
+- **Client 2.30.1 or later.** The transport requires `idct/php-nats-jetstream-client` `^2.30.1`, which
+  `composer update` installs (#131). With `reconnect: true` and a user allowed to pull but not to ask for consumer
+  info, a pull's 503 from a server going away was an empty batch only once the client's reconnect was over: client
+  2.30.0 held `get()` for the whole reconnect, and a worker inside it did not react to `messenger:stop-workers` or a
+  SIGTERM until then. `get()` now returns the empty batch within `request_timeout`, while the client goes on
+  reconnecting.
 
-> **Tested by:** `decode_OfAMessageWhoseRestoreRaisesAnError_DecodesAndPassesTheErrorOn`, `testAMessageWhoseWakeupRaisesASuppressedWarningIsHandledAndAcknowledgedOnce`, `testAnExceptionOfTheApplicationsErrorHandlerPropagatesFromGetWithTheMessageUnsettled`, the Behat scenarios `A message whose __wakeup raises a suppressed warning is handled and acknowledged in nats mode` and `A message whose __wakeup raises a suppressed warning is handled and acknowledged in symfony mode`.
+> **Tested by:** `decode_OfAMessageWhoseRestoreRaisesAnError_DecodesAndPassesTheErrorOn`, `testAMessageWhoseWakeupRaisesASuppressedWarningIsHandledAndAcknowledgedOnce`, `testAnExceptionOfTheApplicationsErrorHandlerPropagatesFromGetWithTheMessageUnsettled`, the Behat scenarios `A message whose __wakeup raises a suppressed warning is handled and acknowledged in nats mode` and `A message whose __wakeup raises a suppressed warning is handled and acknowledged in symfony mode`; `testWithTheRealClientAndReconnectARefusedQuestionOnAServerGoingAwayIsAnEmptyBatchWhileTheNextDialIsHeld`, `testWithTheRealClientARefusedQuestionOnAConnectionThatStaysReachesItsDeadlineAndThe503Propagates`.
 
 ### Logging
 
@@ -2055,9 +2061,12 @@ framework:
 > empty batch, and the next operation checks the connection first. The client stops waiting once the connection is
 > closed, being recovered or replaced by a reconnect, or its server announced lame duck mode, where it would
 > otherwise keep the question waiting until `request_timeout`; once the server has announced lame duck mode it asks
-> nothing more. A question that goes unanswered on a connection that stays, as for a user allowed to pull but not to
-> ask for consumer info (`$JS.API.CONSUMER.INFO.<stream>.<consumer>`), keeps the 503's reading, after
-> `request_timeout`: a missing consumer is not hidden behind empty pulls.
+> nothing more. A question that goes unanswered on a connection that stays keeps the 503's reading, after
+> `request_timeout`: a missing consumer is not hidden behind empty pulls. So does the question of a user allowed to pull
+> but not to ask for consumer info (`$JS.API.CONSUMER.INFO.<stream>.<consumer>`): the server refuses it at once, a
+> server going away as well as one that stays, and the client then watches the connection until `request_timeout` all
+> the same, so a server going away still makes that pull an empty batch, with `reconnect: true` while the client is
+> still reconnecting (client 2.30.1, #131).
 >
 > **Tested by:** `testA503FromAServerGoingAwayIsAnEmptyBatch`, `testTheOperationAfterAServerGoingAwayChecksTheConnectionTheClientHas`, `testA503KeepsItsReadingWhenTheServerAnswers`, `testA503KeepsItsReadingWhenNothingAnswersOnAConnectionThatStays`, `testWithTheRealClientAPullOnAStoppingServerIsAnEmptyBatchAndTheNextOneDialsAgain`, `testWithTheRealClientAndReconnectAPullOnAStoppingServerIsAnEmptyBatchWithoutWaitingForTheRequestTimeout`, `testWithTheRealClientAPullOnAServerInLameDuckModeIsAnEmptyBatchWhileTheConnectionStays`, Behat scenarios `A worker keeps consuming across a server restart` and `A worker keeps consuming across a server that leaves in lame duck mode`
 

@@ -8,7 +8,7 @@ for Claude Code. For architecture see [STRUCTURE.md](STRUCTURE.md); for human on
 
 A Symfony Messenger **transport** for NATS JetStream. It implements `TransportInterface`,
 `MessageCountAwareInterface`, and `SetupableTransportInterface`, bridging Symfony's message bus to
-NATS via the async `idct/php-nats-jetstream-client` (`^2.30`, amphp-based). It ships
+NATS via the async `idct/php-nats-jetstream-client` (`^2.30.1`, amphp-based). It ships
 `IDCTNatsMessengerBundle` (auto-enabled by Flex), which registers the transport factory
 and the igbinary serializer so projects need no manual wiring.
 
@@ -134,7 +134,9 @@ composer nats:stop               # stop NATS
   JetStream API replies before it stops the first consumer, lameDuckMode() stops JetStream before it sends the `ldm`
   INFO) and closes the connection or announces lame duck mode: `ServerGoingAway`, an empty batch, and the next
   operation checks the connection first. `NoAnswer`, on a connection that stays (a user not allowed to ask for consumer
-  info), keeps the reading too, so a missing consumer is never hidden. The client, not the transport, ends the wait
+  info, whose question the server refuses at once and the client then watches the connection for until
+  `request_timeout`), keeps the reading too, so a missing consumer is never hidden. Client 2.30.1 (#131) keeps that watch
+  to `request_timeout` with `reconnect: true` as well: 2.30.0 returned only once the reconnect was over. The client, not the transport, ends the wait
   once the connection is closed, being recovered or replaced, or in lame duck mode. To reproduce lame duck mode in a
   test, signal the server from inside its container (`docker exec <c> kill -USR2 1`): `docker kill` marks the container
   stopped by hand, and docker then does not start it again under `restart: always`.

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.10.1] - 2026-11-21
+
+A **patch** release with two fixes found after 5.10.0, and the client release the second needs. A warning or notice
+of the application's own code while a message is unserialized is the application's again, not a decode failure that
+TERMed the message (#122). With `reconnect: true` and a user allowed to pull but not to ask for consumer info, a pull's
+503 from a server going away is an empty batch within `request_timeout` again, while the client goes on reconnecting:
+5.9.1 and 5.10.0 held `get()` for the whole reconnect, and a worker in it did not react to `messenger:stop-workers` or a
+SIGTERM (#131). The transport now requires `idct/php-nats-jetstream-client` `^2.30.1`.
+
+### Changed
+
+- **`idct/php-nats-jetstream-client` `^2.30.1`** (#131), in `composer.json` and in the functional test app. With
+  `reconnect: true`, a pull's 503 from a server going away is an empty batch within `request_timeout` again for a user
+  allowed to pull but not to ask for consumer info, while the client goes on reconnecting. After the 503 the transport
+  asks the client why (`pullMetAServerGoingAway()`, #106); the server refuses that user's question at once, and the
+  client then watches the connection for the rest of the question's budget. Client 2.30.0 awaited a read that ran the
+  reconnect, or the lame duck failover to another server, itself, and so returned only once that was over: `get()`
+  stayed in the diagnosis for as long as the server was away, and a worker in it did not react to
+  `messenger:stop-workers` or a SIGTERM until then, so a deploy or a scale-down during an outage had to kill it. 5.9.1
+  and 5.10.0 had it, and 5.8.1 and 5.9.0 too once their client was updated to 2.30.0. Client 2.30.1
+  (ideaconnect/php-nats-jetstream-client#257, with #256 in the same loop) looks at the connection every 20 ms whatever
+  that read does. The `pullMetAServerGoingAway()` docblock no longer says that the server leaves such a user's question
+  unanswered.
+
 ### Fixed
 
 - **A warning or notice the application's own code raises while a message is unserialized no longer makes the message
@@ -29,6 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   levels it was set for, so it is called for every level. An exception it throws propagates as it is and leaves the
   message for redelivery, as any other exception of a serializer does: Symfony's error handler throws a warning that
   is not suppressed as an `ErrorException` in debug mode. `deserializeOrFail()`, `raisedByTheDecoder()`.
+
+### Testing & CI
+
+- **The required regression of #131, with the real client:** `GracefulStopPullTest` refuses the consumer-info question
+  as nats-server refuses such a user, then closes the connection or announces lame duck mode naming another server on
+  the client's next read, with the dial of the next server held and `request_timeout` 30 s: `get()` returns `[]` while
+  the client is still `Connecting`, and once the dial goes on the next pull delivers a message that the transport
+  acknowledges. Both fail with client 2.30.0, where `get()` returned only after the scripted connection let the held
+  dial go 10 s later. The control, a refused question on a connection that stays, reaches its deadline and the 503
+  propagates, with and without `reconnect`. The scripted server gains `$refuseConsumerInfo` and `$afterTheRefusal`.
 
 ## [5.10.0] - 2026-11-21
 

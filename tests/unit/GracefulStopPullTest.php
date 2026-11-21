@@ -39,7 +39,8 @@ use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
  * connection that can close right after the question went out (`tests/Support/FaultInjectingNatsServer.php`), as the
  * stopping server closes it, or with the server announcing lame duck mode. An operation that has to succeed gets
  * BUDGET_MS, which it never uses up; only the question a test wants to go unanswered on a connection that stays gets a
- * short budget, where a paused process just ends it sooner.
+ * short budget, where a paused process just ends it sooner. The last ones refuse the question, as nats-server refuses a
+ * user who may pull but not ask for consumer info (#131).
  */
 final class GracefulStopPullTest extends TestCase
 {
@@ -48,6 +49,15 @@ final class GracefulStopPullTest extends TestCase
     private const BUDGET_MS = 5000;
 
     private const SHORT_BUDGET_MS = 50;
+
+    /**
+     * The request timeout of a test whose operation must end long before it: three times the 10 s after which the
+     * scripted connection lets a held dial go on by itself (tests/Support/FaultInjectingNatsServer.php).
+     */
+    private const LONG_BUDGET_MS = 30_000;
+
+    /** The request timeout of the test whose refused question has to reach its deadline. */
+    private const DEADLINE_MS = 300;
 
     private const PULL_503 = 'JetStream pull request ended with status 503';
 
@@ -434,6 +444,96 @@ final class GracefulStopPullTest extends TestCase
     }
 
     /**
+     * @return iterable<string, array{string}>
+     */
+    public static function serversGoingAwayAfterTheRefusal(): iterable
+    {
+        yield 'the server closes the connection' => [SubscriptionLimitNatsServer::CLOSE];
+        yield 'lame duck mode, with another server to move to' => [SubscriptionLimitNatsServer::LAME_DUCK_TO_ANOTHER_SERVER];
+    }
+
+    /**
+     * The real client with `reconnect`, and a user who may pull but not ask for consumer info (#131): after the pull's
+     * 503 the server refuses the question at once, and the client watches the connection for the rest of the
+     * question's time. On the watch's next read the server closes the connection, or announces lame duck mode naming
+     * another server, so the client reconnects, or fails over, and the dial of the next server is held. The pull is an
+     * empty batch while that dial is held, the client Connecting, long before request_timeout (LONG_BUDGET_MS). Once
+     * the test lets the dial go on, the next pull delivers a message, and the transport acknowledges it.
+     *
+     * Fails with client 2.30.0, whose diagnosis returned only once the reconnect was over: get() waited for the dial,
+     * here until the scripted connection let it go after 10 s, and a worker inside it did not react to
+     * messenger:stop-workers or a SIGTERM. A diagnosis that waited for the question's deadline would fail it too.
+     */
+    #[DataProvider('serversGoingAwayAfterTheRefusal')]
+    public function testWithTheRealClientAndReconnectARefusedQuestionOnAServerGoingAwayIsAnEmptyBatchWhileTheNextDialIsHeld(string $goingAway): void
+    {
+        $server = self::server();
+        $faults = new FaultInjectingNatsServer($server);
+        [$transport, $client] = self::transportOver($faults, reconnect: true, requestTimeoutMs: self::LONG_BUDGET_MS);
+
+        try {
+            self::assertSame([], iterator_to_array($transport->get()));
+
+            $server->pullsFindNoResponder = true;
+            $server->refuseConsumerInfo = true;
+            $server->afterTheRefusal = $goingAway;
+            $faults->holdNextDialUntilReleased();
+            $duringTheOutage = iterator_to_array($transport->get());
+            $stateThen = $client->state();
+
+            $server->pullsFindNoResponder = false;
+            $server->refuseConsumerInfo = false;
+            $faults->releaseHeldDial();
+            $transport->send(new Envelope(new \stdClass()));
+            $delivered = iterator_to_array($transport->get());
+            foreach ($delivered as $envelope) {
+                $transport->ack($envelope);
+            }
+        } finally {
+            $transport->close();
+        }
+
+        self::assertSame([], $duringTheOutage);
+        self::assertSame(ConnectionState::Connecting, $stateThen, 'get() returned while the dial of the next server was held');
+        self::assertCount(1, $delivered, 'the pull after the reconnect delivered the message');
+        self::assertCount(1, $server->acks(), 'the transport acknowledged it');
+        self::assertSame(2, $server->sessions());
+        self::assertSame(1, $client->statistics()->reconnects);
+        $questions = array_filter($server->received(), static fn (string $line): bool => $line === 'PUBLISH ' . self::QUESTION);
+        self::assertCount(1, $questions, 'the question was asked once, on the connection the pull came on');
+    }
+
+    /**
+     * The control of the test above: the same refused question on a connection that stays. The client watches the
+     * connection until the question's own deadline (request_timeout, DEADLINE_MS here), and the 503 then propagates,
+     * as for a missing consumer: the refusal alone does not make an empty batch. No dial is made.
+     */
+    #[DataProvider('reconnectModes')]
+    public function testWithTheRealClientARefusedQuestionOnAConnectionThatStaysReachesItsDeadlineAndThe503Propagates(bool $reconnect): void
+    {
+        $server = self::server();
+        $server->pullsFindNoResponder = true;
+        $server->refuseConsumerInfo = true;
+        $faults = new FaultInjectingNatsServer($server);
+        [$transport] = self::transportOver($faults, reconnect: $reconnect, requestTimeoutMs: self::DEADLINE_MS);
+
+        try {
+            $start = hrtime(true);
+            $failure = self::failureOf(static fn () => iterator_to_array($transport->get()));
+            $elapsed = (hrtime(true) - $start) / 1e9;
+        } finally {
+            $transport->close();
+        }
+
+        self::assertInstanceOf(JetStreamException::class, $failure);
+        self::assertSame(503, $failure->getCode());
+        self::assertSame(self::PULL_503, $failure->getMessage());
+        self::assertGreaterThanOrEqual(self::DEADLINE_MS / 1000 * 0.9, $elapsed, sprintf('the pull ended after %.3f s, before the question\'s deadline', $elapsed));
+        self::assertSame(1, $server->sessions());
+        self::assertSame(1, $faults->dialAttempts);
+    }
+
+    /**
      * How often one test may read the client's state: the transport looks at it a few times in each of these tests, and
      * a loop that never ends then fails within moments instead of hanging.
      */
@@ -501,11 +601,11 @@ final class GracefulStopPullTest extends TestCase
     /**
      * @return array{ClientInjectedNatsTransport, RttCountingNatsClient}
      */
-    private static function transportOver(FaultInjectingNatsServer $connection, bool $reconnect): array
+    private static function transportOver(FaultInjectingNatsServer $connection, bool $reconnect, int $requestTimeoutMs = self::BUDGET_MS): array
     {
         $client = new RttCountingNatsClient(new NatsOptions(
             connectTimeoutMs: self::BUDGET_MS,
-            requestTimeoutMs: self::BUDGET_MS,
+            requestTimeoutMs: $requestTimeoutMs,
             reconnectEnabled: $reconnect,
             maxReconnectAttempts: 3,
             reconnectDelayMs: 1,
@@ -519,7 +619,7 @@ final class GracefulStopPullTest extends TestCase
             'ping_after_idle' => 30,
             'reconnect' => $reconnect,
             'max_reconnect_attempts' => 3,
-            'request_timeout' => self::BUDGET_MS / 1000,
+            'request_timeout' => $requestTimeoutMs / 1000,
             'connection_timeout' => self::BUDGET_MS / 1000,
         ], new PhpSerializer());
         $transport->setClient($client);

@@ -73,7 +73,10 @@ of the connection; the others run the real client over the scripted server of
 with an INFO that announces lame duck mode (`$lameDuckOnConsumerInfo`), behind `FaultInjectingNatsServer`, which closes
 the connection right after the question went out, as the stopping server does. On the transport of 5.8.0 every test but
 the three of `testOnlyA503AsksWhyThePullGotNoResponders` fails; on the transport that asked CONSUMER.INFO itself (the
-first commits of #108, client 2.28), the two real-client lame duck cases fail with the 503 after request_timeout.
+first commits of #108, client 2.28), the two real-client lame duck cases fail with the 503 after request_timeout. The
+scripted server can also refuse the question (`$refuseConsumerInfo`), as nats-server refuses a user who may pull but not
+ask for consumer info, and then close the connection or announce lame duck mode naming another server on the client's
+next read (`$afterTheRefusal`), which is the diagnosis's watch of the connection (#131).
 
 | Feature | Tests |
 |---------|-------|
@@ -84,6 +87,8 @@ first commits of #108, client 2.28), the two real-client lame duck cases fail wi
 | **Any answer keeps the 503's reading as a missing consumer, and the next operation does not check the connection** | `testA503KeepsItsReadingWhenTheServerAnswers` (the consumer, 404 consumer or stream not found, another JetStream error), `testWithTheRealClientA503FromAServerThatAnswersTheQuestionPropagates` |
 | **No answer on a connection that stays keeps the reading too, and the next operation checks the connection** | `testA503KeepsItsReadingWhenNothingAnswersOnAConnectionThatStays` (reconnect off and on), `testWithTheRealClientA503WhoseQuestionGoesUnansweredOnAConnectionThatStaysPropagates` (the question gets a 50 ms budget) |
 | **Only a 503 asks why** | `testOnlyA503AsksWhyThePullGotNoResponders` (404 no messages, 409 consumer deleted, 500; guard: passes before #106 too) |
+| **With `reconnect` and a refused question, a server going away is an empty batch while the client is still reconnecting** (#131) | `testWithTheRealClientAndReconnectARefusedQuestionOnAServerGoingAwayIsAnEmptyBatchWhileTheNextDialIsHeld` (the server closes the connection / announces lame duck mode naming another server, on the watch's next read; the next dial held, request_timeout 30 s: `get()` returns `[]` with the client Connecting; once the dial goes on, the next pull delivers a message, which is acknowledged; one question, two sessions, one reconnect). Both fail with client 2.30.0, where `get()` returned only once the scripted connection let the held dial go after 10 s, and with a client whose watch waits for the question's deadline |
+| **A refused question on a connection that stays reaches its deadline, and the 503 propagates** | `testWithTheRealClientARefusedQuestionOnAConnectionThatStaysReachesItsDeadlineAndThe503Propagates` (reconnect off and on; request_timeout 0.3 s: the 503 after at least 0.27 s, one session, one dial; the control of the case above, passes with client 2.30.0 too) |
 | **The pull after provisioning again gets the same reading** | `testA503OfThePullAfterProvisioningAgainFromAServerGoingAwayIsAnEmptyBatch` |
 
 ### Subscription Limit (`tests/unit/SubscriptionLimitPullTest.php`)
