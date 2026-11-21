@@ -147,13 +147,20 @@ composer nats:stop               # stop NATS
   preserves server fields, and updates - it never blindly overwrites an existing stream.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
   `retry_handler=nats` → NAK (NATS redelivers), and `send()` skips the copy Symfony's retry sends (a received
-  envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode. In symfony mode,
+  envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode. Nats mode TERMs what can
+  never succeed: a failure Symfony marks as unrecoverable (its `ErrorDetailsStamp`) and a message that cannot be
+  decoded; a failure transport is not for that mode (README). In symfony mode,
   `retry_via: nak` (default `copy`) leaves that copy out as well, and the worker's `ack()` or `reject()` of the
   delivery NAKs it with the copy's `DelayStamp` delay (0 a plain NAK). A retry no NAK can carry is still
   published: a copy without its delivery token, and the retry of the last delivery `max_deliver` allows. `get()`
   adds `numDelivered - 1` to the retry count a message carries. With `nak` the builder refuses a positive
   `nak_delay` and `backoff`, and in nats mode it refuses any `retry_via`. See
   [docs/symfony_retry_via.md](docs/symfony_retry_via.md).
+- **A message that cannot be decoded never stops the worker.** The Worker does not catch what `get()` throws, so
+  `get()` must not throw for one message. From Symfony Messenger 8.1 on, a serializer that throws becomes a
+  `MessageDecodingFailedException` message (`wrap()`), as 8.1's `ReceiverInterface` asks; before 8.1 `get()` TERMs
+  it, logs an error and goes on (`messengerPassesOnDecodeFailures()`). Messenger 8.1.11 and later fail a thrown
+  failure once, as unrecoverable; 8.1.0 to 8.1.10 retry it, which the delivery count keeps bounded with `nak`.
 - **`keepalive()` queues, never waits.** Symfony calls it from a SIGALRM handler, where fibers cannot switch,
   so it queues `inProgress()->ignore()`, which goes out the next time the event loop runs.
 - **Duplicate protection:** a `DeduplicationIdStamp`, added on the first send with `deduplicate` or by the

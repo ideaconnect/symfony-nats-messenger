@@ -91,11 +91,14 @@ tests/
 - **Replication**: `stream_replicas` for HA
 - **Consumer strategies**: shared (batching=1) or independent consumers
 - **Batching**: configurable `batching` count and `max_batch_timeout`
-- **Retry handling**: `retry_handler` - `symfony` (TERM, default) or `nats` (NAK); in symfony mode,
+- **Retry handling**: `retry_handler` - `symfony` (TERM, default: Symfony decides, its failure transport keeps what
+  it gives up on) or `nats` (NAK: NATS decides up to `max_deliver`, no failure transport, and an unrecoverable failure
+  or a message that cannot be decoded is TERMed); a message that cannot be decoded never stops the worker; in symfony mode,
   `retry_via: nak` NAKs with Symfony's retry delay instead of publishing the retry copy
   (see [docs/symfony_retry_via.md](docs/symfony_retry_via.md))
 - **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers; refused on a server
   before NATS 2.12, at `setup()` and at the send of a delayed message
+- **Option names**: an option that is not a `TransportOption` case (or `transport_name`) is refused, with the closest one
 - **TLS/mTLS**: full TLS config options including client certificates
 - **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`)
 - **Serialization**: igbinary (default with fallback) or custom via `AbstractEnveloperSerializer`

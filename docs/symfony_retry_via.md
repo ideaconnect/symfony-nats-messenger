@@ -86,7 +86,8 @@ should decide while NATS redelivers.
 - **A NAK cannot carry every retry.** A copy without its delivery token is published as with `copy`. So is the
   retry of the last delivery `max_deliver` allows: a NAK would end the message there, handled by nobody and in no
   failure transport. The copy is a new message with deliveries of its own, so Symfony's strategy runs to its end
-  whatever `max_deliver` is.
+  whatever `max_deliver` is. It goes out at once without `scheduled_messages`, and since 5.10.0 the first such copy
+  is logged once per worker as a warning, with the delay it lost.
 - **The last delivery is the consumer's.** NATS applies the consumer's `max_deliver`, which is the option's only
   once `setup()` has written it. So the transport asks for the consumer's info at the first retry that needs it,
   and again once the answer is a minute old: one request a minute at most, only while deliveries fail. A limit

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A warning when Symfony's retry is published without its delay**, once per worker: every retry with `retry_via:
+  copy` and no `scheduled_messages`, and the retry of the last delivery `max_deliver` allows with `retry_via: nak`,
+  which goes out as a copy. Up to 5.9.x the delays were dropped without a word. `warnIfARetryLosesItsDelay()`.
+- **A warning at `setup()` in nats mode with `max_deliver`** when the stream is one where NATS deletes a message that
+  reached `max_deliver`: interest retention on a clustered server, interest on a standalone server before 2.12.9 or on
+  2.14.0, work-queue with replicas before 2.12.5. Nats mode keeps its behaviour. `warnIfNatsModeLosesWhatMaxDeliverStops()`.
+- **The example `nats-retry-on-a-cluster.php`** shows on the test cluster the warning, NATS deleting a message stopped
+  at `max_deliver` from an interest stream with three replicas, and a work-queue stream keeping it.
+
 ### Changed
 
 - **⚠️ An option the transport does not know is refused**, in the options and in the DSN query, with an
@@ -62,6 +73,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- **The README's "Retry Handler Behavior" states the two modes plainly:** in symfony mode Symfony decides and its
+  failure transport keeps what it gives up on; in nats mode NATS decides, a failure transport is not for that mode,
+  and what can never succeed is TERMed. The comparison of `copy`, `nak` and nats mode gains rows for an unrecoverable
+  failure, a message that cannot be decoded and the failure transport, and the section gives the steps from nats mode
+  to `retry_via: nak`, and describes a subscriber a later release may add for one failure-transport copy in nats mode.
+  `give_up_via` from PR #119 was not taken: with `retry_via: nak` a message Symfony gives up on is in the failure
+  transport already, and keeping it in the stream too worked only on the streams where NATS keeps such a message
+  (`docs/PRs/PR-113-symfony-retry-via.md`, "Rejected alternatives").
 - **A message stopped at `max_deliver` does not always stay in the stream.** `docs/symfony_retry_via.md` said it
   does, and the README told nats mode to rely on NATS's handling of a message that keeps failing. Measured on
   nats-server 2.10.29 to 2.15.2: NATS deletes it from an interest stream inside a cluster, from a replicated
