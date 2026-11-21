@@ -589,8 +589,8 @@ does not survive it.
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
-on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.7% MSI and covered
-MSI: 1625 of 1647 mutants killed, none timed out, with 100% mutation code coverage.
+on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.6% MSI and covered
+MSI: 1706 of 1730 mutants killed, none timed out, with 100% mutation code coverage.
 
 Scores reported before, 100% among them, were not real. Infection runs each mutant in a PHPUnit process
 whose bootstrap puts its include interceptor on `file://`; the interceptor dropped the wrapper BypassFinals
@@ -619,9 +619,9 @@ mutation step fails.
 
 ### Surviving mutants
 
-Of the 22 mutants that survive:
+Of the 24 mutants that survive:
 
-- **17 are equivalent**: no input makes them behave differently.
+- **19 are equivalent**: no input makes them behave differently.
 - **2 make no difference with the real client**: its acknowledgement calls do not read the `sid` of the
   message `buildAckMessage()` gives them. A test could kill them only by asserting on the `sid` its client
   double receives, which would pin a detail rather than behaviour.
@@ -640,7 +640,8 @@ Of the 22 mutants that survive:
 | `assertDuplicateWindowNotExceedingMaxAge()`: a null max age read as -1 instead of 0 | Both mean no age limit there |
 | `send()`: a missing `DelayStamp` read as -1 instead of 0 with `retry_via: nak` | `nakForRetry()` sends a plain NAK for any delay of 0 or below |
 | `warnIfNatsModeLosesWhatMaxDeliverStops()`: a stream info without a replica count read as 0 replicas instead of 1 | It only asks whether there is more than one replica, which 0 and 1 answer alike (2, the other mutant, is killed by a work-queue stream without a count on 2.12.4) |
-| `serverVersionIsAtLeast()`: the version pattern without its `^` | Servers report a version that starts with its number, or with `v`, so the pattern finds the same release either way |
+| `isAFailureNatsModeCannotRetry()`: its check of the mode removed, or true in symfony mode (2 mutants) | In symfony mode `reject()` TERMs every failure without a retry anyway, through `handleFailedDelivery()`, which sends the same TERM |
+| `assertNoCredentialAfterASecondQuery()`: the credential names without `preg_quote()` | The names of `TransportOption` are lowercase letters and underscores, which mean the same in a pattern |
 | `assertTheStreamKeepsDelayedMessages()`: the sample delayed subject without its UUID | A filter tells `{topic}.delayed.<uuid>` from `{topic}.delayed.` (an empty last token) only by naming that token, and NATS refuses a subject with an empty token |
 | `requiredString()`: `&&` instead of `\|\|` | `parseDsn()` already requires a host, and `parse_url()` never gives an empty one |
 | `resolveNkeySigner()`: `\Error` removed from the catch, and `\|\|` for either `&&` of the condition on the seed advice (3 mutants) | Between them `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError` and `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike` fail on each, but they run in a child process, which the mutant does not reach |
