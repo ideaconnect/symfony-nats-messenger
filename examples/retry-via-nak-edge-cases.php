@@ -17,6 +17,10 @@
  *    times with max_retries 3, at counts 1, 2 and 3.
  * 5. The builder refuses `retry_via` in nats mode, and with `nak` a `nak_delay` and a `backoff`, since both
  *    would change the delays Symfony's retry strategy computed.
+ * 6. A consumer whose `max_deliver` the option does not say, here one another configuration's setup limited to 2
+ *    while the option is unset: the transport reads the consumer's own limit and publishes the retry of its last
+ *    delivery as a copy, and warns once. Up to 5.9.0 the option decided, that retry was NAKed, NATS redelivered
+ *    nothing, and the message was gone after 2 runs with no failure-transport copy (5.9.1).
  *
  * Mirrors the README "Retrying through a NAK" section. Needs the test server (composer nats:start).
  * Run: php examples/retry-via-nak-edge-cases.php
@@ -211,6 +215,42 @@ $refused(['retry_handler' => 'nats', 'retry_via' => 'copy'], "The retry_via opti
 $refused(['retry_via' => 'nak', 'nak_delay' => 2], "The nak_delay option has no effect with retry_via 'nak'");
 $refused(['retry_via' => 'nak', 'backoff' => [1, 5], 'max_deliver' => 3], "The backoff option cannot be combined with retry_via 'nak'");
 $lines[] = "the builder refused retry_via with retry_handler: nats, and nak_delay and backoff with retry_via: nak";
+
+// 6. A consumer whose max_deliver the option does not say.
+$stream = exampleStream('retry_via_edges');
+$logger = new ExampleLogger();
+$transport = retryTransport($stream, 'retry_via=nak', $logger);
+try {
+    $transport->setup();
+    // Another configuration's setup on the same consumer, with max_deliver 2.
+    $other = retryTransport($stream, 'retry_via=nak&max_deliver=2');
+    $other->setup();
+    $other->close();
+    $transport->send(new Envelope(new ExampleMessage('the consumer allows 2 deliveries')));
+
+    $run = runWorker(
+        $transport,
+        new MultiplierRetryStrategy(2, 200, 1, 0, 0.0),
+        static function (): void {
+            throw new RuntimeException('the payment provider did not answer');
+        },
+        static fn (WorkerRun $run): bool => in_array(false, $run->willRetry, true),
+    );
+
+    assertExpected('the retry count of each run', [0, 1, 2], $run->retryCounts());
+    assertExpected('willRetry() of each failure', [true, true, false], $run->willRetry);
+    assertExpected('copies in the failure transport', 1, $run->failureCopies());
+    assertExpected(
+        'the warning about the consumer\'s limit',
+        1,
+        count(array_filter($logger->lines, static fn (string $line): bool => str_contains($line, 'consumer "client" has max_deliver 2 and the max_deliver option is unset (no limit)'))),
+    );
+
+    $lines[] = 'a consumer limited to 2 by another setup, with the option unset: 3 runs and 1 failure copy, the retry of the second delivery published as a copy, and one warning';
+} finally {
+    $transport->close();
+    deleteExampleStream($stream);
+}
 
 printf("OK retry-via-nak-edge-cases: %d cases held (symfony/messenger %s):\n", count($lines), InstalledVersions::getPrettyVersion('symfony/messenger'));
 foreach ($lines as $line) {

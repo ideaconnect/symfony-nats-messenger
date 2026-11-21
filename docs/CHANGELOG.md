@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`retry_via: nak` no longer loses a retry when the consumer's `max_deliver` is not the option's.** The transport
+  told the last delivery, whose retry has to go out as a copy, by the `max_deliver` option, while NATS applies the
+  consumer's own limit. With the option unset (the default) or at 5 on a consumer limited to 3, as another
+  configuration's setup or a change by hand leaves it, the retry of the third delivery was NAKed and NATS redelivered
+  nothing: 3 handler runs with `max_retries` 4, no failure-transport copy (measured on nats-server 2.15.2). The
+  transport now reads the consumer's limit at the first retry that needs it and again after a minute, follows it,
+  and warns once when it differs from the option; a consumer it may not read leaves the option to decide, with one
+  warning. Now 5 runs and 1 failure-transport copy. `isTheLastDelivery()`, `consumersMaxDeliver()`.
+
 ## [5.9.0] - 2026-11-18
 
 A **minor** release. It adds `retry_via: nak` for symfony mode: Symfony's retry strategy still decides whether and when a

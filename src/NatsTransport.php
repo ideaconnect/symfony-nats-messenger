@@ -172,6 +172,35 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private bool $symfonysRetryStrategyReported = false;
 
     /**
+     * How long the max_deliver of the consumer, as the server last reported it, is trusted before
+     * {@see consumersMaxDeliver()} asks for it again, in seconds.
+     */
+    private const CONSUMER_MAX_DELIVER_TTL = 60.0;
+
+    /**
+     * The max_deliver of this transport's consumer as the server last reported it (null for no limit), with the
+     * monotonic time {@see consumersMaxDeliver()} read it at. Null while it was never read.
+     *
+     * @var array{value: int|null, at: float}|null
+     */
+    private ?array $consumersMaxDeliver = null;
+
+    /**
+     * Whether asking for the consumer failed on the current connection, which is then not asked again until the
+     * connection is replaced or closed ({@see consumersMaxDeliver()}).
+     */
+    private bool $consumerUnreadableOnThisConnection = false;
+
+    /** Whether {@see consumersMaxDeliver()} has logged that the consumer could not be read, which it does once. */
+    private bool $consumerUnreadableReported = false;
+
+    /**
+     * Whether {@see consumersMaxDeliver()} has logged that the consumer's max_deliver is not the option's, which it
+     * does once.
+     */
+    private bool $maxDeliverMismatchReported = false;
+
+    /**
      * Creates a transport instance from DSN/options and optional serializer override.
      *
      * Parses the DSN and options via {@see NatsTransportConfigurationBuilder}, sets up
@@ -446,20 +475,140 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Whether this is the last delivery max_deliver allows: NATS does not redeliver the message after it, whatever
-     * the NAK says, and publishes the MAX_DELIVERIES advisory instead. The deliveries so far come from the
-     * delivery's reply subject. False without max_deliver, and for a token that is no JetStream reply subject.
+     * Whether this is the last delivery the consumer's max_deliver allows: NATS does not redeliver the message after
+     * it, whatever the NAK says, and publishes the MAX_DELIVERIES advisory instead. The deliveries so far come from
+     * the delivery's reply subject, and the limit is the one the server enforces ({@see consumersMaxDeliver()}).
+     * False without a limit, and for a token that is no JetStream reply subject.
+     *
+     * Up to 5.9.0 the limit was the max_deliver option. A consumer whose limit was not the option's lost a retry: the
+     * option raised (or left unset, the default) without running setup, or another configuration's setup on the
+     * same consumer. With the option at 5 on a consumer limited to 3, or unset on one limited to 3, and max_retries 4,
+     * the retry of the third delivery was NAKed, NATS redelivered nothing, and the message was gone: 3 handler runs,
+     * no failure-transport copy (measured on nats-server 2.15.2).
      */
     private function isTheLastDelivery(string $id): bool
     {
-        $maxDeliver = $this->configuration->maxDeliver();
-        if ($maxDeliver === null) {
+        $delivered = JsMessageMetadata::fromMessage($this->buildAckMessage($id))?->numDelivered;
+        if ($delivered === null) {
             return false;
         }
 
-        $delivered = JsMessageMetadata::fromMessage($this->buildAckMessage($id))?->numDelivered;
+        $maxDeliver = $this->consumersMaxDeliver();
 
-        return $delivered !== null && $delivered >= $maxDeliver;
+        return $maxDeliver !== null && $delivered >= $maxDeliver;
+    }
+
+    /**
+     * The max_deliver the server enforces for this transport's consumer, null for no limit.
+     *
+     * A consumer info request gives it, made at the first retry that needs it and again once the answer is older
+     * than {@see CONSUMER_MAX_DELIVER_TTL}: one request a minute at most, made only while deliveries fail with
+     * retry_via=nak. So a change of the consumer's limit is seen within a minute. A consumer whose limit is not the
+     * max_deliver option's is followed, and logged once, since that limit is the one NATS applies: the option takes
+     * effect only once setup writes it to the consumer.
+     *
+     * setup()'s own answer is not taken: another configuration's setup on the same consumer can change its limit right
+     * after, as happens when two processes start, and the first retry usually comes later than that.
+     *
+     * A consumer that cannot be read, such as for a user who may not ask for consumer info, leaves the last value read,
+     * or the option when there is none, and is logged once; it is not asked again until the connection is replaced or
+     * closed. From client 2.30.0 on, the server's refusal of that request ends it at once; before, it took the
+     * request_timeout.
+     */
+    private function consumersMaxDeliver(): ?int
+    {
+        $known = $this->consumersMaxDeliver;
+        $stale = $known === null || $this->monotonicSeconds() - $known['at'] >= self::CONSUMER_MAX_DELIVER_TTL;
+        if ($stale && !$this->consumerUnreadableOnThisConnection) {
+            try {
+                $this->rememberConsumersMaxDeliver(
+                    $this->awaitOnConnection(fn (): Future => $this->jetStream()->getConsumer($this->streamName, $this->configuration->consumer())),
+                );
+                $known = $this->consumersMaxDeliver;
+            } catch (\Throwable $failure) {
+                $this->consumerUnreadableOnThisConnection = true;
+                $this->warnThatTheConsumerCouldNotBeRead($failure, $known);
+            }
+        }
+
+        $option = $this->configuration->maxDeliver();
+        if ($known === null) {
+            return $option;
+        }
+
+        if ($known['value'] !== $option) {
+            $this->warnThatTheConsumersMaxDeliverIsNotTheOptions($known['value'], $option);
+        }
+
+        return $known['value'];
+    }
+
+    /**
+     * Keeps the max_deliver a consumer info reports, as the one the server enforces now. NATS reports -1 for a
+     * consumer without a limit.
+     */
+    private function rememberConsumersMaxDeliver(ConsumerInfo $consumerInfo): void
+    {
+        $config = is_array($consumerInfo->raw['config'] ?? null) ? $consumerInfo->raw['config'] : [];
+        $maxDeliver = $config['max_deliver'] ?? null;
+
+        $this->consumersMaxDeliver = [
+            'value' => is_int($maxDeliver) && $maxDeliver > 0 ? $maxDeliver : null,
+            'at' => $this->monotonicSeconds(),
+        ];
+    }
+
+    /**
+     * Logs, once per transport object, that the consumer could not be read for its max_deliver
+     * ({@see consumersMaxDeliver()}).
+     *
+     * @param array{value: int|null, at: float}|null $known
+     */
+    private function warnThatTheConsumerCouldNotBeRead(\Throwable $failure, ?array $known): void
+    {
+        if ($this->consumerUnreadableReported) {
+            return;
+        }
+
+        $this->consumerUnreadableReported = true;
+        $this->logger?->warning(sprintf(
+            'retry_via=nak on stream "%s": consumer "%s" could not be read for its max_deliver (%s), so %s tells which'
+            . ' delivery is the last one. Let this user ask for consumer info ($JS.API.CONSUMER.INFO.%s.%s).',
+            $this->streamName,
+            $this->configuration->consumer(),
+            $failure->getMessage(),
+            $known !== null
+                ? 'the value read before (' . self::describeMaxDeliver($known['value']) . ')'
+                : 'the max_deliver option (' . self::describeMaxDeliver($this->configuration->maxDeliver()) . ')',
+            $this->streamName,
+            $this->configuration->consumer(),
+        ));
+    }
+
+    /**
+     * Logs, once per transport object, that the consumer's max_deliver is not the option's ({@see consumersMaxDeliver()}).
+     */
+    private function warnThatTheConsumersMaxDeliverIsNotTheOptions(?int $consumers, ?int $option): void
+    {
+        if ($this->maxDeliverMismatchReported) {
+            return;
+        }
+
+        $this->maxDeliverMismatchReported = true;
+        $this->logger?->warning(sprintf(
+            'retry_via=nak on stream "%s": consumer "%s" has max_deliver %s and the max_deliver option is %s. The'
+            . ' transport follows the consumer, whose limit NATS applies. Run messenger:setup-transports to give the'
+            . ' consumer the option\'s value.',
+            $this->streamName,
+            $this->configuration->consumer(),
+            self::describeMaxDeliver($consumers),
+            self::describeMaxDeliver($option),
+        ));
+    }
+
+    private static function describeMaxDeliver(?int $maxDeliver): string
+    {
+        return $maxDeliver === null ? 'unset (no limit)' : (string) $maxDeliver;
     }
 
     /**
@@ -842,6 +991,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $this->jetStream = null;
         $this->lastUsedAt = null;
         $this->checkBeforeNextUse = false;
+        $this->consumerUnreadableOnThisConnection = false;
 
         // The next operation reconnects lazily, so let auto_setup verify provisioning once more on the
         // reopened connection. Without this the flag would stay latched for the lifetime of the object
@@ -1459,6 +1609,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $this->jetStream = null;
         $this->lastUsedAt = null;
         $this->checkBeforeNextUse = false;
+        $this->consumerUnreadableOnThisConnection = false;
         // As after close(): auto_setup verifies provisioning again on the new connection, where a stream
         // removed during the outage is recreated instead of being trusted from the latched flag.
         $this->autoSetupDone = false;

@@ -38,3 +38,14 @@ Feature: Symfony's retries carried out by NATS (retry_via: nak)
     And I wait for the consumer to finish or timeout
     Then the always-failing message should have been attempted 1 time
     And the failure transport should contain 1 message
+
+  @retry-via
+  Scenario: A consumer whose max_deliver the option does not say still gets the retry of its last delivery
+    Given the transport's consumer allows 2 deliveries, which the max_deliver option does not say
+    When I send 1 always-failing message
+    And I start a messenger consumer with high limit
+    And I wait for the consumer to finish or timeout
+    Then the always-failing message should have been attempted 3 times
+    And the failure transport should contain 1 message
+    And the NATS stream should hold 2 messages
+    And the consumer should have warned once that the consumer allows 2 deliveries and the option says none

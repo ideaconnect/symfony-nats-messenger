@@ -87,6 +87,15 @@ should decide while NATS redelivers.
   retry of the last delivery `max_deliver` allows: a NAK would end the message there, handled by nobody and in no
   failure transport. The copy is a new message with deliveries of its own, so Symfony's strategy runs to its end
   whatever `max_deliver` is.
+- **The last delivery is the consumer's.** NATS applies the consumer's `max_deliver`, which is the option's only
+  once `setup()` has written it. So the transport asks for the consumer's info at the first retry that needs it,
+  and again once the answer is a minute old: one request a minute at most, only while deliveries fail. A limit
+  that differs from the option is followed and logged once; a consumer it may not read leaves the option to decide,
+  with one warning, and is not asked again on that connection. `setup()`'s own answer is not taken, since another
+  configuration's setup can change the consumer right after. Up to 5.9.0 the option decided: with the option at 5,
+  or unset, on a consumer limited to 3, and `max_retries` 4, the retry of the third delivery was NAKed, NATS
+  redelivered nothing, and the message was gone after 3 runs, with no failure-transport copy and one MAX_DELIVERIES
+  advisory (measured on nats-server 2.15.2). With 5.9.1 the same runs are 5, with 1 failure-transport copy.
 - **`ack()` and `reject()`** NAK the remembered delivery with the delay. A delay of 0 is a plain NAK. A delay
   above 9,223,372,036,854 ms is cut there, since the frame carries nanoseconds in a 64-bit integer. The NAK goes
   out after a check of the connection, as the settling of any failed delivery does.

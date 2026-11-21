@@ -7530,6 +7530,25 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * The transport's consumer as the server reports it, with max_deliver $maxDeliver; null is a consumer without a
+     * limit, which NATS reports as -1.
+     */
+    private static function consumerLimitedTo(?int $maxDeliver): ConsumerInfo
+    {
+        return new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => [
+                'ack_policy' => 'explicit',
+                'deliver_policy' => 'all',
+                'filter_subject' => 'test-topic',
+                'max_deliver' => $maxDeliver ?? -1,
+            ]],
+        );
+    }
+
+    /**
      * A server that is shutting down ends every pull in flight with "409 Server Shutdown". The consumer is not
      * missing, so the pull is an empty batch, with and without auto_setup: with it, setup() no longer runs against
      * the server that is going away. The server closes the connection right after, so the next operation checks it
@@ -7891,6 +7910,7 @@ final class NatsTransportTest extends TestCase
             new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.3.1.3.0.0', payload: 'p'),
             new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.4.1.4.0.0', payload: 'p'),
         ]));
+        $jetStream->method('getConsumer')->willReturn(Future::complete(self::consumerLimitedTo(null)));
         $jetStream->expects(self::never())->method('publish');
         $jetStream->expects(self::never())->method('ack');
         $jetStream->method('nakWithDelay')->willReturnCallback(static function (NatsMessage $message, int $delayMs) use (&$settled): Future {
@@ -8022,6 +8042,7 @@ final class NatsTransportTest extends TestCase
     public function testNakRetryPublishesTheCopyOfTheLastDeliveryMaxDeliverAllows(int $maxDeliver, string $delivery, string $settlement, string $settledWith): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('getConsumer')->willReturn(Future::complete(self::consumerLimitedTo($maxDeliver)));
         $jetStream->expects(self::once())->method('publish')->with('test-topic', 'encoded')->willReturn(Future::complete());
         $jetStream->expects(self::never())->method('nak');
         $jetStream->expects(self::never())->method('nakWithDelay');
@@ -8065,6 +8086,8 @@ final class NatsTransportTest extends TestCase
     public function testNakRetryNaksADeliveryThatIsNotKnownToBeTheLast(array $options, string $delivery, int $delayMs): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
+        $maxDeliver = $options['max_deliver'] ?? null;
+        $jetStream->method('getConsumer')->willReturn(Future::complete(self::consumerLimitedTo(is_int($maxDeliver) ? $maxDeliver : null)));
         $jetStream->expects(self::never())->method('publish');
         $jetStream->expects(self::never())->method('nak');
         $jetStream->expects(self::once())->method('nakWithDelay')->with(self::anything(), $delayMs)->willReturn(Future::complete());
@@ -8109,6 +8132,7 @@ final class NatsTransportTest extends TestCase
             new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.2.3.0.0', payload: 'retry count 2'),
             new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.2.2.4.0.0', payload: 'retry count 2'),
         ]));
+        $jetStream->method('getConsumer')->willReturn(Future::complete(self::consumerLimitedTo(2)));
         $jetStream->method('publish')->willReturnCallback(static function (string $subject, string $payload) use (&$published): Future {
             $published[] = $subject . ': ' . $payload;
 
@@ -8172,6 +8196,196 @@ final class NatsTransportTest extends TestCase
         self::assertSame([true, true, true, false], $willRetry);
         self::assertCount(1, $failureTransport->getSent());
         self::assertSame([], $logger->records);
+    }
+
+    /**
+     * The retry of the last delivery the consumer allows is published as a copy whatever the max_deliver option says:
+     * NATS applies the consumer's limit. Up to 5.9.0 the option decided, and a consumer limited to 3 with the option
+     * unset (the default) or at 5 lost the retry of its third delivery: it was NAKed, NATS redelivered nothing, and
+     * no failure-transport copy was made (3 handler runs with max_retries 4, measured on nats-server 2.15.2). The
+     * difference is logged once.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('optionsAboveTheConsumersLimit')]
+    public function testNakRetryPublishesTheCopyOfTheConsumersLastDeliveryWhateverTheOptionSays(array $options, string $optionDescribed): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('getConsumer')->with('test-stream', 'client')->willReturn(Future::complete(self::consumerLimitedTo(3)));
+        $jetStream->expects(self::once())->method('publish')->with('test-topic', 'encoded')->willReturn(Future::complete());
+        $jetStream->expects(self::never())->method('nak');
+        $jetStream->expects(self::never())->method('nakWithDelay');
+        $jetStream->expects(self::once())->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES + $options, $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.3.1.3.0.0')]);
+
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(3)));
+        $transport->ack($failed);
+
+        self::assertSame([
+            'retry_via=nak on stream "test-stream": consumer "client" has max_deliver 3 and the max_deliver option is '
+            . $optionDescribed . '. The transport follows the consumer, whose limit NATS applies. Run'
+            . ' messenger:setup-transports to give the consumer the option\'s value.',
+        ], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function optionsAboveTheConsumersLimit(): iterable
+    {
+        yield 'the option unset, the default' => [[], 'unset (no limit)'];
+        yield 'the option at 5' => [['max_deliver' => 5], '5'];
+    }
+
+    /**
+     * A consumer that allows more deliveries than the option says redelivers the message after the option's last
+     * delivery, so that retry is a NAK with Symfony's delay rather than a copy. Logged once.
+     */
+    public function testNakRetryNaksADeliveryTheConsumerStillRedelivers(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('getConsumer')->willReturn(Future::complete(self::consumerLimitedTo(5)));
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::once())->method('nakWithDelay')->with(self::anything(), 1000)->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['max_deliver' => 3], $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.3.1.3.0.0')]);
+
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(3)));
+        $transport->ack($failed);
+
+        self::assertCount(1, $logger->messagesAt('warning'));
+        self::assertStringContainsString('consumer "client" has max_deliver 5 and the max_deliver option is 3', $logger->messagesAt('warning')[0]);
+    }
+
+    /**
+     * The consumer's limit is read at the first retry that needs it and trusted for a minute: three retries at 0 s,
+     * 59.9 s and 60 s read it twice. Each retry here is of a delivery the consumer redelivers.
+     */
+    public function testTheConsumersMaxDeliverIsReadAgainOnceItIsAMinuteOld(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturn(Future::complete(self::consumerLimitedTo(10)));
+        $jetStream->expects(self::exactly(3))->method('nakWithDelay')->willReturn(Future::complete());
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['max_deliver' => 10], $this->encodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+
+        foreach ([1000.0, 1059.9, 1060.0] as $delivery => $now) {
+            $transport->now = $now;
+            $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp(sprintf('$JS.ACK.test-stream.client.%d.1.%d.0.0', $delivery + 1, $delivery + 1))]);
+            $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp($delivery + 1)));
+            $transport->ack($failed);
+        }
+    }
+
+    /**
+     * A consumer that cannot be read, here because the server refused the request, leaves the max_deliver option to
+     * tell the last delivery, as up to 5.9.0, and is logged once. It is not asked again on that connection, a minute
+     * later or not; once the connection is closed and opened again it is.
+     */
+    public function testAConsumerThatCannotBeReadLeavesTheOptionAndIsNotAskedAgainOnThatConnection(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static fn (): Future => Future::error(new \RuntimeException('refused')));
+        $jetStream->method('publish')->willReturn(Future::complete());
+        $jetStream->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        // A client that stays open, so that the transport keeps the JetStream context the test gives it after close().
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('disconnect')->willReturn(Future::complete());
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['max_deliver' => 2], $this->encodingSerializer(), $logger);
+        $transport->setClient($client);
+        $transport->setJetStreamContext($jetStream);
+        $retryTheLastDelivery = static function () use ($transport): void {
+            $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.2.1.2.0.0')]);
+            $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
+            $transport->ack($failed);
+        };
+
+        $retryTheLastDelivery();
+        $transport->now += 120;
+        $retryTheLastDelivery();
+
+        self::assertSame([
+            'retry_via=nak on stream "test-stream": consumer "client" could not be read for its max_deliver (refused), so the'
+            . ' max_deliver option (2) tells which delivery is the last one. Let this user ask for consumer info'
+            . ' ($JS.API.CONSUMER.INFO.test-stream.client).',
+        ], $logger->messagesAt('warning'));
+
+        $transport->close();
+        $transport->setJetStreamContext($jetStream);
+        $retryTheLastDelivery();
+    }
+
+    /**
+     * A consumer read once and unreadable later leaves the value read before, not the option: the consumer limited to 3
+     * still has its third delivery's retry published as a copy, with the option unset.
+     */
+    public function testAConsumerUnreadableLaterLeavesTheValueReadBefore(): void
+    {
+        $answers = [Future::complete(self::consumerLimitedTo(3))];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('getConsumer')->willReturnCallback(static function () use (&$answers): Future {
+            return array_shift($answers) ?? Future::error(new \RuntimeException('refused'));
+        });
+        $jetStream->method('nakWithDelay')->willReturn(Future::complete());
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $jetStream->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, self::NAK_RETRIES, $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        foreach ([1, 3] as $delivery) {
+            $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp(sprintf('$JS.ACK.test-stream.client.%d.1.%d.0.0', $delivery, $delivery))]);
+            $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp($delivery)));
+            $transport->ack($failed);
+            $transport->now += 120;
+        }
+
+        $warnings = $logger->messagesAt('warning');
+        self::assertCount(2, $warnings);
+        self::assertStringContainsString('consumer "client" has max_deliver 3 and the max_deliver option is unset (no limit)', $warnings[0]);
+        self::assertStringContainsString('could not be read for its max_deliver (refused), so the value read before (3) tells', $warnings[1]);
+    }
+
+    /**
+     * setup()'s answer is not trusted for the consumer's limit: another configuration's setup may change it right
+     * after. Here setup() wrote max_deliver 5, and the consumer reports 3 by the first retry, which is asked for it and
+     * publishes the copy of the third delivery. Up to 5.9.0 the option decided, and that retry was NAKed and lost.
+     */
+    public function testARetryAfterSetupAsksForTheConsumersLimitAgain(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete());
+        // The first answer is setup()'s lookup of the consumer's replay policy, the second the retry's.
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnOnConsecutiveCalls(
+            Future::complete(self::consumerLimitedTo(5)),
+            Future::complete(self::consumerLimitedTo(3)),
+        );
+        $jetStream->method('addConsumer')->willReturn(Future::complete(self::consumerLimitedTo(5)));
+        $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
+        $jetStream->expects(self::never())->method('nakWithDelay');
+        $jetStream->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['max_deliver' => 5], $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        $transport->setup();
+        $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.3.1.3.0.0')]);
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(3)));
+        $transport->ack($failed);
+
+        self::assertCount(1, $logger->messagesAt('warning'), 'the consumer\'s 3 against the option\'s 5');
     }
 
     /**

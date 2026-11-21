@@ -14,6 +14,9 @@ use Symfony\Component\Process\Exception\ProcessFailedException;
 use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
+use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
+use IDCT\NATS\JetStream\Enum\AckPolicy;
+use IDCT\NATS\JetStream\Enum\DeliverPolicy;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 
@@ -3213,6 +3216,58 @@ class NatsSetupContext implements Context
         file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
 
         $this->resetSymfonyCache();
+    }
+
+    /**
+     * Changes the max_deliver of the transport's durable consumer behind the transport's back, as another
+     * configuration's setup on the same consumer or a change by hand does, after "the NATS stream is set up" wrote
+     * it without one. Up to 5.9.0 the transport took the max_deliver option for the consumer's limit: with the
+     * option unset it NAKed the retry of the consumer's last delivery, NATS redelivered nothing, and the message was
+     * lost after 2 attempts with no failure-transport copy.
+     */
+    #[Given('the transport\'s consumer allows :limit deliveries, which the max_deliver option does not say')]
+    public function theTransportsConsumerAllowsDeliveriesWhichTheMaxDeliverOptionDoesNotSay(int $limit): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $jetStream = $client->jetStream();
+            $jetStream->addConsumer($this->testStreamName, ConsumerConfiguration::create()
+                ->durable('client')
+                ->filterSubject($this->testSubject)
+                ->ackPolicy(AckPolicy::Explicit)
+                ->deliverPolicy(DeliverPolicy::All)
+                ->maxDeliver($limit))->await();
+
+            $config = $jetStream->getConsumer($this->testStreamName, 'client')->await()->raw['config'] ?? [];
+            if (!is_array($config) || ($config['max_deliver'] ?? null) !== $limit) {
+                throw new \RuntimeException(sprintf('The consumer did not take max_deliver %d: %s', $limit, json_encode($config)));
+            }
+        } finally {
+            $client->disconnect()->await();
+        }
+    }
+
+    /**
+     * The transport logs once per transport object that the consumer's max_deliver is not the option's, through the
+     * logger the bundle gives it: FrameworkBundle's default logger writes it to the consumer's stderr.
+     */
+    #[Then('the consumer should have warned once that the consumer allows :limit deliveries and the option says none')]
+    public function theConsumerShouldHaveWarnedOnceThatTheConsumerAllowsDeliveriesAndTheOptionSaysNone(int $limit): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        $warning = sprintf(
+            'retry_via=nak on stream "%s": consumer "client" has max_deliver %d and the max_deliver option is unset (no limit).',
+            $this->testStreamName,
+            $limit,
+        );
+        $warnings = substr_count($output, $warning);
+        if ($warnings !== 1) {
+            throw new \RuntimeException(sprintf("Expected the max_deliver warning once, found it %d time(s).\nConsumer output: %s", $warnings, $output));
+        }
     }
 
     #[When('I send :count unrecoverable failing message')]
