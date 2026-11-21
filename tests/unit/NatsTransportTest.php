@@ -7128,6 +7128,41 @@ final class NatsTransportTest extends TestCase
         yield 'no error details' => [[], 'nak'];
     }
 
+    /** @return iterable<string, array{string}> */
+    public static function settlementsOfARetriedDelivery(): iterable
+    {
+        yield 'acknowledged, as Messenger 7.4.22, 8.1.10 and later settle it' => ['ack'];
+        yield 'rejected, as Messenger 7.4.21, 8.1.9 and earlier settle it' => ['reject'];
+    }
+
+    /**
+     * In nats mode with Symfony's retries left on, two handlers, the first failing as unrecoverable and the second not:
+     * Symfony retries the message, and the stamp names the first exception. The delivery is NAKed however the worker
+     * settles it. The first form of 5.10.0 TERMed it when the worker rejected it, as Messenger 7.4.21 and 8.1.9 do,
+     * and NAKed it when it acknowledged it, as later releases do, so the same failure ended differently with the release.
+     */
+    #[DataProvider('settlementsOfARetriedDelivery')]
+    public function testNatsModeNaksAFailureSymfonyRetriedWhoseFirstExceptionIsUnrecoverable(string $settlement): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('term');
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::once())->method('nak')
+            ->with(self::callback(static fn (NatsMessage $message): bool => $message->replyTo === 'delivery-1'))
+            ->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE);
+        $transport->setJetStreamContext($jetStream);
+        $received = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1')]);
+        $failed = $received->with(ErrorDetailsStamp::create(new HandlerFailedException($received, [
+            'first' => new UnrecoverableMessageHandlingException('never'),
+            'second' => new \RuntimeException('not yet'),
+        ])));
+
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(1)));
+        $transport->{$settlement}($failed);
+    }
+
     /**
      * Through Symfony's Worker with its error-details and retry listeners, in nats mode with max_retries 0: an
      * unrecoverable failure runs once and is TERMed. Up to 5.9.x it ran on every delivery max_deliver allowed.

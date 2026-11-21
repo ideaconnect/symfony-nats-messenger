@@ -31,7 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Nats mode TERMs a failure Symfony marks as unrecoverable** (`UnrecoverableExceptionInterface`, read from Symfony's
   `ErrorDetailsStamp`), instead of NAKing it. It can never succeed, and NATS ran the handler again on every delivery
   `max_deliver` allowed: 3 runs with `max_deliver: 3`, now 1. Ordinary failures are still NAKed, for NATS to redeliver.
-  `isAFailureNatsModeCannotRetry()`.
+  A failure Symfony retried is NAKed however the worker settles it, as with Symfony's retries left on a
+  `HandlerFailedException` whose first exception is unrecoverable and another is not. `isAFailureNatsModeCannotRetry()`.
 - **A message that cannot be decoded is handled as Symfony's own transports handle it.** From Symfony Messenger 8.1
   on, a `MessageDecodingFailedException` the serializer throws, as this transport's igbinary serializer does, now
   gives a `MessageDecodingFailedException` message, as Messenger 8.1's `ReceiverInterface` asks and its Doctrine,

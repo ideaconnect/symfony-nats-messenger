@@ -998,7 +998,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $retry = $this->natsRedeliversTheRetryOf($envelope, $id);
         $this->checkTheConnectionBeforeSettlingAFailure();
 
-        if ($this->isAMessageNatsModeCannotDecode($envelope) || $this->isAFailureNatsModeCannotRetry($envelope)) {
+        // A failure Symfony retried is NAKed as ack() NAKs it, whatever its stamp says: Symfony Messenger up to 7.4.21
+        // and 8.1.9 rejects the message it sent for retry, and later releases acknowledge it.
+        if ($this->isAMessageNatsModeCannotDecode($envelope) || ($retry === null && $this->isAFailureNatsModeCannotRetry($envelope))) {
             $this->sendTerm($id);
 
             return;
@@ -1020,10 +1022,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * the handler again on every delivery up to max_deliver, for ever without it: 4 runs with max_deliver 4 (measured
      * on nats-server 2.15.2). Ordinary failures are still NAKed, for NATS to redeliver under nak_delay, backoff and
      * max_deliver. The stamp names the first exception a HandlerFailedException wraps, which is the one that failed
-     * when the message has one handler. With several handlers, a failure whose first exception is unrecoverable is
-     * TERMed even when another handler's failure could succeed on a redelivery, where Symfony's own retry strategy
-     * retries a HandlerFailedException unless every exception in it is unrecoverable. Symfony mode leaves that decision
-     * to Symfony.
+     * when the message has one handler. With several handlers, Symfony's own retry strategy retries a
+     * HandlerFailedException unless every exception in it is unrecoverable: a failure Symfony retried is NAKed, as
+     * reject() reads it first, and one it did not retry (with max_retries: 0, which nats mode asks for, it retries
+     * none) is TERMed when its first exception is unrecoverable, even when another handler's failure could succeed on
+     * a redelivery. Symfony mode leaves that decision to Symfony.
      */
     private function isAFailureNatsModeCannotRetry(Envelope $envelope): bool
     {
