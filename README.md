@@ -2035,19 +2035,21 @@ subject no consumer has interest in, and the transport's consumer reads the topi
 published to `{topic}.delayed.{uuid}`, was dropped at once though its publish was acknowledged: with `retry_via:
 copy`, a message that failed once ran once and was gone, with no failure-transport copy. NATS calls this intended
 ([ADR-51](https://github.com/nats-io/nats-architecture-and-design/blob/main/adr/ADR-51.md#stream-retention-interaction)).
-Since 5.9.1 `messenger:setup-transports` and a worker's first pull refuse it:
+Since 5.9.1 `messenger:setup-transports` refuses it before it creates or changes the stream, since NATS never turns
+a stream's schedules off once a write turned them on, and a worker's first pull refuses it too:
 
 ```text
 scheduled_messages on stream "my-stream": the stream has interest retention and no consumer has interest in "my-topic.delayed.>", so NATS would store none of the delayed messages this transport publishes there, Symfony's delayed retries included, and each would be lost. Turn scheduled_messages off (with retry_via: nak, retries wait through a NAK instead), use a stream with limits or work-queue retention, or add a durable consumer filtered on "my-topic.delayed.>" that nobody pulls from, which keeps the delayed messages until they are due.
 ```
 
 A durable consumer on `{topic}.delayed.>` that nobody pulls from gives the delayed messages interest, and the
-transport then goes on (create it after the first setup, which creates the stream, and run the setup again). ADR-51
+transport then goes on. Create the stream yourself first, with interest retention and the subjects `{topic}` and
+`{topic}.delayed.>`, then that consumer, then run the setup, which turns the stream's schedules on. ADR-51
 calls it a pinning consumer and prefers a separate work-queue stream for the schedules: the pinning consumer costs
 work on a replicated stream, and the delayed messages are lost again if it is deleted. A process that only publishes
 does not check the stream, and a stream or consumer list the transport may not read is let through with one warning.
 
-> **Tested by:** `testSetupRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testSetupKeepsScheduledMessagesOnAnInterestStreamWithAConsumerOnTheDelayedSubjects`, `testSetupAsksForNoConsumersOnAStreamThatKeepsDelayedMessages`, `testTheFirstPullRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testTheStreamIsCheckedOnceForAWorkerWhosePullsGoOn`, `testAStreamThatCannotBeReadIsLetThroughWithOneWarning`, `testWithoutScheduledMessagesAPullChecksNothing`, the Behat scenarios `scheduled_messages on an interest stream nothing has interest in the delayed subjects of is refused` and `Delayed messages on an interest stream are delivered while a consumer has interest in the delayed subjects` (`nats_delayed.feature`), the example `delayed-messages.php`
+> **Tested by:** `testSetupRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testSetupRefusesScheduledMessagesOnAnInterestStreamItWouldCreateWithoutCreatingIt`, `testSetupKeepsScheduledMessagesOnAnInterestStreamWithAConsumerOnTheDelayedSubjects`, `testSetupAsksForNoConsumersOnAStreamThatKeepsDelayedMessages`, `testTheFirstPullRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testTheStreamIsCheckedOnceForAWorkerWhosePullsGoOn`, `testAStreamThatCannotBeReadIsLetThroughWithOneWarning`, `testWithoutScheduledMessagesAPullChecksNothing`, the Behat scenarios `scheduled_messages on an interest stream nothing has interest in the delayed subjects of is refused` and `Delayed messages on an interest stream are delivered while a consumer has interest in the delayed subjects` (`nats_delayed.feature`), the example `delayed-messages.php`
 
 Enable `scheduled_messages` in the DSN to use Symfony's `DelayStamp` for deferred delivery:
 

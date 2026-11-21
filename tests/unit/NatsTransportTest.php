@@ -4572,8 +4572,9 @@ final class NatsTransportTest extends TestCase
                 'unknown field "allow_msg_schedules"',
                 400,
             )));
-        // A version-feature rejection is not a pre-existing-stream conflict, so no existence check.
-        $jetStream->expects(self::never())->method('getStream');
+        // The check of delayed messages finds no stream; a version-feature rejection is not a pre-existing-stream
+        // conflict, so there is no second existence check.
+        $jetStream->expects(self::once())->method('getStream')->willReturn(Future::error(new JetStreamException('stream not found', 404)));
         $jetStream->expects(self::never())->method('addConsumer');
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true]);
@@ -5823,8 +5824,9 @@ final class NatsTransportTest extends TestCase
     /**
      * setup() refuses scheduled_messages on a stream with interest retention where no consumer has interest in the
      * delayed subjects: NATS stores none of the delayed messages there, so each one, Symfony's delayed retries
-     * included, would be lost. The consumer is not created. Up to 5.9.0 setup() passed, and a message that failed
-     * once with retry_via: copy ran once and was gone.
+     * included, would be lost. The stream is neither created nor updated, and the consumer is not created: NATS never
+     * turns allow_msg_schedules off once a write set it. Up to 5.9.0 setup() passed, and a message that failed once
+     * with retry_via: copy ran once and was gone.
      *
      * @param list<ConsumerInfo> $consumers
      */
@@ -5832,8 +5834,10 @@ final class NatsTransportTest extends TestCase
     public function testSetupRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn(array $consumers): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->method('addStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
+        $jetStream->expects(self::once())->method('getStream')->with('test-stream')->willReturn(Future::complete(self::streamWithRetention('interest')));
         $jetStream->expects(self::once())->method('listConsumers')->with('test-stream')->willReturn(Future::complete($consumers));
+        $jetStream->expects(self::never())->method('addStream');
+        $jetStream->expects(self::never())->method('updateStream');
         $jetStream->expects(self::never())->method('addConsumer');
 
         $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'stream_retention' => 'interest']);
@@ -5850,6 +5854,30 @@ final class NatsTransportTest extends TestCase
             self::assertStringContainsString('Turn scheduled_messages off', $refusal->getMessage());
             self::assertStringContainsString('add a durable consumer filtered on "test-topic.delayed.>" that nobody pulls from', $refusal->getMessage());
         }
+    }
+
+    /**
+     * A stream that does not exist yet and would be created with interest retention has no consumer to give the delayed
+     * subjects interest: setup() refuses it without creating it. The first form of 5.9.1 created it first, with
+     * allow_msg_schedules, and refused it then: the stream was left with schedules on, and setup() with
+     * scheduled_messages turned off, the first remedy the refusal names, failed with "message schedules can not be
+     * disabled" (measured on nats-server 2.14.2).
+     */
+    public function testSetupRefusesScheduledMessagesOnAnInterestStreamItWouldCreateWithoutCreatingIt(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('getStream')->with('test-stream')->willReturn(Future::error(new JetStreamException('stream not found', 404)));
+        $jetStream->expects(self::never())->method('listConsumers');
+        $jetStream->expects(self::never())->method('addStream');
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'stream_retention' => 'interest']);
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('scheduled_messages on stream "test-stream": the stream has interest retention and no consumer has interest in "test-topic.delayed.>"');
+
+        $transport->setup();
     }
 
     /**
@@ -5875,6 +5903,7 @@ final class NatsTransportTest extends TestCase
     public function testSetupKeepsScheduledMessagesOnAnInterestStreamWithAConsumerOnTheDelayedSubjects(ConsumerInfo $consumer): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('getStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
         $jetStream->method('addStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
         $jetStream->expects(self::once())->method('listConsumers')->willReturn(Future::complete([self::consumerFilteredOn('test-topic'), $consumer]));
         $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
@@ -5902,8 +5931,8 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * A stream with limits or work-queue retention keeps every delayed message: the consumers are not asked for, and
-     * a later pull does not check the stream again.
+     * A stream created with limits or work-queue retention keeps every delayed message: the consumers are not asked
+     * for, and a later pull does not check the stream again.
      */
     #[DataProvider('retentionsThatKeepDelayedMessages')]
     public function testSetupAsksForNoConsumersOnAStreamThatKeepsDelayedMessages(string $retention): void
@@ -5911,7 +5940,8 @@ final class NatsTransportTest extends TestCase
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->method('addStream')->willReturn(Future::complete(self::streamWithRetention($retention)));
         $jetStream->expects(self::never())->method('listConsumers');
-        $jetStream->expects(self::never())->method('getStream');
+        // setup()'s look for the stream before it creates it.
+        $jetStream->expects(self::once())->method('getStream')->willReturn(Future::error(new JetStreamException('stream not found', 404)));
         $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
         $jetStream->method('fetchBatch')->willReturn(Future::complete([]));
 
@@ -6080,7 +6110,8 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::once())
             ->method('addStream')
             ->willReturn(Future::error(new JetStreamException('stream already exists', 400)));
-        $jetStream->expects(self::once())
+        // Once for the check of delayed messages before the write, once for the update.
+        $jetStream->expects(self::exactly(2))
             ->method('getStream')
             ->with('test-stream')
             ->willReturn(Future::complete($streamInfo));
@@ -6992,7 +7023,8 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::once())
             ->method('addStream')
             ->willReturn(Future::error(new JetStreamException('already exists', 0)));
-        $jetStream->expects(self::once())
+        // With scheduled_messages also for the check of delayed messages before the write.
+        $jetStream->expects(self::exactly($scheduledMessages ? 2 : 1))
             ->method('getStream')
             ->willReturn(Future::complete(StreamInfo::fromArray([
                 'config' => ['name' => 'test-stream', 'subjects' => [42, '', 'operator.added'], 'storage' => 'file'],

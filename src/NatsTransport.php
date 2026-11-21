@@ -1216,6 +1216,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 if ($unsupported !== null) {
                     throw $unsupported;
                 }
+
+                $this->assertTheStreamToSetUpKeepsDelayedMessages($streamConfiguration);
             }
 
             try {
@@ -1246,7 +1248,6 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             // The live stream: an update leaves an existing stream's retention as it was.
-            $this->assertTheStreamKeepsDelayedMessages($streamInfo);
             $this->warnIfNatsModeLosesWhatMaxDeliverStops($streamInfo);
 
             $consumerConfiguration = ConsumerConfiguration::create()
@@ -2123,7 +2124,44 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
         }
 
-        throw new TransportException(sprintf(
+        throw $this->delayedMessagesWouldBeLost();
+    }
+
+    /**
+     * The check of {@see assertTheStreamKeepsDelayedMessages()} for setup(), made before setup() creates or updates the
+     * stream: on the stream that exists, with its retention, which an update keeps, or on the configuration of the one
+     * setup() would create, whose consumers do not exist yet. NATS turns allow_msg_schedules on with the write and
+     * never turns it off again, so a refusal after the write, as up to the first form of 5.9.1, left the stream with
+     * schedules on, and the first remedy the refusal names, turning scheduled_messages off, then failed with "message
+     * schedules can not be disabled".
+     */
+    private function assertTheStreamToSetUpKeepsDelayedMessages(StreamConfiguration $streamConfiguration): void
+    {
+        if ($this->delayedMessagesChecked) {
+            return;
+        }
+
+        $existing = $this->getExistingStream();
+        if ($existing !== null) {
+            $this->assertTheStreamKeepsDelayedMessages($existing);
+
+            return;
+        }
+
+        if (($streamConfiguration->toArray()['retention'] ?? 'limits') === 'interest') {
+            throw $this->delayedMessagesWouldBeLost();
+        }
+
+        $this->delayedMessagesChecked = true;
+    }
+
+    /**
+     * The refusal of scheduled_messages on a stream with interest retention where no consumer has interest in the
+     * delayed subjects, with the ways out.
+     */
+    private function delayedMessagesWouldBeLost(): TransportException
+    {
+        return new TransportException(sprintf(
             'scheduled_messages on stream "%s": the stream has interest retention and no consumer has interest in "%s",'
             . ' so NATS would store none of the delayed messages this transport publishes there, Symfony\'s delayed'
             . ' retries included, and each would be lost. Turn scheduled_messages off (with retry_via: nak, retries wait'

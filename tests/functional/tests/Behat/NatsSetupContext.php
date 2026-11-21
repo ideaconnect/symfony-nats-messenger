@@ -2004,6 +2004,38 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * The remedy the refusal of scheduled_messages names first: the same interest stream, without scheduled_messages.
+     */
+    #[When('I have a messenger transport configured with a stream with interest retention and scheduled messages off')]
+    public function iHaveAMessengerTransportConfiguredWithAStreamWithInterestRetentionAndScheduledMessagesOff(): void
+    {
+        $this->writeTransportConfiguration('stream_max_age=900&stream_retention=interest');
+    }
+
+    /**
+     * Creates the interest stream as an operator would, with the transport's own consumer on the topic and nothing on
+     * the delayed subjects, so that NATS stores none of the delayed messages.
+     */
+    #[Given('the stream already exists with interest retention and nothing on its delayed subjects')]
+    public function theStreamAlreadyExistsWithInterestRetentionAndNothingOnItsDelayedSubjects(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $jetStream = $client->jetStream();
+            $jetStream->addStream(StreamConfiguration::create($this->testStreamName)
+                ->subjects($this->testSubject, $this->testSubject . '.delayed.>')
+                ->retention(RetentionPolicy::Interest)
+                ->set('allow_msg_schedules', true))->await();
+            $jetStream->addConsumer($this->testStreamName, ConsumerConfiguration::create()
+                ->durable('client')
+                ->filterSubject($this->testSubject)
+                ->ackPolicy(AckPolicy::Explicit))->await();
+        } finally {
+            $client->disconnect()->await();
+        }
+    }
+
+    /**
      * Creates the interest stream as setup() would, and a durable consumer on its delayed subjects that nobody pulls
      * from, which gives them interest (NATS ADR-51 calls it a pinning consumer).
      */
