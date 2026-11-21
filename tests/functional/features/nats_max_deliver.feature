@@ -38,6 +38,6 @@ Feature: NATS-native redelivery cap (max_deliver)
   @max-deliver
   Scenario: In nats mode, setup warns about an interest stream when the server deletes a message stopped at max_deliver
     Given I have a messenger transport configured with the NATS retry handler, max_deliver 3 and interest retention
-    When I run the messenger setup command
+    When I run the messenger setup command with its warnings shown
     Then the NATS stream should be created successfully
     And the setup should have warned that NATS deletes a message stopped at max_deliver exactly when the server's version does

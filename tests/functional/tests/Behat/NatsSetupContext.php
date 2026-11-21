@@ -252,6 +252,20 @@ class NatsSetupContext implements Context
         $this->setupProcess->run();
     }
 
+    /**
+     * The setup command with -v: Symfony's default logger writes only errors to stderr at the normal verbosity, so a
+     * warning of setup() shows only from -v on, as the consumer steps run with -vv.
+     */
+    #[When('I run the messenger setup command with its warnings shown')]
+    public function iRunTheMessengerSetupCommandWithItsWarningsShown(): void
+    {
+        $this->setupProcess = new Process(
+            ['php', 'bin/console', 'messenger:setup-transports', 'test_transport', '--no-interaction', '--env=test', '-v'],
+            __DIR__ . '/../..'
+        );
+        $this->setupProcess->run();
+    }
+
     #[When('I run the messenger setup command for both shared transports')]
     public function iRunTheMessengerSetupCommandForBothSharedTransports(): void
     {
