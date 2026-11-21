@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1289 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1330 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -217,13 +217,26 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
 - **Only a `MessageDecodingFailedException` of the serializer is a decode failure.** Any other exception propagates
   and leaves the message for redelivery, where 5.9.x TERMed it. A custom serializer should throw a
   `MessageDecodingFailedException` for a payload it cannot decode; `AbstractEnveloperSerializer` does so for every
-  failure of `deserialize()`.
+  failure of its decoder (see [Creating Custom Serializers](#creating-custom-serializers)).
 - **Nats mode TERMs a failure Symfony marks as unrecoverable,** which ran on every delivery `max_deliver` allowed.
 - **New warnings,** through the transport's logger: a retry published without its delay, and at setup a nats-mode
   stream from which NATS deletes a message stopped at `max_deliver` (see [Logging](#logging)). A log alert on warnings
   may fire once per worker where it did not.
 
 > **Tested by:** `testBuildRefusesAnUnknownOption`, `testFromMessenger81AMessageThatCannotBeDecodedGoesOnAsTheDecodingFailure`, `testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testARetryPublishedWithoutItsDelayIsLoggedOnce`, `testSetupInNatsModeWarnsAboutAStreamWhereNatsDeletesWhatMaxDeliverStops`.
+
+### Upgrading from 5.10.0
+
+- **A warning or notice of the application's own code while a message is unserialized is the application's again**
+  (#122). A message whose `__wakeup()`, `__unserialize()` or autoloader raises one, suppressed with `@` or not, decodes
+  as up to 5.9.x, and the error goes to the application's error handler. 5.10.0 made such a message one that cannot be
+  decoded, and it was TERMed without its handler running. A warning of the decoder itself is still a decode failure
+  (see [Creating Custom Serializers](#creating-custom-serializers)).
+- **An exception the application's error handler throws for such an error propagates from the transport,** with the
+  message left for redelivery after `ack_wait`, as for any exception of a serializer other than a decode failure.
+  Symfony's error handler throws a warning or notice that is not suppressed as an `ErrorException` in debug mode.
+
+> **Tested by:** `decode_OfAMessageWhoseRestoreRaisesAnError_DecodesAndPassesTheErrorOn`, `testAMessageWhoseWakeupRaisesASuppressedWarningIsHandledAndAcknowledgedOnce`, `testAnExceptionOfTheApplicationsErrorHandlerPropagatesFromGetWithTheMessageUnsettled`, the Behat scenarios `A message whose __wakeup raises a suppressed warning is handled and acknowledged in nats mode` and `A message whose __wakeup raises a suppressed warning is handled and acknowledged in symfony mode`.
 
 ### Logging
 
@@ -381,6 +394,27 @@ class MyCustomSerializer extends AbstractEnveloperSerializer
 ```
 
 > **Tested by:** `readmeCustomSerializerExample_EncodeDecode_RoundTrips`, `readmeCustomSerializerExample_DecodeInvalidBody_ThrowsException` - the exact code above is compiled and exercised via `ReadmeExampleSerializer` in the unit tests.
+
+**Which warnings make a message one that cannot be decoded.** `decode()` turns into a `MessageDecodingFailedException`
+an exception `deserialize()` throws, and a warning or notice the decoder raises itself, whatever the application's
+error handler does with warnings: one the outermost `igbinary_unserialize()` or `unserialize()` call raises (igbinary
+warns about a payload that is not igbinary, cut short or with bytes after its data; PHP's `unserialize()`, from PHP 8.3,
+about bytes after the end of a payload, whose value it still returns), and one raised by code running on the serializer
+object: `deserialize()`, inherited or not, and the methods it calls on it. Unserializing a message also runs the
+application's code: the `__wakeup()` or `__unserialize()` of the message and of each object in it, and the autoloader
+that loads their classes. A warning or notice that code raises, suppressed with `@` or not, goes to the error handler
+there was, as every deprecation does, or to PHP's own when there was none or it returns false, and the message decodes.
+5.10.0 made such a message one that cannot be decoded, and it was TERMed without its handler running (#122). A codec
+that is an object of its own, which `deserialize()` calls, counts as the application's code: have it throw a
+`MessageDecodingFailedException` for a payload it cannot decode, rather than go on with what it could read.
+
+PHP gives the error handler there was back without the error levels it was set for, so it is called for every level: a
+handler set with `set_error_handler($handler, E_WARNING)` is called for an `E_USER_NOTICE` too, and should check the
+type it gets. An exception it throws propagates from `decode()` as it is, not as a decode failure, so the transport
+leaves the message for redelivery after `ack_wait`, as for any other exception of a serializer, and the worker stops.
+Symfony's error handler throws a warning or notice that is not suppressed as an `ErrorException` in debug mode.
+
+> **Tested by:** `readmeCustomSerializerExample_OfAMessageWhoseRestoreRaisesAnError_DecodesAndPassesTheErrorOn`, `readmeCustomSerializerExample_OfAMessageWhoseClassAnAutoloaderLoadsWithAWarning_DecodesAndPassesTheWarningOn`, `decode_OfAPayloadWithATrailingByte_ThrowsMessageDecodingFailedWhereverUnserializeIsCalled`, `decode_OfAPayloadCutShort_ThrowsMessageDecodingFailedWhereverUnserializeIsCalled`, `decode_OfAMessageWhoseClassAClosureOfDeserializeLoads_DecodesAndPassesTheWarningOn`, `decode_WhoseInheritedDeserializeRaisesANotice_ThrowsMessageDecodingFailed`, `decode_WhoseCodecHelperRaisesAWarningItself_PassesItOnAndDecodes`, `decode_WhoseErrorHandlerThereWasThrows_PropagatesItsExceptionAsItIs`, `decode_WhoseErrorHandlerThereWasLeavesTheErrorToPhp_DecodesAndPhpRecordsIt`, `decode_OfAPayloadIgbinaryCannotRead_ThrowsMessageDecodingFailedWithItsWarning`, `testAMessageWhoseWakeupRaisesASuppressedWarningIsHandledAndAcknowledgedOnce`, `testAnExceptionOfTheApplicationsErrorHandlerPropagatesFromGetWithTheMessageUnsettled`, the Behat scenarios `A message whose __wakeup raises a suppressed warning is handled and acknowledged in nats mode` and `A message whose __wakeup raises a suppressed warning is handled and acknowledged in symfony mode`.
 
 For reference implementations, see:
 - `src/Serializer/IgbinarySerializer.php` - Binary serialization
@@ -826,7 +860,10 @@ In detail:
 
 **A message that cannot be decoded is handled as Symfony's own transports handle it** (Doctrine, Redis, AMQP), in
 either mode. A message that cannot be decoded is one whose serializer throws a `MessageDecodingFailedException`, which
-this transport's serializers throw for every way they fail, warnings included.
+this transport's serializers throw for every way their decoder fails, warnings included. A warning or notice of the
+application's own code that runs while a message is unserialized, such as the message's `__wakeup()`, goes to the
+application's error handler instead, and the message decodes (see
+[Creating Custom Serializers](#creating-custom-serializers)).
 
 - **On Symfony Messenger 8.1 and later** the worker gets it as the decoding failure, a
   `MessageDecodingFailedException` message (5.10.0), and FrameworkBundle's `DecodeFailedMessageMiddleware` decodes it
@@ -1823,9 +1860,9 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 98.6% (1706 of 1730 mutants killed, with 100% mutation code coverage).
-[docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 19 mutants that survive, with the reason for each:
-13 are equivalent, two make no difference with the real client, and three are caught by tests in a child process,
+95%; the suite scores 98.6% (1740 of 1765 mutants killed, with 100% mutation code coverage).
+[docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 25 mutants that survive, with the reason for each:
+20 are equivalent, two make no difference with the real client, and three are caught by tests in a child process,
 which a mutant does not reach. CI runs all three commands on the PHP 8.5 job and
 every day. Scores published before, 100% among them, were not
 real: in Infection's mutant processes the client's final classes could not be doubled, so every mutant their

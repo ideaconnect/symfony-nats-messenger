@@ -155,6 +155,12 @@ apply only with the option on.
   handle it (5.10.0): from Symfony Messenger 8.1 on it becomes a decoding-failure message; before
   8.1 `get()` TERMs it and throws. Any other serializer exception propagates unsettled. Nats mode
   TERMs a decoding-failure message when it is settled. Received headers with integer array keys are omitted before decode.
+  The serializers make a decode failure of the decoder's own warnings only: the outermost `igbinary_unserialize()` or
+  `unserialize()` call's, and those of code running on the serializer object. A warning of code the parser runs
+  (`__wakeup()`, `__unserialize()`, an autoloader) or of a codec helper of another object goes to the error handler
+  there was, whose exception propagates as it is (#122; 5.10.0 converted them all and TERMed such messages). A file
+  and line check of `deserialize()` was tried and rejected: an override calling `parent::deserialize()` and a closure
+  autoloader declared in `deserialize()` defeat it.
 - **Retry ownership:** default `retry_handler=symfony` sends TERM; Symfony owns retries and the
   failure transport. `retry_handler=nats` sends NAK, optionally delayed; `send()` suppresses
   Symfony's retry copy when it carries `ReceivedStamp` and a positive retry count. NATS owns

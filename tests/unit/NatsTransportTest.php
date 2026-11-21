@@ -24,9 +24,13 @@ use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NATS\Protocol\ServerInfo;
 use IDCT\NatsMessenger\NatsTransport;
+use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
+use IDCT\NatsMessenger\Tests\Support\NoticeOnWakeup;
+use IDCT\NatsMessenger\Tests\Support\RecordedErrors;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Tests\Support\StrictHeaderNameSerializer;
+use IDCT\NatsMessenger\Tests\Support\SuppressedWarningOnWakeup;
 use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -903,6 +907,101 @@ final class NatsTransportTest extends TestCase
         $this->expectExceptionMessage('the schema registry did not answer');
 
         iterator_to_array($transport->get(), false);
+    }
+
+    /**
+     * Through Symfony's Worker, with the transport's igbinary serializer, a message whose __wakeup() raises a warning it
+     * suppresses is handled once and acknowledged, in each retry mode, and the warning goes to the application's error
+     * handler. On 5.10.0 the warning made it a message that cannot be decoded: its handler never ran, and it was TERMed
+     * (#122).
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('modesThatReceiveAMessageThatCannotBeDecoded')]
+    #[RequiresPhpExtension('igbinary')]
+    public function testAMessageWhoseWakeupRaisesASuppressedWarningIsHandledAndAcknowledgedOnce(array $options): void
+    {
+        $serializer = new IgbinarySerializer();
+        $settled = [];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([new NatsMessage(
+            subject: 'test-topic',
+            sid: 1,
+            replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0',
+            payload: $serializer->encode(new Envelope(new SuppressedWarningOnWakeup('invoice 7')))['body'],
+        )]));
+        foreach (['term', 'nak', 'nakWithDelay', 'ack', 'ackSync'] as $method) {
+            $jetStream->method($method)->willReturnCallback(static function (NatsMessage $message) use (&$settled, $method): Future {
+                $settled[] = $method;
+
+                return Future::complete();
+            });
+        }
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $serializer);
+        $transport->setJetStreamContext($jetStream);
+        $handled = [];
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            SuppressedWarningOnWakeup::class => [static function (SuppressedWarningOnWakeup $message) use (&$handled): void {
+                $handled[] = $message->text;
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($transport),
+            self::singleServiceLocator(new MultiplierRetryStrategy(3)),
+        ));
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        [, $errors] = RecordedErrors::during(static function () use ($transport, $bus, $dispatcher): void {
+            (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
+        });
+
+        self::assertSame(['invoice 7'], $handled);
+        self::assertSame(['ack'], $settled);
+        self::assertSame([[E_WARNING, 'hex2bin(): Hexadecimal input string must have an even length']], $errors);
+    }
+
+    /**
+     * An exception the application's error handler throws for a warning or notice of the message's own code propagates
+     * from get() as it is, with the delivery left unsettled for redelivery, as any exception of the serializer other
+     * than a MessageDecodingFailedException. On 5.10.0 it was a decode failure (#122).
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('modesThatReceiveAMessageThatCannotBeDecoded')]
+    #[RequiresPhpExtension('igbinary')]
+    public function testAnExceptionOfTheApplicationsErrorHandlerPropagatesFromGetWithTheMessageUnsettled(array $options): void
+    {
+        $serializer = new IgbinarySerializer();
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([new NatsMessage(
+            subject: 'test-topic',
+            sid: 1,
+            replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0',
+            payload: $serializer->encode(new Envelope(new NoticeOnWakeup('invoice 8')))['body'],
+        )]));
+        foreach (['term', 'nak', 'nakWithDelay', 'ack', 'ackSync'] as $method) {
+            $jetStream->expects(self::never())->method($method);
+        }
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $serializer);
+        $transport->setJetStreamContext($jetStream);
+        $thrown = null;
+        set_error_handler(static function (int $type, string $message) use (&$thrown): never {
+            throw $thrown = new \ErrorException($message, 0, $type);
+        });
+
+        try {
+            iterator_to_array($transport->get(), false);
+            self::fail('get() should have failed');
+        } catch (\Throwable $failure) {
+            self::assertInstanceOf(\ErrorException::class, $thrown);
+            self::assertSame($thrown, $failure);
+        } finally {
+            restore_error_handler();
+        }
     }
 
     /**

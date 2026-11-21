@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A warning or notice the application's own code raises while a message is unserialized no longer makes the message
+  one that cannot be decoded** (#122). 5.10.0 made every warning or notice raised during `deserialize()` a
+  `MessageDecodingFailedException`, also one of the code that unserializing a message runs: the `__wakeup()` or
+  `__unserialize()` of the message and of the objects in it, and the autoloader that loads their classes, even one
+  that code suppressed with `@`, for which PHP calls the error handler all the same. Such a message, which 5.9.x
+  decoded, was TERMed without its handler running, and in symfony mode one copy went to the failure transport when
+  there was one (measured with nats-server 2.14.2 and Symfony Messenger 8.1.11). The transport's serializers
+  (`AbstractEnveloperSerializer`, `IgbinarySerializer`) now read from the call stack which code raised it. The
+  decoder's own warnings are still the decoding failure, whatever the application's error handler does with warnings:
+  one the outermost `igbinary_unserialize()` or `unserialize()` call raises itself (igbinary's about a payload that is
+  not igbinary, cut short or with bytes after its data, and PHP's about bytes after the end of a payload, from PHP 8.3,
+  whose value it still returns), and one raised by code running on the serializer object, such as its
+  `deserialize()`, inherited or not. Neither the file nor the lines of `deserialize()` tell them apart: an override
+  that calls `parent::deserialize()` or a codec helper calls the parser elsewhere, and a closure declared in
+  `deserialize()` can run inside the parser as an autoloader. A warning or notice of code that runs inside the parser
+  call, or of a codec helper of another object, goes to the error handler there was, as up to 5.9.x, or to PHP's own
+  when there was none or it returns false; so does every deprecation. PHP gives that handler back without the error
+  levels it was set for, so it is called for every level. An exception it throws propagates as it is and leaves the
+  message for redelivery, as any other exception of a serializer does: Symfony's error handler throws a warning that
+  is not suppressed as an `ErrorException` in debug mode. `deserializeOrFail()`, `raisedByTheDecoder()`.
+
 ## [5.10.0] - 2026-11-21
 
 A **minor** release that makes the two retry modes plain, from the review of #119, whose `give_up_via` is not taken. In

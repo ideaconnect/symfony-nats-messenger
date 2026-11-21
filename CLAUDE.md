@@ -163,7 +163,10 @@ composer nats:stop               # stop NATS
   (`messengerPassesOnDecodeFailures()`). Any other exception propagates with the message unsettled. Bartosz asked
   for this behaviour, not a logger that decides. Messenger 8.1.11 and later fail a thrown failure once, as
   unrecoverable; 8.1.0 to 8.1.10 retry it, which the delivery count keeps bounded with `nak`. The serializers turn
-  every failure of `deserialize()`, warnings included, into that exception.
+  every failure of their decoder, warnings included, into that exception, but not a warning or notice of the
+  application's code that unserializing runs (a message's `__wakeup()`, an autoloader): that one goes to the error
+  handler there was, and an exception that handler throws propagates as it is (#122). Which code raised it is read
+  from the call stack (`raisedByTheDecoder()`), not from a file or line range.
 - **`keepalive()` queues, never waits.** Symfony calls it from a SIGALRM handler, where fibers cannot switch,
   so it queues `inProgress()->ignore()`, which goes out the next time the event loop runs.
 - **Duplicate protection:** a `DeduplicationIdStamp`, added on the first send with `deduplicate` or by the

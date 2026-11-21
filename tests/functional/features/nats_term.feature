@@ -44,3 +44,22 @@ Feature: Symfony failure transport via TERM
     When two messenger consumers run one after the other for 3 seconds each
     Then the message that could not be decoded should have been settled
     And only a consumer before Symfony Messenger 8.1 should have stopped, on the decode error
+
+  # A message whose __wakeup() raises a warning it suppresses, as legacy code looking for a cache file does, through the
+  # igbinary serializer, in symfony mode with a failure transport. The warning is the application's: the message is
+  # handled and acknowledged. 5.10.0 made it a decode failure: the handler never ran, the message was TERMed and a copy
+  # went to the failure transport (#122).
+  @term
+  Scenario: A message whose __wakeup raises a suppressed warning is handled and acknowledged in symfony mode
+    Given NATS server is running
+    And I have a messenger transport with failure transport configured using the "IDCT\NatsMessenger\Serializer\IgbinarySerializer" serializer
+    And the NATS stream is set up
+    And the failure stream is set up
+    And the test files directory is clean
+    And I listen for the TERMs of the transport's consumer
+    When I send 1 message whose __wakeup raises a suppressed warning
+    And I start a messenger consumer
+    And I wait for messages to be consumed
+    Then the message whose __wakeup raised a warning should have been handled once
+    And its one delivery should have been acknowledged, not TERMed
+    And the failure transport should contain 0 messages

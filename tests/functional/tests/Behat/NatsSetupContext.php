@@ -14,6 +14,7 @@ use Symfony\Component\Process\Exception\ProcessFailedException;
 use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
+use IDCT\NATS\Core\SubscriptionQueue;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
 use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
 use IDCT\NATS\JetStream\Enum\AckPolicy;
@@ -81,6 +82,9 @@ class NatsSetupContext implements Context
     /** @var list<string> The variables of the commands' environment this scenario set. */
     private array $commandEnvironment = [];
     private ?string $seedFile = null;
+    /** The connection that listens for the MSG_TERMINATED advisories of the transport's consumer, while it does. */
+    private ?NatsClient $advisoryClient = null;
+    private ?SubscriptionQueue $terminations = null;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
     private string $testFilesDir;
@@ -848,7 +852,7 @@ class NatsSetupContext implements Context
     public function iHaveAMessengerTransportConfiguredWithNatsRetryHandler(): void
     {
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n            'App\\Async\\WarningOnWakeupMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             self::IGBINARY_SERIALIZER
@@ -1026,6 +1030,109 @@ class NatsSetupContext implements Context
         }
     }
 
+    /**
+     * Starts listening for the advisory NATS publishes for each TERM of the transport's consumer, MSG_TERMINATED, which
+     * {@see itsOneDeliveryShouldHaveBeenAcknowledgedNotTermed()} counts. An ACK publishes none.
+     */
+    #[Given('I listen for the TERMs of the transport\'s consumer')]
+    public function iListenForTheTermsOfTheTransportsConsumer(): void
+    {
+        $this->advisoryClient = $this->createAppropriateNatsClient();
+        $this->terminations = $this->advisoryClient
+            ->subscribeQueue('$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.' . $this->testStreamName . '.client')
+            ->await();
+        $this->advisoryClient->flush()->await();
+    }
+
+    #[When('I send :count message whose __wakeup raises a suppressed warning')]
+    #[When('I send :count messages whose __wakeup raises a suppressed warning')]
+    public function iSendMessagesWhoseWakeupRaisesASuppressedWarning(int $count): void
+    {
+        $this->messagesSent = $count;
+
+        $sendProcess = new Process(
+            ['php', 'bin/console', 'app:send-warning-on-wakeup-messages', (string) $count, '--env=test'],
+            __DIR__ . '/../..'
+        );
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(sprintf(
+                'Failed to send the messages. Exit code: %d. Output: %s. Error: %s',
+                $sendProcess->getExitCode(),
+                $sendProcess->getOutput(),
+                $sendProcess->getErrorOutput()
+            ));
+        }
+    }
+
+    /**
+     * The handler of the message ran, once: on 5.10.0 the warning its __wakeup() raises made it a message that cannot
+     * be decoded, and the handler never ran (#122).
+     */
+    #[Then('the message whose __wakeup raised a warning should have been handled once')]
+    public function theMessageWhoseWakeupRaisedAWarningShouldHaveBeenHandledOnce(): void
+    {
+        $file = $this->testFilesDir . '/warning_on_wakeup_1.txt';
+        $runs = file_exists($file) ? (int) file_get_contents($file) : 0;
+        if ($runs !== 1) {
+            throw new \RuntimeException(sprintf(
+                "Expected the handler to run once, it ran %d times.\nConsumer output: %s\nConsumer error: %s",
+                $runs,
+                $this->consumerProcess?->getOutput() ?? 'N/A',
+                $this->consumerProcess?->getErrorOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /**
+     * The transport's consumer delivered the message once, redelivered nothing, has nothing left to deliver or to wait
+     * for, and its acknowledgement floor is that delivery; NATS published no MSG_TERMINATED for it, which a TERM would
+     * have, so the delivery was acknowledged.
+     */
+    #[Then('its one delivery should have been acknowledged, not TERMed')]
+    public function itsOneDeliveryShouldHaveBeenAcknowledgedNotTermed(): void
+    {
+        if ($this->advisoryClient === null || $this->terminations === null) {
+            throw new \RuntimeException('Nothing listened for the TERMs of the consumer');
+        }
+
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $terms = 0;
+        try {
+            $this->terminations->setTimeout(0.5);
+            while ($this->terminations->next() !== null) {
+                $terms++;
+            }
+        } finally {
+            $this->advisoryClient->disconnect()->await();
+            $this->advisoryClient = null;
+            $this->terminations = null;
+        }
+
+        $delivered = is_array($info['delivered'] ?? null) ? ($info['delivered']['consumer_seq'] ?? null) : null;
+        $ackFloor = is_array($info['ack_floor'] ?? null) ? ($info['ack_floor']['consumer_seq'] ?? null) : null;
+        $state = [
+            'deliveries' => $delivered,
+            'acknowledged up to' => $ackFloor,
+            'redelivered' => $info['num_redelivered'] ?? null,
+            'ack pending' => $info['num_ack_pending'] ?? null,
+            'pending' => $info['num_pending'] ?? null,
+            'TERMs' => $terms,
+        ];
+        $expected = ['deliveries' => 1, 'acknowledged up to' => 1, 'redelivered' => 0, 'ack pending' => 0, 'pending' => 0, 'TERMs' => 0];
+        if ($state !== $expected) {
+            throw new \RuntimeException('Expected one delivery, acknowledged, and nothing left, got ' . json_encode($state));
+        }
+    }
+
     #[Given('I have a messenger transport with failure transport configured')]
     public function iHaveAMessengerTransportWithFailureTransportConfigured(): void
     {
@@ -1040,7 +1147,7 @@ class NatsSetupContext implements Context
     public function iHaveAMessengerTransportWithFailureTransportConfiguredUsingTheSerializer(string $serializer): void
     {
         $configContent = sprintf(
-            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: 1\n                    delay: 100\n                    multiplier: 1\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: 1\n                    delay: 100\n                    multiplier: 1\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n            'App\\Async\\WarningOnWakeupMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             $serializer,
@@ -2794,6 +2901,15 @@ class NatsSetupContext implements Context
     public function cleanup(): void
     {
         sleep(1);
+        if ($this->advisoryClient !== null) {
+            try {
+                $this->advisoryClient->disconnect()->await();
+            } catch (\Throwable $e) {
+                // Ignore cleanup errors
+            }
+            $this->advisoryClient = null;
+            $this->terminations = null;
+        }
         // Stop consumer process if running
         if ($this->consumerProcess && $this->consumerProcess->isRunning()) {
             $this->consumerProcess->stop();
