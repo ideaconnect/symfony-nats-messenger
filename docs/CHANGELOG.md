@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.10.1] - 2026-11-21
+
+A **patch** release with two fixes found after 5.10.0, and the client release the second needs. A warning or notice
+of the application's own code while a message is unserialized is the application's again, not a decode failure that
+TERMed the message (#122). With `reconnect: true` and a user allowed to pull but not to ask for consumer info, a pull's
+503 from a server going away is an empty batch within `request_timeout` again, while the client goes on reconnecting:
+5.9.1 and 5.10.0 held `get()` for the whole reconnect, and a worker in it did not react to `messenger:stop-workers` or a
+SIGTERM (#131). The transport now requires `idct/php-nats-jetstream-client` `^2.30.1`.
+
 ### Changed
 
 - **`idct/php-nats-jetstream-client` `^2.30.1`** (#131), in `composer.json` and in the functional test app. With

@@ -615,4 +615,11 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   the dial is held until the test has seen `get()` return while the client is `Connecting`. Hold a recovery for such a
   test, never time it, and give request_timeout far more than the scripted connection's 10 s dial limit, so that a
   diagnosis that waits for its deadline fails too.
+- **5.10.1, a patch release,** ships #122 and #131 the same day, on client 2.30.1. Its checks, on PR #133's CI: PHPStan
+  clean; 1334 tests on PHP 8.5 with client 2.30.1 and Symfony Messenger 8.1.11, also stopped at random moments, and 1333
+  on PHP 8.2 with the lowest releases (client 2.30.1, Messenger 7.4.0); coverage 99.79 % (1402/1405); Infection killed
+  1740 of 1765 mutants, the 25 survivors `docs/TESTS.md` lists; Behat 107 of 107 on both legs and 100 of 100 on
+  nats-server 2.10.29; 22 of 22 examples. A real-server probe (nats-server 2.15.2 and 2.12.15, a user denied
+  `$JS.API.CONSUMER.INFO.>`, the server killed during the watch): `get()` returned after 1.18 s, the client still
+  Connecting, where client 2.30.0 took 7.21 s, until after the server was back.
 
