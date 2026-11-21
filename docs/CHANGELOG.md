@@ -25,7 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `retry_via: nak` the retry of the last delivery `max_deliver` allows was lost the same way. NATS calls it intended
   (ADR-51, nats-server issue #7408). `setup()` and a worker's first pull now read the stream's real retention and
   consumers and refuse it with a `TransportException` that names the ways out, unless a consumer's filter covers the
-  delayed subjects. `assertTheStreamKeepsDelayedMessages()`.
+  delayed subjects. `setup()` refuses it before it creates or updates the stream, with the retention of the stream that
+  exists or the one it would create: NATS never turns a stream's schedules off once a write turned them on, so a
+  refusal after the write would make the first way out, turning `scheduled_messages` off, fail with "message
+  schedules can not be disabled". `assertTheStreamKeepsDelayedMessages()`, `assertTheStreamToSetUpKeepsDelayedMessages()`.
 
 - **Nats mode TERMs a message that cannot be decoded, instead of NAKing it.** A redelivery cannot decode it either.
   When `get()` fails on it (this transport's igbinary serializer, and Symfony Messenger before 8.1), the worker stops

@@ -15,9 +15,10 @@
  * - On NATS 2.12 and later, a message sent with a delay of 1.5 s arrives 1.5 to 2.5 s later: the server delivers
  *   at whole seconds, and the transport rounds up, so that a message is never early.
  * - On NATS 2.12 and later, a stream with interest retention stores nothing published to a subject no consumer has
- *   interest in, the delayed subjects included, so setup() refuses `scheduled_messages` there (5.9.1). With a
- *   consumer on the delayed subjects that nobody pulls from, setup() goes on and the delayed message arrives. Up to
- *   5.9.0 the setup passed, and every delayed message on such a stream was lost, Symfony's retry copies among them.
+ *   interest in, the delayed subjects included, so setup() refuses `scheduled_messages` there (5.9.1), before it
+ *   creates the stream. With the stream made by hand and a consumer on the delayed subjects that nobody pulls from,
+ *   setup() goes on and the delayed message arrives. Up to 5.9.0 the setup passed, and every delayed message on such
+ *   a stream was lost, Symfony's retry copies among them.
  * - On an older server, setup() with `scheduled_messages` is refused and creates no stream. On a stream that was
  *   set up without the option, the send of a delayed message is refused too, and stores nothing.
  *
@@ -33,8 +34,11 @@ declare(strict_types=1);
 
 require __DIR__ . '/_bootstrap.php';
 
+use IDCT\NATS\Exception\JetStreamException;
 use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
+use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
 use IDCT\NATS\JetStream\Enum\AckPolicy;
+use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NatsMessenger\NatsTransport;
 use Symfony\Component\Messenger\Envelope;
@@ -106,12 +110,31 @@ if (serverHasMessageSchedules()) {
         if (!str_contains($refusal, 'the stream has interest retention and no consumer has interest in')) {
             throw new RuntimeException('expected setup() to refuse scheduled_messages on an interest stream nothing has interest in, it said: ' . $refusal);
         }
+        // Refused before it was created: NATS never turns a stream's schedules off once a write turned them on.
+        $created = withJetStream($stream, static function (JetStreamContext $jetStream) use ($stream): bool {
+            try {
+                $jetStream->getStream($stream)->await();
 
-        // The pinning consumer of NATS ADR-51: durable, on the delayed subjects, and nobody pulls from it.
-        withJetStream($stream, static fn (JetStreamContext $jetStream) => $jetStream->addConsumer($stream, ConsumerConfiguration::create()
-            ->durable('delayed_pin')
-            ->filterSubject($stream . '.messages.delayed.>')
-            ->ackPolicy(AckPolicy::Explicit))->await());
+                return true;
+            } catch (JetStreamException) {
+                return false;
+            }
+        });
+        if ($created) {
+            throw new RuntimeException('expected the refused setup() to leave no stream behind');
+        }
+
+        // The stream made by hand, with the delayed subjects, and the pinning consumer of NATS ADR-51: durable, on the
+        // delayed subjects, and nobody pulls from it. setup() then turns the stream's schedules on.
+        withJetStream($stream, static function (JetStreamContext $jetStream) use ($stream): void {
+            $jetStream->addStream(StreamConfiguration::create($stream)
+                ->subjects($stream . '.messages', $stream . '.messages.delayed.>')
+                ->retention(RetentionPolicy::Interest))->await();
+            $jetStream->addConsumer($stream, ConsumerConfiguration::create()
+                ->durable('delayed_pin')
+                ->filterSubject($stream . '.messages.delayed.>')
+                ->ackPolicy(AckPolicy::Explicit))->await();
+        });
         $transport = $transportOn($stream, $query);
         $transport->setup();
 
