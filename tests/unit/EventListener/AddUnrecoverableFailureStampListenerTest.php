@@ -5,24 +5,37 @@ declare(strict_types=1);
 namespace IDCT\NatsMessenger\Tests\Unit\EventListener;
 
 use IDCT\NatsMessenger\EventListener\AddUnrecoverableFailureStampListener;
+use IDCT\NatsMessenger\Stamp\ReceivedInNatsModeStamp;
 use IDCT\NatsMessenger\Stamp\UnrecoverableFailureStamp;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 use Symfony\Component\Messenger\EventListener\AddErrorDetailsStampListener;
 use Symfony\Component\Messenger\EventListener\SendFailedMessageForRetryListener;
 use Symfony\Component\Messenger\EventListener\SendFailedMessageToFailureTransportListener;
+use Symfony\Component\Messenger\EventListener\StopWorkerOnMessageLimitListener;
 use Symfony\Component\Messenger\Exception\HandlerFailedException;
 use Symfony\Component\Messenger\Exception\RecoverableMessageHandlingException;
 use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
+use Symfony\Component\Messenger\Handler\HandlersLocator;
+use Symfony\Component\Messenger\MessageBus;
+use Symfony\Component\Messenger\Middleware\HandleMessageMiddleware;
+use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
+use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
+use Symfony\Component\Messenger\Worker;
 
 /**
  * The listener that tells nats mode whether every handler of a failed message failed for good (#125), by Symfony's
- * rule: every exception the HandlerFailedException wraps directly is unrecoverable.
+ * rule: every exception the HandlerFailedException wraps directly is unrecoverable. It classifies only a delivery a
+ * transport in nats mode received.
  */
 final class AddUnrecoverableFailureStampListenerTest extends TestCase
 {
+    /** A delivery token, as a JetStream reply subject. */
+    private const DELIVERY = '$JS.ACK.test-stream.client.1.1.1.0.0';
+
     /**
      * One stamp, true only when every exception the HandlerFailedException wraps directly is unrecoverable, whatever
      * their order. False is a stamp too: without it the transport would go by the first exception, which TERMed the
@@ -33,7 +46,7 @@ final class AddUnrecoverableFailureStampListenerTest extends TestCase
     #[DataProvider('handlerFailures')]
     public function testStampsWhetherEveryHandlerFailedForGood(array $exceptions, bool $unrecoverable): void
     {
-        $envelope = new Envelope(new \stdClass());
+        $envelope = self::receivedInNatsMode();
         $event = new WorkerMessageFailedEvent($envelope, 'async', new HandlerFailedException($envelope, $exceptions));
 
         (new AddUnrecoverableFailureStampListener())->onMessageFailed($event);
@@ -74,7 +87,7 @@ final class AddUnrecoverableFailureStampListenerTest extends TestCase
     #[DataProvider('failuresThatAreNotAHandlerFailure')]
     public function testAddsNothingToAFailureThatIsNotAHandlerFailure(\Throwable $failure): void
     {
-        $envelope = new Envelope(new \stdClass());
+        $envelope = self::receivedInNatsMode();
         $event = new WorkerMessageFailedEvent($envelope, 'async', $failure);
 
         (new AddUnrecoverableFailureStampListener())->onMessageFailed($event);
@@ -89,6 +102,63 @@ final class AddUnrecoverableFailureStampListenerTest extends TestCase
     {
         yield 'unrecoverable' => [new UnrecoverableMessageHandlingException('the invoice does not exist')];
         yield 'ordinary' => [new \RuntimeException('the connection was lost')];
+    }
+
+    /**
+     * Only nats mode reads the stamp, so only a delivery a transport in nats mode received gets one: its
+     * ReceivedInNatsModeStamp names the delivery its last TransportMessageIdStamp holds. Without that marker, or with
+     * the marker of another delivery, as on a copy another transport stored with an id of its own, the envelope stays
+     * as it is.
+     */
+    #[DataProvider('deliveriesNoTransportInNatsModeReceived')]
+    public function testAddsNothingToADeliveryNoTransportInNatsModeReceived(Envelope $envelope): void
+    {
+        $failure = new HandlerFailedException($envelope, ['invoice' => new UnrecoverableMessageHandlingException('the invoice does not exist')]);
+        $event = new WorkerMessageFailedEvent($envelope, 'async', $failure);
+
+        (new AddUnrecoverableFailureStampListener())->onMessageFailed($event);
+
+        self::assertSame($envelope, $event->getEnvelope());
+    }
+
+    /**
+     * @return iterable<string, array{Envelope}>
+     */
+    public static function deliveriesNoTransportInNatsModeReceived(): iterable
+    {
+        yield 'no marker' => [new Envelope(new \stdClass(), [new TransportMessageIdStamp(self::DELIVERY)])];
+        yield 'no marker and no delivery token' => [new Envelope(new \stdClass())];
+        yield 'a marker without a delivery token' => [new Envelope(new \stdClass(), [new ReceivedInNatsModeStamp(self::DELIVERY)])];
+        yield 'the marker of another delivery' => [new Envelope(new \stdClass(), [
+            new TransportMessageIdStamp('$JS.ACK.test-stream.client.2.2.2.0.0'),
+            new ReceivedInNatsModeStamp(self::DELIVERY),
+        ])];
+        yield 'a copy another transport stored with an id of its own' => [self::receivedInNatsMode()->with(new TransportMessageIdStamp(1))];
+    }
+
+    /**
+     * In a worker whose receiver is Symfony's in-memory transport, a handler that fails for good leaves the envelope
+     * the receiver rejects as it is: the subscriber, registered for every worker, skips a receiver that is not a NATS
+     * transport in nats mode.
+     */
+    public function testLeavesTheFailureOfAnInMemoryReceiverAlone(): void
+    {
+        $receiver = new InMemoryTransport();
+        $receiver->send(new Envelope(new \stdClass()));
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function (): void {
+                throw new UnrecoverableMessageHandlingException('the invoice does not exist');
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
+        $dispatcher->addSubscriber(new AddUnrecoverableFailureStampListener());
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        (new Worker(['memory' => $receiver], $bus, $dispatcher))->run(['sleep' => 0]);
+
+        self::assertCount(1, $receiver->getRejected());
+        self::assertNull($receiver->getRejected()[0]->last(UnrecoverableFailureStamp::class));
     }
 
     /**
@@ -108,5 +178,13 @@ final class AddUnrecoverableFailureStampListenerTest extends TestCase
             self::assertIsArray($subscribed);
             self::assertGreaterThan(AddUnrecoverableFailureStampListener::PRIORITY, $subscribed[1], $symfonys);
         }
+    }
+
+    /**
+     * An envelope as a transport in nats mode yields it: its delivery token, and the marker with the same token.
+     */
+    private static function receivedInNatsMode(): Envelope
+    {
+        return new Envelope(new \stdClass(), [new TransportMessageIdStamp(self::DELIVERY), new ReceivedInNatsModeStamp(self::DELIVERY)]);
     }
 }

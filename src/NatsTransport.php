@@ -33,6 +33,7 @@ use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Options\RetryVia;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
+use IDCT\NatsMessenger\Stamp\ReceivedInNatsModeStamp;
 use IDCT\NatsMessenger\Stamp\UnrecoverableFailureStamp;
 use LogicException;
 use Psr\Log\LoggerInterface;
@@ -800,6 +801,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * A pull the server refuses because the connection is at its subscription limit fails with a
      * TransportException that names the stream, the consumer and the limit ({@see fetchBatchMessages()}).
      *
+     * Each envelope carries its delivery token in a TransportMessageIdStamp, and in nats mode a
+     * {@see ReceivedInNatsModeStamp} with the same token as well, by which
+     * {@see EventListener\AddUnrecoverableFailureStampListener} tells the deliveries whose failure this
+     * mode reads from those of other receivers (#125).
+     *
      * @return iterable<Envelope>
      *
      * @throws TransportException If the pull fails because the connection is at its subscription limit.
@@ -857,7 +863,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $decoded = self::decodingFailure($encoded, $e);
             }
 
-            yield $this->withDeliveryCountAsRetryCount($decoded->with(new TransportMessageIdStamp($replyTo)), $message);
+            $received = $decoded->with(new TransportMessageIdStamp($replyTo));
+            if ($this->configuration->retryHandler() === RetryHandler::NATS) {
+                // Only nats mode reads what AddUnrecoverableFailureStampListener says about a failure of the handlers,
+                // so the listener classifies the deliveries marked so, and leaves other receivers' envelopes alone.
+                $received = $received->with(new ReceivedInNatsModeStamp($replyTo));
+            }
+
+            yield $this->withDeliveryCountAsRetryCount($received, $message);
         }
     }
 

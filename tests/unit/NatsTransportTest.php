@@ -27,6 +27,7 @@ use IDCT\NatsMessenger\EventListener\AddUnrecoverableFailureStampListener;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
+use IDCT\NatsMessenger\Stamp\ReceivedInNatsModeStamp;
 use IDCT\NatsMessenger\Stamp\UnrecoverableFailureStamp;
 use IDCT\NatsMessenger\Tests\Support\NoticeOnWakeup;
 use IDCT\NatsMessenger\Tests\Support\RecordedErrors;
@@ -7609,6 +7610,87 @@ final class NatsTransportTest extends TestCase
     {
         yield 'the failure copy, with max_retries 0' => [0];
         yield 'the retry copy, with max_retries 1' => [1];
+    }
+
+    /**
+     * In nats mode get() marks each delivery with a ReceivedInNatsModeStamp holding its token, the one its
+     * TransportMessageIdStamp holds: AddUnrecoverableFailureStampListener classifies only the deliveries marked so,
+     * since only nats mode reads what it says (#125). Symfony mode, with retry_via=nak too, marks none.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('modesThatMarkTheirDeliveries')]
+    public function testGetMarksADeliveryInNatsModeWithItsToken(array $options, bool $marked): void
+    {
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.7.7.0.0', payload: 'payload'),
+        ]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $this->decodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+        $envelopes = iterator_to_array($transport->get());
+
+        self::assertCount(1, $envelopes);
+        self::assertSame('$JS.ACK.test-stream.client.1.7.7.0.0', $envelopes[0]->last(TransportMessageIdStamp::class)?->getId());
+        self::assertSame(
+            $marked ? ['$JS.ACK.test-stream.client.1.7.7.0.0'] : [],
+            array_map(static fn (ReceivedInNatsModeStamp $marker): string => $marker->deliveryToken, $envelopes[0]->all(ReceivedInNatsModeStamp::class)),
+        );
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, bool}>
+     */
+    public static function modesThatMarkTheirDeliveries(): iterable
+    {
+        yield 'nats mode' => [self::NATS_MODE, true];
+        yield 'symfony mode' => [[], false];
+        yield 'symfony mode, retry_via=nak' => [self::NAK_RETRIES, false];
+    }
+
+    /**
+     * An in-memory failure transport without a serializer keeps every stamp of the copy it is given, the marker of the
+     * nats-mode delivery included, and gives the copy a TransportMessageIdStamp of its own. When the copy fails again
+     * in a worker that consumes that transport, the listener leaves it alone: the marker names another delivery, and
+     * nothing reads the stamp there.
+     */
+    public function testTheListenerLeavesAnInMemoryFailureCopyOfANatsModeDeliveryAloneWhereItFailsAgain(): void
+    {
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'p'),
+        ]));
+        foreach (['term', 'nak', 'ack'] as $method) {
+            $jetStream->method($method)->willReturn(Future::complete());
+        }
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $this->decodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+        $failed = new InMemoryTransport();
+        $bus = self::busOfFailingHandlers(['unrecoverable']);
+
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($transport),
+            self::singleServiceLocator(new MultiplierRetryStrategy(0)),
+        ));
+        $dispatcher->addSubscriber(new SendFailedMessageToFailureTransportListener(self::singleServiceLocator($failed)));
+        $dispatcher->addSubscriber(new AddUnrecoverableFailureStampListener());
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
+
+        $again = new EventDispatcher();
+        $again->addSubscriber(new AddErrorDetailsStampListener());
+        $again->addSubscriber(new AddUnrecoverableFailureStampListener());
+        $again->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+        (new Worker(['failed' => $failed], $bus, $again))->run(['sleep' => 0]);
+
+        self::assertCount(1, $failed->getRejected());
+        $rejected = $failed->getRejected()[0];
+        self::assertNotNull($rejected->last(SentToFailureTransportStamp::class));
+        self::assertSame('$JS.ACK.test-stream.client.1.1.1.0.0', $rejected->last(ReceivedInNatsModeStamp::class)?->deliveryToken);
+        self::assertNull($rejected->last(UnrecoverableFailureStamp::class));
     }
 
     /**

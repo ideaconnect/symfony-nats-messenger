@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger\EventListener;
 
+use IDCT\NatsMessenger\Stamp\ReceivedInNatsModeStamp;
 use IDCT\NatsMessenger\Stamp\UnrecoverableFailureStamp;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 use Symfony\Component\Messenger\Exception\HandlerFailedException;
 use Symfony\Component\Messenger\Exception\UnrecoverableExceptionInterface;
+use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
 
 /**
  * Tells the transport in nats mode whether a message whose handlers failed can never succeed, by Symfony's own rule:
@@ -22,6 +25,11 @@ use Symfony\Component\Messenger\Exception\UnrecoverableExceptionInterface;
  * passes the envelope of this event to reject(), with the {@see UnrecoverableFailureStamp} this listener adds to it:
  * `true` or `false` for a HandlerFailedException, nothing for any other throwable, which the ErrorDetailsStamp names
  * as it is. The transport reads `false` too, before the ErrorDetailsStamp.
+ *
+ * Only a delivery a transport in nats mode received is classified: one that carries a {@see ReceivedInNatsModeStamp}
+ * whose token is the one in its last TransportMessageIdStamp. The envelopes of other receivers, which nothing reads the
+ * stamp of, are left as they are, and so is a copy of a nats-mode delivery stored in another transport, which gives
+ * the copy an id of its own.
  *
  * Priority -101: after Symfony's retry listener (100) and its failure-transport listener (-100) have taken their
  * copies of the envelope. The stamp is not sendable, so a serializer strips it, but a transport without one, such as
@@ -39,7 +47,7 @@ final class AddUnrecoverableFailureStampListener implements EventSubscriberInter
     public function onMessageFailed(WorkerMessageFailedEvent $event): void
     {
         $failure = $event->getThrowable();
-        if (!$failure instanceof HandlerFailedException) {
+        if (!$failure instanceof HandlerFailedException || !self::wasReceivedInNatsMode($event->getEnvelope())) {
             return;
         }
 
@@ -52,6 +60,17 @@ final class AddUnrecoverableFailureStampListener implements EventSubscriberInter
     public static function getSubscribedEvents(): array
     {
         return [WorkerMessageFailedEvent::class => ['onMessageFailed', self::PRIORITY]];
+    }
+
+    /**
+     * Whether a transport in nats mode received this delivery: its marker names the delivery the envelope's last
+     * TransportMessageIdStamp holds, which a copy in another transport replaces with an id of its own.
+     */
+    private static function wasReceivedInNatsMode(Envelope $envelope): bool
+    {
+        $marker = $envelope->last(ReceivedInNatsModeStamp::class);
+
+        return $marker !== null && $marker->deliveryToken === $envelope->last(TransportMessageIdStamp::class)?->getId();
     }
 
     /**
