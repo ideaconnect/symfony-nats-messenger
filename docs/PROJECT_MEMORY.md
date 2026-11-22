@@ -188,9 +188,15 @@ apply only with the option on.
   the envelope, so the bundle's `AddUnrecoverableFailureStampListener` adds an `UnrecoverableFailureStamp` (`true` or
   `false`, not sendable) at priority -101, after Symfony's retry (100) and failure-transport (-100) listeners took their
   copies: at 0 an `InMemoryTransport` without a serializer kept it on its failure copy. Without the stamp the
-  `ErrorDetailsStamp`, which names the first exception only, decides. In a test, two anonymous closures for one message
+  `ErrorDetailsStamp`, which names the first exception only, decides, as long as Symfony requested no retry; a retry
+  Symfony requested is NAKed in place of its copy whatever the first exception. The listener classifies only a delivery
+  `get()` marked in nats mode with a `ReceivedInNatsModeStamp` whose token is the envelope's last
+  `TransportMessageIdStamp`: other receivers' envelopes stay as they are, and so does an in-memory copy of a nats-mode
+  delivery, which keeps the marker but gets an id of its own. In a test, two anonymous closures for one message
   are one handler to Symfony: `HandlersLocator` skips a handler whose name (`Closure`) it has seen, so give each a
-  `HandlerDescriptor` with its own `alias`.
+  `HandlerDescriptor` with its own `alias`. A test of the retry path proves that Symfony's retry ran (the example reads
+  `willRetry()` after the retry listener, Behat counts the transport's warning that the retry strategy is on): the
+  advisories and runs come out the same when it does not.
 - **Scheduled messages need a server that has them:** NATS before 2.12 ignores the stream's `allow_msg_schedules`
   setting without rejecting it, so up to 5.8.1 `setup()` succeeded there and every delayed message was stored on
   `<topic>.delayed.<uuid>` and never delivered (measured on 2.9.25, 2.10.29 and 2.11.17). The client's

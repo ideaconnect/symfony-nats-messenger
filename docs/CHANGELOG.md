@@ -30,11 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `reject()`, where the transport reads the stamp before the `ErrorDetailsStamp`, `false` included: a stamp for
   `true` alone would leave the mix whose first exception is unrecoverable to the `ErrorDetailsStamp`, which TERMs it.
   Without the stamp, in a worker that does not register the listener, the transport goes by the first exception, as up
-  to 5.10.1. It runs at priority -101, after Symfony's retry listener (100) and failure-transport listener (-100) have
-  taken their copies: at priority 0 an in-memory failure transport without a serializer, which stores the envelope as it
-  is given, kept the stamp on its copy. An application without the bundle registers it in its services.yaml with the
-  `kernel.event_subscriber` tag, and a worker built by hand adds it to its event dispatcher with `addSubscriber()`
-  (README, "Retry Handler Behavior").
+  to 5.10.1, when Symfony requested no retry (with `max_retries: 0`, as nats mode asks for); a delivery Symfony sent for
+  retry is NAKed in place of the copy, whatever its first exception. The listener classifies only a delivery a
+  transport in nats mode received, since only that mode reads the stamp: `get()` marks it, in nats mode, with a
+  **`ReceivedInNatsModeStamp`** (not sendable) holding its delivery token, and the listener requires that token to be
+  the one in the envelope's last `TransportMessageIdStamp`. The envelopes of other receivers, such as an in-memory
+  transport, stay as they are, and so does a copy of a nats-mode delivery that a transport without a serializer
+  stores, as an in-memory failure transport does, since it gives the copy an id of its own. It runs at priority -101,
+  after Symfony's retry listener (100) and failure-transport listener (-100) have taken their copies: at priority 0 an
+  in-memory failure transport without a serializer, which stores the envelope as it is given, kept the stamp on its
+  copy. An application without the bundle registers it in its services.yaml with the `kernel.event_subscriber` tag,
+  and a worker built by hand adds it to its event dispatcher with `addSubscriber()` (README, "Retry Handler Behavior").
 
 ### Testing & CI
 
@@ -43,19 +49,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unrecoverable failures, and without the listener still TERMs the mix whose first exception is unrecoverable. The mix
   with the unrecoverable failure first fails on 5.10.1. `testTheCopiesSymfonyTakesOfAFailureDoNotCarryTheListenersStamp`
   checks that neither the failure copy nor the retry copy, both in an `InMemoryTransport` without a serializer, carries
-  the stamp, while the envelope the worker settles carries `false`; `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`
-  gains the stamp's rows. The listener has tests of its own (`AddUnrecoverableFailureStampListenerTest`), and
+  the stamp, while the envelope the worker settles carries `false`, and tells the two copies apart by the
+  `SentToFailureTransportStamp` only the failure copy carries. `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`
+  gains the stamp's rows. `testGetMarksADeliveryInNatsModeWithItsToken` checks that `get()` adds the marker in nats
+  mode only, and `testTheListenerLeavesAnInMemoryFailureCopyOfANatsModeDeliveryAloneWhereItFailsAgain` that a copy
+  keeping it in an in-memory failure transport gets no stamp there. The listener has tests of its own
+  (`AddUnrecoverableFailureStampListenerTest`, among them a worker whose receiver is an `InMemoryTransport`, and
+  envelopes without the marker or with another delivery's), and
   `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies` finds it on the compiled event dispatcher once, at
   priority -101, with the bundle, with the README's services.yaml entry, and with both.
 - **The Behat scenarios of #125 and row 22 of #123** in `nats_nak.feature`: one handler fails for good, the other once,
   in both orders, with `max_retries` 0 and 3, on a real server: `MSG_NAKED`, then `MSG_TERMINATED` for stream sequence
-  1, and each handler runs twice; two handlers failing for good are TERMed at the first delivery. The functional app
-  gains `TwoHandlersMessage`, its two handlers and `app:send-two-handlers-message`. The row with the unrecoverable
-  handler first and `max_retries: 0` fails on 5.10.1, with a single `MSG_TERMINATED`. Run on nats-server 2.15.2 with
-  client 2.30.1 and Symfony Messenger 8.1.11 and 7.4.21.
+  1, and each handler runs twice; two handlers failing for good are TERMed at the first delivery. The rows with
+  `max_retries: 3` expect the transport's warning that Symfony's retry strategy is on once, and those with 0 none, so
+  they fail if Symfony's retry stops taking place. The functional app gains `TwoHandlersMessage`, its two handlers and
+  `app:send-two-handlers-message`. The row with the unrecoverable handler first and `max_retries: 0` fails on 5.10.1,
+  with a single `MSG_TERMINATED`. Run on nats-server 2.15.2 with client 2.30.1 and Symfony Messenger 8.1.11 and 7.4.21.
 - **The example `nats-retry-several-handlers.php`** shows the same through Symfony's Worker, the four runs and the two
-  handlers failing for good; on 5.10.1 it stops at the first run, where the message was TERMed after one run of each
-  handler.
+  handlers failing for good, with what Symfony decided for each delivery (`willRetry()` after its retry listener:
+  `[false, false]` with `max_retries: 0`, `[true, false]` with 3); on 5.10.1 it stops at the first run, where the
+  message was TERMed after one run of each handler.
 
 ## [5.10.1] - 2026-11-21
 

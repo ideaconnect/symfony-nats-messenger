@@ -875,8 +875,15 @@ delivery is TERMed. Up to 5.10.1 the transport went by Symfony's `ErrorDetailsSt
 exception: with the unrecoverable handler first the message was TERMed and the other handler's failure, which a
 redelivery could cure, was never tried again; with it second the message was NAKed. The bundle registers
 `AddUnrecoverableFailureStampListener`, which tells the transport with an `UnrecoverableFailureStamp` (`true` or
-`false`, never sent with the message); without the listener the transport goes by the first exception, as before. An
-application without the bundle registers it with its tag:
+`false`, never sent with the message). It tells only a delivery that a transport in nats mode received, which `get()`
+marks with a `ReceivedInNatsModeStamp` holding the delivery's token (not sent either): only nats mode reads the stamp,
+so the envelopes of other receivers stay as they are, and so does a copy of a nats-mode delivery that another
+transport stores as it is, such as an in-memory failure transport, which gives the copy an id of its own.
+
+Without the listener, the first exception decides when Symfony leaves the delivery to `reject()` with no retry, as with
+`max_retries: 0`, which this mode asks for. When Symfony requested a retry, the transport leaves its copy out and NAKs
+the delivery whatever the first exception is, so a mix with the unrecoverable failure first is NAKed then as well, with
+the listener or without it. An application without the bundle registers it with its tag:
 
 ```yaml
 # config/services.yaml (only without the bundle)
@@ -898,7 +905,7 @@ It runs at priority -101, after Symfony's retry listener (100) and failure-trans
 copies, so no copy carries the stamp, also in a transport that stores envelopes without a serializer, such as the
 in-memory one.
 
-> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testTheCopiesSymfonyTakesOfAFailureDoNotCarryTheListenersStamp`, `testStampsWhetherEveryHandlerFailedForGood`, `testRunsAfterSymfonysListenersHaveTakenTheirCopies`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenarios `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` and `With two handlers that both fail for good, the first delivery is TERMed` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testTheCopiesSymfonyTakesOfAFailureDoNotCarryTheListenersStamp`, `testGetMarksADeliveryInNatsModeWithItsToken`, `testTheListenerLeavesAnInMemoryFailureCopyOfANatsModeDeliveryAloneWhereItFailsAgain`, `testStampsWhetherEveryHandlerFailedForGood`, `testAddsNothingToADeliveryNoTransportInNatsModeReceived`, `testLeavesTheFailureOfAnInMemoryReceiverAlone`, `testRunsAfterSymfonysListenersHaveTakenTheirCopies`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenarios `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (with the warning Symfony's retry makes the transport log: once with `max_retries: 3`, never with 0) and `With two handlers that both fail for good, the first delivery is TERMed` (`nats_nak.feature`), the example `nats-retry-several-handlers.php` (with what Symfony decided, `willRetry()`, for each delivery)
 
 **A message that cannot be decoded is handled as Symfony's own transports handle it** (Doctrine, Redis, AMQP), in
 either mode. A message that cannot be decoded is one whose serializer throws a `MessageDecodingFailedException`, which

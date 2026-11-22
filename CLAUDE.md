@@ -154,7 +154,8 @@ composer nats:stop               # stop NATS
   is not for that mode (README). A HandlerFailedException is unrecoverable only when every exception it wraps
   directly is (#125): the bundle's `AddUnrecoverableFailureStampListener` (priority -101, after Symfony's copies) says
   so with an `UnrecoverableFailureStamp`, `false` included, and only without it does the transport go by the first
-  exception, which Symfony's `ErrorDetailsStamp` names. In symfony mode,
+  exception, which Symfony's `ErrorDetailsStamp` names. The listener stamps only a delivery `get()` marked in nats mode
+  with a `ReceivedInNatsModeStamp` holding the token of its `TransportMessageIdStamp`. In symfony mode,
   `retry_via: nak` (default `copy`) leaves that copy out as well, and the worker's `ack()` or `reject()` of the
   delivery NAKs it with the copy's `DelayStamp` delay (0 a plain NAK). A retry no NAK can carry is still
   published: a copy without its delivery token, and the retry of the last delivery `max_deliver` allows. `get()`

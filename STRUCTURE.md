@@ -38,6 +38,7 @@ src/
 │   └── TransportOption.php                     # Enum of every recognized option key
 ├── Stamp/
 │   ├── DeduplicationIdStamp.php                # The id JetStream deduplicates a message by (Nats-Msg-Id)
+│   ├── ReceivedInNatsModeStamp.php             # Marks a delivery received in nats mode, with its token (not sent)
 │   └── UnrecoverableFailureStamp.php           # Whether every handler of a failed delivery failed for good (not sent)
 └── Serializer/
     ├── AbstractEnveloperSerializer.php         # Base encode/decode envelope wrapping + validation
@@ -142,7 +143,7 @@ The heart of the bridge. Responsibilities map almost 1:1 to `TransportInterface`
 | Method | What it does |
 |--------|--------------|
 | `send()` | Stamps a UUIDv4 `TransportMessageIdStamp`, serializes the envelope, publishes to the subject through `JetStreamContext::publish()`, which waits for the publish acknowledgement and throws `JetStreamException` on an error or an invalid acknowledgement. A `DelayStamp` (when `scheduled_messages` is on) is published to `{topic}.delayed.{uuid}` with `Nats-Schedule` headers. A `DeduplicationIdStamp` (added with `deduplicate`) is sent as `Nats-Msg-Id`. With `retry_handler=nats`, and with `retry_via=nak` when a NAK can carry the retry, the copy Symfony's retry sends is not published. With `scheduled_messages`, a delayed send first refuses a server before NATS 2.12. |
-| `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. A pull that found no messages (408, or 404) is an empty result. A missing consumer reports 503: `auto_setup` re-provisions it once, otherwise the error propagates. A pull refused at the connection's subscription limit (the client's `SubscriptionLimitException`) fails with Symfony's `TransportException` naming the stream, the consumer and the limit, since the transport needs two subscriptions per connection (#76). Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp`. |
+| `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. A pull that found no messages (408, or 404) is an empty result. A missing consumer reports 503: `auto_setup` re-provisions it once, otherwise the error propagates. A pull refused at the connection's subscription limit (the client's `SubscriptionLimitException`) fails with Symfony's `TransportException` naming the stream, the consumer and the limit, since the transport needs two subscriptions per connection (#76). Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp`, and in nats mode a `ReceivedInNatsModeStamp` with the same token, by which `AddUnrecoverableFailureStampListener` tells the deliveries whose failure nats mode reads (#125). |
 | `ack()` | Sends JetStream ACK for the message's reply token. A delivery whose retry copy `send()` left out is NAKed instead, with Symfony's delay under `retry_via=nak`. |
 | `reject()` | Delegates to `handleFailedDelivery()` → TERM (Symfony retry) or NAK (NATS retry). A delivery whose retry copy `send()` left out is NAKed, as in `ack()`. |
 | `getMessageCount()` | Tries consumer info (`num_ack_pending` / `num_pending`), falls back to stream `state.messages`, then 0. |
