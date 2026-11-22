@@ -83,7 +83,9 @@ Feature: NATS-native retry via NAK
   # where the unrecoverable failure is the only one left, is TERMed. Up to 5.10.1 nats mode went by the first exception:
   # with the unrecoverable handler first and max_retries 0 it TERMed the first delivery, and the other handler never ran
   # again. With max_retries 3 Symfony retries the first failure itself, and the transport NAKs the delivery in place of
-  # the retry copy, whichever exception comes first (row 22 of #123).
+  # the retry copy, whichever exception comes first (row 22 of #123). The copy it leaves out makes it warn that
+  # Symfony's retry strategy is on, once: so the rows with max_retries 3 fail if Symfony's retry stops taking place,
+  # and those with 0 if Symfony retries what it should not.
   @nak
   Scenario Outline: With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left
     Given NATS server is running
@@ -98,13 +100,14 @@ Feature: NATS-native retry via NAK
     Then the transport's consumer should have published "MSG_NAKED, MSG_TERMINATED" for stream sequence 1
     And both handlers should have run 2 times
     And the handler that fails once should have succeeded on its second run
+    And the consumer should have warned <warnings> that Symfony's retry strategy is on
 
     Examples:
-      | first    | second   | max_retries |
-      | for good | once     | 0           |
-      | once     | for good | 0           |
-      | for good | once     | 3           |
-      | once     | for good | 3           |
+      | first    | second   | max_retries | warnings |
+      | for good | once     | 0           | 0 times  |
+      | once     | for good | 0           | 0 times  |
+      | for good | once     | 3           | 1 time   |
+      | once     | for good | 3           | 1 time   |
 
   # When every handler fails for good, the failure is unrecoverable, and the first delivery is TERMed.
   @nak

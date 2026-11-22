@@ -1395,6 +1395,17 @@ class NatsSetupContext implements Context
         $this->assertSymfonysRetryStrategyWarnings(0);
     }
 
+    /**
+     * The same, for a Scenario Outline whose rows expect different counts: 0 where Symfony retries nothing, 1 where it
+     * retried a message and the transport left the copy out (#125).
+     */
+    #[Then('the consumer should have warned :count time that Symfony\'s retry strategy is on')]
+    #[Then('the consumer should have warned :count times that Symfony\'s retry strategy is on')]
+    public function theConsumerShouldHaveWarnedTimesThatSymfonysRetryStrategyIsOn(int $count): void
+    {
+        $this->assertSymfonysRetryStrategyWarnings($count);
+    }
+
     private function assertSymfonysRetryStrategyWarnings(int $expected): void
     {
         if (!$this->consumerProcess) {

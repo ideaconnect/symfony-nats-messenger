@@ -7562,6 +7562,8 @@ final class NatsTransportTest extends TestCase
      * and its failure-transport listener's (-100): the listener runs at -101, after both. An in-memory transport
      * without a serializer stores the envelope it is given as it is, so at priority 0 its failure copy kept the stamp.
      * The envelope the worker settles carries it, false for the mix of an unrecoverable failure and an ordinary one.
+     * The copies share one transport, so the SentToFailureTransportStamp tells which one the row inspected: the failure
+     * copy with max_retries 0, the retry copy with 1.
      */
     #[DataProvider('copiesSymfonyTakesOfAFailure')]
     public function testTheCopiesSymfonyTakesOfAFailureDoNotCarryTheListenersStamp(int $maxRetries): void
@@ -7595,6 +7597,7 @@ final class NatsTransportTest extends TestCase
         (new Worker(['async' => $transport], self::busOfFailingHandlers(['unrecoverable', 'ordinary']), $dispatcher))->run(['sleep' => 0]);
 
         self::assertCount(1, $copies->getSent());
+        self::assertSame($maxRetries === 0, $copies->getSent()[0]->last(SentToFailureTransportStamp::class) !== null);
         self::assertNull($copies->getSent()[0]->last(UnrecoverableFailureStamp::class));
         self::assertSame([false], $settles);
     }

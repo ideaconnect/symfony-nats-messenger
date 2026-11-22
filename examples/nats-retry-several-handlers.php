@@ -16,8 +16,11 @@
  *
  * With `max_retries: 0`, as the README asks for in nats mode, Symfony retries nothing and the worker rejects the
  * failure; with `max_retries: 3` Symfony retries the first failure itself, the transport leaves its copy out and NAKs
- * the delivery instead, whatever the first exception is. Both settings, both orders. Then two handlers that both fail
- * for good: the first delivery is TERMed.
+ * the delivery instead, whatever the first exception is. Both settings, both orders. What Symfony decided is checked
+ * too, as `WorkerMessageFailedEvent::willRetry()` after its retry listener: no retry with `max_retries: 0`
+ * (`[false, false]`), and with `max_retries: 3` one for the mix and none once the unrecoverable failure is left alone
+ * (`[true, false]`), so a run where Symfony's retry did not take place fails. Then two handlers that both fail for
+ * good: the first delivery is TERMed, and Symfony retries nothing.
  *
  * Mirrors the README "Retry Handler Behavior" section. Needs the test server (composer nats:start).
  * Run: php examples/nats-retry-several-handlers.php
@@ -34,6 +37,7 @@ use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use Psr\Container\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 use Symfony\Component\Messenger\EventListener\AddErrorDetailsStampListener;
 use Symfony\Component\Messenger\EventListener\SendFailedMessageForRetryListener;
 use Symfony\Component\Messenger\EventListener\StopWorkerOnMessageLimitListener;
@@ -67,11 +71,12 @@ $locator = static fn (object $service): ContainerInterface => new class ($servic
 /**
  * One run: a message with two handlers, failing as $failures says ('for good' or 'once', in the order they run),
  * through Symfony's Worker in nats mode with max_deliver 3 and the given max_retries, until $deliveries deliveries
- * came or 10 s passed. Returns how often each handler ran, the NAK, TERM and MAX_DELIVERIES advisories of the
- * consumer as "KIND of <stream sequence>", in the order JetStream published them, and what the consumer holds.
+ * came or 10 s passed. Returns how often each handler ran, whether Symfony asked for a retry of each failed delivery
+ * (`willRetry()`, read after its retry listener decided), the NAK, TERM and MAX_DELIVERIES advisories of the consumer
+ * as "KIND of <stream sequence>", in the order JetStream published them, and what the consumer holds.
  *
  * @param list<string> $failures
- * @return array{runs: list<int>, advisories: list<string>, ackPending: mixed, pending: mixed}
+ * @return array{runs: list<int>, willRetry: list<bool>, advisories: list<string>, ackPending: mixed, pending: mixed}
  */
 $run = static function (array $failures, int $maxRetries, int $deliveries) use ($locator): array {
     $stream = exampleStream('nats_retry_several_handlers');
@@ -105,6 +110,11 @@ $run = static function (array $failures, int $maxRetries, int $deliveries) use (
         $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
         $dispatcher->addSubscriber(new SendFailedMessageForRetryListener($locator($transport), $locator(new MultiplierRetryStrategy($maxRetries))));
         $dispatcher->addSubscriber(new AddUnrecoverableFailureStampListener());
+        // What Symfony decided for each failed delivery: at priority 0, after its retry listener (100).
+        $willRetry = [];
+        $dispatcher->addListener(WorkerMessageFailedEvent::class, static function (WorkerMessageFailedEvent $event) use (&$willRetry): void {
+            $willRetry[] = $event->willRetry();
+        });
         $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener($deliveries));
         $dispatcher->addSubscriber(new StopWorkerOnTimeLimitListener(10));
         (new Worker(['nats' => $transport], $bus, $dispatcher))->run(['sleep' => 100000]);
@@ -120,7 +130,7 @@ $run = static function (array $failures, int $maxRetries, int $deliveries) use (
         }
         $consumer = withJetStream($stream, static fn (JetStreamContext $jetStream): array => $jetStream->getConsumer($stream, 'client')->await()->raw);
 
-        return ['runs' => $runs, 'advisories' => $published, 'ackPending' => $consumer['num_ack_pending'] ?? null, 'pending' => $consumer['num_pending'] ?? null];
+        return ['runs' => $runs, 'willRetry' => $willRetry, 'advisories' => $published, 'ackPending' => $consumer['num_ack_pending'] ?? null, 'pending' => $consumer['num_pending'] ?? null];
     } finally {
         $listener->disconnect()->await();
         $transport->close();
@@ -133,7 +143,8 @@ foreach ([0, 3] as $maxRetries) {
     foreach ([['for good', 'once'], ['once', 'for good']] as $failures) {
         $what = sprintf('max_retries %d, the first handler failing %s and the second %s', $maxRetries, $failures[0], $failures[1]);
         $result = $run($failures, $maxRetries, 2);
-        $expected = ['runs' => [2, 2], 'advisories' => ['MSG_NAKED of 1', 'MSG_TERMINATED of 1'], 'ackPending' => 0, 'pending' => 0];
+        // Symfony retries the mix only when max_retries allows it, and never the unrecoverable failure left alone.
+        $expected = ['runs' => [2, 2], 'willRetry' => [$maxRetries > 0, false], 'advisories' => ['MSG_NAKED of 1', 'MSG_TERMINATED of 1'], 'ackPending' => 0, 'pending' => 0];
         if ($result !== $expected) {
             throw new RuntimeException(sprintf('%s: expected %s, got %s', $what, json_encode($expected), json_encode($result)));
         }
@@ -142,13 +153,13 @@ foreach ([0, 3] as $maxRetries) {
 }
 
 $result = $run(['for good', 'for good'], 0, 1);
-$expected = ['runs' => [1, 1], 'advisories' => ['MSG_TERMINATED of 1'], 'ackPending' => 0, 'pending' => 0];
+$expected = ['runs' => [1, 1], 'willRetry' => [false], 'advisories' => ['MSG_TERMINATED of 1'], 'ackPending' => 0, 'pending' => 0];
 if ($result !== $expected) {
     throw new RuntimeException(sprintf('two handlers failing for good: expected %s, got %s', json_encode($expected), json_encode($result)));
 }
 
 printf(
-    "OK nats-retry-several-handlers: a mix of an unrecoverable failure and an ordinary one was NAKed and then, with the unrecoverable one left alone, TERMed (MSG_NAKED, then MSG_TERMINATED, each handler run twice) in all %d runs (%s); two handlers failing for good were TERMed at the first delivery\n",
+    "OK nats-retry-several-handlers: a mix of an unrecoverable failure and an ordinary one was NAKed and then, with the unrecoverable one left alone, TERMed (MSG_NAKED, then MSG_TERMINATED, each handler run twice) in all %d runs (%s), Symfony asking for a retry of the mix with max_retries 3 only; two handlers failing for good were TERMed at the first delivery\n",
     count($checked),
     implode('; ', $checked),
 );
