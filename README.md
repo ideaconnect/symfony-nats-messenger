@@ -496,6 +496,7 @@ the test server and print `OK` when what they show held:
 | `jwt-login.php` | `jwt` with `nkey_seed`: a user of a server in operator mode logs in; its JWT with another user's seed and an expired JWT are refused by the server, and the JWT alone when the transport is built |
 | `nkey-login.php` | `nkey_seed`: a user the server knows by its public key logs in; a seed it does not know is refused by the server, and the public key alone or a seed next to a password when the transport is built |
 | `token-login.php` | `token`: a client logs in with the server's token, and a wrong one is refused |
+| `refused-pull.php` | a worker whose user may not pull: `get()` fails at once with the `TransportException` naming the subject to grant, and a worker that may pull then receives the waiting message |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, and `auto_setup` recreates the memory stream the restart lost |
 | `cluster-failover.php` | `reconnect: true` on a cluster: a worker carries on through another server when the one it is connected to stops |
 | `handler-failing-during-failover.php` | both retry modes on a cluster: a handler fails while the worker's server stops, and the worker carries on through another server; the message comes back at once as Symfony's retry copy, or `nak_delay` later in nats mode |
@@ -1420,6 +1421,34 @@ below what the connection holds, and closes the connection right behind it.
 
 > **Tested by:** `testAtALimitOfOneThePullFailsWithATransportExceptionNamingTheLimit`, `testAtALimitOfOneAPullWhoseRefusalTheHeartbeatReadsFailsTheSameWay`, `testAtALimitOfTwoPullsDeliverAndAcknowledge`, `testALimitErrorTheServerClosesTheConnectionBehindKeepsTheCheckBeforeTheNextOperation`, `testALimitErrorTheServerClosesTheConnectionBehindLeavesAClosedClientThatIsReplacedWithoutACheck`, `testPullRefusedAtTheSubscriptionLimitFailsWithATransportExceptionAndTheNextOperationChecksTheConnection`, `testAutoSetupRetriedPullRefusedAtTheSubscriptionLimitFailsWithATransportException`, `testPullThatFailedOnTheConnectionOtherwisePropagatesAsItIs`
 
+### Permissions a Worker Needs
+
+A pull is a publish to `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`, with a reply inbox the worker subscribes to.
+A worker's NATS user therefore needs, besides the subscribe permission for the client's reply inboxes (`_INBOX.>`):
+
+- **publish to `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`**, to pull;
+- publish to `$JS.ACK.<stream>.<consumer>.>`, the reply subjects of the deliveries, to acknowledge, NAK or TERM them;
+- publish to `$JS.API.CONSUMER.INFO.<stream>.<consumer>`, for `messenger:stats`, the diagnosis of a pull's 503 and the
+  consumer's `max_deliver` with `retry_via: nak`;
+- with `auto_setup`, what `messenger:setup-transports` needs: the stream and consumer management API under
+  `$JS.API.STREAM.` and `$JS.API.CONSUMER.`.
+
+The server refuses a pull the user may not publish with `-ERR 'Permissions Violation for Publish to "..."'` and keeps
+the connection open. The client fails such a pull at once with its `PermissionViolationException`
+(ideaconnect/php-nats-jetstream-client#260), and `get()` throws Symfony's `TransportException` with it as the previous
+exception, naming the subject to grant:
+
+```text
+Cannot pull from NATS stream "orders", consumer "worker". Grant the worker permission to publish to "$JS.API.CONSUMER.MSG.NEXT.orders.worker".
+```
+
+Like any exception from `get()`, it ends a worker's run, so `messenger:consume` exits nonzero and a supervisor or health
+check sees it. Before, each refused pull waited `max_batch_timeout` plus a second and ended as an empty one: the worker
+ran on, reported nothing, and the messages waited for ever (#130). The refusal is no failure of the connection, so the
+next operation does not PING first. With `auto_setup` the pull retried after re-provisioning gets the same treatment.
+
+> **Tested by:** `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndTheNextOperationChecksNothing`, `testAutoSetupPullRefusedForLackOfPermissionFailsWithATransportException`, Behat scenario `A worker whose user may not pull stops with the permission it needs`, the example `refused-pull.php`
+
 ### Automatic Reconnect
 
 Who recovers a lost connection is a choice between two modes.
@@ -2303,6 +2332,13 @@ The connection may hold only one subscription, and the transport needs two. Rais
 or the account's or user's subscription limit, to at least two (see [Subscription Limits](#subscription-limits)).
 
 > **Tested by:** `testAtALimitOfOneThePullFailsWithATransportExceptionNamingTheLimit`, `testAtALimitOfTwoPullsDeliverAndAcknowledge`
+
+**Error: "Cannot pull from NATS stream ... Grant the worker permission to publish to ..."**
+
+The worker's NATS user may not pull from the consumer: let it publish to the subject the message names,
+`$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>` (see [Permissions a Worker Needs](#permissions-a-worker-needs)).
+
+> **Tested by:** `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndTheNextOperationChecksNothing`, Behat scenario `A worker whose user may not pull stops with the permission it needs`
 
 **Error: "Reconnect attempts exhausted"**
 

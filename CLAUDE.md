@@ -145,6 +145,13 @@ composer nats:stop               # stop NATS
   `SubscriptionLimitException` (client `^2.27`) becomes Symfony's `TransportException` naming the stream, consumer
   and limit, in `fetchBatchMessages()`. The next operation still PINGs first: the server sends the same error when
   an account's limit is lowered and then closes the connection, so the error does not prove the connection is alive.
+- **A pull refused for lack of permission throws `TransportException` (#130).** A user who may not publish to
+  `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>` gets each pull refused with a permissions violation, the connection
+  kept open. The client's `fetchBatch()` throws `PermissionViolationException` for it at once
+  (ideaconnect/php-nats-jetstream-client#260); before, it ended the pull as the 408 of an empty one, and `get()` returned
+  nothing for ever. `fetchBatchMessages()` turns it into a `TransportException` naming the stream, the consumer and
+  `getSubject()`. No PING follows: `awaitOnConnection()` rethrows the exception before it sets `checkBeforeNextUse`.
+  The test server's user `nopull` (`tests/nats/nats.conf`) may do everything but pull from a consumer named `worker`.
 - **`setup()` create-then-update.** On a stream conflict it reads the live config, **merges** subjects,
   preserves server fields, and updates - it never blindly overwrites an existing stream.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);

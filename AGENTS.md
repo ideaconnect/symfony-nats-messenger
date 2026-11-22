@@ -74,7 +74,8 @@ tests/
 │   │   ├── nats_mtls.feature                   # mTLS with client certificates
 │   │   ├── nats_nkey.feature                   # Logins with an NKey seed, and credentials refused when built
 │   │   ├── nats_jwt.feature                    # Logins with a JWT and its seed on a server in operator mode
-│   │   └── nats_token.feature                  # Logins with a token
+│   │   ├── nats_token.feature                  # Logins with a token
+│   │   └── nats_pull_permission.feature        # A worker whose user may not pull stops with the permission it needs
 │   └── tests/Behat/NatsSetupContext.php        # All step definitions
 └── nats/                                       # Docker Compose + NATS configs for testing
     ├── docker-compose.yaml
@@ -157,6 +158,10 @@ composer nats:stop               # Stop NATS
   and the client watches the connection until `request_timeout` all the same; client 2.30.1 (#131) keeps to that with
   `reconnect: true` too, which `GracefulStopPullTest` checks with the real client and a held dial. A restart or lame duck scenario on CI that fails with
   `JetStream pull request ended with status 503` is a real failure now.
+- A pull the server refuses for lack of permission is a `TransportException` naming the subject to grant (#130), from
+  the client's `PermissionViolationException` (ideaconnect/php-nats-jetstream-client#260), and is no failure of the
+  connection. The plain test server's user `nopull` (`tests/nats/nats.conf`) may do everything but pull from a consumer
+  named `worker`: `nats_pull_permission.feature` and `examples/refused-pull.php` use it.
 - No frame that waits on a Future takes it as a parameter (#115). With `zend.exception_ignore_args` off, the default
   without a php.ini, the trace of an exception raised in the event loop records the arguments of every frame waiting on
   it, so a Future taken as a parameter, holding that exception, makes a cycle only the cycle collector frees: one per

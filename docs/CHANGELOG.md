@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MSG_NAKED`, then `MSG_TERMINATED`, for the message. Failures that are all unrecoverable are TERMed at once, as
   before, and a message with one handler is settled as before. A failure Symfony retried is still NAKed in place of its
   retry copy, through `ack()` or `reject()`. `isAFailureNatsModeCannotRetry()`.
+- **A worker whose user may not pull stops with an error naming the permission it needs** (#130). A user who may not
+  publish to `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>` gets each pull refused with a permissions violation, and
+  the server keeps the connection open. The client ended such a pull after `max_batch_timeout` plus a second as the 408
+  of an empty pull, which `get()` reads as an empty batch: `messenger:consume` ran on without an error and exited 0,
+  and the messages waited for ever, with one error line per pull in the client's log at most (measured on nats-server
+  2.14.2 with client 2.30.1: zero envelopes after 2.005 s with `max_batch_timeout: 1`). The client now fails the pull at
+  once with its `PermissionViolationException` (ideaconnect/php-nats-jetstream-client#260), and
+  `fetchBatchMessages()` turns it into Symfony's `TransportException`, next to the one for the subscription limit:
+  `Cannot pull from NATS stream "<stream>", consumer "<consumer>". Grant the worker permission to publish to
+  "$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>".`, the client's exception as its previous one. The pull retried after
+  `auto_setup` re-provisioned the consumer gets the same treatment. It is no failure of the connection: the server
+  answered, so the next operation does not PING first. Needs the client release that carries the fix for #260.
 
 ### Added
 
@@ -77,6 +89,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handlers failing for good, with what Symfony decided for each delivery (`willRetry()` after its retry listener:
   `[false, false]` with `max_retries: 0`, `[true, false]` with 3); on 5.10.1 it stops at the first run, where the
   message was TERMed after one run of each handler.
+- **A worker whose user may not pull (#130):** the plain test server gets a user `nopull` that may do everything but
+  pull from a consumer named `worker` (`tests/nats/nats.conf`). The Behat scenario `A worker whose user may not pull
+  stops with the permission it needs` (`nats_pull_permission.feature`) runs `messenger:consume` as that user with
+  `auto_setup` off and expects a nonzero exit and the subject in the error, then consumes the waiting message as the
+  admin; with client 2.30.1 the worker ran until its 10 s time limit and exited 0. The example `refused-pull.php` shows
+  the same through `get()`. Unit tests: `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndTheNextOperationChecksNothing`
+  and `testAutoSetupPullRefusedForLackOfPermissionFailsWithATransportException`.
 
 ## [5.10.1] - 2026-11-21
 
