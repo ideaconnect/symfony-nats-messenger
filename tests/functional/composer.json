@@ -3,11 +3,17 @@
     "license": "proprietary",
     "minimum-stability": "stable",
     "prefer-stable": true,
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/ideaconnect/php-nats-jetstream-client"
+        }
+    ],
     "require": {
         "php": ">=8.2",
         "ext-ctype": "*",
         "ext-iconv": "*",
-        "idct/php-nats-jetstream-client": "^2.30.1",
+        "idct/php-nats-jetstream-client": "dev-bober/symfony-nats-messenger-130 as 2.30.2",
         "phpdocumentor/reflection-docblock": "^6.0.3",
         "phpstan/phpdoc-parser": "^2.3.6",
         "symfony/console": "^7.4.21 || ^8.1.9",
