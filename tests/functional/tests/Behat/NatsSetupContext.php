@@ -85,6 +85,8 @@ class NatsSetupContext implements Context
     /** The connection that listens for the MSG_TERMINATED advisories of the transport's consumer, while it does. */
     private ?NatsClient $advisoryClient = null;
     private ?SubscriptionQueue $terminations = null;
+    /** Every advisory of the transport's consumer, on $advisoryClient, while a scenario listens for them. */
+    private ?SubscriptionQueue $consumerAdvisories = null;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
     private string $testFilesDir;
@@ -1391,6 +1393,17 @@ class NatsSetupContext implements Context
     public function theConsumerShouldNotHaveWarnedThatSymfonysRetryStrategyIsOn(): void
     {
         $this->assertSymfonysRetryStrategyWarnings(0);
+    }
+
+    /**
+     * The same, for a Scenario Outline whose rows expect different counts: 0 where Symfony retries nothing, 1 where it
+     * retried a message and the transport left the copy out (#125).
+     */
+    #[Then('the consumer should have warned :count time that Symfony\'s retry strategy is on')]
+    #[Then('the consumer should have warned :count times that Symfony\'s retry strategy is on')]
+    public function theConsumerShouldHaveWarnedTimesThatSymfonysRetryStrategyIsOn(int $count): void
+    {
+        $this->assertSymfonysRetryStrategyWarnings($count);
     }
 
     private function assertSymfonysRetryStrategyWarnings(int $expected): void
@@ -2909,6 +2922,7 @@ class NatsSetupContext implements Context
             }
             $this->advisoryClient = null;
             $this->terminations = null;
+            $this->consumerAdvisories = null;
         }
         // Stop consumer process if running
         if ($this->consumerProcess && $this->consumerProcess->isRunning()) {
@@ -3652,6 +3666,161 @@ class NatsSetupContext implements Context
 
         if (!$sendProcess->isSuccessful()) {
             throw new \RuntimeException(sprintf('Failed to send failing messages. Exit code: %d. Output: %s. Error: %s', $sendProcess->getExitCode(), $sendProcess->getOutput(), $sendProcess->getErrorOutput()));
+        }
+    }
+
+    /**
+     * Nats mode with max_deliver and the given max_retries, the igbinary serializer, and the message of two handlers
+     * routed to the transport (#125).
+     */
+    #[Given('I have a messenger transport configured with NATS retry handler, max deliver of :maxDeliver and max retries of :maxRetries, routing the message of two handlers')]
+    public function iHaveAMessengerTransportConfiguredWithNatsRetryHandlerMaxDeliverAndMaxRetriesRoutingTheMessageOfTwoHandlers(int $maxDeliver, int $maxRetries): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats&max_deliver=%d'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: %d\n        routing:\n            'App\\Async\\TwoHandlersMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $maxDeliver,
+            self::IGBINARY_SERIALIZER,
+            $maxRetries
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Starts listening for every advisory NATS publishes about the transport's consumer
+     * (`$JS.EVENT.ADVISORY.CONSUMER.<kind>.<stream>.client`), in the order the server publishes them, for
+     * {@see theTransportsConsumerShouldHavePublishedForStreamSequence()}.
+     */
+    #[Given('I listen for the advisories of the transport\'s consumer')]
+    public function iListenForTheAdvisoriesOfTheTransportsConsumer(): void
+    {
+        $this->advisoryClient = $this->createAppropriateNatsClient();
+        $this->consumerAdvisories = $this->advisoryClient
+            ->subscribeQueue('$JS.EVENT.ADVISORY.CONSUMER.*.' . $this->testStreamName . '.client')
+            ->await();
+        $this->advisoryClient->flush()->await();
+    }
+
+    /**
+     * One message, to {@see \App\Async\FirstOfTwoHandlers} and {@see \App\Async\SecondOfTwoHandlers}, each failing
+     * `for good` (an UnrecoverableMessageHandlingException on every run) or `once` (a RuntimeException on its first
+     * run, then it succeeds).
+     */
+    #[When('I send a message to two handlers, the first failing :first and the second :second')]
+    public function iSendAMessageToTwoHandlers(string $first, string $second): void
+    {
+        $this->messagesSent = 1;
+
+        $sendProcess = new Process(['php', 'bin/console', 'app:send-two-handlers-message', $first, $second, '--env=test'], __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(sprintf('Failed to send the message. Exit code: %d. Output: %s. Error: %s', $sendProcess->getExitCode(), $sendProcess->getOutput(), $sendProcess->getErrorOutput()));
+        }
+    }
+
+    /**
+     * A consumer that stops after the given number of deliveries, or after 20 s when fewer come.
+     */
+    #[When('I start a messenger consumer that stops after :count delivery')]
+    #[When('I start a messenger consumer that stops after :count deliveries')]
+    public function iStartAMessengerConsumerThatStopsAfterDeliveries(int $count): void
+    {
+        $this->consumerProcess = new Process(
+            ['php', 'bin/console', 'messenger:consume', 'test_transport', '--limit=' . $count, '--time-limit=20', '--sleep=0.1', '--env=test', '-vv'],
+            __DIR__ . '/../..'
+        );
+        $this->consumerProcess->setTimeout(60);
+        $this->consumerProcess->start();
+    }
+
+    /**
+     * The NAK, TERM and MAX_DELIVERIES advisories of the transport's consumer, in the order the server published them,
+     * each for the given stream sequence: a NAK is MSG_NAKED, a TERM MSG_TERMINATED. The other advisories (the
+     * consumer's creation, an ACK nobody asked to be told about) are left out.
+     */
+    #[Then('the transport\'s consumer should have published :advisories for stream sequence :sequence')]
+    public function theTransportsConsumerShouldHavePublishedForStreamSequence(string $advisories, int $sequence): void
+    {
+        if ($this->advisoryClient === null || $this->consumerAdvisories === null) {
+            throw new \RuntimeException('Nothing listened for the advisories of the consumer');
+        }
+
+        $published = [];
+        try {
+            $this->consumerAdvisories->setTimeout(0.5);
+            while (($advisory = $this->consumerAdvisories->next()) !== null) {
+                $kind = explode('.', $advisory->subject)[4] ?? '';
+                if (!in_array($kind, ['MSG_NAKED', 'MSG_TERMINATED', 'MAX_DELIVERIES'], true)) {
+                    continue;
+                }
+                $payload = json_decode($advisory->payload, true);
+                $published[] = sprintf('%s of %s', $kind, json_encode(is_array($payload) ? ($payload['stream_seq'] ?? null) : null));
+            }
+        } finally {
+            $this->advisoryClient->disconnect()->await();
+            $this->advisoryClient = null;
+            $this->consumerAdvisories = null;
+        }
+
+        $expected = array_map(static fn (string $kind): string => sprintf('%s of %d', trim($kind), $sequence), explode(',', $advisories));
+        if ($published !== $expected) {
+            throw new \RuntimeException(sprintf(
+                "Expected the advisories %s, got %s.\nConsumer output: %s\nConsumer error: %s",
+                json_encode($expected),
+                json_encode($published),
+                $this->consumerProcess?->getOutput() ?? 'N/A',
+                $this->consumerProcess?->getErrorOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    #[Then('both handlers should have run :times time')]
+    #[Then('both handlers should have run :times times')]
+    public function bothHandlersShouldHaveRun(int $times): void
+    {
+        $runs = [];
+        foreach (['first', 'second'] as $position) {
+            $file = sprintf('%s/two_handlers_%s.attempt', $this->retryStateDir, $position);
+            $runs[$position] = file_exists($file) ? (int) file_get_contents($file) : 0;
+        }
+
+        if ($runs !== ['first' => $times, 'second' => $times]) {
+            throw new \RuntimeException(sprintf(
+                "Expected each handler to run %d time(s), got %s.\nConsumer output: %s",
+                $times,
+                json_encode($runs),
+                $this->consumerProcess?->getOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /**
+     * The handler that fails once succeeded on its second run, the redelivery, and the one that fails for good never
+     * succeeded.
+     */
+    #[Then('the handler that fails once should have succeeded on its second run')]
+    public function theHandlerThatFailsOnceShouldHaveSucceededOnItsSecondRun(): void
+    {
+        $succeeded = [];
+        foreach (['first', 'second'] as $position) {
+            $file = sprintf('%s/two_handlers_%s.txt', $this->testFilesDir, $position);
+            if (file_exists($file)) {
+                $succeeded[$position] = trim((string) file_get_contents($file));
+            }
+        }
+
+        if (count($succeeded) !== 1 || reset($succeeded) !== 'Attempt: 2') {
+            throw new \RuntimeException(sprintf(
+                "Expected one handler to succeed, on its second run, got %s.\nConsumer output: %s",
+                json_encode($succeeded),
+                $this->consumerProcess?->getOutput() ?? 'N/A'
+            ));
         }
     }
 }

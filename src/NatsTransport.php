@@ -33,6 +33,8 @@ use IDCT\NatsMessenger\Options\RetryHandler;
 use IDCT\NatsMessenger\Options\RetryVia;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
+use IDCT\NatsMessenger\Stamp\ReceivedInNatsModeStamp;
+use IDCT\NatsMessenger\Stamp\UnrecoverableFailureStamp;
 use LogicException;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
@@ -799,6 +801,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * A pull the server refuses because the connection is at its subscription limit fails with a
      * TransportException that names the stream, the consumer and the limit ({@see fetchBatchMessages()}).
      *
+     * Each envelope carries its delivery token in a TransportMessageIdStamp, and in nats mode a
+     * {@see ReceivedInNatsModeStamp} with the same token as well, by which
+     * {@see EventListener\AddUnrecoverableFailureStampListener} tells the deliveries whose failure this
+     * mode reads from those of other receivers (#125).
+     *
      * @return iterable<Envelope>
      *
      * @throws TransportException If the pull fails because the connection is at its subscription limit.
@@ -856,7 +863,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $decoded = self::decodingFailure($encoded, $e);
             }
 
-            yield $this->withDeliveryCountAsRetryCount($decoded->with(new TransportMessageIdStamp($replyTo)), $message);
+            // The stamps go on in one with(), which clones the envelope once for every delivery.
+            $stamps = [new TransportMessageIdStamp($replyTo)];
+            if ($this->configuration->retryHandler() === RetryHandler::NATS) {
+                // Only nats mode reads what AddUnrecoverableFailureStampListener says about a failure of the handlers,
+                // so the listener classifies the deliveries marked so, and leaves other receivers' envelopes alone.
+                $stamps[] = new ReceivedInNatsModeStamp($replyTo);
+            }
+
+            yield $this->withDeliveryCountAsRetryCount($decoded->with(...$stamps), $message);
         }
     }
 
@@ -1047,22 +1062,30 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
-     * Whether, in nats mode, the delivery being rejected failed with an exception Symfony marks as unrecoverable
-     * (UnrecoverableExceptionInterface, such as UnrecoverableMessageHandlingException), which Symfony's
-     * ErrorDetailsStamp names. Such a failure can never succeed, so it is TERMed, where nats mode NAKed it and NATS ran
-     * the handler again on every delivery up to max_deliver, for ever without it: 4 runs with max_deliver 4 (measured
-     * on nats-server 2.15.2). Ordinary failures are still NAKed, for NATS to redeliver under nak_delay, backoff and
-     * max_deliver. The stamp names the first exception a HandlerFailedException wraps, which is the one that failed
-     * when the message has one handler. With several handlers, Symfony's own retry strategy retries a
-     * HandlerFailedException unless every exception in it is unrecoverable: a failure Symfony retried is NAKed, as
-     * reject() reads it first, and one it did not retry (with max_retries: 0, which nats mode asks for, it retries
-     * none) is TERMed when its first exception is unrecoverable, even when another handler's failure could succeed on
-     * a redelivery. Symfony mode leaves that decision to Symfony.
+     * Whether, in nats mode, the delivery being rejected failed with what can never succeed, which it TERMs, where nats
+     * mode NAKed it and NATS ran the handler again on every delivery up to max_deliver, for ever without it: 4 runs with
+     * max_deliver 4 (measured on nats-server 2.15.2). Ordinary failures are still NAKed, for NATS to redeliver under
+     * nak_delay, backoff and max_deliver. Symfony mode leaves that decision to Symfony.
+     *
+     * The rule is Symfony's: a HandlerFailedException can never succeed only when every exception it wraps directly is
+     * unrecoverable (UnrecoverableExceptionInterface, such as UnrecoverableMessageHandlingException). The
+     * {@see UnrecoverableFailureStamp} that {@see EventListener\AddUnrecoverableFailureStampListener} (registered by the
+     * bundle) adds says so, true or false, and decides when it is there: a mix of an unrecoverable failure and an
+     * ordinary one is NAKed in either order of the handlers (#125). Without it the transport goes by Symfony's
+     * ErrorDetailsStamp, which names the first exception a HandlerFailedException wraps: right for a message with one
+     * handler, while with several the handler that ran first decides, and an unrecoverable failure first TERMs a
+     * failure of another handler that a redelivery could cure. A failure Symfony retried never gets here: reject()
+     * reads it first.
      */
     private function isAFailureNatsModeCannotRetry(Envelope $envelope): bool
     {
         if ($this->configuration->retryHandler() !== RetryHandler::NATS) {
             return false;
+        }
+
+        $classified = $envelope->last(UnrecoverableFailureStamp::class);
+        if ($classified !== null) {
+            return $classified->unrecoverable;
         }
 
         $failedWith = $envelope->last(ErrorDetailsStamp::class)?->getExceptionClass();

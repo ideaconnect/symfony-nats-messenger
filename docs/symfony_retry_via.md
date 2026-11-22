@@ -23,7 +23,7 @@ framework:
 | Term | Meaning |
 |---|---|
 | **symfony mode** | `retry_handler: symfony`, the default. Symfony's retry strategy decides whether and when a failed message is retried. `retry_via` belongs to this mode. |
-| **nats mode** | `retry_handler: nats`. NATS redelivers every failed message itself, and Symfony's retry strategy has no effect. |
+| **nats mode** | `retry_handler: nats`. NATS redelivers a failed message itself, and Symfony's retry strategy has no effect. What can never succeed is TERMed instead: a failure Symfony marks as unrecoverable, which with several handlers means that every handler's failure is (the example [nats-retry-several-handlers.php](../examples/nats-retry-several-handlers.php)), and a message that cannot be decoded. The README's [Retry Handler Behavior](../README.md#retry-handler-behavior) has the rules. |
 | **retry copy** | The envelope Symfony's retry listener sends to the transport when it retries a message: the same message, with a `DelayStamp` holding the delay the strategy computed and a `RedeliveryStamp` holding the retry count. |
 | **NAK retry** | A retry carried out by NAKing the failed delivery with the retry copy's delay. NATS then redelivers the original message, and no copy is published. |
 | **delivery token** | The reply subject of one delivery (`$JS.ACK.<stream>.<consumer>.<deliveries>.<stream sequence>...`), which the transport keeps in the envelope's `TransportMessageIdStamp`. An ACK, a NAK or a TERM is a message published to it. It names one delivery, not the message, and says how many times the message has been delivered. |

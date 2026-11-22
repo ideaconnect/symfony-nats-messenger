@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger\Tests\Unit;
 
+use IDCT\NatsMessenger\EventListener\AddUnrecoverableFailureStampListener;
 use IDCT\NatsMessenger\IDCTNatsMessengerBundle;
 use IDCT\NatsMessenger\NatsTransport;
 use Psr\Log\LoggerInterface;
@@ -25,8 +26,10 @@ use PHPUnit\Framework\TestCase;
 use ReflectionObject;
 use ReflectionProperty;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\HttpKernel\Bundle\BundleInterface;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 use Symfony\Component\Messenger\Exception\InvalidArgumentException;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\Serialization\SigningSerializer;
@@ -306,6 +309,38 @@ final class IDCTNatsMessengerBundleTest extends TestCase
             self::clientLoggerOf($withoutLogger->get('messenger.transport.nats')),
             'the factory gets the logger service when the application has one, and null otherwise',
         );
+    }
+
+    /**
+     * The listener that tells nats mode whether every handler of a failed message failed for good (#125) is on the
+     * event dispatcher Messenger's worker dispatches to, once, at priority -101, after Symfony's retry and
+     * failure-transport listeners: with the bundle, through the README's services.yaml entry without the bundle, and
+     * with both, where the application's entry replaces the bundle's under the same id.
+     *
+     * @param list<BundleInterface> $bundles
+     */
+    #[Test]
+    #[DataProvider('setupsOfTheListenerOfHandlerFailures')]
+    public function theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies(array $bundles, bool $withTheReadmesEntries): void
+    {
+        $files = $withTheReadmesEntries ? self::readmeYamlBlocksStartingWith('# config/services.yaml (only without the bundle)') : [];
+        $dispatcher = $this->kernel($bundles, [], $files)->testContainer()->get('event_dispatcher');
+        $this->assertInstanceOf(EventDispatcherInterface::class, $dispatcher);
+
+        $listeners = array_values(array_filter(
+            $dispatcher->getListeners(WorkerMessageFailedEvent::class),
+            static fn (mixed $listener): bool => is_array($listener) && ($listener[0] ?? null) instanceof AddUnrecoverableFailureStampListener,
+        ));
+        $this->assertCount(1, $listeners);
+        $this->assertSame(-101, $dispatcher->getListenerPriority(WorkerMessageFailedEvent::class, $listeners[0]));
+    }
+
+    /** @return iterable<string, array{list<BundleInterface>, bool}> */
+    public static function setupsOfTheListenerOfHandlerFailures(): iterable
+    {
+        yield 'the bundle' => [[new IDCTNatsMessengerBundle()], false];
+        yield 'the README\'s entries without the bundle' => [[], true];
+        yield 'the README\'s entries next to the bundle' => [[new IDCTNatsMessengerBundle()], true];
     }
 
     /** The logger of the NATS client inside a transport. */
