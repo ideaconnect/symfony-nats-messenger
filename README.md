@@ -49,8 +49,9 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 composer require idct/symfony-nats-messenger
 ```
 
-The package ships `IDCTNatsMessengerBundle`, which registers the transport factory and
-the igbinary serializer for you - no per-project `services.yaml` entries are required.
+The package ships `IDCTNatsMessengerBundle`, which registers the transport factory,
+the igbinary serializer, and the listener nats mode reads the failures of several handlers by (see
+[Retry Handler Behavior](#retry-handler-behavior)) for you - no per-project `services.yaml` entries are required.
 With Symfony Flex the bundle is enabled automatically when the package is installed or updated. Without
 Flex, enable it manually:
 
@@ -481,6 +482,7 @@ the test server and print `OK` when what they show held:
 | `send-and-consume.php` | `setup()`, sending, the queue depth, receiving and acknowledging |
 | `duplicate-protection.php` | `DeduplicationIdStamp` and `deduplicate: true`: a message sent again is stored once |
 | `nats-retry.php` | `retry_handler: nats` with Symfony's default retry strategy: NATS redelivers a message whose handler failed, and the transport warns that the strategy is on; a message that cannot be decoded is TERMed, and stops a worker only before Symfony Messenger 8.1; an unrecoverable failure runs once |
+| `nats-retry-several-handlers.php` | `retry_handler: nats` with two handlers of one message, one failing for good and the other once: the first delivery is NAKed in either order of the handlers, with `max_retries` 0 and 3, and the second is TERMed once the unrecoverable failure is left alone; two handlers failing for good are TERMed at once |
 | `retry-via-nak.php` | `retry_via: nak`: Symfony's retry strategy decides, and NATS redelivers the failed message after a NAK with Symfony's delay; a message Symfony gives up on is TERMed, with one copy in the failure transport |
 | `retry-via-nak-edge-cases.php` | `retry_via: nak` at its edges: a delivery nobody settled, a message that cannot be decoded, the `reject()` of older Symfony Messenger releases, a message published with a retry count, what the builder refuses, and a consumer whose `max_deliver` the option does not say |
 | `retry-via-nak-past-max-deliver.php` | `retry_via: nak` with a low `max_deliver`: the retry of the last delivery it allows goes out as a copy, so Symfony's strategy runs to its end |
@@ -863,6 +865,40 @@ In detail:
   after such a Symfony upgrade, although the transport did not change. No message is lost: the retry copy is in
   the stream.
 - `retry_handler: nats` sends `NAK` when a message is rejected, so NATS redelivers the message itself. A message that cannot be decoded is TERMed in this mode too (5.9.1): a redelivery cannot decode it either. Up to 5.9.0 nats mode NAKed it, and NATS brought it back at once: to every new worker, which stopped again, or on 8.1 to the same worker, about 600 times a second, for ever without `max_deliver`. A failure Symfony marks as unrecoverable (`UnrecoverableExceptionInterface`, such as `UnrecoverableMessageHandlingException`) is TERMed too (5.10.0): it runs once, where NATS ran it again on every delivery `max_deliver` allowed.
+
+**With several handlers, nats mode goes by every handler's failure, in either order** (#125). Symfony wraps the
+failures of the handlers of one message in one `HandlerFailedException`, and treats it as unrecoverable only when every
+exception it wraps is. Nats mode follows that rule: when every handler that failed threw an unrecoverable exception the
+delivery is TERMed, and a mix of an unrecoverable failure and an ordinary one is NAKed, whichever handler ran first, so
+NATS redelivers the message and every handler runs again. Once the unrecoverable failure is the only one left, that
+delivery is TERMed. Up to 5.10.1 the transport went by Symfony's `ErrorDetailsStamp`, which names only the first
+exception: with the unrecoverable handler first the message was TERMed and the other handler's failure, which a
+redelivery could cure, was never tried again; with it second the message was NAKed. The bundle registers
+`AddUnrecoverableFailureStampListener`, which tells the transport with an `UnrecoverableFailureStamp` (`true` or
+`false`, never sent with the message); without the listener the transport goes by the first exception, as before. An
+application without the bundle registers it with its tag:
+
+```yaml
+# config/services.yaml (only without the bundle)
+services:
+    IDCT\NatsMessenger\EventListener\AddUnrecoverableFailureStampListener:
+        tags: [kernel.event_subscriber]
+```
+
+A worker built by hand, outside the framework, adds it to the event dispatcher it gives Symfony's `Worker`, next to
+Symfony's `AddErrorDetailsStampListener` and retry listener:
+
+```php
+use IDCT\NatsMessenger\EventListener\AddUnrecoverableFailureStampListener;
+
+$dispatcher->addSubscriber(new AddUnrecoverableFailureStampListener());
+```
+
+It runs at priority -101, after Symfony's retry listener (100) and failure-transport listener (-100) have taken their
+copies, so no copy carries the stamp, also in a transport that stores envelopes without a serializer, such as the
+in-memory one.
+
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testTheCopiesSymfonyTakesOfAFailureDoNotCarryTheListenersStamp`, `testStampsWhetherEveryHandlerFailedForGood`, `testRunsAfterSymfonysListenersHaveTakenTheirCopies`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenarios `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` and `With two handlers that both fail for good, the first delivery is TERMed` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`
 
 **A message that cannot be decoded is handled as Symfony's own transports handle it** (Doctrine, Redis, AMQP), in
 either mode. A message that cannot be decoded is one whose serializer throws a `MessageDecodingFailedException`, which
@@ -2303,6 +2339,8 @@ The bridge consists of two main components, wired into the framework by a thin b
 ### IDCTNatsMessengerBundle
 - Registers `NatsTransportFactory` and the `IgbinarySerializer` service in the application container
 - Hands the application's `logger` service to the factory, under Monolog's `messenger` channel
+- Registers `AddUnrecoverableFailureStampListener`, which tells nats mode whether every handler of a failed message
+  failed for good
 - Auto-enabled by Symfony Flex; no semantic configuration
 
 ### NatsTransportFactory

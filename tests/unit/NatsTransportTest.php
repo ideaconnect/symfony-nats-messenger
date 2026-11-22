@@ -23,9 +23,11 @@ use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\StreamInfo;
 use IDCT\NATS\Protocol\ServerInfo;
+use IDCT\NatsMessenger\EventListener\AddUnrecoverableFailureStampListener;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
+use IDCT\NatsMessenger\Stamp\UnrecoverableFailureStamp;
 use IDCT\NatsMessenger\Tests\Support\NoticeOnWakeup;
 use IDCT\NatsMessenger\Tests\Support\RecordedErrors;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
@@ -51,6 +53,7 @@ use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Messenger\EventListener\SendFailedMessageForRetryListener;
 use Symfony\Component\Messenger\EventListener\SendFailedMessageToFailureTransportListener;
 use Symfony\Component\Messenger\EventListener\StopWorkerOnMessageLimitListener;
+use Symfony\Component\Messenger\Handler\HandlerDescriptor;
 use Symfony\Component\Messenger\Handler\HandlersLocator;
 use Symfony\Component\Messenger\MessageBus;
 use Symfony\Component\Messenger\Middleware\HandleMessageMiddleware;
@@ -7408,6 +7411,20 @@ final class NatsTransportTest extends TestCase
         yield 'an ordinary failure' => [[ErrorDetailsStamp::create(new \RuntimeException('not now'))], 'nak'];
         yield 'recoverable' => [[ErrorDetailsStamp::create(new RecoverableMessageHandlingException('later'))], 'nak'];
         yield 'no error details' => [[], 'nak'];
+        // Without the listener's stamp, the first exception of a HandlerFailedException decides (#125).
+        yield 'two handlers, the first unrecoverable, without the listener\'s stamp' => [[ErrorDetailsStamp::create(new HandlerFailedException(new Envelope(new \stdClass()), [
+            'invoice' => new UnrecoverableMessageHandlingException('never'),
+            'payment' => new \RuntimeException('not now'),
+        ]))], 'term'];
+        // The listener's stamp decides when it is there, false included, before the error details.
+        yield 'every handler failed for good, by the listener\'s stamp' => [[new UnrecoverableFailureStamp(true)], 'term'];
+        yield 'two handlers, the first unrecoverable, and the listener\'s stamp false' => [[
+            ErrorDetailsStamp::create(new HandlerFailedException(new Envelope(new \stdClass()), [
+                'invoice' => new UnrecoverableMessageHandlingException('never'),
+                'payment' => new \RuntimeException('not now'),
+            ])),
+            new UnrecoverableFailureStamp(false),
+        ], 'nak'];
     }
 
     /** @return iterable<string, array{string}> */
@@ -7482,6 +7499,134 @@ final class NatsTransportTest extends TestCase
         (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
 
         self::assertSame(['term'], $settled);
+    }
+
+    /**
+     * Through Symfony's Worker with its error-details and retry listeners, in nats mode with max_retries 0, and with the
+     * listener the bundle registers: two handlers of one message, one failing as unrecoverable and the other not, are
+     * NAKed in either order, for NATS to redeliver; two unrecoverable failures are TERMed. Up to 5.10.1 the first
+     * exception decided, which TERMed the mix whose first exception is unrecoverable, and the other handler's failure
+     * was never tried again (#125). Without the listener (a worker that does not register it) that is still so.
+     *
+     * @param list<string> $failures 'unrecoverable' or 'ordinary', one per handler, in the order they run
+     */
+    #[DataProvider('failuresOfTwoHandlers')]
+    public function testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker(array $failures, bool $withTheListener, string $settledWith): void
+    {
+        $settled = [];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'p'),
+        ]));
+        foreach (['term', 'nak', 'ack'] as $method) {
+            $jetStream->method($method)->willReturnCallback(static function (NatsMessage $message) use (&$settled, $method): Future {
+                $settled[] = $method;
+
+                return Future::complete();
+            });
+        }
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE + ['max_deliver' => 3], $this->decodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($transport),
+            self::singleServiceLocator(new MultiplierRetryStrategy(0)),
+        ));
+        if ($withTheListener) {
+            $dispatcher->addSubscriber(new AddUnrecoverableFailureStampListener());
+        }
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        (new Worker(['async' => $transport], self::busOfFailingHandlers($failures), $dispatcher))->run(['sleep' => 0]);
+
+        self::assertSame([$settledWith], $settled);
+    }
+
+    /**
+     * @return iterable<string, array{list<string>, bool, string}>
+     */
+    public static function failuresOfTwoHandlers(): iterable
+    {
+        yield 'unrecoverable first, ordinary second' => [['unrecoverable', 'ordinary'], true, 'nak'];
+        yield 'ordinary first, unrecoverable second' => [['ordinary', 'unrecoverable'], true, 'nak'];
+        yield 'both unrecoverable' => [['unrecoverable', 'unrecoverable'], true, 'term'];
+        yield 'both ordinary' => [['ordinary', 'ordinary'], true, 'nak'];
+        yield 'unrecoverable first, ordinary second, without the listener: the first exception decides' => [['unrecoverable', 'ordinary'], false, 'term'];
+        yield 'both unrecoverable, without the listener' => [['unrecoverable', 'unrecoverable'], false, 'term'];
+    }
+
+    /**
+     * The listener's stamp stays off the copies Symfony takes of a failed envelope, its retry listener's (priority 100)
+     * and its failure-transport listener's (-100): the listener runs at -101, after both. An in-memory transport
+     * without a serializer stores the envelope it is given as it is, so at priority 0 its failure copy kept the stamp.
+     * The envelope the worker settles carries it, false for the mix of an unrecoverable failure and an ordinary one.
+     */
+    #[DataProvider('copiesSymfonyTakesOfAFailure')]
+    public function testTheCopiesSymfonyTakesOfAFailureDoNotCarryTheListenersStamp(int $maxRetries): void
+    {
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'p'),
+        ]));
+        foreach (['term', 'nak', 'ack'] as $method) {
+            $jetStream->method($method)->willReturn(Future::complete());
+        }
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $this->decodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+        $copies = new InMemoryTransport();
+
+        $dispatcher = new EventDispatcher();
+        // Added first: at the priority of one of Symfony's listeners it would run before that one.
+        $dispatcher->addSubscriber(new AddUnrecoverableFailureStampListener());
+        $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($copies),
+            self::singleServiceLocator(new MultiplierRetryStrategy($maxRetries)),
+        ));
+        $dispatcher->addSubscriber(new SendFailedMessageToFailureTransportListener(self::singleServiceLocator($copies)));
+        $settles = [];
+        $dispatcher->addListener(WorkerMessageFailedEvent::class, static function (WorkerMessageFailedEvent $event) use (&$settles): void {
+            $settles[] = $event->getEnvelope()->last(UnrecoverableFailureStamp::class)?->unrecoverable;
+        }, -1000);
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        (new Worker(['async' => $transport], self::busOfFailingHandlers(['unrecoverable', 'ordinary']), $dispatcher))->run(['sleep' => 0]);
+
+        self::assertCount(1, $copies->getSent());
+        self::assertNull($copies->getSent()[0]->last(UnrecoverableFailureStamp::class));
+        self::assertSame([false], $settles);
+    }
+
+    /**
+     * @return iterable<string, array{int}>
+     */
+    public static function copiesSymfonyTakesOfAFailure(): iterable
+    {
+        yield 'the failure copy, with max_retries 0' => [0];
+        yield 'the retry copy, with max_retries 1' => [1];
+    }
+
+    /**
+     * A bus with one handler per failure, in that order, each failing as it says: 'unrecoverable' with an
+     * UnrecoverableMessageHandlingException, 'ordinary' with a RuntimeException. Each handler has a name of its own:
+     * Symfony runs one closure per name, and keys the exceptions of a HandlerFailedException by it.
+     *
+     * @param list<string> $failures
+     */
+    private static function busOfFailingHandlers(array $failures): MessageBus
+    {
+        $handlers = [];
+        foreach ($failures as $index => $failure) {
+            $handlers[] = new HandlerDescriptor(static function () use ($failure): void {
+                throw $failure === 'unrecoverable'
+                    ? new UnrecoverableMessageHandlingException('the invoice does not exist')
+                    : new \RuntimeException('the payment provider did not answer');
+            }, ['alias' => 'handler-' . $index]);
+        }
+
+        return new MessageBus([new HandleMessageMiddleware(new HandlersLocator([\stdClass::class => $handlers]))]);
     }
 
     public function testGetWithMultipleValidMessagesReturnsAll(): void
