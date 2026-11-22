@@ -1881,6 +1881,51 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * The test transport on the consumer $consumerName as the user "nopull" of tests/nats/nats.conf, who may do
+     * everything but pull from a consumer named "worker" (#130), with auto setup disabled: the admin set the stream and
+     * the consumer up, as an operator does for a worker in production.
+     */
+    #[Given('the transport\'s user may not pull from the consumer :consumerName')]
+    public function theTransportsUserMayNotPullFromTheConsumer(string $consumerName): void
+    {
+        if ($consumerName !== 'worker') {
+            throw new \RuntimeException('tests/nats/nats.conf denies the user "nopull" the pulls from a consumer named "worker", not ' . $consumerName);
+        }
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://nopull:nopull@localhost:4222/%s/%s?stream_max_age=900&consumer=%s&auto_setup=false'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $consumerName
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * A worker whose pulls the server refuses stops with the error naming the stream, the consumer and the subject its
+     * user needs to publish to, and a nonzero exit code (#130). It used to read each refused pull as an empty one and
+     * run on until its 10 s time limit, and then exit 0.
+     */
+    #[Then('a messenger consumer should fail naming the permission to publish to :subject')]
+    public function aMessengerConsumerShouldFailNamingThePermissionToPublishTo(string $subject): void
+    {
+        $process = new Process(
+            ['php', 'bin/console', 'messenger:consume', 'test_transport', '--limit=1', '--time-limit=10', '--sleep=0.1', '--env=test'],
+            __DIR__ . '/../..'
+        );
+        $process->setTimeout(30);
+        $process->run();
+
+        $this->assertCommandFailedSaying($process, sprintf(
+            'Cannot pull from NATS stream "%s", consumer "worker". Grant the worker permission to publish to "%s".',
+            $this->testStreamName,
+            $subject,
+        ));
+    }
+
+    /**
      * No user or password in the DSN: the connection authenticates only with the NKey seed, whose public key is
      * the NKey user in tests/nats/nats.conf. The seed goes in the transport's options, as the README recommends.
      */
