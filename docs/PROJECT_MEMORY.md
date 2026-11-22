@@ -183,6 +183,14 @@ apply only with the option on.
   why the builder refuses `backoff` and a positive `nak_delay` with it (`docs/symfony_retry_via.md` has the
   measurements). NATS 2.9.25 was seen to report a redelivery as delivery 1 when the NAK's delay equals the pull's
   expiry, about 1 message in 5: the retry count is then one too low once.
+- **Several handlers in nats mode (#125):** a `HandlerFailedException` is TERMed only when every exception it wraps
+  directly is unrecoverable, as Symfony's retry listener decides; a mix is NAKed in either order. `reject()` sees only
+  the envelope, so the bundle's `AddUnrecoverableFailureStampListener` adds an `UnrecoverableFailureStamp` (`true` or
+  `false`, not sendable) at priority -101, after Symfony's retry (100) and failure-transport (-100) listeners took their
+  copies: at 0 an `InMemoryTransport` without a serializer kept it on its failure copy. Without the stamp the
+  `ErrorDetailsStamp`, which names the first exception only, decides. In a test, two anonymous closures for one message
+  are one handler to Symfony: `HandlersLocator` skips a handler whose name (`Closure`) it has seen, so give each a
+  `HandlerDescriptor` with its own `alias`.
 - **Scheduled messages need a server that has them:** NATS before 2.12 ignores the stream's `allow_msg_schedules`
   setting without rejecting it, so up to 5.8.1 `setup()` succeeded there and every delayed message was stored on
   `<topic>.delayed.<uuid>` and never delivered (measured on 2.9.25, 2.10.29 and 2.11.17). The client's

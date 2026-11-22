@@ -150,8 +150,11 @@ composer nats:stop               # stop NATS
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
   `retry_handler=nats` → NAK (NATS redelivers), and `send()` skips the copy Symfony's retry sends (a received
   envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode. Nats mode TERMs what can
-  never succeed: a failure Symfony marks as unrecoverable (its `ErrorDetailsStamp`) and a message that cannot be
-  decoded; a failure transport is not for that mode (README). In symfony mode,
+  never succeed: a failure Symfony marks as unrecoverable and a message that cannot be decoded; a failure transport
+  is not for that mode (README). A HandlerFailedException is unrecoverable only when every exception it wraps
+  directly is (#125): the bundle's `AddUnrecoverableFailureStampListener` (priority -101, after Symfony's copies) says
+  so with an `UnrecoverableFailureStamp`, `false` included, and only without it does the transport go by the first
+  exception, which Symfony's `ErrorDetailsStamp` names. In symfony mode,
   `retry_via: nak` (default `copy`) leaves that copy out as well, and the worker's `ack()` or `reject()` of the
   delivery NAKs it with the copy's `DelayStamp` delay (0 a plain NAK). A retry no NAK can carry is still
   published: a copy without its delivery token, and the retry of the last delivery `max_deliver` allows. `get()`

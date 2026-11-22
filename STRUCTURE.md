@@ -28,6 +28,8 @@ src/
 ├── NatsTransport.php                          # Core transport: send/get/ack/reject/setup/getMessageCount
 ├── NatsTransportFactory.php                   # TransportFactoryInterface - DSN scheme detection + instantiation
 ├── TypeCoercion.php                           # Safe mixed → int/float/string coercion (final, static)
+├── EventListener/
+│   └── AddUnrecoverableFailureStampListener.php # Tells nats mode whether every handler of a failed message failed for good
 ├── Options/
 │   ├── NatsTransportConfiguration.php         # Immutable readonly value object of resolved settings
 │   ├── NatsTransportConfigurationBuilder.php  # Parses DSN + options, validates, builds the NatsClient
@@ -35,7 +37,8 @@ src/
 │   ├── RetryVia.php                            # Enum: COPY | NAK, how a Symfony retry reaches NATS
 │   └── TransportOption.php                     # Enum of every recognized option key
 ├── Stamp/
-│   └── DeduplicationIdStamp.php                # The id JetStream deduplicates a message by (Nats-Msg-Id)
+│   ├── DeduplicationIdStamp.php                # The id JetStream deduplicates a message by (Nats-Msg-Id)
+│   └── UnrecoverableFailureStamp.php           # Whether every handler of a failed delivery failed for good (not sent)
 └── Serializer/
     ├── AbstractEnveloperSerializer.php         # Base encode/decode envelope wrapping + validation
     └── IgbinarySerializer.php                  # Default serializer (igbinary), falls back to PhpSerializer
@@ -68,6 +71,8 @@ tests/
 │   ├── RunTestsWithPausesTest.php              # composer test:unit:paused really stops the tests and keeps PHPUnit's exit code
 │   ├── LoginCombinationsTest.php               # every combination of credentials: refused when built, or through the real client
 │   ├── TestNkeysTest.php                       # the keys tests/Support/TestNkeys.php builds when the tests run
+│   ├── EventListener/
+│   │   └── AddUnrecoverableFailureStampListenerTest.php  # the stamp nats mode reads several handlers' failures by
 │   ├── Options/
 │   │   ├── NatsTransportConfigurationBuilderTest.php  # DSN parsing, validation, option merging
 │   │   ├── SecretsInExceptionsTest.php                 # a failed build leaves no seed or password in its exception
@@ -93,7 +98,8 @@ examples/                                       # Runnable scripts, one per beha
                                                 # handler-failing-during-failover, handler-succeeding-during-failover,
                                                 # stream-placement, delayed-messages, retry-via-nak, retry-via-nak-edge-cases,
                                                 # retry-via-nak-past-max-deliver, retry-via-nak-server-behaviour,
-                                                # retry-via-nak-across-a-restart, retry-via-copy-or-nak
+                                                # retry-via-nak-across-a-restart, retry-via-copy-or-nak,
+                                                # nats-retry-several-handlers
 
 scripts/
 ├── run-examples.sh                             # runs examples/*.php, strict mode for CI
