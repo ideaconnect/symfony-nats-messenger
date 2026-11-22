@@ -2277,6 +2277,49 @@ final class NatsTransportTest extends TestCase
         self::assertSame([], iterator_to_array($transport->get()));
     }
 
+    /**
+     * A pull the server refused because the connection's user may not publish to the consumer's
+     * `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>` fails get() with Symfony's TransportException, naming the stream,
+     * the consumer and the subject the worker needs to publish to, with the client's PermissionViolationException as
+     * its previous one (#130). The worker stops with that error, where the refusal used to end as an empty pull and the
+     * worker looked healthy for ever. It is no failure on the connection: the server answered and kept it open, so the
+     * next operation, an empty pull here, checks nothing.
+     */
+    public function testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndTheNextOperationChecksNothing(): void
+    {
+        $refused = self::refusedPull('test-stream', 'client');
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturnOnConsecutiveCalls(
+            Future::error($refused),
+            Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408)),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $client->expects(self::never())->method('rtt');
+        $client->expects(self::never())->method('disconnect');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+
+        try {
+            iterator_to_array($transport->get());
+            self::fail('expected get() to fail');
+        } catch (TransportException $e) {
+            self::assertSame(
+                'Cannot pull from NATS stream "test-stream", consumer "client". Grant the worker permission to publish to '
+                . '"$JS.API.CONSUMER.MSG.NEXT.test-stream.client".',
+                $e->getMessage(),
+            );
+            self::assertSame(0, $e->getCode());
+            self::assertSame($refused, $e->getPrevious());
+        }
+
+        // The client still reports Open, and no time has passed: a check now could only come from the refused pull.
+        self::assertSame([], iterator_to_array($transport->get()));
+    }
+
     public function testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -4256,6 +4299,69 @@ final class NatsTransportTest extends TestCase
             );
             self::assertSame($limit, $e->getPrevious());
         }
+    }
+
+    /** @return iterable<string, array{bool}> */
+    public static function autoSetupPullsRefusedForLackOfPermission(): iterable
+    {
+        // Provisioned once, for the first use.
+        yield 'the first pull' => [false];
+        // Again after the 409 that sent auto_setup to provision the consumer anew.
+        yield 'the pull after a 409 Consumer Deleted' => [true];
+    }
+
+    /**
+     * With auto_setup, the first pull and the second one after re-provisioning get the same treatment when the server
+     * refuses them for lack of permission (#130): get() fails with the TransportException naming the stream, the
+     * consumer and the subject, the client's exception as its previous one. A refusal is no missing consumer, so it
+     * provisions nothing more.
+     */
+    #[DataProvider('autoSetupPullsRefusedForLackOfPermission')]
+    public function testAutoSetupPullRefusedForLackOfPermissionFailsWithATransportException(bool $afterConsumerDeleted): void
+    {
+        $consumerInfo = new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+        );
+        $refused = self::refusedPull('test-stream', 'client');
+        $pulls = $afterConsumerDeleted
+            ? [Future::error(new JetStreamException('JetStream pull request ended with status 409: Consumer Deleted', 409)), Future::error($refused)]
+            : [Future::error($refused)];
+        $provisionings = $afterConsumerDeleted ? 2 : 1;
+
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly($provisionings))->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly($provisionings))->method('addConsumer')->willReturn(Future::complete($consumerInfo));
+        $jetStream->expects(self::exactly(count($pulls)))->method('fetchBatch')->willReturnOnConsecutiveCalls(...$pulls);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['auto_setup' => true]);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            iterator_to_array($transport->get());
+            self::fail('expected get() to fail');
+        } catch (TransportException $e) {
+            self::assertSame(
+                'Cannot pull from NATS stream "test-stream", consumer "client". Grant the worker permission to publish to '
+                . '"$JS.API.CONSUMER.MSG.NEXT.test-stream.client".',
+                $e->getMessage(),
+            );
+            self::assertSame($refused, $e->getPrevious());
+        }
+    }
+
+    /** The client's refusal of a pull to $stream's $consumer, as it reports one the server refused for lack of permission. */
+    private static function refusedPull(string $stream, string $consumer): PermissionViolationException
+    {
+        $subject = '$JS.API.CONSUMER.MSG.NEXT.' . $stream . '.' . $consumer;
+
+        return new PermissionViolationException(
+            'The server refused the pull to "' . $subject . '": Permissions Violation for Publish to "' . $subject . '".'
+            . ' No message was delivered for it. Grant this connection\'s user permission to publish to "' . $subject . '".',
+            subject: $subject,
+        );
     }
 
     /**
