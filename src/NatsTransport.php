@@ -863,14 +863,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $decoded = self::decodingFailure($encoded, $e);
             }
 
-            $received = $decoded->with(new TransportMessageIdStamp($replyTo));
+            // The stamps go on in one with(), which clones the envelope once for every delivery.
+            $stamps = [new TransportMessageIdStamp($replyTo)];
             if ($this->configuration->retryHandler() === RetryHandler::NATS) {
                 // Only nats mode reads what AddUnrecoverableFailureStampListener says about a failure of the handlers,
                 // so the listener classifies the deliveries marked so, and leaves other receivers' envelopes alone.
-                $received = $received->with(new ReceivedInNatsModeStamp($replyTo));
+                $stamps[] = new ReceivedInNatsModeStamp($replyTo);
             }
 
-            yield $this->withDeliveryCountAsRetryCount($received, $message);
+            yield $this->withDeliveryCountAsRetryCount($decoded->with(...$stamps), $message);
         }
     }
 
