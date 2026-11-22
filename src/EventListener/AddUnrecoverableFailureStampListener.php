@@ -28,8 +28,13 @@ use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
  *
  * Only a delivery a transport in nats mode received is classified: one that carries a {@see ReceivedInNatsModeStamp}
  * whose token is the one in its last TransportMessageIdStamp. The envelopes of other receivers, which nothing reads the
- * stamp of, are left as they are, and so is a copy of a nats-mode delivery stored in another transport, which gives
- * the copy an id of its own.
+ * stamp of, are left as they are, and so is a copy of a nats-mode delivery stored in another transport that gives the
+ * copy an id of its own, as the in-memory transport does, or serializes it, which drops the marker. Symfony leaves that
+ * id to the transport, so a custom transport that stores the envelope as it is and returns it without an id of its own
+ * keeps the marker and the NATS delivery's id on the copy, and a failure of that copy in another worker is classified
+ * too. Nothing but nats mode reads the stamp, and the NATS delivery was settled already; such a transport keeps its
+ * envelopes as they were sent by dropping the non-sendable stamps when it takes one, as Symfony's serializers do, or
+ * by giving each one a TransportMessageIdStamp of its own (README, "Retry Handler Behavior").
  *
  * Priority -101: after Symfony's retry listener (100) and its failure-transport listener (-100) have taken their
  * copies of the envelope. The stamp is not sendable, so a serializer strips it, but a transport without one, such as
@@ -64,7 +69,8 @@ final class AddUnrecoverableFailureStampListener implements EventSubscriberInter
 
     /**
      * Whether a transport in nats mode received this delivery: its marker names the delivery the envelope's last
-     * TransportMessageIdStamp holds, which a copy in another transport replaces with an id of its own.
+     * TransportMessageIdStamp holds, which a copy in another transport loses when that transport gives it an id of its
+     * own.
      */
     private static function wasReceivedInNatsMode(Envelope $envelope): bool
     {

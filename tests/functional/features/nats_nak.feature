@@ -80,9 +80,10 @@ Feature: NATS-native retry via NAK
   # Two handlers of one message: one fails for good (an UnrecoverableMessageHandlingException on every run), the other
   # once (a RuntimeException, then it succeeds). Symfony treats such a failure as unrecoverable only when every handler's
   # is, and nats mode follows that rule (#125): the first delivery is NAKed whichever handler runs first, and the second,
-  # where the unrecoverable failure is the only one left, is TERMed. Up to 5.10.1 nats mode went by the first exception:
-  # with the unrecoverable handler first and max_retries 0 it TERMed the first delivery, and the other handler never ran
-  # again. With max_retries 3 Symfony retries the first failure itself, and the transport NAKs the delivery in place of
+  # where the unrecoverable failure is the only one left, is TERMed. In 5.10.0 and 5.10.1 nats mode went by the first
+  # exception when Symfony did not request a retry: with the unrecoverable handler first and max_retries 0 it TERMed the
+  # first delivery, and the other handler never ran again (earlier releases NAKed every handler failure). With
+  # max_retries 3 Symfony retries the first failure itself, and the transport NAKs the delivery in place of
   # the retry copy, whichever exception comes first (row 22 of #123). The copy it leaves out makes it warn that
   # Symfony's retry strategy is on, once: so the rows with max_retries 3 fail if Symfony's retry stops taking place,
   # and those with 0 if Symfony retries what it should not.

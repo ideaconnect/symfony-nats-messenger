@@ -14,8 +14,12 @@ use Symfony\Component\Messenger\Stamp\NonSendableStampInterface;
  * when the envelope carries it and its token is the one in the envelope's last TransportMessageIdStamp, since only nats
  * mode reads the {@see UnrecoverableFailureStamp}: the envelopes of other receivers (an in-memory or Doctrine
  * transport, a NATS transport in symfony mode) are left as they are. So is a copy of a nats-mode delivery that another
- * transport stores without a serializer, such as an in-memory failure transport: that transport gives the copy a
- * TransportMessageIdStamp of its own, with another id.
+ * transport stores without a serializer, such as an in-memory failure transport, when that transport gives the copy a
+ * TransportMessageIdStamp of its own, with another id, as the in-memory one does. Symfony leaves that id to the
+ * transport: a custom transport that stores the envelope as it is and returns it without an id of its own keeps this
+ * marker and the NATS delivery's id on the copy, whose failure in another worker is then classified too. Such a
+ * transport drops the non-sendable stamps when it takes an envelope, as Symfony's serializers do, or gives it an id of
+ * its own (README, "Retry Handler Behavior").
  *
  * It is not sendable: it describes one delivery, and the serializers strip it.
  */

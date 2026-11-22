@@ -10,9 +10,10 @@
  * once (a RuntimeException, then it succeeds). Symfony wraps both failures in one HandlerFailedException, and treats
  * it as unrecoverable only when every exception in it is: the first delivery is NAKed whichever handler runs first,
  * NATS redelivers the message, and the second delivery, where only the unrecoverable failure is left, is TERMed.
- * JetStream publishes MSG_NAKED and then MSG_TERMINATED for the message. Up to 5.10.1 the transport went by Symfony's
- * ErrorDetailsStamp, which names the first exception only: with the unrecoverable handler first and `max_retries: 0`
- * the first delivery was TERMed, and the other handler never ran again.
+ * JetStream publishes MSG_NAKED and then MSG_TERMINATED for the message. In 5.10.0 and 5.10.1, when Symfony did not
+ * request a retry, the first wrapped exception decided whether the transport sent TERM or NAK, read from Symfony's
+ * ErrorDetailsStamp, which names that one only: with the unrecoverable handler first and `max_retries: 0` the first
+ * delivery was TERMed, and the other handler never ran again. Earlier releases NAKed every handler failure.
  *
  * With `max_retries: 0`, as the README asks for in nats mode, Symfony retries nothing and the worker rejects the
  * failure; with `max_retries: 3` Symfony retries the first failure itself, the transport leaves its copy out and NAKs
