@@ -76,3 +76,47 @@ Feature: NATS-native retry via NAK
     And I wait for messages to be consumed
     Then the message whose __wakeup raised a warning should have been handled once
     And its one delivery should have been acknowledged, not TERMed
+
+  # Two handlers of one message: one fails for good (an UnrecoverableMessageHandlingException on every run), the other
+  # once (a RuntimeException, then it succeeds). Symfony treats such a failure as unrecoverable only when every handler's
+  # is, and nats mode follows that rule (#125): the first delivery is NAKed whichever handler runs first, and the second,
+  # where the unrecoverable failure is the only one left, is TERMed. Up to 5.10.1 nats mode went by the first exception:
+  # with the unrecoverable handler first and max_retries 0 it TERMed the first delivery, and the other handler never ran
+  # again. With max_retries 3 Symfony retries the first failure itself, and the transport NAKs the delivery in place of
+  # the retry copy, whichever exception comes first (row 22 of #123).
+  @nak
+  Scenario Outline: With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left
+    Given NATS server is running
+    And I have a messenger transport configured with NATS retry handler, max deliver of 3 and max retries of <max_retries>, routing the message of two handlers
+    And the NATS stream is set up
+    And the retry state directory is clean
+    And the test files directory is clean
+    And I listen for the advisories of the transport's consumer
+    When I send a message to two handlers, the first failing "<first>" and the second "<second>"
+    And I start a messenger consumer that stops after 2 deliveries
+    And I wait for the consumer to finish or timeout
+    Then the transport's consumer should have published "MSG_NAKED, MSG_TERMINATED" for stream sequence 1
+    And both handlers should have run 2 times
+    And the handler that fails once should have succeeded on its second run
+
+    Examples:
+      | first    | second   | max_retries |
+      | for good | once     | 0           |
+      | once     | for good | 0           |
+      | for good | once     | 3           |
+      | once     | for good | 3           |
+
+  # When every handler fails for good, the failure is unrecoverable, and the first delivery is TERMed.
+  @nak
+  Scenario: With two handlers that both fail for good, the first delivery is TERMed
+    Given NATS server is running
+    And I have a messenger transport configured with NATS retry handler, max deliver of 3 and max retries of 0, routing the message of two handlers
+    And the NATS stream is set up
+    And the retry state directory is clean
+    And the test files directory is clean
+    And I listen for the advisories of the transport's consumer
+    When I send a message to two handlers, the first failing "for good" and the second "for good"
+    And I start a messenger consumer that stops after 1 delivery
+    And I wait for the consumer to finish or timeout
+    Then the transport's consumer should have published "MSG_TERMINATED" for stream sequence 1
+    And both handlers should have run 1 time
