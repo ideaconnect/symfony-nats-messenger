@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger;
 
+use IDCT\NatsMessenger\EventListener\AddUnrecoverableFailureStampListener;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
@@ -20,7 +21,9 @@ use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
  * {@see IgbinarySerializer}, which a transport uses only when its `serializer:` key names it. Registering the
  * serializer does not select it. The factory gets the application's `logger` service when there is one, so the
  * NATS client's lifecycle and errors, and the transport's own warning about Symfony's retry strategy in nats mode,
- * reach the application's log under Messenger's channel.
+ * reach the application's log under Messenger's channel. It also registers
+ * {@see AddUnrecoverableFailureStampListener}, tagged `kernel.event_subscriber`, which tells a transport in nats mode
+ * whether every handler of a failed message failed for good.
  *
  * Each service has one id, its class name. Applications write that id in their configuration, and an entry an
  * application defines under it, as it had to before this bundle, replaces the bundle's. The serializer must not
@@ -51,5 +54,9 @@ final class IDCTNatsMessengerBundle extends AbstractBundle
 
         // Under this one id only, see the class comment.
         $services->set(IgbinarySerializer::class);
+
+        // Tells nats mode whether every handler of a failed message failed for good, by Symfony's rule (#125).
+        $services->set(AddUnrecoverableFailureStampListener::class)
+            ->tag('kernel.event_subscriber');
     }
 }

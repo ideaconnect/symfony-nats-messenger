@@ -12,6 +12,7 @@ use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\RetryHandler;
+use IDCT\NatsMessenger\Options\RetryVia;
 use IDCT\NatsMessenger\Options\StreamCompression;
 use IDCT\NatsMessenger\Options\TransportOption;
 use IDCT\NatsMessenger\Tests\Support\PhpProcess;
@@ -1234,6 +1235,76 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     }
 
     /**
+     * An option the transport does not know is refused, with the closest one when one is near (5.10.0). Up to 5.9.x it
+     * was ignored without a word, and the default stayed in place.
+     *
+     * @param array<array-key, mixed> $options
+     */
+    #[DataProvider('unknownOptions')]
+    public function testBuildRefusesAnUnknownOption(string $dsn, array $options, string $expected): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage($expected);
+
+        (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+    }
+
+    /**
+     * @return iterable<string, array{string, array<array-key, mixed>, string}>
+     */
+    public static function unknownOptions(): iterable
+    {
+        $none = ' See "Configuration Options" in the README for the options it takes.';
+
+        yield 'a letter more, in the options' => [self::VALID_DSN, ['max_delivers' => 3], "Unknown option 'max_delivers' in the options of the NATS transport. Did you mean 'max_deliver'?"];
+        yield 'a letter more, in the DSN query' => [self::VALID_DSN . '?retry_handeler=nats', [], "Unknown option 'retry_handeler' in the DSN query of the NATS transport. Did you mean 'retry_handler'?"];
+        yield 'two letters swapped' => [self::VALID_DSN . '?bacthing=5', [], "Unknown option 'bacthing' in the DSN query of the NATS transport. Did you mean 'batching'?"];
+        yield 'in capitals' => [self::VALID_DSN . '?RETRY_HANDLER=nats', [], "Unknown option 'RETRY_HANDLER' in the DSN query of the NATS transport. Did you mean 'retry_handler'?"];
+        yield 'without the word before it' => [self::VALID_DSN . '?retention=interest', [], "Unknown option 'retention' in the DSN query of the NATS transport. Did you mean 'stream_retention'?"];
+        yield 'without the word after it' => [self::VALID_DSN, ['tls_peer' => 'nats.internal'], "Unknown option 'tls_peer' in the options of the NATS transport. Did you mean 'tls_peer_name'?"];
+        yield 'the nearest of several' => [self::VALID_DSN, ['stream_max_message' => 5], "Unknown option 'stream_max_message' in the options of the NATS transport. Did you mean 'stream_max_messages'?"];
+        yield 'nothing near' => [self::VALID_DSN, ['colour' => 'blue'], "Unknown option 'colour' in the options of the NATS transport." . $none];
+        yield 'three letters more than a short name' => [self::VALID_DSN, ['tokenxyz' => 'x'], "Unknown option 'tokenxyz' in the options of the NATS transport." . $none];
+        yield 'a list entry' => [self::VALID_DSN, ['batching' => 5, 7 => 'x'], "Unknown option '7' in the options of the NATS transport." . $none];
+        yield 'after a known option in the query' => [self::VALID_DSN . '?batching=5&max_delivers=3', [], "Unknown option 'max_delivers' in the DSN query of the NATS transport. Did you mean 'max_deliver'?"];
+        yield 'with no value in the query' => [self::VALID_DSN . '?scheduled', [], "Unknown option 'scheduled' in the DSN query of the NATS transport."];
+        yield 'two letters swapped in a short name' => [self::VALID_DSN, ['bakcoff' => [1]], "Unknown option 'bakcoff' in the options of the NATS transport. Did you mean 'backoff'?"];
+        yield 'a quarter of a long name changed' => [self::VALID_DSN . '?max_recon_attempt=3', [], "Unknown option 'max_recon_attempt' in the DSN query of the NATS transport. Did you mean 'max_reconnect_attempts'?"];
+        yield 'more than a quarter of a long name changed' => [self::VALID_DSN, ['stream_max_msg_per_subj' => 5], "Unknown option 'stream_max_msg_per_subj' in the options of the NATS transport." . $none];
+        yield 'the start of a name, not up to an underscore' => [self::VALID_DSN . '?sched=1', [], "Unknown option 'sched' in the DSN query of the NATS transport." . $none];
+        yield 'the end of a name, not from an underscore' => [self::VALID_DSN, ['eplicas' => 3], "Unknown option 'eplicas' in the options of the NATS transport." . $none];
+        yield 'equally near two options, the first of them' => [self::VALID_DSN . '?ack=1', [], "Unknown option 'ack' in the DSN query of the NATS transport. Did you mean 'ack_wait'?"];
+        yield 'after a parameter with no name' => [self::VALID_DSN . '?=x&max_delivers=3', [], "Unknown option 'max_delivers' in the DSN query of the NATS transport. Did you mean 'max_deliver'?"];
+        yield 'a number as the name in the query' => [self::VALID_DSN . '?7=x', [], "Unknown option '7' in the DSN query of the NATS transport." . $none];
+    }
+
+    /**
+     * What Symfony adds to the options, and what parse_str() makes nothing of, are accepted.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('queriesAndOptionsWithNothingUnknown')]
+    public function testBuildAcceptsWhatNamesNoUnknownOption(string $dsn, array $options): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+
+        self::assertSame(5, $configuration->batching());
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function queriesAndOptionsWithNothingUnknown(): iterable
+    {
+        yield 'transport_name, which FrameworkBundle adds' => [self::VALID_DSN, ['batching' => 5, 'transport_name' => 'async']];
+        yield 'transport_name in the query' => [self::VALID_DSN . '?batching=5&transport_name=async', []];
+        yield 'empty parameters' => [self::VALID_DSN . '?&batching=5&&', []];
+        yield 'a parameter with no name' => [self::VALID_DSN . '?=x&batching=5', []];
+        yield 'a list in the query' => [self::VALID_DSN . '?batching=5&backoff[]=1&backoff[]=2', []];
+        yield 'a known option after a credential' => [self::VALID_DSN . '?token=abc&batching=5', []];
+    }
+
+    /**
      * Off unless asked for, from the options or from the DSN query (#53).
      */
     public function testDeduplicateIsOffByDefaultAndCanBeEnabled(): void
@@ -1688,6 +1759,12 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
             'nats-jetstream://localhost/audit-stream/audit-topic',
             'audit-stream',
             'audit-topic',
+        ];
+
+        yield 'README: retry_via nak' => [
+            'nats-jetstream://localhost:4222/my-stream/my-topic?retry_via=nak',
+            'my-stream',
+            'my-topic',
         ];
 
         yield 'README: scheduled messages DSN' => [
@@ -2650,5 +2727,87 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'list with an integer' => [['a.b', 5]];
         yield 'boolean' => [true];
         yield 'integer' => [5];
+    }
+
+    public function testRetryViaIsCopyUnlessSetToNak(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+
+        self::assertSame(RetryVia::COPY, $builder->build(self::VALID_DSN, [])->retryVia());
+        self::assertSame(RetryVia::COPY, $builder->build(self::VALID_DSN, ['retry_via' => 'copy'])->retryVia());
+        self::assertSame(RetryVia::NAK, $builder->build(self::VALID_DSN, ['retry_via' => 'nak'])->retryVia());
+        self::assertSame(RetryVia::NAK, $builder->build(self::VALID_DSN . '?retry_via=nak', [])->retryVia());
+        // The transport's options win over the DSN's query, as for every option.
+        self::assertSame(RetryVia::COPY, $builder->build(self::VALID_DSN . '?retry_via=nak', ['retry_via' => 'copy'])->retryVia());
+        self::assertNull($builder->build(self::VALID_DSN, ['retry_handler' => 'nats'])->retryVia());
+    }
+
+    public function testBuildWithInvalidRetryViaThrowsException(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("Invalid retry_via option 'nack'. Allowed values are 'copy' or 'nak'.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_via' => 'nack']);
+    }
+
+    /**
+     * Any value is refused in nats mode, 'copy' included: NATS redelivers every failed message there, so there is no
+     * Symfony retry for the option to route, and 'copy' would read as nats mode retrying by copy.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('retryViaValues')]
+    public function testBuildRefusesRetryViaInNatsMode(string $dsn, array $options): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("The retry_via option needs retry_handler 'symfony': with retry_handler 'nats', NATS redelivers every failed message and Symfony's retry strategy has no effect.");
+
+        (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function retryViaValues(): iterable
+    {
+        yield 'copy' => [self::VALID_DSN, ['retry_handler' => 'nats', 'retry_via' => 'copy']];
+        yield 'nak' => [self::VALID_DSN, ['retry_handler' => 'nats', 'retry_via' => 'nak']];
+        yield 'nak in the DSN' => [self::VALID_DSN . '?retry_handler=nats&retry_via=nak', []];
+    }
+
+    /**
+     * With retry_via 'nak' the NAK carries Symfony's delay, so a positive nak_delay, which only nats mode reads, is
+     * refused; 0, the default, is not.
+     */
+    public function testBuildRefusesAPositiveNakDelayWithNakRetries(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+        self::assertSame(RetryVia::NAK, $builder->build(self::VALID_DSN, ['retry_via' => 'nak', 'nak_delay' => 0])->retryVia());
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("The nak_delay option has no effect with retry_via 'nak': each NAK carries the delay Symfony's retry strategy computed. Set the delay in the retry strategy (delay, multiplier, max_delay) instead.");
+
+        $builder->build(self::VALID_DSN . '?retry_via=nak&nak_delay=0.5', []);
+    }
+
+    public function testBuildRefusesBackoffWithNakRetries(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("The backoff option cannot be combined with retry_via 'nak': NATS would lengthen each NAK retry by the difference between the backoff's current and first step and would replace ack_wait with the first step, so the retries would not wait the delays Symfony's retry strategy computed.");
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['retry_via' => 'nak', 'backoff' => [1, 2], 'max_deliver' => 5]);
+    }
+
+    /**
+     * Without retry_via, or with 'copy', nak_delay and backoff are accepted as before: refusing them there would break
+     * configurations that work today.
+     */
+    public function testRetryViaCopyStillAcceptsNakDelayAndBackoff(): void
+    {
+        $builder = new NatsTransportConfigurationBuilder();
+        $options = ['nak_delay' => 5, 'backoff' => [1, 2], 'max_deliver' => 5];
+
+        self::assertSame(RetryVia::COPY, $builder->build(self::VALID_DSN, $options)->retryVia());
+        self::assertSame([1000, 2000], $builder->build(self::VALID_DSN, $options + ['retry_via' => 'copy'])->backoffMs());
     }
 }

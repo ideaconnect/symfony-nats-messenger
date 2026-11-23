@@ -413,6 +413,22 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns how a retry that Symfony's retry strategy decides on reaches NATS ({@see RetryVia}).
+     *
+     * {@see RetryVia::COPY} when retry_via is not set. Null with {@see RetryHandler::NATS}, where Symfony's retry
+     * strategy has no effect and the builder refuses the option.
+     */
+    public function retryVia(): ?RetryVia
+    {
+        if ($this->natsRetryHandlerEnabled) {
+            return null;
+        }
+
+        return RetryVia::tryFrom(TypeCoercion::stringValue($this->options[TransportOption::RETRY_VIA->value] ?? null))
+            ?? RetryVia::COPY;
+    }
+
+    /**
      * Returns true when retry handling is delegated to NATS (NAK mode).
      */
     public function isNatsRetryHandlerEnabled(): bool

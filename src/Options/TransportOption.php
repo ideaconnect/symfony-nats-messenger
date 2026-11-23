@@ -21,7 +21,7 @@ namespace IDCT\NatsMessenger\Options;
  *                    STREAM_ALLOW_ROLLUP_HEADERS
  * **Stream Placement:** STREAM_PLACEMENT_CLUSTER, STREAM_PLACEMENT_TAGS
  * **Subjects:** ADDITIONAL_SUBJECTS
- * **Retry Strategy:** RETRY_HANDLER, NAK_DELAY, ACK_WAIT, MAX_DELIVER, BACKOFF
+ * **Retry Strategy:** RETRY_HANDLER, RETRY_VIA, NAK_DELAY, ACK_WAIT, MAX_DELIVER, BACKOFF
  * **Acknowledgement:** ACK_SYNC
  * **Deduplication:** DEDUPLICATE
  * **Scheduling:** SCHEDULED_MESSAGES
@@ -65,6 +65,7 @@ enum TransportOption: string
     case STREAM_PLACEMENT_TAGS = 'stream_placement_tags';
     case ADDITIONAL_SUBJECTS = 'additional_subjects';
     case RETRY_HANDLER = 'retry_handler';
+    case RETRY_VIA = 'retry_via';
     case NAK_DELAY = 'nak_delay';
     case ACK_WAIT = 'ack_wait';
     case MAX_DELIVER = 'max_deliver';
@@ -89,4 +90,26 @@ enum TransportOption: string
     case NKEY_SEED = 'nkey_seed';
     case USERNAME = 'username';
     case PASSWORD = 'password';
+
+    /**
+     * Whether the option holds a credential: a value no error repeats, and that an "&" not encoded as "%26" would cut
+     * into the name of another option in the DSN query.
+     */
+    public function isCredential(): bool
+    {
+        return match ($this) {
+            self::TLS_KEY_PASSPHRASE, self::TOKEN, self::JWT, self::NKEY, self::NKEY_SEED, self::USERNAME, self::PASSWORD => true,
+            default => false,
+        };
+    }
+
+    /**
+     * The options that hold a credential ({@see isCredential()}), in the order of the cases.
+     *
+     * @return list<self>
+     */
+    public static function credentials(): array
+    {
+        return array_values(array_filter(self::cases(), static fn (self $option): bool => $option->isCredential()));
+    }
 }

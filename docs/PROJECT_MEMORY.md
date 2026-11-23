@@ -37,6 +37,7 @@ point for future sessions, not a replacement for source or current issue status.
 | [docs/TESTS.md](TESTS.md) | Feature-to-test map, examples, mutation testing caveats |
 | [docs/CHANGELOG.md](CHANGELOG.md) | Releases and reasons for behavior changes |
 | [docs/PRs/](PRs/) | Notes on previously adapted PRs |
+| [docs/symfony_retry_via.md](symfony_retry_via.md) | Reference for `retry_via`: terms, the retry setups delivery by delivery, what the server does with a NAK |
 | Client `AGENTS.md`, `README.md`, `TESTS.md`, `CHANGELOG.md` | Upstream workflow, APIs, coverage and changes |
 
 Prefer source and manifests when documentation disagrees. For example, this transport now also
@@ -150,8 +151,16 @@ apply only with the option on.
 - **Delivery identity:** outgoing `TransportMessageIdStamp` is a UUID; incoming it holds the
   JetStream reply/ACK subject. ACK, reject and keepalive depend on that incoming token. Messages
   without it are skipped; empty payloads are TERMed to avoid an endless poison-message loop.
-  Decode failures reject according to retry mode and preserve the original decode exception
-  even if rejection fails. Received headers with integer array keys are omitted before decode.
+  A decode failure (a `MessageDecodingFailedException`) is handled as Symfony's own transports
+  handle it (5.10.0): from Symfony Messenger 8.1 on it becomes a decoding-failure message; before
+  8.1 `get()` TERMs it and throws. Any other serializer exception propagates unsettled. Nats mode
+  TERMs a decoding-failure message when it is settled. Received headers with integer array keys are omitted before decode.
+  The serializers make a decode failure of the decoder's own warnings only: the outermost `igbinary_unserialize()` or
+  `unserialize()` call's, and those of code running on the serializer object. A warning of code the parser runs
+  (`__wakeup()`, `__unserialize()`, an autoloader) or of a codec helper of another object goes to the error handler
+  there was, whose exception propagates as it is (#122; 5.10.0 converted them all and TERMed such messages). A file
+  and line check of `deserialize()` was tried and rejected: an override calling `parent::deserialize()` and a closure
+  autoloader declared in `deserialize()` defeat it.
 - **Retry ownership:** default `retry_handler=symfony` sends TERM; Symfony owns retries and the
   failure transport. `retry_handler=nats` sends NAK, optionally delayed; `send()` suppresses
   Symfony's retry copy when it carries `ReceivedStamp` and a positive retry count. NATS owns
@@ -163,7 +172,40 @@ apply only with the option on.
   delivery; an ACK there lost the message (#90). Any code path that settles a received message
   must keep both Messenger lines in mind. The first copy left out logs a warning, once per transport object,
   that Symfony's retry strategy is on (#94), through the logger the transport now keeps besides handing it to
-  the client; it parses no configuration and cannot fire with `max_retries: 0`.
+  the client; it parses no configuration, and with `max_retries: 0` it fires only for a
+  `RecoverableExceptionInterface`, which Symfony retries whatever `max_retries` says.
+  In symfony mode, `retry_via: nak` (5.9.0, #113) uses the same machinery for Symfony's own retries: the copy is
+  left out, its `DelayStamp` delay is remembered with the delivery token, and the worker's `ack()` or `reject()`
+  NAKs the delivery with it. `get()` then sets the retry count to the count the message carries plus
+  `numDelivered - 1`. A retry no NAK can carry is published instead: a copy without its delivery token, and the
+  retry of the last delivery `max_deliver` allows, after which NATS redelivers nothing. A NAK with a delay holds a
+  `max_ack_pending` slot, survives a server restart, and gets `backoff[n] - backoff[0]` added by the server, which is
+  why the builder refuses `backoff` and a positive `nak_delay` with it (`docs/symfony_retry_via.md` has the
+  measurements). NATS 2.9.25 was seen to report a redelivery as delivery 1 when the NAK's delay equals the pull's
+  expiry, about 1 message in 5: the retry count is then one too low once.
+- **Several handlers in nats mode (#125):** a `HandlerFailedException` is TERMed only when every exception it wraps
+  directly is unrecoverable, as Symfony's retry listener decides; a mix is NAKed in either order. `reject()` sees only
+  the envelope, so the bundle's `AddUnrecoverableFailureStampListener` adds an `UnrecoverableFailureStamp` (`true` or
+  `false`, not sendable) at priority -101, after Symfony's retry (100) and failure-transport (-100) listeners took their
+  copies: at 0 an `InMemoryTransport` without a serializer kept it on its failure copy. Without the stamp the
+  `ErrorDetailsStamp`, which names the first exception only, decides, as long as Symfony requested no retry; a retry
+  Symfony requested is NAKed in place of its copy whatever the first exception. The listener classifies only a delivery
+  `get()` marked in nats mode with a `ReceivedInNatsModeStamp` whose token is the envelope's last
+  `TransportMessageIdStamp`: other receivers' envelopes stay as they are, and so does an in-memory copy of a nats-mode
+  delivery, which keeps the marker but gets an id of its own. A custom transport that stores the envelope as it is and
+  returns it without an id of its own (Symfony makes the id optional) keeps both, so a failure of that copy in another
+  worker gets the stamp too; harmless to NATS, which settled the delivery already, and the README says such a
+  transport drops non-sendable stamps at the handoff or assigns its own id. In a test, two anonymous closures for one
+  message are one handler to Symfony: `HandlersLocator` skips a handler whose name (`Closure`) it has seen, so give
+  each a `HandlerDescriptor` with its own `alias`. A test of the retry path proves that Symfony's retry ran (the example
+  reads `willRetry()` after the retry listener, Behat counts the transport's warning that the retry strategy is on):
+  the advisories and runs come out the same when it does not.
+- **Scheduled messages need a server that has them:** NATS before 2.12 ignores the stream's `allow_msg_schedules`
+  setting without rejecting it, so up to 5.8.1 `setup()` succeeded there and every delayed message was stored on
+  `<topic>.delayed.<uuid>` and never delivered (measured on 2.9.25, 2.10.29 and 2.11.17). The client's
+  `UnsupportedFeatureException` only comes from a server that rejects the setting, so the transport reads
+  `serverInfo()->version` once connected (`schedulesUnsupportedByTheServer()`) and refuses in `setup()` and in the
+  send of a delayed message. A server that gives no version, or one that cannot be read, is let through.
 - **Keepalive:** Symfony invokes it from SIGALRM. It queues `inProgress()->ignore()` without
   awaiting, pinging, or connecting, because a signal handler cannot switch fibers (#48).
   The event loop must run for the queued write to leave. Plain blocking PHP work therefore
@@ -261,6 +303,14 @@ address only. Examples that stop or restart a server with docker start it again.
 server (`servers: [$server]`), so a worker started while that server is down cannot connect. CI runs PHP 8.2 with the lowest
 allowed client and PHP 8.5 with latest, verifies root/app versions match, and also tests NATS 2.10
 without delayed scenarios. README advertises NATS ^2.9; the oldest CI image is actually 2.10.
+The PHP 8.2 leg also lowers `symfony/messenger`: to 7.4.0 for the unit tests, the lowest the Symfony 7.4 packages
+installed there accept, and to 7.4.21 in the functional app, its own floor. Both reject a message they sent for
+retry, where the PHP 8.5 leg's release acknowledges it, so each leg runs one of the transport's two settle paths,
+and `scripts/check-messenger-rejects-a-retry.php` fails the leg if that stops being so. Before 5.9.0 both legs
+installed a release that acknowledges. The composer floors themselves (Messenger 7.3) are not run by CI: lowering
+FrameworkBundle too passes the unit suite on 7.3.0, but PHPStan then reports two errors about the header types an
+older `SerializerInterface` declares. To run a release by hand, copy the checkout without `vendor/` and
+`composer update --with symfony/messenger:7.4.21`.
 Measured on it (2026-11-01, nats 2.10.29): right after a stream update from 2 replicas to 1, consumer requests
 can get err_code 10008 "JetStream system temporarily unavailable", "stream not found" or no answer for a few ms
 while NATS moves the consumer; `setup()` asks again on 10008 and 10059 (up to 5 s) and once more after no answer.
@@ -531,3 +581,64 @@ These are posted recommendations; the tests and proposed issue-summary edits are
 - CI on the tree of the #114 merge (run 43913469827, head `5e02bad`): PHPStan clean; 1068 tests, 3122 assertions, also
   stopped at random moments; coverage 99.80 % (1023/1025); Infection killed 1179 of 1197 mutants, with the 18 survivors
   `docs/TESTS.md` lists; Behat 94 of 94 on each PHP job and 90 of 90 on NATS 2.10.29; 14 of 14 examples in each job.
+
+## Dated snapshot: 2026-11-18
+
+- **5.9.0, a minor release,** ships `retry_via: nak` (PR #113 by Petar Fedorovsky, adapted and landed through #118 with the
+  contributor's two commits unchanged; it closes #109), the refusal of `scheduled_messages` on a server before NATS 2.12, and
+  `symfony/messenger` `^7.3`. The changelog cut is on the same branch, and the tag is on its merge commit.
+  `docs/PRs/PR-113-symfony-retry-via.md` says what was changed against the proposal, and why.
+- Open transport issues: #104 (`.creds` files and rotation) and #105 (external signers); #110, #111 and #112, the three
+  blockers the review of PR #100 found; #117 (`nak_delay` is accepted in symfony mode, where it has no effect). The one open
+  PR is #100 (per-message subjects), by a contributor. It adds changelog items under `[Unreleased]`, which this cut emptied
+  again: when it next merges `main`, check that git did not move them into `[5.9.0]` without a conflict marker.
+- Known and not filed: the composer floors are not run by CI (the CI notes above), and NATS 2.9's delivery count is
+  documented, not worked around (`docs/symfony_retry_via.md`). As before, an unanswered PING leaves a cycle through amphp's
+  `TimeoutCancellation`.
+- The checks before the merge, on PHP 8.5.11 with client 2.29.0 and Symfony Messenger 8.1.11: PHPStan clean; 1143 tests,
+  3341 assertions, also stopped at random moments; coverage 99.82 % (1114/1116); Infection killed
+  1298 of 1317 mutants, with the 19 survivors `docs/TESTS.md` lists; Behat 97 of 97 on NATS 2.14.2 and
+  93 of 93 on NATS 2.10.29 without the scheduled scenarios; 21 of 21 examples on each.
+  CI on `9a7d1d4` (run 44318707618), before the docs-only commits that follow it, agrees on each count: PHP 8.2 with client
+  2.29.0 and Symfony Messenger 7.4.0 (7.4.21 in the functional app), PHP 8.5 with 8.1.11, and NATS 2.10.29 with 7.4.23.
+
+## Dated snapshot: 2026-11-21
+
+- **5.9.1, a patch release** (#120), fixes three bugs of 5.9.0 the review of #119 found: with `retry_via: nak` the
+  consumer's own `max_deliver` decides the last delivery (the option's lost a retry when they differed); `scheduled_messages`
+  is refused on an interest stream nothing has interest in the delayed subjects of, before `setup()` writes the stream; nats
+  mode TERMs a message that cannot be decoded. It requires client `^2.30` (2.30.0, released the same day from
+  php-nats-jetstream-client#255: a request refused for lack of permission fails at once with `PermissionViolationException`).
+  Only that refusal latches the transport's reads of the consumer and the stream; a failure of the connection propagates.
+- **#119 (`give_up_via: nak`) is declined,** with a comment; `docs/PRs/PR-113-symfony-retry-via.md` records why under
+  "Rejected alternatives". 5.10.0 follows with the rest of that review (two plain retry modes, decode failures as Symfony's own
+  transports handle them, unknown options refused, new warnings).
+- Open transport issues: #104, #105, #110, #111, #112, #117. Open PR by a contributor: #100. The nats-server issue about an
+  interest stream deleting a message stopped at `max_deliver` is drafted and held back (Bartosz, 2026-11-21).
+- The checks before the merge, on PHP 8.5 with client 2.30.0 and Symfony Messenger 8.1.11 (8.1.9 in the functional app):
+  PHPStan clean; 1186 tests, also stopped at random moments; coverage 99.76 % (1248/1251); Infection killed 1466 of 1486
+  mutants, with the 20 survivors `docs/TESTS.md` lists; Behat 102 of 102; 21 of 21 examples.
+- **5.10.0, a minor release,** follows the same day: the two retry modes stated plainly, nats mode TERMing an
+  unrecoverable failure, decode failures handled as Symfony's Doctrine, Redis and AMQP receivers handle them (Bartosz's
+  rule: a logger never decides whether to throw), unknown options refused, and the two warnings. Its checks: PHPStan clean
+  on Symfony Messenger 8.1.11 and 7.4.21; 1289 tests, also stopped at random moments; coverage 99.78 % (1382/1385);
+  Infection killed 1706 of 1730 mutants, with the 24 survivors `docs/TESTS.md` lists; Behat 105 of 105; 22 of 22
+  examples. The retry matrix, 6 modes by 4 failure scenarios on 8 kinds of stream (a standalone 2.15.2, clusters of
+  2.15.2 and 2.11.17) and on Messenger 7.4.21, gave the expected outcome in all 216 cells.
+- **#131, after 5.10.0:** with `reconnect: true` and a user who may pull but not ask for consumer info, client 2.30.0's
+  `diagnoseNoResponders()` returned only once the reconnect was over, as its watch after the refused question awaited a
+  read that ran the reconnect, or the lame duck failover, itself: `get()` stayed in it for the whole outage, deaf to
+  `messenger:stop-workers` and SIGTERM. Fixed in the client first (2.30.1, php-nats-jetstream-client#257 with #256),
+  then required here as `^2.30.1` in both manifests. `GracefulStopPullTest` drives it with the real client: the scripted
+  server refuses the question (`$refuseConsumerInfo`) and goes away on the watch's next read (`$afterTheRefusal`), and
+  the dial is held until the test has seen `get()` return while the client is `Connecting`. Hold a recovery for such a
+  test, never time it, and give request_timeout far more than the scripted connection's 10 s dial limit, so that a
+  diagnosis that waits for its deadline fails too.
+- **5.10.1, a patch release,** ships #122 and #131 the same day, on client 2.30.1. Its checks, on PR #133's CI: PHPStan
+  clean; 1334 tests on PHP 8.5 with client 2.30.1 and Symfony Messenger 8.1.11, also stopped at random moments, and 1333
+  on PHP 8.2 with the lowest releases (client 2.30.1, Messenger 7.4.0); coverage 99.79 % (1402/1405); Infection killed
+  1740 of 1765 mutants, the 25 survivors `docs/TESTS.md` lists; Behat 107 of 107 on both legs and 100 of 100 on
+  nats-server 2.10.29; 22 of 22 examples. A real-server probe (nats-server 2.15.2 and 2.12.15, a user denied
+  `$JS.API.CONSUMER.INFO.>`, the server killed during the watch): `get()` returned after 1.18 s, the client still
+  Connecting, where client 2.30.0 took 7.21 s, until after the server was back.
+

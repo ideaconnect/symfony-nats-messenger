@@ -14,6 +14,12 @@ use Symfony\Component\Process\Exception\ProcessFailedException;
 use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
+use IDCT\NATS\Core\SubscriptionQueue;
+use IDCT\NATS\JetStream\Configuration\ConsumerConfiguration;
+use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
+use IDCT\NATS\JetStream\Enum\AckPolicy;
+use IDCT\NATS\JetStream\Enum\DeliverPolicy;
+use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 
@@ -59,6 +65,8 @@ class NatsSetupContext implements Context
     private ?Process $consumerProcess = null;
     /** @var Process[] */
     private array $consumerProcesses = [];
+    /** @var list<array{'exit code': int|null, 'error output': string}> How each consumer the last When step ran ended. */
+    private array $consumerRuns = [];
     private string $testStreamName = 'stream';
     private string $testSubject = 'test.messages';
     private ?string $secondaryTestSubject = null;
@@ -75,6 +83,11 @@ class NatsSetupContext implements Context
     /** @var list<string> The variables of the commands' environment this scenario set. */
     private array $commandEnvironment = [];
     private ?string $seedFile = null;
+    /** The connection that listens for the MSG_TERMINATED advisories of the transport's consumer, while it does. */
+    private ?NatsClient $advisoryClient = null;
+    private ?SubscriptionQueue $terminations = null;
+    /** Every advisory of the transport's consumer, on $advisoryClient, while a scenario listens for them. */
+    private ?SubscriptionQueue $consumerAdvisories = null;
     private int $messagesSent = 0;
     private int $messagesConsumed = 0;
     private string $testFilesDir;
@@ -243,6 +256,20 @@ class NatsSetupContext implements Context
         ];
 
         $this->setupProcess = new Process($command, __DIR__ . '/../..');
+        $this->setupProcess->run();
+    }
+
+    /**
+     * The setup command with -v: Symfony's default logger writes only errors to stderr at the normal verbosity, so a
+     * warning of setup() shows only from -v on, as the consumer steps run with -vv.
+     */
+    #[When('I run the messenger setup command with its warnings shown')]
+    public function iRunTheMessengerSetupCommandWithItsWarningsShown(): void
+    {
+        $this->setupProcess = new Process(
+            ['php', 'bin/console', 'messenger:setup-transports', 'test_transport', '--no-interaction', '--env=test', '-v'],
+            __DIR__ . '/../..'
+        );
         $this->setupProcess->run();
     }
 
@@ -840,7 +867,7 @@ class NatsSetupContext implements Context
     public function iHaveAMessengerTransportConfiguredWithNatsRetryHandler(): void
     {
         $configContent = sprintf(
-            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: 0\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n            'App\\Async\\WarningOnWakeupMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             self::IGBINARY_SERIALIZER
@@ -908,6 +935,219 @@ class NatsSetupContext implements Context
         $this->resetSymfonyCache();
     }
 
+    /**
+     * Publishes to the transport's subject a payload no serializer of this transport decodes, as a producer with
+     * another serializer, or a corrupted message, leaves it.
+     */
+    #[Given('a message the transport cannot decode is published to its subject')]
+    public function aMessageTheTransportCannotDecodeIsPublishedToItsSubject(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            // igbinary, but no envelope: what another application's publisher could put on the subject.
+            $client->jetStream()->publish($this->testSubject, (string) igbinary_serialize('not an envelope'))->await();
+        } finally {
+            $client->disconnect()->await();
+        }
+    }
+
+    /**
+     * Two workers, one after the other, each for 3 s, as a supervisor starts a new one after an exit. How each one
+     * ended is kept for {@see onlyAConsumerBeforeSymfonyMessenger81ShouldHaveStoppedOnTheDecodeError()}.
+     */
+    #[When('two messenger consumers run one after the other for :seconds seconds each')]
+    public function twoMessengerConsumersRunOneAfterTheOtherForSecondsEach(int $seconds): void
+    {
+        $this->consumerRuns = [];
+        foreach ([1, 2] as $worker) {
+            $process = new Process(
+                ['php', 'bin/console', 'messenger:consume', 'test_transport', '--time-limit=' . $seconds, '--sleep=0.1', '--env=test'],
+                __DIR__ . '/../..'
+            );
+            $process->setTimeout($seconds + 30);
+            $process->run();
+            $this->consumerRuns[] = ['exit code' => $process->getExitCode(), 'error output' => $process->getErrorOutput()];
+        }
+    }
+
+    /**
+     * How a message that cannot be decoded ends the workers, as with Symfony's own transports: from Symfony Messenger
+     * 8.1 on it goes to the worker as the decoding failure, and both run to their time limit; before 8.1 the first
+     * worker stops on the decode error, after the transport TERMed the message, and the second, which does not get
+     * it, runs to its time limit. In nats mode up to 5.9.0 every worker stopped, as NATS brought the NAKed message back.
+     */
+    #[Then('only a consumer before Symfony Messenger 8.1 should have stopped, on the decode error')]
+    public function onlyAConsumerBeforeSymfonyMessenger81ShouldHaveStoppedOnTheDecodeError(): void
+    {
+        if (count($this->consumerRuns) !== 2) {
+            throw new \RuntimeException(sprintf('Expected two consumer runs, got %d', count($this->consumerRuns)));
+        }
+
+        $passesOn = (new \ReflectionClass(\Symfony\Component\Messenger\Exception\MessageDecodingFailedException::class))->hasMethod('wrap');
+        [$first, $second] = $this->consumerRuns;
+        $firstStopped = $first['exit code'] !== 0 && str_contains($first['error output'], 'not a valid Symfony Messenger Envelope');
+        if ($passesOn ? $first['exit code'] !== 0 : !$firstStopped) {
+            throw new \RuntimeException(sprintf(
+                'Expected the first consumer to %s; it exited with %s: %s',
+                $passesOn ? 'run to its time limit (Symfony Messenger 8.1 or later)' : 'stop on the decode error (Symfony Messenger before 8.1)',
+                var_export($first['exit code'], true),
+                trim($first['error output']),
+            ));
+        }
+        if ($second['exit code'] !== 0) {
+            throw new \RuntimeException(sprintf('Expected the second consumer to run to its time limit; it exited with %s: %s', var_export($second['exit code'], true), trim($second['error output'])));
+        }
+    }
+
+    /**
+     * The transport's consumer delivered the message once, redelivered nothing, and has nothing left to deliver or to
+     * wait for: it was TERMed. A NAK brought it back at once.
+     */
+    #[Then('the message that could not be decoded should have been delivered once and settled')]
+    public function theMessageThatCouldNotBeDecodedShouldHaveBeenDeliveredOnceAndSettled(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $delivered = is_array($info['delivered'] ?? null) ? ($info['delivered']['consumer_seq'] ?? null) : null;
+        $state = [
+            'deliveries' => $delivered,
+            'redelivered' => $info['num_redelivered'] ?? null,
+            'ack pending' => $info['num_ack_pending'] ?? null,
+            'pending' => $info['num_pending'] ?? null,
+        ];
+        if ($state !== ['deliveries' => 1, 'redelivered' => 0, 'ack pending' => 0, 'pending' => 0]) {
+            throw new \RuntimeException('Expected one delivery and nothing left, got ' . json_encode($state));
+        }
+    }
+
+    /**
+     * The transport's consumer has nothing left to deliver or to wait for, however many times Symfony retried the
+     * message: its deliveries were settled.
+     */
+    #[Then('the message that could not be decoded should have been settled')]
+    public function theMessageThatCouldNotBeDecodedShouldHaveBeenSettled(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $state = ['ack pending' => $info['num_ack_pending'] ?? null, 'pending' => $info['num_pending'] ?? null];
+        if ($state !== ['ack pending' => 0, 'pending' => 0]) {
+            throw new \RuntimeException('Expected nothing left, got ' . json_encode($state));
+        }
+    }
+
+    /**
+     * Starts listening for the advisory NATS publishes for each TERM of the transport's consumer, MSG_TERMINATED, which
+     * {@see itsOneDeliveryShouldHaveBeenAcknowledgedNotTermed()} counts. An ACK publishes none.
+     */
+    #[Given('I listen for the TERMs of the transport\'s consumer')]
+    public function iListenForTheTermsOfTheTransportsConsumer(): void
+    {
+        $this->advisoryClient = $this->createAppropriateNatsClient();
+        $this->terminations = $this->advisoryClient
+            ->subscribeQueue('$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.' . $this->testStreamName . '.client')
+            ->await();
+        $this->advisoryClient->flush()->await();
+    }
+
+    #[When('I send :count message whose __wakeup raises a suppressed warning')]
+    #[When('I send :count messages whose __wakeup raises a suppressed warning')]
+    public function iSendMessagesWhoseWakeupRaisesASuppressedWarning(int $count): void
+    {
+        $this->messagesSent = $count;
+
+        $sendProcess = new Process(
+            ['php', 'bin/console', 'app:send-warning-on-wakeup-messages', (string) $count, '--env=test'],
+            __DIR__ . '/../..'
+        );
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(sprintf(
+                'Failed to send the messages. Exit code: %d. Output: %s. Error: %s',
+                $sendProcess->getExitCode(),
+                $sendProcess->getOutput(),
+                $sendProcess->getErrorOutput()
+            ));
+        }
+    }
+
+    /**
+     * The handler of the message ran, once: on 5.10.0 the warning its __wakeup() raises made it a message that cannot
+     * be decoded, and the handler never ran (#122).
+     */
+    #[Then('the message whose __wakeup raised a warning should have been handled once')]
+    public function theMessageWhoseWakeupRaisedAWarningShouldHaveBeenHandledOnce(): void
+    {
+        $file = $this->testFilesDir . '/warning_on_wakeup_1.txt';
+        $runs = file_exists($file) ? (int) file_get_contents($file) : 0;
+        if ($runs !== 1) {
+            throw new \RuntimeException(sprintf(
+                "Expected the handler to run once, it ran %d times.\nConsumer output: %s\nConsumer error: %s",
+                $runs,
+                $this->consumerProcess?->getOutput() ?? 'N/A',
+                $this->consumerProcess?->getErrorOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /**
+     * The transport's consumer delivered the message once, redelivered nothing, has nothing left to deliver or to wait
+     * for, and its acknowledgement floor is that delivery; NATS published no MSG_TERMINATED for it, which a TERM would
+     * have, so the delivery was acknowledged.
+     */
+    #[Then('its one delivery should have been acknowledged, not TERMed')]
+    public function itsOneDeliveryShouldHaveBeenAcknowledgedNotTermed(): void
+    {
+        if ($this->advisoryClient === null || $this->terminations === null) {
+            throw new \RuntimeException('Nothing listened for the TERMs of the consumer');
+        }
+
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $terms = 0;
+        try {
+            $this->terminations->setTimeout(0.5);
+            while ($this->terminations->next() !== null) {
+                $terms++;
+            }
+        } finally {
+            $this->advisoryClient->disconnect()->await();
+            $this->advisoryClient = null;
+            $this->terminations = null;
+        }
+
+        $delivered = is_array($info['delivered'] ?? null) ? ($info['delivered']['consumer_seq'] ?? null) : null;
+        $ackFloor = is_array($info['ack_floor'] ?? null) ? ($info['ack_floor']['consumer_seq'] ?? null) : null;
+        $state = [
+            'deliveries' => $delivered,
+            'acknowledged up to' => $ackFloor,
+            'redelivered' => $info['num_redelivered'] ?? null,
+            'ack pending' => $info['num_ack_pending'] ?? null,
+            'pending' => $info['num_pending'] ?? null,
+            'TERMs' => $terms,
+        ];
+        $expected = ['deliveries' => 1, 'acknowledged up to' => 1, 'redelivered' => 0, 'ack pending' => 0, 'pending' => 0, 'TERMs' => 0];
+        if ($state !== $expected) {
+            throw new \RuntimeException('Expected one delivery, acknowledged, and nothing left, got ' . json_encode($state));
+        }
+    }
+
     #[Given('I have a messenger transport with failure transport configured')]
     public function iHaveAMessengerTransportWithFailureTransportConfigured(): void
     {
@@ -922,7 +1162,7 @@ class NatsSetupContext implements Context
     public function iHaveAMessengerTransportWithFailureTransportConfiguredUsingTheSerializer(string $serializer): void
     {
         $configContent = sprintf(
-            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: 1\n                    delay: 100\n                    multiplier: 1\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: 1\n                    delay: 100\n                    multiplier: 1\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n            'App\\Async\\WarningOnWakeupMessage': test_transport\n",
             $this->testStreamName,
             $this->testSubject,
             $serializer,
@@ -1166,6 +1406,17 @@ class NatsSetupContext implements Context
     public function theConsumerShouldNotHaveWarnedThatSymfonysRetryStrategyIsOn(): void
     {
         $this->assertSymfonysRetryStrategyWarnings(0);
+    }
+
+    /**
+     * The same, for a Scenario Outline whose rows expect different counts: 0 where Symfony retries nothing, 1 where it
+     * retried a message and the transport left the copy out (#125).
+     */
+    #[Then('the consumer should have warned :count time that Symfony\'s retry strategy is on')]
+    #[Then('the consumer should have warned :count times that Symfony\'s retry strategy is on')]
+    public function theConsumerShouldHaveWarnedTimesThatSymfonysRetryStrategyIsOn(int $count): void
+    {
+        $this->assertSymfonysRetryStrategyWarnings($count);
     }
 
     private function assertSymfonysRetryStrategyWarnings(int $expected): void
@@ -1437,6 +1688,8 @@ class NatsSetupContext implements Context
     }
 
     #[Then('the NATS stream should hold exactly :count messages')]
+    #[Then('the NATS stream should hold :count message')]
+    #[Then('the NATS stream should hold :count messages')]
     public function theNatsStreamShouldHoldExactlyMessages(int $count): void
     {
         $client = $this->createNatsClient();
@@ -1893,6 +2146,74 @@ class NatsSetupContext implements Context
 
         file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
         $this->resetSymfonyCache();
+    }
+
+    /**
+     * scheduled_messages on a stream with interest retention. NATS stores nothing published to a subject no consumer
+     * has interest in on such a stream, so the delayed messages the transport publishes to "{topic}.delayed.<uuid>"
+     * were dropped at publish, though acknowledged, up to 5.9.0. setup() and a worker's first pull now refuse it, unless
+     * a consumer has interest in the delayed subjects.
+     */
+    #[Given('I have a messenger transport configured with scheduled messages on a stream with interest retention')]
+    public function iHaveAMessengerTransportConfiguredWithScheduledMessagesOnAStreamWithInterestRetention(): void
+    {
+        $this->writeTransportConfiguration('stream_max_age=900&scheduled_messages=true&stream_retention=interest');
+    }
+
+    /**
+     * The remedy the refusal of scheduled_messages names first: the same interest stream, without scheduled_messages.
+     */
+    #[When('I have a messenger transport configured with a stream with interest retention and scheduled messages off')]
+    public function iHaveAMessengerTransportConfiguredWithAStreamWithInterestRetentionAndScheduledMessagesOff(): void
+    {
+        $this->writeTransportConfiguration('stream_max_age=900&stream_retention=interest');
+    }
+
+    /**
+     * Creates the interest stream as an operator would, with the transport's own consumer on the topic and nothing on
+     * the delayed subjects, so that NATS stores none of the delayed messages.
+     */
+    #[Given('the stream already exists with interest retention and nothing on its delayed subjects')]
+    public function theStreamAlreadyExistsWithInterestRetentionAndNothingOnItsDelayedSubjects(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $jetStream = $client->jetStream();
+            $jetStream->addStream(StreamConfiguration::create($this->testStreamName)
+                ->subjects($this->testSubject, $this->testSubject . '.delayed.>')
+                ->retention(RetentionPolicy::Interest)
+                ->set('allow_msg_schedules', true))->await();
+            $jetStream->addConsumer($this->testStreamName, ConsumerConfiguration::create()
+                ->durable('client')
+                ->filterSubject($this->testSubject)
+                ->ackPolicy(AckPolicy::Explicit))->await();
+        } finally {
+            $client->disconnect()->await();
+        }
+    }
+
+    /**
+     * Creates the interest stream as setup() would, and a durable consumer on its delayed subjects that nobody pulls
+     * from, which gives them interest (NATS ADR-51 calls it a pinning consumer).
+     */
+    #[Given('the stream already has a consumer on the delayed subjects that nobody pulls from')]
+    public function theStreamAlreadyHasAConsumerOnTheDelayedSubjectsThatNobodyPullsFrom(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $jetStream = $client->jetStream();
+            $jetStream->addStream(StreamConfiguration::create($this->testStreamName)
+                ->subjects($this->testSubject, $this->testSubject . '.delayed.>')
+                ->retention(RetentionPolicy::Interest)
+                ->set('allow_msg_schedules', true))->await();
+            $jetStream->addConsumer($this->testStreamName, ConsumerConfiguration::create()
+                ->durable('delayed_pin')
+                ->filterSubject($this->testSubject . '.delayed.>')
+                ->ackPolicy(AckPolicy::Explicit)
+                ->deliverPolicy(DeliverPolicy::All))->await();
+        } finally {
+            $client->disconnect()->await();
+        }
     }
 
     #[When('I send :count messages with :delay milliseconds delay to the transport')]
@@ -2770,6 +3091,16 @@ class NatsSetupContext implements Context
     public function cleanup(): void
     {
         sleep(1);
+        if ($this->advisoryClient !== null) {
+            try {
+                $this->advisoryClient->disconnect()->await();
+            } catch (\Throwable $e) {
+                // Ignore cleanup errors
+            }
+            $this->advisoryClient = null;
+            $this->terminations = null;
+            $this->consumerAdvisories = null;
+        }
         // Stop consumer process if running
         if ($this->consumerProcess && $this->consumerProcess->isRunning()) {
             $this->consumerProcess->stop();
@@ -3379,4 +3710,303 @@ class NatsSetupContext implements Context
         }
     }
 
+    /**
+     * Like the failure-transport setup, with Symfony's retries carried out by NATS: the transport NAKs a failed
+     * delivery with Symfony's delay instead of publishing a retry copy (retry_via=nak).
+     */
+    #[Given('I have a messenger transport configured with NAK retries and a failure transport')]
+    public function iHaveAMessengerTransportConfiguredWithNakRetriesAndAFailureTransport(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_via=nak'\n                serializer: 'messenger.transport.native_php_serializer'\n                retry_strategy:\n                    max_retries: 2\n                    delay: 100\n                    multiplier: 2\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $this->failedStreamName,
+            $this->failedSubject,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Changes the max_deliver of the transport's durable consumer behind the transport's back, as another
+     * configuration's setup on the same consumer or a change by hand does, after "the NATS stream is set up" wrote
+     * it without one. Up to 5.9.0 the transport took the max_deliver option for the consumer's limit: with the
+     * option unset it NAKed the retry of the consumer's last delivery, NATS redelivered nothing, and the message was
+     * lost after 2 attempts with no failure-transport copy.
+     */
+    #[Given('the transport\'s consumer allows :limit deliveries, which the max_deliver option does not say')]
+    public function theTransportsConsumerAllowsDeliveriesWhichTheMaxDeliverOptionDoesNotSay(int $limit): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $jetStream = $client->jetStream();
+            $jetStream->addConsumer($this->testStreamName, ConsumerConfiguration::create()
+                ->durable('client')
+                ->filterSubject($this->testSubject)
+                ->ackPolicy(AckPolicy::Explicit)
+                ->deliverPolicy(DeliverPolicy::All)
+                ->maxDeliver($limit))->await();
+
+            $config = $jetStream->getConsumer($this->testStreamName, 'client')->await()->raw['config'] ?? [];
+            if (!is_array($config) || ($config['max_deliver'] ?? null) !== $limit) {
+                throw new \RuntimeException(sprintf('The consumer did not take max_deliver %d: %s', $limit, json_encode($config)));
+            }
+        } finally {
+            $client->disconnect()->await();
+        }
+    }
+
+    /**
+     * The transport logs once per transport object that the consumer's max_deliver is not the option's, through the
+     * logger the bundle gives it: FrameworkBundle's default logger writes it to the consumer's stderr.
+     */
+    #[Then('the consumer should have warned once that the consumer allows :limit deliveries and the option says none')]
+    public function theConsumerShouldHaveWarnedOnceThatTheConsumerAllowsDeliveriesAndTheOptionSaysNone(int $limit): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        $warning = sprintf(
+            'retry_via=nak on stream "%s": consumer "client" has max_deliver %d and the max_deliver option is unset (no limit).',
+            $this->testStreamName,
+            $limit,
+        );
+        $warnings = substr_count($output, $warning);
+        if ($warnings !== 1) {
+            throw new \RuntimeException(sprintf("Expected the max_deliver warning once, found it %d time(s).\nConsumer output: %s", $warnings, $output));
+        }
+    }
+
+    /**
+     * With retry_via=copy, the default, and no scheduled_messages, Symfony's retry copy is published at once; the
+     * transport warns once per consumer process with the delay it dropped, which carries Symfony's jitter (5.10.0).
+     */
+    #[Then('the consumer should have warned once that Symfony\'s retry was published without its delay')]
+    public function theConsumerShouldHaveWarnedOnceThatSymfonysRetryWasPublishedWithoutItsDelay(): void
+    {
+        $this->assertConsumerLoggedOnce(sprintf(
+            'retry_via=copy on stream "%s", subject "%s": Symfony\'s retry was published at once, without its delay of',
+            $this->testStreamName,
+            $this->testSubject,
+        ));
+    }
+
+    #[Given('I have a messenger transport configured with the NATS retry handler, max_deliver :maxDeliver and interest retention')]
+    public function iHaveAMessengerTransportConfiguredWithTheNatsRetryHandlerMaxDeliverAndInterestRetention(int $maxDeliver): void
+    {
+        $this->writeTransportConfiguration(sprintf('stream_max_age=900&retry_handler=nats&max_deliver=%d&stream_retention=interest', $maxDeliver));
+    }
+
+    /**
+     * On a standalone server NATS deletes a message stopped at max_deliver from an interest stream at a restart before
+     * 2.12.9, and on 2.14.0 (measured, docs/symfony_retry_via.md); setup() warns on those servers and only there. The
+     * oldest-server job's NATS 2.10 gets the warning, the latest server none.
+     */
+    #[Then('the setup should have warned that NATS deletes a message stopped at max_deliver exactly when the server\'s version does')]
+    public function theSetupShouldHaveWarnedThatNatsDeletesAMessageStoppedAtMaxDeliverExactlyWhenTheServersVersionDoes(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $client->connect()->await();
+            $version = (string) $client->serverInfo()?->version;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $release = preg_replace('/^v?(\d+\.\d+\.\d+).*$/', '$1', $version) ?? '';
+        $deletes = version_compare($release, '2.12.9', '<') || (version_compare($release, '2.14.0', '>=') && version_compare($release, '2.14.1', '<'));
+        $output = $this->setupProcess->getOutput() . $this->setupProcess->getErrorOutput();
+        $warnings = substr_count($output, 'deletes a message that reached max_deliver from a stream with interest retention, at a restart of the server');
+        if ($warnings !== ($deletes ? 1 : 0)) {
+            throw new \RuntimeException(sprintf("Expected %d warning(s) on NATS %s, found %d.\nSetup output: %s", $deletes ? 1 : 0, $version, $warnings, $output));
+        }
+    }
+
+    private function assertConsumerLoggedOnce(string $text): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        $found = substr_count($output, $text);
+        if ($found !== 1) {
+            throw new \RuntimeException(sprintf("Expected the consumer to log \"%s\" once, found it %d time(s).\nConsumer output: %s", $text, $found, $output));
+        }
+    }
+
+    #[When('I send :count unrecoverable failing message')]
+    #[When('I send :count unrecoverable failing messages')]
+    public function iSendUnrecoverableFailingMessages(int $count): void
+    {
+        $this->messagesSent = $count;
+
+        $sendProcess = new Process(['php', 'bin/console', 'app:send-failing-messages', (string) $count, '--unrecoverable', '--env=test'], __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(sprintf('Failed to send failing messages. Exit code: %d. Output: %s. Error: %s', $sendProcess->getExitCode(), $sendProcess->getOutput(), $sendProcess->getErrorOutput()));
+        }
+    }
+
+    /**
+     * Nats mode with max_deliver and the given max_retries, the igbinary serializer, and the message of two handlers
+     * routed to the transport (#125).
+     */
+    #[Given('I have a messenger transport configured with NATS retry handler, max deliver of :maxDeliver and max retries of :maxRetries, routing the message of two handlers')]
+    public function iHaveAMessengerTransportConfiguredWithNatsRetryHandlerMaxDeliverAndMaxRetriesRoutingTheMessageOfTwoHandlers(int $maxDeliver, int $maxRetries): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=nats&max_deliver=%d'\n                serializer: '%s'\n                retry_strategy:\n                    max_retries: %d\n        routing:\n            'App\\Async\\TwoHandlersMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $maxDeliver,
+            self::IGBINARY_SERIALIZER,
+            $maxRetries
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Starts listening for every advisory NATS publishes about the transport's consumer
+     * (`$JS.EVENT.ADVISORY.CONSUMER.<kind>.<stream>.client`), in the order the server publishes them, for
+     * {@see theTransportsConsumerShouldHavePublishedForStreamSequence()}.
+     */
+    #[Given('I listen for the advisories of the transport\'s consumer')]
+    public function iListenForTheAdvisoriesOfTheTransportsConsumer(): void
+    {
+        $this->advisoryClient = $this->createAppropriateNatsClient();
+        $this->consumerAdvisories = $this->advisoryClient
+            ->subscribeQueue('$JS.EVENT.ADVISORY.CONSUMER.*.' . $this->testStreamName . '.client')
+            ->await();
+        $this->advisoryClient->flush()->await();
+    }
+
+    /**
+     * One message, to {@see \App\Async\FirstOfTwoHandlers} and {@see \App\Async\SecondOfTwoHandlers}, each failing
+     * `for good` (an UnrecoverableMessageHandlingException on every run) or `once` (a RuntimeException on its first
+     * run, then it succeeds).
+     */
+    #[When('I send a message to two handlers, the first failing :first and the second :second')]
+    public function iSendAMessageToTwoHandlers(string $first, string $second): void
+    {
+        $this->messagesSent = 1;
+
+        $sendProcess = new Process(['php', 'bin/console', 'app:send-two-handlers-message', $first, $second, '--env=test'], __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(sprintf('Failed to send the message. Exit code: %d. Output: %s. Error: %s', $sendProcess->getExitCode(), $sendProcess->getOutput(), $sendProcess->getErrorOutput()));
+        }
+    }
+
+    /**
+     * A consumer that stops after the given number of deliveries, or after 20 s when fewer come.
+     */
+    #[When('I start a messenger consumer that stops after :count delivery')]
+    #[When('I start a messenger consumer that stops after :count deliveries')]
+    public function iStartAMessengerConsumerThatStopsAfterDeliveries(int $count): void
+    {
+        $this->consumerProcess = new Process(
+            ['php', 'bin/console', 'messenger:consume', 'test_transport', '--limit=' . $count, '--time-limit=20', '--sleep=0.1', '--env=test', '-vv'],
+            __DIR__ . '/../..'
+        );
+        $this->consumerProcess->setTimeout(60);
+        $this->consumerProcess->start();
+    }
+
+    /**
+     * The NAK, TERM and MAX_DELIVERIES advisories of the transport's consumer, in the order the server published them,
+     * each for the given stream sequence: a NAK is MSG_NAKED, a TERM MSG_TERMINATED. The other advisories (the
+     * consumer's creation, an ACK nobody asked to be told about) are left out.
+     */
+    #[Then('the transport\'s consumer should have published :advisories for stream sequence :sequence')]
+    public function theTransportsConsumerShouldHavePublishedForStreamSequence(string $advisories, int $sequence): void
+    {
+        if ($this->advisoryClient === null || $this->consumerAdvisories === null) {
+            throw new \RuntimeException('Nothing listened for the advisories of the consumer');
+        }
+
+        $published = [];
+        try {
+            $this->consumerAdvisories->setTimeout(0.5);
+            while (($advisory = $this->consumerAdvisories->next()) !== null) {
+                $kind = explode('.', $advisory->subject)[4] ?? '';
+                if (!in_array($kind, ['MSG_NAKED', 'MSG_TERMINATED', 'MAX_DELIVERIES'], true)) {
+                    continue;
+                }
+                $payload = json_decode($advisory->payload, true);
+                $published[] = sprintf('%s of %s', $kind, json_encode(is_array($payload) ? ($payload['stream_seq'] ?? null) : null));
+            }
+        } finally {
+            $this->advisoryClient->disconnect()->await();
+            $this->advisoryClient = null;
+            $this->consumerAdvisories = null;
+        }
+
+        $expected = array_map(static fn (string $kind): string => sprintf('%s of %d', trim($kind), $sequence), explode(',', $advisories));
+        if ($published !== $expected) {
+            throw new \RuntimeException(sprintf(
+                "Expected the advisories %s, got %s.\nConsumer output: %s\nConsumer error: %s",
+                json_encode($expected),
+                json_encode($published),
+                $this->consumerProcess?->getOutput() ?? 'N/A',
+                $this->consumerProcess?->getErrorOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    #[Then('both handlers should have run :times time')]
+    #[Then('both handlers should have run :times times')]
+    public function bothHandlersShouldHaveRun(int $times): void
+    {
+        $runs = [];
+        foreach (['first', 'second'] as $position) {
+            $file = sprintf('%s/two_handlers_%s.attempt', $this->retryStateDir, $position);
+            $runs[$position] = file_exists($file) ? (int) file_get_contents($file) : 0;
+        }
+
+        if ($runs !== ['first' => $times, 'second' => $times]) {
+            throw new \RuntimeException(sprintf(
+                "Expected each handler to run %d time(s), got %s.\nConsumer output: %s",
+                $times,
+                json_encode($runs),
+                $this->consumerProcess?->getOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /**
+     * The handler that fails once succeeded on its second run, the redelivery, and the one that fails for good never
+     * succeeded.
+     */
+    #[Then('the handler that fails once should have succeeded on its second run')]
+    public function theHandlerThatFailsOnceShouldHaveSucceededOnItsSecondRun(): void
+    {
+        $succeeded = [];
+        foreach (['first', 'second'] as $position) {
+            $file = sprintf('%s/two_handlers_%s.txt', $this->testFilesDir, $position);
+            if (file_exists($file)) {
+                $succeeded[$position] = trim((string) file_get_contents($file));
+            }
+        }
+
+        if (count($succeeded) !== 1 || reset($succeeded) !== 'Attempt: 2') {
+            throw new \RuntimeException(sprintf(
+                "Expected one handler to succeed, on its second run, got %s.\nConsumer output: %s",
+                json_encode($succeeded),
+                $this->consumerProcess?->getOutput() ?? 'N/A'
+            ));
+        }
+    }
 }

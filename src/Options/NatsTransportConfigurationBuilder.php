@@ -36,6 +36,9 @@ final class NatsTransportConfigurationBuilder
     /** Longest stream description NATS accepts. */
     private const MAX_STREAM_DESCRIPTION_LENGTH = 4096;
 
+    /** Added by Symfony's FrameworkBundle to the options of every transport it creates. */
+    private const TRANSPORT_NAME_OPTION = 'transport_name';
+
     /**
      * Default option values.
      *
@@ -79,6 +82,8 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_PLACEMENT_TAGS->value => null,
         TransportOption::ADDITIONAL_SUBJECTS->value => null,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
+        // null reads as 'copy' in symfony mode, and lets the builder tell a value someone set from the default.
+        TransportOption::RETRY_VIA->value => null,
         TransportOption::NAK_DELAY->value => 0,
         TransportOption::ACK_WAIT->value => null,
         TransportOption::MAX_DELIVER->value => null,
@@ -270,6 +275,71 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
+     * Resolves retry_via: null when it is not set, which reads as {@see RetryVia::COPY} in symfony mode.
+     *
+     * Any value is refused with {@see RetryHandler::NATS}, 'copy' included: NATS redelivers every failed message there
+     * and Symfony's retry strategy has no effect, so there is no Symfony retry for the option to route.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     *
+     * @throws InvalidArgumentException When the value is unknown, or set with retry_handler 'nats'.
+     */
+    private function resolveRetryVia(#[\SensitiveParameter] array $configuration, RetryHandler $retryHandler): ?RetryVia
+    {
+        $value = $configuration[TransportOption::RETRY_VIA->value] ?? null;
+        if ($value === null) {
+            return null;
+        }
+
+        $retryVia = RetryVia::tryFrom(TypeCoercion::stringValue($value));
+        if ($retryVia === null) {
+            throw new InvalidArgumentException(sprintf(
+                "Invalid retry_via option%s. Allowed values are 'copy' or 'nak'.",
+                $this->quotedIfPlain(TypeCoercion::stringValue($value)),
+            ));
+        }
+
+        if ($retryHandler === RetryHandler::NATS) {
+            throw new InvalidArgumentException(
+                "The retry_via option needs retry_handler 'symfony': with retry_handler 'nats', NATS redelivers every failed"
+                . " message and Symfony's retry strategy has no effect."
+            );
+        }
+
+        return $retryVia;
+    }
+
+    /**
+     * Refuses, with retry_via 'nak', the two options that would change the delay Symfony's retry strategy computed.
+     *
+     * Only nats mode's NAKs read nak_delay, so it would never apply, although its name suggests it times the NAK
+     * retries. backoff makes NATS lengthen every NAK that carries a delay by backoff[n] - backoff[0], where n counts
+     * the deliveries before (measured on nats-server 2.10.29 and 2.15.1: 0.50, 1.50 and 2.50 s for a 0.5 s delay
+     * with backoff 1, 2 and 3 s), and replaces ack_wait with backoff[0].
+     *
+     * @param array<string, mixed> $configuration Merged configuration array, nak_delay and backoff already validated
+     *
+     * @throws InvalidArgumentException When nak_delay is positive or backoff is set.
+     */
+    private function assertNoNatsRedeliveryTimingWithNakRetries(#[\SensitiveParameter] array $configuration): void
+    {
+        if (TypeCoercion::floatValue($configuration[TransportOption::NAK_DELAY->value] ?? null) > 0) {
+            throw new InvalidArgumentException(
+                "The nak_delay option has no effect with retry_via 'nak': each NAK carries the delay Symfony's retry"
+                . ' strategy computed. Set the delay in the retry strategy (delay, multiplier, max_delay) instead.'
+            );
+        }
+
+        if (($configuration[TransportOption::BACKOFF->value] ?? null) !== null) {
+            throw new InvalidArgumentException(
+                "The backoff option cannot be combined with retry_via 'nak': NATS would lengthen each NAK retry by the"
+                . " difference between the backoff's current and first step and would replace ack_wait with the first"
+                . " step, so the retries would not wait the delays Symfony's retry strategy computed."
+            );
+        }
+    }
+
+    /**
      * A name or value for an error message, in quotes and with a space before it, or nothing when it may hold more than a
      * plain mistake. A DSN query typed with & or ; instead of ?, or with a second ?, stays in the path or in the option
      * before it, credentials included, and a message reaches logs and consoles whatever zend.exception_ignore_args says.
@@ -297,12 +367,103 @@ final class NatsTransportConfigurationBuilder
      */
     private function assertNoCredentialAfterASecondQuery(#[\SensitiveParameter] string $query): void
     {
-        if (preg_match('/[?;]\s*(?:nkey_seed|nkey|jwt|token|username|password|tls_key_passphrase)\s*=/i', urldecode($query)) === 1) {
+        $credentials = implode('|', array_map(static fn (TransportOption $option): string => preg_quote($option->value, '/'), TransportOption::credentials()));
+        if (preg_match('/[?;]\s*(?:' . $credentials . ')\s*=/i', urldecode($query)) === 1) {
             throw new InvalidArgumentException(
                 'The NATS DSN holds a credential after a second "?" or a ";" in its query, where it would be read as a part '
                 . 'of the option before it. Separate the options with "&".'
             );
         }
+    }
+
+    /**
+     * Refuses an option the transport does not know, in the options map or the DSN query (5.10.0). Up to 5.9.x such an
+     * option was ignored without a word, so a mistyped name (`max_delivers`, `retry_handeler`, `RETRY_HANDLER`) left
+     * the default in place: the setup it was meant to change did not happen, and nothing said so. `transport_name` is
+     * known too, as Symfony's FrameworkBundle adds it to the options of every transport.
+     *
+     * The name is repeated, with the closest option when one is near, if it is plain, as a value is
+     * ({@see quotedIfPlain()}). In the DSN query a name right after a credential, or after unknown names that follow
+     * one, is never repeated: an & in a credential that was not encoded as %26 makes the rest of the credential such a
+     * name.
+     *
+     * @param array<array-key, mixed> $options
+     *
+     * @throws InvalidArgumentException When an option is not one of the transport's.
+     */
+    private function assertKnownOptions(#[\SensitiveParameter] array $options, #[\SensitiveParameter] ?string $query): void
+    {
+        foreach (array_keys($options) as $name) {
+            if (!$this->isKnownOption((string) $name)) {
+                throw new InvalidArgumentException($this->unknownOptionMessage((string) $name, 'options'));
+            }
+        }
+
+        if ($query === null) {
+            return;
+        }
+
+        $afterACredential = false;
+        foreach (explode('&', $query) as $parameter) {
+            // Read as parse_str() reads the whole query, so that a name is the one the build would see.
+            $one = [];
+            parse_str($parameter, $one);
+            $name = array_key_first($one);
+            if ($name === null) {
+                continue;
+            }
+
+            $name = (string) $name;
+            if ($this->isKnownOption($name)) {
+                $afterACredential = TransportOption::tryFrom($name)?->isCredential() === true;
+
+                continue;
+            }
+
+            if ($afterACredential) {
+                throw new InvalidArgumentException(
+                    'The NATS DSN query holds an option the transport does not know right after a credential, which an'
+                    . ' "&" in the credential makes of the rest of it. The name is not repeated. Encode an "&" in a'
+                    . ' credential as "%26".'
+                );
+            }
+
+            throw new InvalidArgumentException($this->unknownOptionMessage($name, 'DSN query'));
+        }
+    }
+
+    private function isKnownOption(#[\SensitiveParameter] string $name): bool
+    {
+        return $name === self::TRANSPORT_NAME_OPTION || TransportOption::tryFrom($name) !== null;
+    }
+
+    /**
+     * The message for an unknown option: its name when it is plain, and the closest option when one is near, by edit
+     * distance (a name typed in another case, or with a letter more or less) or because one is the name with a word
+     * before or after it (`retention` for `stream_retention`).
+     */
+    private function unknownOptionMessage(#[\SensitiveParameter] string $name, string $where): string
+    {
+        $typed = strtolower($name);
+        $closest = null;
+        $closestDistance = PHP_INT_MAX;
+        foreach (TransportOption::cases() as $option) {
+            $distance = levenshtein($typed, $option->value);
+            $near = $distance <= max(2, intdiv(strlen($option->value), 4))
+                || str_starts_with($option->value, $typed . '_')
+                || str_ends_with($option->value, '_' . $typed);
+            if ($near && $distance < $closestDistance) {
+                $closest = $option->value;
+                $closestDistance = $distance;
+            }
+        }
+
+        return sprintf(
+            'Unknown option%s in the %s of the NATS transport.%s',
+            $this->quotedIfPlain($name),
+            $where,
+            $closest === null ? ' See "Configuration Options" in the README for the options it takes.' : sprintf(" Did you mean '%s'?", $closest),
+        );
     }
 
     /**
@@ -319,11 +480,13 @@ final class NatsTransportConfigurationBuilder
     private function buildConfiguration(#[\SensitiveParameter] array $components, #[\SensitiveParameter] array $options): array
     {
         $query = [];
-        if (isset($components['query']) && is_string($components['query'])) {
-            $this->assertNoCredentialAfterASecondQuery($components['query']);
+        $rawQuery = isset($components['query']) && is_string($components['query']) ? $components['query'] : null;
+        if ($rawQuery !== null) {
+            $this->assertNoCredentialAfterASecondQuery($rawQuery);
             /** @var array<string, mixed> $query */
-            parse_str($components['query'], $query);
+            parse_str($rawQuery, $query);
         }
+        $this->assertKnownOptions($options, $rawQuery);
 
         /** @var array<string, mixed> $configuration */
         $configuration = $options + $query + self::DEFAULT_OPTIONS;
@@ -337,6 +500,11 @@ final class NatsTransportConfigurationBuilder
         }
 
         $configuration[TransportOption::RETRY_HANDLER->value] = $retryHandler->value;
+
+        $retryVia = $this->resolveRetryVia($configuration, $retryHandler);
+        if ($retryVia !== null) {
+            $configuration[TransportOption::RETRY_VIA->value] = $retryVia->value;
+        }
 
         $consumer = trim(TypeCoercion::stringValue($configuration[TransportOption::CONSUMER->value] ?? null));
         if ($consumer === '') {
@@ -382,6 +550,9 @@ final class NatsTransportConfigurationBuilder
         $this->assertPositiveNumber($configuration, TransportOption::INACTIVE_THRESHOLD);
         $this->assertBackoff($configuration);
         $this->assertMaxDeliverExceedsBackoff($configuration);
+        if ($retryVia === RetryVia::NAK) {
+            $this->assertNoNatsRedeliveryTimingWithNakRetries($configuration);
+        }
         $this->assertDuplicateWindowNotExceedingMaxAge($configuration);
         $this->assertResendOnReconnect($configuration);
         $this->normalizeStorageBackend($configuration);

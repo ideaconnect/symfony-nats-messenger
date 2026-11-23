@@ -2,10 +2,10 @@
 
 ## Overview
 
-Symfony Messenger transport for NATS JetStream. PHP 8.2+, Symfony ^7.2 / ^8.0.
+Symfony Messenger transport for NATS JetStream. PHP 8.2+, Symfony ^7.3 / ^8.0.
 Uses `idct/php-nats-jetstream-client` (amphp-based coroutines).
-Ships `IDCTNatsMessengerBundle` (Flex auto-enables it), which registers the transport factory
-and the igbinary serializer - no manual wiring needed. Each service has one id, its class name:
+Ships `IDCTNatsMessengerBundle` (Flex auto-enables it), which registers the transport factory,
+the igbinary serializer and the listener nats mode reads several handlers' failures by - no manual wiring needed. Each service has one id, its class name:
 Symfony wraps a transport's serializer for signing once per id, so a second id would wrap it twice.
 
 ## Project Memory
@@ -35,10 +35,13 @@ src/
 ├── NatsTransport.php                          # TransportInterface, MessageCountAwareInterface, SetupableTransportInterface
 ├── NatsTransportFactory.php                   # TransportFactoryInterface - DSN parsing, transport creation
 ├── TypeCoercion.php                           # Safe scalar type coercion helpers (final, static)
+├── EventListener/
+│   └── AddUnrecoverableFailureStampListener.php  # Tells nats mode whether every handler of a failed message failed for good
 ├── Options/
 │   ├── NatsTransportConfiguration.php         # Immutable readonly config value object
 │   ├── NatsTransportConfigurationBuilder.php  # DSN + options parsing, validation, builds Configuration
 │   ├── RetryHandler.php                       # Enum: SYMFONY (TERM) | NATS (NAK)
+│   ├── RetryVia.php                           # Enum: COPY | NAK, how a Symfony retry reaches NATS
 │   └── TransportOption.php                    # Enum: all configurable option keys
 └── Serializer/
     ├── AbstractEnveloperSerializer.php         # Base serializer with encode/decode envelope wrapping
@@ -65,6 +68,7 @@ tests/
 │   │   ├── nats_batching.feature               # Batch consumption
 │   │   ├── nats_nak.feature                    # NAK retry handler
 │   │   ├── nats_term.feature                   # TERM failure handler
+│   │   ├── nats_retry_via.feature              # Symfony's retries as NAKs with Symfony's delay (retry_via: nak)
 │   │   ├── nats_delayed.feature                # Scheduled/delayed messages
 │   │   ├── nats_tls.feature                    # TLS connections
 │   │   ├── nats_mtls.feature                   # mTLS with client certificates
@@ -89,9 +93,15 @@ tests/
 - **Replication**: `stream_replicas` for HA
 - **Consumer strategies**: shared (batching=1) or independent consumers
 - **Batching**: configurable `batching` count and `max_batch_timeout`
-- **Retry handling**: `retry_handler` - `symfony` (TERM, default) or `nats` (NAK)
-- **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers
+- **Retry handling**: `retry_handler` - `symfony` (TERM, default: Symfony decides, its failure transport keeps what
+  it gives up on) or `nats` (NAK: NATS decides up to `max_deliver`, no failure transport, and an unrecoverable failure
+  or a message that cannot be decoded is TERMed); a message that cannot be decoded is handled as Symfony's own transports handle it; in symfony mode,
+  `retry_via: nak` NAKs with Symfony's retry delay instead of publishing the retry copy
+  (see [docs/symfony_retry_via.md](docs/symfony_retry_via.md))
+- **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers; refused on a server
+  before NATS 2.12, at `setup()` and at the send of a delayed message
 - **Per-message subjects**: `NatsSubjectStamp` overrides the topic per message; `additional_subjects` adds the patterns the stream and the one consumer cover (`filter_subjects`); retries go back to the subject a message arrived on (`NatsReceivedSubjectStamp`)
+- **Option names**: an option that is not a `TransportOption` case (or `transport_name`) is refused, with the closest one
 - **TLS/mTLS**: full TLS config options including client certificates
 - **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`)
 - **Serialization**: igbinary (default with fallback) or custom via `AbstractEnveloperSerializer`
@@ -144,7 +154,9 @@ composer nats:stop               # Stop NATS
   stream) and for the whole grace period of lame duck mode. After a 503 the transport asks the client why
   (`pullMetAServerGoingAway()`, the client's `diagnoseNoResponders()`, `^2.29`, #106): any answer keeps the 503's reading
   as a missing consumer, and `ServerGoingAway` (no answer, with the connection closed, being recovered or replaced, or in
-  lame duck mode) is an empty batch. A restart or lame duck scenario on CI that fails with
+  lame duck mode) is an empty batch. The server refuses the question of a user who may not ask for consumer info at once,
+  and the client watches the connection until `request_timeout` all the same; client 2.30.1 (#131) keeps to that with
+  `reconnect: true` too, which `GracefulStopPullTest` checks with the real client and a held dial. A restart or lame duck scenario on CI that fails with
   `JetStream pull request ended with status 503` is a real failure now.
 - No frame that waits on a Future takes it as a parameter (#115). With `zend.exception_ignore_args` off, the default
   without a php.ini, the trace of an exception raised in the event loop records the arguments of every frame waiting on
@@ -171,6 +183,11 @@ composer nats:stop               # Stop NATS
 - Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 - Add new items under `## [Unreleased]` as work progresses; move them to a versioned heading at release time.
 - Categorize changes as Added, Changed, Fixed, Deprecated, Removed, or Security.
+
+### Feature Reference (`docs/symfony_retry_via.md`)
+- The reference for `retry_via`: the terms, the three retry setups delivery by delivery, what the server does with a
+  NAK, and what was measured.
+- Update it when a retry path changes, or when a measurement of the server's behaviour does.
 
 ### PR Merge Documentation (`docs/PRs/`)
 - When a PR is merged or its features are adapted, add a file to `docs/PRs/` named `PR-NNN-short-description.md`.

@@ -95,6 +95,29 @@ function deleteExampleStream(string $stream): void
 }
 
 /**
+ * The version of the server the examples run against, as it reports it when a client connects ("2.12.1").
+ */
+function serverVersion(): string
+{
+    $client = (new NatsTransportConfigurationBuilder())->build(exampleDsn('unused'))->client;
+    $client->connect()->await();
+
+    try {
+        return (string) $client->serverInfo()?->version;
+    } finally {
+        $client->disconnect()->await();
+    }
+}
+
+/**
+ * Whether that server has message schedules, which `scheduled_messages` needs: NATS 2.12 and later.
+ */
+function serverHasMessageSchedules(): bool
+{
+    return version_compare(serverVersion(), '2.12', '>=');
+}
+
+/**
  * A PSR-3 logger that keeps what it is given, so an example can show what the NATS client logged. In an
  * application the bundle hands the client the application's `logger` instead (README, "Logging").
  */
@@ -106,6 +129,17 @@ final class ExampleLogger extends AbstractLogger
     public function log($level, \Stringable|string $message, array $context = []): void
     {
         $this->lines[] = sprintf('%s: %s', is_string($level) ? $level : 'log', $message);
+    }
+
+    /** @return list<string> the messages logged at $level, in order, without the level */
+    public function linesAt(string $level): array
+    {
+        $prefix = $level . ': ';
+
+        return array_values(array_map(
+            static fn (string $line): string => substr($line, strlen($prefix)),
+            array_filter($this->lines, static fn (string $line): bool => str_starts_with($line, $prefix)),
+        ));
     }
 
     /** Whether a line containing $text was logged. */

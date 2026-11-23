@@ -16,7 +16,7 @@ Symfony Messenger  ──dispatch──▶  NatsTransportFactory ──▶ NatsT
 - **Symfony side:** the library implements `TransportInterface`, `MessageCountAwareInterface`,
   and `SetupableTransportInterface`, so it plugs into `messenger:consume`, `messenger:setup-transports`,
   and the failure/retry machinery like any first-party transport.
-- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.29`,
+- **NATS side:** every operation goes through the async `idct/php-nats-jetstream-client` (`^2.30.1`,
   amphp-based). Calls return `Amp\Future`; the transport resolves them synchronously with `->await()`
   because Symfony Messenger's transport contract is blocking.
 
@@ -28,15 +28,20 @@ src/
 ├── NatsTransport.php                          # Core transport: send/get/ack/reject/setup/getMessageCount
 ├── NatsTransportFactory.php                   # TransportFactoryInterface - DSN scheme detection + instantiation
 ├── TypeCoercion.php                           # Safe mixed → int/float/string coercion (final, static)
+├── EventListener/
+│   └── AddUnrecoverableFailureStampListener.php # Tells nats mode whether every handler of a failed message failed for good
 ├── Options/
 │   ├── NatsTransportConfiguration.php         # Immutable readonly value object of resolved settings
 │   ├── NatsTransportConfigurationBuilder.php  # Parses DSN + options, validates, builds the NatsClient
 │   ├── RetryHandler.php                        # Enum: SYMFONY (TERM) | NATS (NAK)
+│   ├── RetryVia.php                            # Enum: COPY | NAK, how a Symfony retry reaches NATS
 │   └── TransportOption.php                     # Enum of every recognized option key
 ├── Stamp/
 │   ├── DeduplicationIdStamp.php                # The id JetStream deduplicates a message by (Nats-Msg-Id)
 │   ├── NatsSubjectStamp.php                    # Publish one message to a chosen subject instead of the default
-│   └── NatsReceivedSubjectStamp.php            # The subject get() received a message on; retries go back to it
+│   ├── NatsReceivedSubjectStamp.php            # The subject get() received a message on; retries go back to it
+│   ├── ReceivedInNatsModeStamp.php             # Marks a delivery received in nats mode, with its token (not sent)
+│   └── UnrecoverableFailureStamp.php           # Whether every handler of a failed delivery failed for good (not sent)
 └── Serializer/
     ├── AbstractEnveloperSerializer.php         # Base encode/decode envelope wrapping + validation
     └── IgbinarySerializer.php                  # Default serializer (igbinary), falls back to PhpSerializer
@@ -69,6 +74,8 @@ tests/
 │   ├── RunTestsWithPausesTest.php              # composer test:unit:paused really stops the tests and keeps PHPUnit's exit code
 │   ├── LoginCombinationsTest.php               # every combination of credentials: refused when built, or through the real client
 │   ├── TestNkeysTest.php                       # the keys tests/Support/TestNkeys.php builds when the tests run
+│   ├── EventListener/
+│   │   └── AddUnrecoverableFailureStampListenerTest.php  # the stamp nats mode reads several handlers' failures by
 │   ├── Options/
 │   │   ├── NatsTransportConfigurationBuilderTest.php  # DSN parsing, validation, option merging
 │   │   ├── SecretsInExceptionsTest.php                 # a failed build leaves no seed or password in its exception
@@ -77,7 +84,7 @@ tests/
 │       ├── AbstractEnveloperSerializerTest.php
 │       └── IgbinarySerializerTest.php
 ├── functional/                                 # Behat - requires a running NATS server (Docker)
-│   ├── features/*.feature                      # setup, batching, consumer, nak, term, delayed, tls, mtls, stream_limits, nkey, jwt, token
+│   ├── features/*.feature                      # setup, batching, consumer, nak, term, retry_via, delayed, tls, mtls, stream_limits, nkey, jwt, token
 │   ├── tests/Behat/NatsSetupContext.php        # all step definitions
 │   └── src/, config/, bin/, public/            # a minimal Symfony app exercising the transport end-to-end
 └── nats/                                       # Docker Compose + NATS configs + test TLS certificate generator
@@ -87,21 +94,28 @@ tests/
 
 examples/                                       # Runnable scripts, one per behaviour (composer examples)
 ├── _bootstrap.php                              # shared setup: autoloader, server, stream, test cluster and docker helpers
+├── _retry_via.php                              # shared by the retry-via-* examples: Symfony's Worker with its retry and
+                                                # failure-transport listeners, and a record of one run
 └── *.php                                       # send-and-consume, duplicate-protection, nats-retry, request-timeout, keepalive,
                                                 # connection-checks, jwt-login, nkey-login, token-login, reconnect, cluster-failover,
                                                 # handler-failing-during-failover, handler-succeeding-during-failover,
-                                                # stream-placement
+                                                # stream-placement, delayed-messages, retry-via-nak, retry-via-nak-edge-cases,
+                                                # retry-via-nak-past-max-deliver, retry-via-nak-server-behaviour,
+                                                # retry-via-nak-across-a-restart, retry-via-copy-or-nak,
+                                                # nats-retry-several-handlers
 
 scripts/
 ├── run-examples.sh                             # runs examples/*.php, strict mode for CI
 ├── run-tests-with-pauses.php                   # composer test:unit:paused: the unit tests, stopped at random moments
 ├── check-mutation-canary.php                   # composer test:mutation:canary: mutants that change nothing all escape
-└── check-mutation-log.php                      # composer test:mutation:check-log: no mutant killed by the harness
+├── check-mutation-log.php                      # composer test:mutation:check-log: no mutant killed by the harness
+└── check-messenger-rejects-a-retry.php         # CI's lowest leg: the installed Symfony Messenger rejects a retried message
 
 docs/
 ├── CHANGELOG.md                                # Keep a Changelog format
 ├── PROJECT_MEMORY.md                           # maintainer context, pitfalls and a dated snapshot for agents
 ├── TESTS.md                                    # Feature → test coverage map (kept in sync with the suite)
+├── symfony_retry_via.md                        # Reference for retry_via: terms, the setups delivery by delivery, server facts
 └── PRs/                                         # One file per merged/adapted PR (PR-NNN-*.md)
 ```
 
@@ -130,12 +144,12 @@ The heart of the bridge. Responsibilities map almost 1:1 to `TransportInterface`
 
 | Method | What it does |
 |--------|--------------|
-| `send()` | Stamps a UUIDv4 `TransportMessageIdStamp`, serializes the envelope, publishes to the subject through `JetStreamContext::publish()`, which waits for the publish acknowledgement and throws `JetStreamException` on an error or an invalid acknowledgement. A `DelayStamp` (when `scheduled_messages` is on) is published to `{topic}.delayed.{uuid}` with `Nats-Schedule` headers. A `DeduplicationIdStamp` (added with `deduplicate`) is sent as `Nats-Msg-Id`. With `retry_handler=nats` the copy Symfony's retry sends is not published. The subject is the topic, a `NatsSubjectStamp`'s subject when the consumer reads it, or for Symfony's retry the subject the message arrived on. |
-| `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. A pull that found no messages (408, or 404) is an empty result. A missing consumer reports 503: `auto_setup` re-provisions it once, otherwise the error propagates. A pull refused at the connection's subscription limit (the client's `SubscriptionLimitException`) fails with Symfony's `TransportException` naming the stream, the consumer and the limit, since the transport needs two subscriptions per connection (#76). Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp` and, with `additional_subjects`, the subject it arrived on as a `NatsReceivedSubjectStamp`. |
-| `ack()` | Sends JetStream ACK for the message's reply token. |
-| `reject()` | Delegates to `handleFailedDelivery()` → TERM (Symfony retry) or NAK (NATS retry). |
+| `send()` | Stamps a UUIDv4 `TransportMessageIdStamp`, serializes the envelope, publishes to the subject through `JetStreamContext::publish()`, which waits for the publish acknowledgement and throws `JetStreamException` on an error or an invalid acknowledgement. A `DelayStamp` (when `scheduled_messages` is on) is published to `{topic}.delayed.{uuid}` with `Nats-Schedule` headers. A `DeduplicationIdStamp` (added with `deduplicate`) is sent as `Nats-Msg-Id`. With `retry_handler=nats`, and with `retry_via=nak` when a NAK can carry the retry, the copy Symfony's retry sends is not published. With `scheduled_messages`, a delayed send first refuses a server before NATS 2.12. The subject is the topic, a `NatsSubjectStamp`'s subject when the consumer reads it, or for Symfony's retry the subject the message arrived on. |
+| `get()` | Pulls a batch via `fetchBatch(stream, consumer, batching, timeoutMs)`. A pull that found no messages (408, or 404) is an empty result. A missing consumer reports 503: `auto_setup` re-provisions it once, otherwise the error propagates. A pull refused at the connection's subscription limit (the client's `SubscriptionLimitException`) fails with Symfony's `TransportException` naming the stream, the consumer and the limit, since the transport needs two subscriptions per connection (#76). Decodes each message and yields an `Envelope` carrying the JetStream reply token as its `TransportMessageIdStamp`, with `additional_subjects` the subject it arrived on as a `NatsReceivedSubjectStamp`, and in nats mode a `ReceivedInNatsModeStamp` with the same token, by which `AddUnrecoverableFailureStampListener` tells the deliveries whose failure nats mode reads (#125). |
+| `ack()` | Sends JetStream ACK for the message's reply token. A delivery whose retry copy `send()` left out is NAKed instead, with Symfony's delay under `retry_via=nak`. |
+| `reject()` | Delegates to `handleFailedDelivery()` → TERM (Symfony retry) or NAK (NATS retry). A delivery whose retry copy `send()` left out is NAKed, as in `ack()`. |
 | `getMessageCount()` | Tries consumer info (`num_ack_pending` / `num_pending`), falls back to stream `state.messages`, then 0. |
-| `setup()` | Creates the stream with configured retention/storage/replicas; if it already exists, reads the live config, merges subjects, and updates. The stream's subjects are the topic, any `additional_subjects` and, with `scheduled_messages`, `{topic}.delayed.>`. Then creates a durable **pull** consumer with explicit ACK / deliver-all and asserts it matches expectations. The consumer filters on the topic with `filter_subject`, or on the topic plus `additional_subjects` with `filter_subjects`; an existing consumer keeps the filters it has and gets the configured ones added. |
+| `setup()` | Creates the stream with configured retention/storage/replicas; if it already exists, reads the live config, merges subjects, and updates. The stream's subjects are the topic, any `additional_subjects` and, with `scheduled_messages`, `{topic}.delayed.>`. Then creates a durable **pull** consumer with explicit ACK / deliver-all and asserts it matches expectations. The consumer filters on the topic with `filter_subject`, or on the topic plus `additional_subjects` with `filter_subjects`; an existing consumer keeps the filters it has and gets the configured ones added. With `scheduled_messages` it first refuses a server before NATS 2.12, which would ignore the stream's setting. |
 
 Cross-cutting behavior:
 - **Lazy connection.** No socket is opened in the constructor. `jetStream()` calls `connectIfNeeded()`,
@@ -168,10 +182,13 @@ NatsTransportConfiguration  ← immutable, typed accessors apply clamping/unit c
 ```
 
 - **`TransportOption`** is the single source of truth for option keys; `DEFAULT_OPTIONS` must have an
-  entry for every case (enforced by `testDefaultOptionsCoversAllTransportOptionCases`).
+  entry for every case (enforced by `testDefaultOptionsCoversAllTransportOptionCases`). The builder refuses any
+  other key but `transport_name`, which FrameworkBundle adds (`assertKnownOptions()`).
 - **`NatsTransportConfiguration`** never returns raw option values - accessors normalize (e.g.
   `maxBatchTimeoutMs()` converts seconds→ms and clamps to ≥1, `streamMaxAgeSeconds()` clamps to ≥0).
 - **`RetryHandler`** encodes the TERM-vs-NAK failure strategy.
+- **`RetryVia`** chooses, in symfony mode, between publishing Symfony's retry copy and NAKing the delivery with
+  its delay.
 
 ### Serializer/ - payload encoding
 - `AbstractEnveloperSerializer` implements Symfony's `SerializerInterface` `encode()`/`decode()`,
@@ -200,7 +217,8 @@ the configuration, and the builder, and covered by its own unit tests plus a fun
 1. `messenger:consume nats_transport` loops `NatsTransport::get()`.
 2. `fetchBatch(...)` pulls up to `batching` messages (bounded by `max_batch_timeout`).
 3. Each non-empty message is decoded and yielded with its reply token.
-4. Handler success → `ack()`; failure/exception → `reject()` → TERM or NAK per `retry_handler`.
+4. Handler success → `ack()`; failure/exception → `reject()` → TERM or NAK per `retry_handler`; a delivery sent
+   for retry is NAKed, with Symfony's delay under `retry_via=nak`.
 
 **Setup**
 1. `messenger:setup-transports` → `NatsTransport::setup()`.

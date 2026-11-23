@@ -97,7 +97,8 @@ A quick tour (the full map is in [STRUCTURE.md](STRUCTURE.md)):
 - `src/Serializer/` - how messages are encoded on the wire.
 - `tests/unit/` - fast tests, no server required.
 - `tests/functional/` - Behat scenarios against a real NATS server.
-- `docs/` - changelog, the test-coverage map, and notes on merged PRs.
+- `docs/` - changelog, the test-coverage map, notes on merged PRs, and the reference for `retry_via`
+  (`docs/symfony_retry_via.md`).
 
 ## Want to contribute?
 

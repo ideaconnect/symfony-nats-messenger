@@ -5,6 +5,14 @@ declare(strict_types=1);
 namespace IDCT\NatsMessenger\Tests\Unit\Serializer;
 
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
+use IDCT\NatsMessenger\Tests\Support\AutoloadedInvoice;
+use IDCT\NatsMessenger\Tests\Support\DecodesOnWakeup;
+use IDCT\NatsMessenger\Tests\Support\NoticeOnUnserialize;
+use IDCT\NatsMessenger\Tests\Support\NoticeOnWakeup;
+use IDCT\NatsMessenger\Tests\Support\OwnCacheOnWakeup;
+use IDCT\NatsMessenger\Tests\Support\RecordedErrors;
+use IDCT\NatsMessenger\Tests\Support\SuppressedWarningOnWakeup;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
@@ -208,16 +216,200 @@ class IgbinarySerializerTest extends TestCase
         $this->serializer->decode($encodedEnvelope);
     }
 
+    /**
+     * A body that is not igbinary makes igbinary warn: the warning is the decoding failure, and is not raised.
+     */
     #[Test]
     public function decode_WithInvalidSerializedData_ThrowsMessageDecodingFailed(): void
     {
         $encodedEnvelope = ['body' => 'invalid serialized data'];
 
         $this->expectException(MessageDecodingFailedException::class);
-        $this->expectExceptionMessage('Deserialized data is not a valid Symfony Messenger Envelope.');
+        $this->expectExceptionMessage('Could not decode the envelope: igbinary_unserialize_header: unsupported version');
 
-        // Suppress igbinary warning
-        @$this->serializer->decode($encodedEnvelope);
+        $this->serializer->decode($encodedEnvelope);
+    }
+
+    /**
+     * Symfony's error handler throws a warning as an ErrorException in debug mode, which a transport would not take for
+     * a decode failure, and would leave the message to come back for ever: the warning is a MessageDecodingFailedException
+     * whatever handles errors, as with Symfony's PhpSerializer.
+     */
+    #[Test]
+    public function decode_WithInvalidSerializedDataUnderAnErrorHandlerThatThrows_ThrowsMessageDecodingFailed(): void
+    {
+        set_error_handler(static function (int $type, string $message): never {
+            throw new \ErrorException($message, 0, $type);
+        });
+
+        try {
+            $this->serializer->decode(['body' => 'invalid serialized data']);
+            $this->fail('decode() should have failed');
+        } catch (MessageDecodingFailedException $failure) {
+            $this->assertStringStartsWith('Could not decode the envelope: igbinary_unserialize_header', $failure->getMessage());
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    /**
+     * A message whose __wakeup() or __unserialize() raises a warning or a notice, one it suppresses too, decodes: the
+     * error is the application's, and goes to the error handler there was, as up to 5.9.x. 5.10.0 made every such
+     * message one that cannot be decoded, and the transport TERMed it without its handler running (#122).
+     */
+    #[DataProvider('messagesWhoseRestoreRaisesAnError')]
+    #[Test]
+    public function decode_OfAMessageWhoseRestoreRaisesAnError_DecodesAndPassesTheErrorOn(object $message, int $type, string $error): void
+    {
+        $envelope = new Envelope($message, [new BusNameStamp('bus')]);
+        $encoded = $this->serializer->encode($envelope);
+
+        [$decoded, $seen] = RecordedErrors::during(fn (): Envelope => $this->serializer->decode($encoded));
+
+        $this->assertEquals($envelope, $decoded);
+        $this->assertSame([[$type, $error]], $seen);
+    }
+
+    /**
+     * @return iterable<string, array{object, int, string}>
+     */
+    public static function messagesWhoseRestoreRaisesAnError(): iterable
+    {
+        yield 'a suppressed warning in __wakeup()' => [
+            new SuppressedWarningOnWakeup('invoice 7'),
+            E_WARNING,
+            'hex2bin(): Hexadecimal input string must have an even length',
+        ];
+        yield 'a notice in __wakeup()' => [new NoticeOnWakeup('invoice 8'), E_USER_NOTICE, 'rebuilt a lazy field'];
+        yield 'a notice in __unserialize()' => [new NoticeOnUnserialize('invoice 9'), E_USER_NOTICE, 'restored from an older format'];
+        // An unserialize() call too, but one inside the decoder's: PHP 8.3 made its notice a warning.
+        yield 'an unserialize() of its own cache in __wakeup()' => [
+            new OwnCacheOnWakeup('invoice 10'),
+            PHP_VERSION_ID >= 80300 ? E_WARNING : E_NOTICE,
+            'unserialize(): Error at offset 0 of 20 bytes',
+        ];
+    }
+
+    /**
+     * A message whose class an autoloader loads during the decode, raising a warning it suppresses, decodes, and the
+     * warning goes to the error handler there was (#122).
+     */
+    #[Test]
+    public function decode_OfAMessageWhoseClassAnAutoloaderLoadsWithAWarning_DecodesAndPassesTheWarningOn(): void
+    {
+        ['body' => $body, 'class' => $class] = AutoloadedInvoice::inABodyUnderANewName('invoice 11', $this->serializer);
+        $loader = AutoloadedInvoice::loaderWithASuppressedWarning($class);
+        spl_autoload_register($loader);
+
+        try {
+            [$decoded, $seen] = RecordedErrors::during(fn (): Envelope => $this->serializer->decode(['body' => $body]));
+        } finally {
+            spl_autoload_unregister($loader);
+        }
+
+        $this->assertEquals(new Envelope(new AutoloadedInvoice('invoice 11')), $decoded);
+        $this->assertSame([[E_WARNING, sprintf('Undefined array key "%s"', $class)]], $seen);
+    }
+
+    /**
+     * A payload igbinary cannot read, whatever is wrong with it, is a MessageDecodingFailedException with igbinary's own
+     * warning, under an error handler that lets warnings go as under one that throws them, and with none: the warning
+     * comes from the igbinary_unserialize() call of the decoder itself, and no handler sees it.
+     */
+    #[DataProvider('payloadsIgbinaryCannotReadUnderEachErrorHandler')]
+    #[Test]
+    public function decode_OfAPayloadIgbinaryCannotRead_ThrowsMessageDecodingFailedWithItsWarning(string $damage, string $warning, string $handler): void
+    {
+        $body = igbinary_serialize(new Envelope(new \stdClass()));
+        $body = match ($damage) {
+            'header' => 'invalid serialized data',
+            'truncated' => substr((string) $body, 0, -3),
+            'trailing byte' => $body . "\x00",
+        };
+        $seen = [];
+        set_error_handler(match ($handler) {
+            'lets warnings go' => static function (int $type, string $message) use (&$seen): bool {
+                $seen[] = $message;
+
+                return true;
+            },
+            'throws them' => static function (int $type, string $message) use (&$seen): never {
+                $seen[] = $message;
+
+                throw new \ErrorException($message, 0, $type);
+            },
+            'none' => null,
+        });
+
+        try {
+            $this->serializer->decode(['body' => $body]);
+            $this->fail('decode() should have failed');
+        } catch (MessageDecodingFailedException $failure) {
+            $this->assertStringStartsWith('Could not decode the envelope: igbinary_unserialize', $failure->getMessage());
+            $this->assertStringContainsString($warning, $failure->getMessage());
+            $this->assertNull($failure->getPrevious());
+        } finally {
+            restore_error_handler();
+        }
+
+        $this->assertSame([], $seen);
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string}>
+     */
+    public static function payloadsIgbinaryCannotReadUnderEachErrorHandler(): iterable
+    {
+        $damages = [
+            'header' => 'unsupported version',
+            'truncated' => 'end-of-data',
+            'trailing byte' => 'received more data to unserialize than expected',
+        ];
+        foreach ($damages as $damage => $warning) {
+            foreach (['lets warnings go', 'throws them', 'none'] as $handler) {
+                yield sprintf('%s, under a handler that %s', $damage, $handler) => [$damage, $warning, $handler];
+            }
+        }
+    }
+
+    /**
+     * A subclass, in another file, whose deserialize() raises a warning itself: the warning is the decoder's, and the
+     * decoding failure.
+     */
+    #[Test]
+    public function decode_OfASubclassWhoseDeserializeRaisesAWarning_ThrowsMessageDecodingFailed(): void
+    {
+        $serializer = new class extends IgbinarySerializer {
+            protected function deserialize(string $data): mixed
+            {
+                trigger_error('the payload comes from an older producer', E_USER_WARNING);
+
+                return parent::deserialize($data);
+            }
+        };
+
+        $this->expectException(MessageDecodingFailedException::class);
+        $this->expectExceptionMessage('Could not decode the envelope: the payload comes from an older producer');
+
+        $serializer->decode($serializer->encode(new Envelope(new \stdClass())));
+    }
+
+    /**
+     * A decode that runs while an unserialize() of the application runs, from the __wakeup() of an object it restores,
+     * reads only the calls of its own decode: igbinary's warning about a payload that is not igbinary is still the
+     * decoding failure, though another unserialize() is running further out.
+     */
+    #[Test]
+    public function decode_InsideAnUnserializeOfTheApplication_StillFailsOnIgbinarysWarning(): void
+    {
+        [$restored, $seen] = RecordedErrors::during(
+            static fn (): mixed => unserialize(serialize(new DecodesOnWakeup('invalid serialized data'))),
+        );
+
+        $this->assertInstanceOf(DecodesOnWakeup::class, $restored);
+        $this->assertInstanceOf(MessageDecodingFailedException::class, $restored->decoded);
+        $this->assertStringStartsWith('Could not decode the envelope: igbinary_unserialize_header', $restored->decoded->getMessage());
+        $this->assertSame([], $seen);
     }
 
     #[Test]

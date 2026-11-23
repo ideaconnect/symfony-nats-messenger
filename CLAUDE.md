@@ -8,11 +8,11 @@ for Claude Code. For architecture see [STRUCTURE.md](STRUCTURE.md); for human on
 
 A Symfony Messenger **transport** for NATS JetStream. It implements `TransportInterface`,
 `MessageCountAwareInterface`, and `SetupableTransportInterface`, bridging Symfony's message bus to
-NATS via the async `idct/php-nats-jetstream-client` (`^2.29`, amphp-based). It ships
+NATS via the async `idct/php-nats-jetstream-client` (`^2.30.1`, amphp-based). It ships
 `IDCTNatsMessengerBundle` (auto-enabled by Flex), which registers the transport factory
 and the igbinary serializer so projects need no manual wiring.
 
-- **PHP:** `^8.2` · **Symfony:** `^7.2 || ^8` · **NATS:** `^2.9` (`^2.10` for `additional_subjects`, `^2.12` for scheduled messages)
+- **PHP:** `^8.2` · **Symfony:** `^7.3 || ^8` · **NATS:** `^2.9` (`^2.10` for `additional_subjects`, `^2.12` for scheduled messages)
 - Everything NATS-specific lives behind the `IDCT\NATS\…` client; this library is the synchronous adapter.
 
 ## Project memory
@@ -67,7 +67,9 @@ composer nats:stop               # stop NATS
   Behat configuration is `tests/functional/behat.php`: Behat 4 reads neither doc-comment annotations nor YAML. The
   configuration is strict, so a scenario with an undefined step fails the run instead of being skipped.
 - `TransportOption` is the single source of truth for option keys; every case needs a `DEFAULT_OPTIONS`
-  entry in `NatsTransportConfigurationBuilder` (guarded by `testDefaultOptionsCoversAllTransportOptionCases`).
+  entry in `NatsTransportConfigurationBuilder` (guarded by `testDefaultOptionsCoversAllTransportOptionCases`). The
+  builder refuses any other key but `transport_name`, which FrameworkBundle adds (`assertKnownOptions()`), so an
+  option a test or an example passes must be a case.
 - Mark DSN/credential parameters with `#[\SensitiveParameter]`.
 - Use `TypeCoercion` (static helpers) for `mixed → scalar` casting rather than ad-hoc casts.
 - Match the surrounding style: typed properties, readonly value objects, rich doc-comments.
@@ -132,7 +134,9 @@ composer nats:stop               # stop NATS
   JetStream API replies before it stops the first consumer, lameDuckMode() stops JetStream before it sends the `ldm`
   INFO) and closes the connection or announces lame duck mode: `ServerGoingAway`, an empty batch, and the next
   operation checks the connection first. `NoAnswer`, on a connection that stays (a user not allowed to ask for consumer
-  info), keeps the reading too, so a missing consumer is never hidden. The client, not the transport, ends the wait
+  info, whose question the server refuses at once and the client then watches the connection for until
+  `request_timeout`), keeps the reading too, so a missing consumer is never hidden. Client 2.30.1 (#131) keeps that watch
+  to `request_timeout` with `reconnect: true` as well: 2.30.0 returned only once the reconnect was over. The client, not the transport, ends the wait
   once the connection is closed, being recovered or replaced, or in lame duck mode. To reproduce lame duck mode in a
   test, signal the server from inside its container (`docker exec <c> kill -USR2 1`): `docker kill` marks the container
   stopped by hand, and docker then does not start it again under `restart: always`.
@@ -146,7 +150,30 @@ composer nats:stop               # stop NATS
   its filters too: the configured ones are added to them, never written in their place.
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
   `retry_handler=nats` → NAK (NATS redelivers), and `send()` skips the copy Symfony's retry sends (a received
-  envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode.
+  envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode. Nats mode TERMs what can
+  never succeed: a failure Symfony marks as unrecoverable and a message that cannot be decoded; a failure transport
+  is not for that mode (README). A HandlerFailedException is unrecoverable only when every exception it wraps
+  directly is (#125): the bundle's `AddUnrecoverableFailureStampListener` (priority -101, after Symfony's copies) says
+  so with an `UnrecoverableFailureStamp`, `false` included, and only without it does the transport go by the first
+  exception, which Symfony's `ErrorDetailsStamp` names. The listener stamps only a delivery `get()` marked in nats mode
+  with a `ReceivedInNatsModeStamp` holding the token of its `TransportMessageIdStamp`. In symfony mode,
+  `retry_via: nak` (default `copy`) leaves that copy out as well, and the worker's `ack()` or `reject()` of the
+  delivery NAKs it with the copy's `DelayStamp` delay (0 a plain NAK). A retry no NAK can carry is still
+  published: a copy without its delivery token, and the retry of the last delivery `max_deliver` allows. `get()`
+  adds `numDelivered - 1` to the retry count a message carries. With `nak` the builder refuses a positive
+  `nak_delay` and `backoff`, and in nats mode it refuses any `retry_via`. See
+  [docs/symfony_retry_via.md](docs/symfony_retry_via.md).
+- **A message that cannot be decoded is handled as Symfony's own transports handle it** (Doctrine, Redis, AMQP):
+  only a `MessageDecodingFailedException` counts. From Symfony Messenger 8.1 on it becomes a
+  `MessageDecodingFailedException` message (`decodingFailure()`, made through reflection so that PHPStan passes
+  on 7.4 as well), as 8.1's `ReceiverInterface` asks; before 8.1 `get()` TERMs it and throws, which stops the worker
+  (`messengerPassesOnDecodeFailures()`). Any other exception propagates with the message unsettled. Bartosz asked
+  for this behaviour, not a logger that decides. Messenger 8.1.11 and later fail a thrown failure once, as
+  unrecoverable; 8.1.0 to 8.1.10 retry it, which the delivery count keeps bounded with `nak`. The serializers turn
+  every failure of their decoder, warnings included, into that exception, but not a warning or notice of the
+  application's code that unserializing runs (a message's `__wakeup()`, an autoloader): that one goes to the error
+  handler there was, and an exception that handler throws propagates as it is (#122). Which code raised it is read
+  from the call stack (`raisedByTheDecoder()`), not from a file or line range.
 - **`keepalive()` queues, never waits.** Symfony calls it from a SIGALRM handler, where fibers cannot switch,
   so it queues `inProgress()->ignore()`, which goes out the next time the event loop runs.
 - **Duplicate protection:** a `DeduplicationIdStamp`, added on the first send with `deduplicate` or by the
@@ -156,7 +183,9 @@ composer nats:stop               # stop NATS
 - **Serializers strip non-sendable stamps** (`NonSendableStampInterface`, such as the worker's `AckStamp`,
   which holds a closure) before encoding, as Symfony's own serializers do.
 - **Scheduled messages:** only when `scheduled_messages=true` does a `DelayStamp` route to
-  `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored.
+  `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored. A server before 2.12
+  ignores the stream setting without rejecting it, so `setup()` and the send of a delayed message read the
+  server's version from the connection and refuse (`schedulesUnsupportedByTheServer()`).
 - **Publish subject:** a `NatsSubjectStamp` (non-sendable) wins when the transport's consumer reads its subject
   (the topic, or a match of an `additional_subjects` pattern), as Symfony hands every transport a message is routed
   to the same envelope; then, for Symfony's retry, the subject `get()`
@@ -180,6 +209,8 @@ composer nats:stop               # stop NATS
 - `docs/TESTS.md` - update whenever tests are added, removed, or renamed (feature → test map).
 - `docs/CHANGELOG.md` - Keep a Changelog format; add items under `## [Unreleased]` as you go.
 - `docs/PRs/` - when a PR is merged or adapted, add `PR-NNN-short-description.md`.
+- `docs/symfony_retry_via.md` - the reference for `retry_via`: update it when a retry path changes, or when a
+  measurement of the server's behaviour does.
 - Keep README "Tested by:" references pointing at real test method names.
 
 ## Repository facts
@@ -190,3 +221,6 @@ composer nats:stop               # stop NATS
   (#89 through #101). Bring `main` into a branch by merging it, for the same reason.
 - Tasks and findings are tracked as **GitHub issues** (`gh issue …`).
 - CI matrix: PHP `8.2` and `8.5`; functional suite runs against plain / TLS / mTLS / operator-mode / token NATS in Docker.
+  The PHP 8.2 leg runs the lowest client release, and a Symfony Messenger that rejects a message it sent for retry
+  (7.4.0 in the unit tests, 7.4.21 in the functional test app); the PHP 8.5 leg runs one that acknowledges it.
+  `scripts/check-messenger-rejects-a-retry.php` fails the lowest leg if that ever stops being so.

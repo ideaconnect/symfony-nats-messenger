@@ -29,7 +29,8 @@ class SendFailingMessagesCommand extends Command
         $this
             ->addArgument('count', InputArgument::REQUIRED, 'Number of messages to send')
             ->addOption('retryable', null, InputOption::VALUE_NONE, 'Messages should eventually succeed on retry')
-            ->addOption('subject', null, InputOption::VALUE_REQUIRED, 'Publish to this subject instead of the topic (NatsSubjectStamp)');
+            ->addOption('subject', null, InputOption::VALUE_REQUIRED, 'Publish to this subject instead of the topic (NatsSubjectStamp)')
+            ->addOption('unrecoverable', null, InputOption::VALUE_NONE, 'Messages fail with an exception Symfony never retries');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -48,6 +49,7 @@ class SendFailingMessagesCommand extends Command
                 content: "Failing message {$i} of {$count}",
                 messageId: $i,
                 shouldEventuallySucceed: $retryable,
+                unrecoverable: (bool) $input->getOption('unrecoverable'),
             );
 
             $this->messageBus->dispatch($message, $stamps);
