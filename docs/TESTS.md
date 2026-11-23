@@ -513,7 +513,7 @@ Runs against the plain server (port 4222, `tests/nats/nats.conf`), whose user `n
 
 | Feature | Scenarios |
 |---------|-----------|
-| **A worker whose user may not pull stops with the permission it needs (#130)** | A worker whose user may not pull stops with the permission it needs (the admin sets up the stream and the consumer `worker` and sends a message; `messenger:consume` as `nopull`, with `auto_setup` off, exits nonzero saying `Cannot pull from NATS stream "stream", consumer "worker". Grant the worker permission to publish to "$JS.API.CONSUMER.MSG.NEXT.stream.worker".`; the message is still waiting, and the admin's worker consumes it. With client 2.30.1 the worker ran until its 10 s time limit and exited 0) |
+| **A worker whose user may not pull stops with the permission it needs (#130)** | A worker whose user may not pull stops with the permission it needs (the admin sets up the stream and the consumer `worker` and sends a message; `messenger:consume` as `nopull`, with `auto_setup` off and `max_batch_timeout` 60 s, exits nonzero saying `Cannot pull from NATS stream "stream", consumer "worker". Grant the worker permission to publish to "$JS.API.CONSUMER.MSG.NEXT.stream.worker".`; the message is still waiting, and the admin's worker consumes it. The 60 s pull outlasts the step's 30 s process timeout, so a refusal reported only when the pull expires fails the step: with client 2.30.1, and with the exception held for the pull's time, the process ran into that timeout; with the 1 s default the held exception still passed) |
 
 ### Type Coercion (`tests/functional/features/nats_type_coercion.feature`)
 
