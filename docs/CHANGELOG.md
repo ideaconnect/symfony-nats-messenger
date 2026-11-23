@@ -59,6 +59,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy. An application without the bundle registers it in its services.yaml with the `kernel.event_subscriber` tag,
   and a worker built by hand adds it to its event dispatcher with `addSubscriber()` (README, "Retry Handler Behavior").
 
+### Documentation
+
+- **The README lists the permissions a worker's NATS user needs** (#130, "Permissions a Worker Needs"): publish to the
+  pull subject `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`; to the reply subjects of the deliveries, in the v1
+  form `$JS.ACK.<stream>.<consumer>.>` and, on a server with the feature flag `js_ack_fc_v2` (NATS 2.14 and later), the
+  v2 form `$JS.ACK.<domain>.<account-hash>.<stream>.<consumer>.>` (`_` for an unset domain); to `<topic>` and, with
+  `scheduled_messages`, `<topic>.delayed.>` for Symfony's retry copies; to `$JS.API.CONSUMER.INFO.<stream>.<consumer>`;
+  with `scheduled_messages` to `$JS.API.STREAM.INFO.<stream>` (and `$JS.API.CONSUMER.LIST.<stream>` on an interest
+  stream) for the check before the first pull; the management API with `auto_setup`; and the topic of a NATS failure
+  transport for its credentials. Checked on nats-server 2.15.2 with the flag on and off: a user with exactly these
+  grants pulls, acknowledges and publishes both retry copies; with the flag on, one with the v1 form alone leaves the
+  delivery pending.
+
 ### Testing & CI
 
 - **Two handlers through Symfony's Worker** with its error-details and retry listeners and `max_retries: 0`:
@@ -92,9 +105,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A worker whose user may not pull (#130):** the plain test server gets a user `nopull` that may do everything but
   pull from a consumer named `worker` (`tests/nats/nats.conf`). The Behat scenario `A worker whose user may not pull
   stops with the permission it needs` (`nats_pull_permission.feature`) runs `messenger:consume` as that user with
-  `auto_setup` off and expects a nonzero exit and the subject in the error, then consumes the waiting message as the
-  admin; with client 2.30.1 the worker ran until its 10 s time limit and exited 0. The example `refused-pull.php` shows
-  the same through `get()`. Unit tests: `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndTheNextOperationChecksNothing`
+  `auto_setup` off and `max_batch_timeout` 60 s, and expects a nonzero exit and the subject in the error, then consumes
+  the waiting message as the admin. The 60 s pull outlasts the step's 30 s process timeout, so a refusal reported only
+  when the pull expires fails the scenario: with client 2.30.1 the worker's process ran into that timeout. The example
+  `refused-pull.php` shows the same through `get()`. Unit tests: `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndTheNextOperationChecksNothing`
   and `testAutoSetupPullRefusedForLackOfPermissionFailsWithATransportException`.
 
 ## [5.10.1] - 2026-11-21

@@ -1427,11 +1427,32 @@ A pull is a publish to `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`, with a r
 A worker's NATS user therefore needs, besides the subscribe permission for the client's reply inboxes (`_INBOX.>`):
 
 - **publish to `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`**, to pull;
-- publish to `$JS.ACK.<stream>.<consumer>.>`, the reply subjects of the deliveries, to acknowledge, NAK or TERM them;
+- publish to the reply subjects of the deliveries, to acknowledge, NAK or TERM them:
+  - `$JS.ACK.<stream>.<consumer>.>`, the v1 form NATS uses by default;
+  - `$JS.ACK.<domain>.<account-hash>.<stream>.<consumer>.>`, the v2 form, on a server with the feature flag
+    `js_ack_fc_v2` (`feature_flags { js_ack_fc_v2: true }`, NATS 2.14 and later, off by default). `<domain>` is the
+    JetStream domain, `_` when none is set, and `<account-hash>` the 8 characters the server derives from the
+    account's name: the third and fourth tokens of a delivery's reply subject. `$JS.ACK.*.*.<stream>.<consumer>.>`
+    grants it without naming them. A user with only the v1 form receives the deliveries of such a server but cannot
+    settle them: the delivery stays pending. With `ack_sync` the acknowledgement fails with the client's
+    `PermissionViolationException`; without it `ack()` returns as if it had worked;
+- publish to `<topic>`, for the copies Symfony's retries publish with `retry_via: copy` (the default), and with
+  `scheduled_messages` to `<topic>.delayed.>`, where a retry with a delay goes. `retry_via: nak` needs the same for
+  the retries it still publishes as a copy (see [Retrying through a NAK](#retrying-through-a-nak-retry_via-nak)).
+  Without it, the retry's publish after the handler's failure fails with `PermissionViolationException` on that
+  subject;
 - publish to `$JS.API.CONSUMER.INFO.<stream>.<consumer>`, for `messenger:stats`, the diagnosis of a pull's 503 and the
   consumer's `max_deliver` with `retry_via: nak`;
+- with `scheduled_messages`, publish to `$JS.API.STREAM.INFO.<stream>`, and on a stream with interest retention to
+  `$JS.API.CONSUMER.LIST.<stream>`, for the check before the first pull that the stream keeps the delayed messages
+  (see [Delayed / Scheduled Messages](#delayed--scheduled-messages)). Without them the worker goes on, after an error
+  line from the client and a warning that the stream could not be checked, once per worker process;
 - with `auto_setup`, what `messenger:setup-transports` needs: the stream and consumer management API under
   `$JS.API.STREAM.` and `$JS.API.CONSUMER.`.
+
+When the failure transport is a NATS transport too, the worker's process sends the messages Symfony gives up on
+through it, with the credentials of that transport's DSN: they need publish access to its topic, and with
+`auto_setup` what its setup needs.
 
 The server refuses a pull the user may not publish with `-ERR 'Permissions Violation for Publish to "..."'` and keeps
 the connection open. The client fails such a pull at once with its `PermissionViolationException`
