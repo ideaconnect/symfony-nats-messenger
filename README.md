@@ -1461,17 +1461,30 @@ through it, with the credentials of that transport's DSN. They need both of thes
 - **publish to the failure transport's topic**, for the copy;
 - **subscribe to the client's reply inboxes (`_INBOX.>`)**, where JetStream's acknowledgement of that publish arrives.
 
-Without the second, the send fails with the client's `ConnectionException` (`request/reply is unavailable on this
-connection: the shared reply-inbox subscription "_INBOX.<inbox>.*" was rejected by the server (permissions
-violation). ...`), and the worker stops before it settles the original, which stays pending. JetStream may already
-have stored the copy when the send fails. Redelivery can then produce another copy. Measured on nats-server 2.15.2:
-two copies after two worker runs by default; one with `deduplicate: true` on the transport the message came from,
-whose id the copy keeps, so that JetStream drops the copy sent again within the failure stream's duplicate window
-(see [Duplicate Protection](#duplicate-protection)); none with `auto_setup` on the failure transport, whose setup
+Without the second, the send fails, and the worker stops before it settles the original, which stays pending. Which
+exception reaches the worker depends on `auto_setup` on the failure transport:
+
+- without it (the default), the client's `IDCT\NATS\Exception\ConnectionException`, as the publish threw it
+  (`request/reply is unavailable on this connection: the shared reply-inbox subscription "_INBOX.<inbox>.*" was
+  rejected by the server (permissions violation). ...`);
+- with it, a plain `\RuntimeException` from the failure transport's setup, which its first `send()` runs and whose
+  first request fails the same way before anything is published (`Failed to setup NATS stream '<stream>':
+  request/reply is unavailable ...`), with that `ConnectionException` as its `getPrevious()`.
+
+Both are `\RuntimeException`s (the client's `ConnectionException` extends its `NatsException`, a `\RuntimeException`).
+A `catch (ConnectionException $e)` takes only the first: to take both, catch `\RuntimeException` and check the
+exception or its `getPrevious()` for a `ConnectionException`.
+
+Without `auto_setup`, JetStream may already have stored the copy when the send fails, and redelivery can then produce
+another copy. Measured on nats-server 2.15.2, after two worker runs: two copies by default; one with
+`deduplicate: true` on the transport in the process that published the original, whose send gives the message the id
+the copy keeps, so that JetStream drops the copy sent again within the failure stream's duplicate window (see
+[Duplicate Protection](#duplicate-protection)); two again with `deduplicate: true` only in the worker's configuration
+of that transport, since the message then carries no id; none with `auto_setup` on the failure transport, whose setup
 failed before the first copy. With `auto_setup` the failure transport's credentials need what its setup needs as
 well.
 
-> **Tested by:** Behat scenario `A failure transport whose own user may publish to its topic and receive its replies takes one copy and the original is settled` (`nats_term.feature`), `testAStreamThatCannotBeReadIsLetThroughWithOneWarning`, `testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull`, `testWithAutoSetupTheFirstSendFailsTheSetupOnAStreamThatCannotBeRead`, `testWithAutoSetupAConsumerListThatCannotBeReadIsLetThroughWithOneWarning`
+> **Tested by:** Behat scenario `A failure transport whose own user may publish to its topic and receive its replies takes one copy and the original is settled` (`nats_term.feature`), `testWithoutAutoSetupAFailureCopyWhoseReplyInboxIsRefusedThrowsTheClientsConnectionException`, `testWithAutoSetupTheFirstFailureCopyWhoseReplyInboxIsRefusedThrowsTheSetupsRuntimeException`, `testAStreamThatCannotBeReadIsLetThroughWithOneWarning`, `testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull`, `testWithAutoSetupTheFirstSendFailsTheSetupOnAStreamThatCannotBeRead`, `testWithAutoSetupAConsumerListThatCannotBeReadIsLetThroughWithOneWarning`
 
 The server refuses a pull the user may not publish with `-ERR 'Permissions Violation for Publish to "..."'` and keeps
 the connection open. The client fails such a pull at once with its `PermissionViolationException`

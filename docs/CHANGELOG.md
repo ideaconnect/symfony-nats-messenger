@@ -75,10 +75,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$JS.API.STREAM.INFO.<stream>`, and a refusal fails it, and with it the `get()` or `send()` that ran it, before the
   first pull or publish, while a refused consumer list is let through with the warning there too. So a process that
   only publishes checks the stream only with `auto_setup`, in its first `send()`. Without the subscribe grant, a
-  failure transport's send fails with `ConnectionException`, and the original stays pending. JetStream may
-  already have stored the copy when the send fails, and redelivery can then produce another copy (measured on
-  nats-server 2.15.2: two copies after two worker runs by default, one with `deduplicate: true` on the transport the
-  message came from, none with `auto_setup` on the failure transport, whose setup failed first). Checked on
+  failure transport's send fails and the original stays pending. What reaches the worker depends on that transport's
+  `auto_setup`: without it, the client's `IDCT\NATS\Exception\ConnectionException`, as the publish threw it; with it,
+  a plain `\RuntimeException` from the setup its first `send()` runs (`Failed to setup NATS stream '<stream>': ...`),
+  before anything is published, with that `ConnectionException` as `getPrevious()`. A `catch (ConnectionException)`
+  takes only the first. Without `auto_setup`, JetStream may already have stored the copy when the send fails, and
+  redelivery can then produce another copy (measured on nats-server 2.15.2, after two worker runs: two copies by
+  default; one with `deduplicate: true` on the transport in the process that published the original, whose send gives
+  the message the id the copy keeps; two with it only in the worker's configuration of that transport; none with
+  `auto_setup` on the failure transport, whose setup failed first). Checked on
   nats-server 2.15.2 with the flag on and off: a user with exactly these grants pulls, acknowledges and publishes both
   retry copies; with the flag on, one with the v1 form alone leaves the delivery pending.
 
@@ -128,10 +133,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sends a message that always fails through a worker whose failure transport logs in as that user with `auto_setup`
   off, and expects one message in the failure stream and nothing pending on the source consumer, both read as the
   admin. With the subscribe grant taken away it fails: in that run JetStream stored the copy, but the send failed with
-  `ConnectionException` and the original stayed awaiting acknowledgement. Unit tests for a refused read of the stream
-  with `scheduled_messages` and `auto_setup`: `testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull`
-  (`get()` fails in the setup, before any pull), `testWithAutoSetupTheFirstSendFailsTheSetupOnAStreamThatCannotBeRead`
-  (the same for a process that only publishes: its first `send()` fails in the setup, nothing published) and
+  `ConnectionException` and the original stayed awaiting acknowledgement. Unit tests of what reaches the worker then:
+  `testWithoutAutoSetupAFailureCopyWhoseReplyInboxIsRefusedThrowsTheClientsConnectionException` (the client's exception
+  as it is) and `testWithAutoSetupTheFirstFailureCopyWhoseReplyInboxIsRefusedThrowsTheSetupsRuntimeException` (a plain
+  `\RuntimeException` from the setup, the client's exception as previous, nothing published). Unit tests for a refused
+  read of the stream with `scheduled_messages` and `auto_setup`:
+  `testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull` (`get()` fails in the setup, before any pull),
+  `testWithAutoSetupTheFirstSendFailsTheSetupOnAStreamThatCannotBeRead` (the same for a process that only publishes:
+  its first `send()` fails in the setup, nothing published; in both no transport warning) and
   `testWithAutoSetupAConsumerListThatCannotBeReadIsLetThroughWithOneWarning`; `testWithoutAutoSetupASendChecksNoStream`
   pins that without `auto_setup` a delayed send to an interest stream reads neither the stream nor its consumers.
 
