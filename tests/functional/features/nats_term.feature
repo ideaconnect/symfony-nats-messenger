@@ -18,9 +18,9 @@ Feature: Symfony failure transport via TERM
 
   # A failure transport with credentials of its own, which the admin set up (auto_setup off), as the README's
   # "Permissions a Worker Needs" lists them: publish to its topic, and subscribe to the reply inboxes, where JetStream's
-  # acknowledgement of the publish arrives. Without the subscribe grant JetStream stores the copy, but the send fails
-  # with a ConnectionException, the worker stops with the original still pending, and the next worker that receives
-  # it again stores a second copy (#130).
+  # acknowledgement of the publish arrives. Without the subscribe grant the send fails with a ConnectionException and
+  # the worker stops with the original still pending. JetStream may already have stored the copy when the send fails.
+  # Redelivery can then produce another copy (#130).
   @term @permissions
   Scenario: A failure transport whose own user may publish to its topic and receive its replies takes one copy and the original is settled
     Given NATS server is running

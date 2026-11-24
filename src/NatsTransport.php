@@ -2195,16 +2195,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * was gone, with no failure-transport copy (measured on nats-server 2.15.2, one server and three replicas). NATS
      * calls this intended (ADR-51, "Stream Retention Interaction"; nats-server issue #7408).
      *
-     * Checked by setup(), before it writes the stream ({@see assertTheStreamToSetUpKeepsDelayedMessages()}), and by a
-     * worker before its first pull, since a worker sends Symfony's delayed retries; a process that only publishes is
-     * not checked. A stream with limits or work-queue retention passes, and so does an interest stream with a consumer
-     * whose filter covers the delayed subjects, such as one an operator added that nobody pulls from (ADR-51's
-     * pinning consumer). Once it passes it is not checked again by this transport object. A stream or consumer list a
-     * user may not read is logged once and let through, as the permission is the user's; in setup(), which reads the
-     * stream itself first ({@see assertTheStreamToSetUpKeepsDelayedMessages()}), only the consumer list is. A stream
-     * that does not exist is not checked yet: the pull reports it, or auto_setup creates it and checks it. Any other
-     * failure propagates, as the pull's would: the first form of 5.9.1 took a failed dial for an unreadable stream,
-     * logged it, dialled again for the pull, and never checked again on that transport object.
+     * Checked by setup(), before it writes the stream ({@see assertTheStreamToSetUpKeepsDelayedMessages()}), which
+     * auto_setup runs for the first get() or send(), and by a worker before its first pull, since a worker sends
+     * Symfony's delayed retries; without auto_setup a process that only publishes is not checked. A stream with limits
+     * or work-queue retention passes, and so does an interest stream with a consumer whose filter covers the delayed
+     * subjects, such as one an operator added that nobody pulls from (ADR-51's pinning consumer). Once it passes it is
+     * not checked again by this transport object. A stream or consumer list a user may not read is logged once and let
+     * through, as the permission is the user's; in setup(), which reads the stream itself first
+     * ({@see assertTheStreamToSetUpKeepsDelayedMessages()}), only the consumer list is. A stream that does not exist
+     * is not checked yet: the pull reports it, or auto_setup creates it and checks it. Any other failure propagates, as
+     * the pull's would: the first form of 5.9.1 took a failed dial for an unreadable stream, logged it, dialled again
+     * for the pull, and never checked again on that transport object.
      *
      * @throws TransportException When the stream would drop every delayed message.
      */
