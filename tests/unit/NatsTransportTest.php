@@ -6442,8 +6442,9 @@ final class NatsTransportTest extends TestCase
     /**
      * With auto_setup, setup() reads the stream that exists before it writes it, and that read is setup()'s own: a
      * user who may not read the stream ($JS.API.STREAM.INFO.<stream>) fails setup(), and with it the get() that ran
-     * it, before the first pull and with nothing logged. Without auto_setup the check before the first pull lets the
-     * refusal through with a warning; a refused consumer list is let through by both (#130).
+     * it, before the first pull and with no transport warning (on a real server the client logs an error line of its
+     * own for the refusal). Without auto_setup the check before the first pull lets the refusal through with a
+     * warning; a refused consumer list is let through by both (#130).
      */
     public function testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull(): void
     {
@@ -6499,7 +6500,8 @@ final class NatsTransportTest extends TestCase
     /**
      * With auto_setup, a process that only publishes runs setup() for its first send(), and setup() reads the stream
      * there as well: a user who may not read it ($JS.API.STREAM.INFO.<stream>) fails that send() in the setup, before
-     * anything is published, with nothing logged (#130).
+     * anything is published, with no transport warning (#130). On a real server the client logs an error line of its
+     * own for the refusal.
      */
     public function testWithAutoSetupTheFirstSendFailsTheSetupOnAStreamThatCannotBeRead(): void
     {
@@ -6542,6 +6544,76 @@ final class NatsTransportTest extends TestCase
         $transport->setJetStreamContext($jetStream);
 
         $transport->send(new Envelope(new \stdClass(), [new DelayStamp(5000)]));
+    }
+
+    /**
+     * A failure transport whose user may publish to its topic but not subscribe to the reply inboxes (_INBOX.>)
+     * never receives JetStream's acknowledgement, and the client fails the request with its ConnectionException about
+     * the rejected reply-inbox subscription. Without auto_setup that exception reaches the worker sending the failure
+     * copy as it is, from the publish (#130).
+     */
+    public function testWithoutAutoSetupAFailureCopyWhoseReplyInboxIsRefusedThrowsTheClientsConnectionException(): void
+    {
+        $refused = self::replyInboxRefused();
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('addStream');
+        $jetStream->expects(self::once())->method('publish')->willReturnCallback(static fn (): Future => Future::error($refused));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $this->encodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->send(self::failureCopy());
+            self::fail('expected send() to fail');
+        } catch (ConnectionException $e) {
+            self::assertSame($refused, $e);
+        }
+    }
+
+    /**
+     * With auto_setup the first send() of that failure transport runs setup(), whose first request fails the same
+     * way before anything is published: the worker gets setup()'s plain RuntimeException, no ConnectionException, with
+     * the client's ConnectionException as its previous one (#130). A caller catching ConnectionException alone misses it.
+     */
+    public function testWithAutoSetupTheFirstFailureCopyWhoseReplyInboxIsRefusedThrowsTheSetupsRuntimeException(): void
+    {
+        $refused = self::replyInboxRefused();
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturnCallback(static fn (): Future => Future::error($refused));
+        $jetStream->expects(self::never())->method('addConsumer');
+        $jetStream->expects(self::never())->method('publish');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['auto_setup' => true], $this->encodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->send(self::failureCopy());
+            self::fail('expected send() to fail in setup()');
+        } catch (\RuntimeException $e) {
+            self::assertSame(\RuntimeException::class, $e::class);
+            self::assertSame("Failed to setup NATS stream 'test-stream': " . $refused->getMessage(), $e->getMessage());
+            self::assertSame($refused, $e->getPrevious());
+        }
+    }
+
+    /**
+     * The client's error for a request on a connection whose shared reply-inbox subscription the server rejected.
+     */
+    private static function replyInboxRefused(): ConnectionException
+    {
+        return new ConnectionException(
+            'request/reply is unavailable on this connection: the shared reply-inbox subscription "_INBOX.<inbox>.*" was'
+            . ' rejected by the server (permissions violation). Grant the account subscribe permission for the reply-inbox'
+            . ' wildcard "_INBOX.>" to use request()/requestMany().',
+        );
+    }
+
+    /**
+     * The copy Symfony's failure-transport listener sends of a message received on the transport "async".
+     */
+    private static function failureCopy(): Envelope
+    {
+        return new Envelope(new \stdClass(), [new SentToFailureTransportStamp('async'), new RedeliveryStamp(0)]);
     }
 
     /**
