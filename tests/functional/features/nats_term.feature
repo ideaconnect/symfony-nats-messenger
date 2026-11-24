@@ -16,6 +16,24 @@ Feature: Symfony failure transport via TERM
     Then the failure transport should contain 1 message
     And the consumer should have warned once that Symfony's retry was published without its delay
 
+  # A failure transport with credentials of its own, which the admin set up (auto_setup off), as the README's
+  # "Permissions a Worker Needs" lists them: publish to its topic, and subscribe to the reply inboxes, where JetStream's
+  # acknowledgement of the publish arrives. Without the subscribe grant the send fails with a ConnectionException and
+  # the worker stops with the original still pending. JetStream may already have stored the copy when the send fails.
+  # Redelivery can then produce another copy (#130).
+  @term @permissions
+  Scenario: A failure transport whose own user may publish to its topic and receive its replies takes one copy and the original is settled
+    Given NATS server is running
+    And I have a messenger transport with failure transport configured
+    And the NATS stream is set up
+    And the failure stream is set up
+    And the failure transport logs in as its own user, who may only publish to its topic and receive its replies
+    When I send 1 always-failing message
+    And I start a messenger consumer that stops after 2 deliveries
+    And I wait for the consumer to finish or timeout
+    Then the failure stream should hold 1 message
+    And the transport's consumer should have no delivery pending
+
   # The README's recommended IgbinarySerializer on both transports. A worker adds a stamp holding a closure
   # to every message it handles; the serializer used to serialize it with the retry and the send to the
   # failure transport, which failed and stopped the consumer before the message reached either (#46).

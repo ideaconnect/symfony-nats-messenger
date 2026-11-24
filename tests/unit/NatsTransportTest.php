@@ -2277,6 +2277,72 @@ final class NatsTransportTest extends TestCase
         self::assertSame([], iterator_to_array($transport->get()));
     }
 
+    /** @return iterable<string, array{float, int}> */
+    public static function reusesAfterARefusedPull(): iterable
+    {
+        // No time has passed: a PING now could only come from the refused pull.
+        yield 'at once' => [0.0, 0];
+        // Unused for longer than ping_after_idle since the refusal: the usual check, one PING.
+        yield '31 s later, ping_after_idle 30' => [31.0, 1];
+    }
+
+    /**
+     * A pull the server refused because the connection's user may not publish to the consumer's
+     * `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>` fails get() with Symfony's TransportException, naming the stream,
+     * the consumer and the subject the worker needs to publish to, with the client's PermissionViolationException as
+     * its previous one (#130). The worker stops with that error, where the refusal used to end as an empty pull and the
+     * worker looked healthy for ever. It is no failure on the connection: the server answered and kept it open, so the
+     * refused pull leaves the next operation subject to the usual ping_after_idle check, timed from the refused pull,
+     * which used the connection. Each case starts with a fresh transport and the refusal, and the pull it times is the
+     * first use of the connection after the refusal: an empty pull at once PINGs nothing, and one after the connection
+     * sat idle for longer than ping_after_idle PINGs once. A pull in between would set the time of the last use again,
+     * and hide a refused pull that did not set it.
+     */
+    #[DataProvider('reusesAfterARefusedPull')]
+    public function testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndLeavesTheUsualIdleCheck(float $idleSeconds, int $pingsExpected): void
+    {
+        $refused = self::refusedPull('test-stream', 'client');
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturnOnConsecutiveCalls(
+            Future::error($refused),
+            Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408)),
+        );
+
+        $state = ConnectionState::Idle;
+        $client = $this->clientReportingState($state, [Future::complete()]);
+        $client->method('jetStream')->willReturn($jetStream);
+        $pings = 0;
+        $client->expects(self::exactly($pingsExpected))->method('rtt')->willReturnCallback(static function () use (&$pings): Future {
+            $pings++;
+
+            return Future::complete(0.001);
+        });
+        $client->expects(self::never())->method('disconnect');
+
+        $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
+        $transport->setClient($client);
+
+        try {
+            iterator_to_array($transport->get());
+            self::fail('expected get() to fail');
+        } catch (TransportException $e) {
+            self::assertSame(
+                'Cannot pull from NATS stream "test-stream", consumer "client". Grant the worker permission to publish to '
+                . '"$JS.API.CONSUMER.MSG.NEXT.test-stream.client".',
+                $e->getMessage(),
+            );
+            self::assertSame(0, $e->getCode());
+            self::assertSame($refused, $e->getPrevious());
+        }
+
+        self::assertSame(0, $pings);
+
+        // The client still reports Open; the connection is kept either way.
+        $transport->now += $idleSeconds;
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame($pingsExpected, $pings);
+    }
+
     public function testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -4256,6 +4322,69 @@ final class NatsTransportTest extends TestCase
             );
             self::assertSame($limit, $e->getPrevious());
         }
+    }
+
+    /** @return iterable<string, array{bool}> */
+    public static function autoSetupPullsRefusedForLackOfPermission(): iterable
+    {
+        // Provisioned once, for the first use.
+        yield 'the first pull' => [false];
+        // Again after the 409 that sent auto_setup to provision the consumer anew.
+        yield 'the pull after a 409 Consumer Deleted' => [true];
+    }
+
+    /**
+     * With auto_setup, the first pull and the second one after re-provisioning get the same treatment when the server
+     * refuses them for lack of permission (#130): get() fails with the TransportException naming the stream, the
+     * consumer and the subject, the client's exception as its previous one. A refusal is no missing consumer, so it
+     * provisions nothing more.
+     */
+    #[DataProvider('autoSetupPullsRefusedForLackOfPermission')]
+    public function testAutoSetupPullRefusedForLackOfPermissionFailsWithATransportException(bool $afterConsumerDeleted): void
+    {
+        $consumerInfo = new ConsumerInfo(
+            streamName: 'test-stream',
+            name: 'client',
+            push: false,
+            raw: ['config' => ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic']],
+        );
+        $refused = self::refusedPull('test-stream', 'client');
+        $pulls = $afterConsumerDeleted
+            ? [Future::error(new JetStreamException('JetStream pull request ended with status 409: Consumer Deleted', 409)), Future::error($refused)]
+            : [Future::error($refused)];
+        $provisionings = $afterConsumerDeleted ? 2 : 1;
+
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly($provisionings))->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly($provisionings))->method('addConsumer')->willReturn(Future::complete($consumerInfo));
+        $jetStream->expects(self::exactly(count($pulls)))->method('fetchBatch')->willReturnOnConsecutiveCalls(...$pulls);
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['auto_setup' => true]);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            iterator_to_array($transport->get());
+            self::fail('expected get() to fail');
+        } catch (TransportException $e) {
+            self::assertSame(
+                'Cannot pull from NATS stream "test-stream", consumer "client". Grant the worker permission to publish to '
+                . '"$JS.API.CONSUMER.MSG.NEXT.test-stream.client".',
+                $e->getMessage(),
+            );
+            self::assertSame($refused, $e->getPrevious());
+        }
+    }
+
+    /** The client's refusal of a pull to $stream's $consumer, as it reports one the server refused for lack of permission. */
+    private static function refusedPull(string $stream, string $consumer): PermissionViolationException
+    {
+        $subject = '$JS.API.CONSUMER.MSG.NEXT.' . $stream . '.' . $consumer;
+
+        return new PermissionViolationException(
+            'The server refused the pull to "' . $subject . '": Permissions Violation for Publish to "' . $subject . '".'
+            . ' No message was delivered for it. Grant this connection\'s user permission to publish to "' . $subject . '".',
+            subject: $subject,
+        );
     }
 
     /**
@@ -6308,6 +6437,183 @@ final class NatsTransportTest extends TestCase
         $transport->setJetStreamContext($jetStream);
 
         self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
+     * With auto_setup, setup() reads the stream that exists before it writes it, and that read is setup()'s own: a
+     * user who may not read the stream ($JS.API.STREAM.INFO.<stream>) fails setup(), and with it the get() that ran
+     * it, before the first pull and with no transport warning (on a real server the client logs an error line of its
+     * own for the refusal). Without auto_setup the check before the first pull lets the refusal through with a
+     * warning; a refused consumer list is let through by both (#130).
+     */
+    public function testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull(): void
+    {
+        $refused = new PermissionViolationException('refused', subject: '$JS.API.STREAM.INFO.test-stream');
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('getStream')->willReturnCallback(static fn (): Future => Future::error($refused));
+        $jetStream->expects(self::never())->method('listConsumers');
+        $jetStream->expects(self::never())->method('addStream');
+        $jetStream->expects(self::never())->method('addConsumer');
+        $jetStream->expects(self::never())->method('fetchBatch');
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'auto_setup' => true], null, $logger);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            iterator_to_array($transport->get());
+            self::fail('expected get() to fail in setup()');
+        } catch (\RuntimeException $e) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': refused", $e->getMessage());
+            self::assertSame($refused, $e->getPrevious());
+        }
+
+        self::assertSame([], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * With auto_setup, a consumer list the user may not read ($JS.API.CONSUMER.LIST.<stream>, asked for on an interest
+     * stream) is let through by setup() with the one warning of the check before the first pull, and the worker pulls.
+     */
+    public function testWithAutoSetupAConsumerListThatCannotBeReadIsLetThroughWithOneWarning(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('getStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
+        $jetStream->expects(self::once())->method('listConsumers')->willReturnCallback(static fn (): Future => Future::error(new PermissionViolationException('refused', subject: '$JS.API.CONSUMER.LIST.test-stream')));
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::complete([]));
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'stream_retention' => 'interest', 'auto_setup' => true], null, $logger);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([
+            'scheduled_messages on stream "test-stream": the stream and its consumers could not be read (refused), so the'
+            . ' transport could not check that the stream keeps delayed messages. A stream with interest retention keeps'
+            . ' them only while a consumer has interest in "test-topic.delayed.>".',
+        ], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * With auto_setup, a process that only publishes runs setup() for its first send(), and setup() reads the stream
+     * there as well: a user who may not read it ($JS.API.STREAM.INFO.<stream>) fails that send() in the setup, before
+     * anything is published, with no transport warning (#130). On a real server the client logs an error line of its
+     * own for the refusal.
+     */
+    public function testWithAutoSetupTheFirstSendFailsTheSetupOnAStreamThatCannotBeRead(): void
+    {
+        $refused = new PermissionViolationException('refused', subject: '$JS.API.STREAM.INFO.test-stream');
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('getStream')->willReturnCallback(static fn (): Future => Future::error($refused));
+        $jetStream->expects(self::never())->method('addStream');
+        $jetStream->expects(self::never())->method('publish');
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'auto_setup' => true], $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->send(new Envelope(new \stdClass()));
+            self::fail('expected send() to fail in setup()');
+        } catch (\RuntimeException $e) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': refused", $e->getMessage());
+            self::assertSame($refused, $e->getPrevious());
+        }
+
+        self::assertSame([], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * Without auto_setup, a process that only publishes does not check the stream: a delayed send to an interest
+     * stream reads neither the stream nor its consumers, and is published.
+     */
+    public function testWithoutAutoSetupASendChecksNoStream(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('getStream');
+        $jetStream->expects(self::never())->method('listConsumers');
+        $jetStream->expects(self::once())->method('publish')
+            ->with(self::stringStartsWith('test-topic.delayed.'), 'encoded', self::arrayHasKey('Nats-Schedule'))
+            ->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'stream_retention' => 'interest'], $this->encodingSerializer());
+        $transport->setClient($this->clientOfAServer('2.15.2'));
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->send(new Envelope(new \stdClass(), [new DelayStamp(5000)]));
+    }
+
+    /**
+     * A failure transport whose user may publish to its topic but not subscribe to the reply inboxes (_INBOX.>)
+     * never receives JetStream's acknowledgement, and the client fails the request with its ConnectionException about
+     * the rejected reply-inbox subscription. Without auto_setup that exception reaches the worker sending the failure
+     * copy as it is, from the publish (#130).
+     */
+    public function testWithoutAutoSetupAFailureCopyWhoseReplyInboxIsRefusedThrowsTheClientsConnectionException(): void
+    {
+        $refused = self::replyInboxRefused();
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('addStream');
+        $jetStream->expects(self::once())->method('publish')->willReturnCallback(static fn (): Future => Future::error($refused));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, [], $this->encodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->send(self::failureCopy());
+            self::fail('expected send() to fail');
+        } catch (ConnectionException $e) {
+            self::assertSame($refused, $e);
+        }
+    }
+
+    /**
+     * With auto_setup the first send() of that failure transport runs setup(), whose first request fails the same
+     * way before anything is published: the worker gets setup()'s plain RuntimeException, no ConnectionException, with
+     * the client's ConnectionException as its previous one (#130). A caller catching ConnectionException alone misses it.
+     */
+    public function testWithAutoSetupTheFirstFailureCopyWhoseReplyInboxIsRefusedThrowsTheSetupsRuntimeException(): void
+    {
+        $refused = self::replyInboxRefused();
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturnCallback(static fn (): Future => Future::error($refused));
+        $jetStream->expects(self::never())->method('addConsumer');
+        $jetStream->expects(self::never())->method('publish');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['auto_setup' => true], $this->encodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            $transport->send(self::failureCopy());
+            self::fail('expected send() to fail in setup()');
+        } catch (\RuntimeException $e) {
+            self::assertSame(\RuntimeException::class, $e::class);
+            self::assertSame("Failed to setup NATS stream 'test-stream': " . $refused->getMessage(), $e->getMessage());
+            self::assertSame($refused, $e->getPrevious());
+        }
+    }
+
+    /**
+     * The client's error for a request on a connection whose shared reply-inbox subscription the server rejected.
+     */
+    private static function replyInboxRefused(): ConnectionException
+    {
+        return new ConnectionException(
+            'request/reply is unavailable on this connection: the shared reply-inbox subscription "_INBOX.<inbox>.*" was'
+            . ' rejected by the server (permissions violation). Grant the account subscribe permission for the reply-inbox'
+            . ' wildcard "_INBOX.>" to use request()/requestMany().',
+        );
+    }
+
+    /**
+     * The copy Symfony's failure-transport listener sends of a message received on the transport "async".
+     */
+    private static function failureCopy(): Envelope
+    {
+        return new Envelope(new \stdClass(), [new SentToFailureTransportStamp('async'), new RedeliveryStamp(0)]);
     }
 
     /**

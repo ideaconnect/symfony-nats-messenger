@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MSG_NAKED`, then `MSG_TERMINATED`, for the message. Failures that are all unrecoverable are TERMed at once, as
   before, and a message with one handler is settled as before. A failure Symfony retried is still NAKed in place of its
   retry copy, through `ack()` or `reject()`. `isAFailureNatsModeCannotRetry()`.
+- **A worker whose user may not pull stops with an error naming the permission it needs** (#130). A user who may not
+  publish to `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>` gets each pull refused with a permissions violation, and
+  the server keeps the connection open. The client ended such a pull after `max_batch_timeout` plus a second as the 408
+  of an empty pull, which `get()` reads as an empty batch: `messenger:consume` ran on without an error and exited 0,
+  and the messages waited for ever, with one error line per pull in the client's log at most (measured on nats-server
+  2.14.2 with client 2.30.1: zero envelopes after 2.005 s with `max_batch_timeout: 1`). The client now fails the pull at
+  once with its `PermissionViolationException` (ideaconnect/php-nats-jetstream-client#260), and
+  `fetchBatchMessages()` turns it into Symfony's `TransportException`, next to the one for the subscription limit:
+  `Cannot pull from NATS stream "<stream>", consumer "<consumer>". Grant the worker permission to publish to
+  "$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>".`, the client's exception as its previous one. The pull retried after
+  `auto_setup` re-provisioned the consumer gets the same treatment. It is no failure of the connection: the server
+  answered and keeps it open, so a refused pull leaves the next operation subject to the usual `ping_after_idle`
+  check. Needs the client release that carries the fix for #260.
 
 ### Added
 
@@ -46,6 +59,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in-memory failure transport without a serializer, which stores the envelope as it is given, kept the stamp on its
   copy. An application without the bundle registers it in its services.yaml with the `kernel.event_subscriber` tag,
   and a worker built by hand adds it to its event dispatcher with `addSubscriber()` (README, "Retry Handler Behavior").
+
+### Documentation
+
+- **The README lists the permissions a worker's NATS user needs** (#130, "Permissions a Worker Needs"): publish to the
+  pull subject `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`; to the reply subjects of the deliveries, in the v1
+  form `$JS.ACK.<stream>.<consumer>.>` and, on a server with the feature flag `js_ack_fc_v2` (NATS 2.14 and later), the
+  v2 form `$JS.ACK.<domain>.<account-hash>.<stream>.<consumer>.>` (`_` for an unset domain); to `<topic>` and, with
+  `scheduled_messages`, `<topic>.delayed.>` for Symfony's retry copies; to `$JS.API.CONSUMER.INFO.<stream>.<consumer>`;
+  with `scheduled_messages` to `$JS.API.STREAM.INFO.<stream>` (and `$JS.API.CONSUMER.LIST.<stream>` on an interest
+  stream) for the check that the stream keeps the delayed messages; the management API with `auto_setup`; and, for a
+  NATS failure transport's own credentials, publish to its topic and subscribe to the reply inboxes `_INBOX.>`.
+  Without `auto_setup`, the check before the first pull lets a refused stream or consumer-list read through with a
+  warning. With `scheduled_messages` and `auto_setup`, the setup makes that check: it needs
+  `$JS.API.STREAM.INFO.<stream>`, and a refusal fails it, and with it the `get()` or `send()` that ran it, before the
+  first pull or publish, while a refused consumer list is let through with the warning there too. So a process that
+  only publishes checks the stream only with `auto_setup`, in its first `send()`. Without the subscribe grant, a
+  failure transport's send fails and the original stays pending. What reaches the worker depends on that transport's
+  `auto_setup`: without it, the client's `IDCT\NATS\Exception\ConnectionException`, as the publish threw it; with it,
+  a plain `\RuntimeException` from the setup its first `send()` runs (`Failed to setup NATS stream '<stream>': ...`),
+  before anything is published, with that `ConnectionException` as `getPrevious()`. A `catch (ConnectionException)`
+  takes only the first. Without `auto_setup`, JetStream may already have stored the copy when the send fails, and
+  redelivery can then produce another copy (measured on nats-server 2.15.2, after two worker runs: two copies by
+  default; one with `deduplicate: true` on the transport in the process that published the original, whose send gives
+  the message the id the copy keeps; two with it only in the worker's configuration of that transport; none with
+  `auto_setup` on the failure transport, whose setup failed first). Checked on
+  nats-server 2.15.2 with the flag on and off: a user with exactly these grants pulls, acknowledges and publishes both
+  retry copies; with the flag on, one with the v1 form alone leaves the delivery pending.
 
 ### Testing & CI
 
@@ -77,6 +117,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handlers failing for good, with what Symfony decided for each delivery (`willRetry()` after its retry listener:
   `[false, false]` with `max_retries: 0`, `[true, false]` with 3); on 5.10.1 it stops at the first run, where the
   message was TERMed after one run of each handler.
+- **A worker whose user may not pull (#130):** the plain test server gets a user `nopull` that may do everything but
+  pull from a consumer named `worker` (`tests/nats/nats.conf`). The Behat scenario `A worker whose user may not pull
+  stops with the permission it needs` (`nats_pull_permission.feature`) runs `messenger:consume` as that user with
+  `auto_setup` off and `max_batch_timeout` 60 s, and expects a nonzero exit and the subject in the error, then consumes
+  the waiting message as the admin. The 60 s pull outlasts the step's 30 s process timeout, so a refusal reported only
+  when the pull expires fails the scenario: with client 2.30.1 the worker's process ran into that timeout. The example
+  `refused-pull.php` shows the same through `get()`. Unit tests: `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndLeavesTheUsualIdleCheck`
+  (data provider, each case a fresh transport and the refusal, then the first reuse: at once it PINGs nothing, 31 s
+  later with `ping_after_idle: 30` it PINGs once, so a refused pull that did not count as a use of the connection
+  fails the second case) and `testAutoSetupPullRefusedForLackOfPermissionFailsWithATransportException`.
+- **A failure transport with credentials of its own (#130):** the plain test server gets a user `failure` that may
+  only publish to `fail.messages` and subscribe to `_INBOX.>`. The Behat scenario `A failure transport whose own user
+  may publish to its topic and receive its replies takes one copy and the original is settled` (`nats_term.feature`)
+  sends a message that always fails through a worker whose failure transport logs in as that user with `auto_setup`
+  off, and expects one message in the failure stream and nothing pending on the source consumer, both read as the
+  admin. With the subscribe grant taken away it fails: in that run JetStream stored the copy, but the send failed with
+  `ConnectionException` and the original stayed awaiting acknowledgement. Unit tests of what reaches the worker then:
+  `testWithoutAutoSetupAFailureCopyWhoseReplyInboxIsRefusedThrowsTheClientsConnectionException` (the client's exception
+  as it is) and `testWithAutoSetupTheFirstFailureCopyWhoseReplyInboxIsRefusedThrowsTheSetupsRuntimeException` (a plain
+  `\RuntimeException` from the setup, the client's exception as previous, nothing published). Unit tests for a refused
+  read of the stream with `scheduled_messages` and `auto_setup`:
+  `testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull` (`get()` fails in the setup, before any pull),
+  `testWithAutoSetupTheFirstSendFailsTheSetupOnAStreamThatCannotBeRead` (the same for a process that only publishes:
+  its first `send()` fails in the setup, nothing published; in both no transport warning) and
+  `testWithAutoSetupAConsumerListThatCannotBeReadIsLetThroughWithOneWarning`; `testWithoutAutoSetupASendChecksNoStream`
+  pins that without `auto_setup` a delayed send to an interest stream reads neither the stream nor its consumers.
 
 ## [5.10.1] - 2026-11-21
 

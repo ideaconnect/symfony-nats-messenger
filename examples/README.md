@@ -23,6 +23,7 @@ behaviour still works. In an application the same DSN and options go under `fram
 | `jwt-login.php` | `jwt` with `nkey_seed` logs in as a user of a server in operator mode, for `setup()`, sending and receiving; the JWT with another user's seed and an expired JWT are refused by the server, and the JWT alone or a seed in the `jwt` option when the transport is built |
 | `nkey-login.php` | `nkey_seed` alone logs in as a user the server knows by its public key, for `setup()`, sending and receiving; a seed the server does not know is refused by the server, and the public key alone or a seed next to a password when the transport is built |
 | `token-login.php` | `token` logs in to a server whose clients share one token, for `setup()`, sending and receiving; a wrong token is refused |
+| `refused-pull.php` | a worker whose user may not pull (the user `nopull` of `tests/nats/nats.conf`): `get()` fails at once with a `TransportException` naming the stream, the consumer and `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`, the client's `PermissionViolationException` as its previous one, where it used to return nothing after `max_batch_timeout` plus a second; the admin's worker then receives the waiting message (#130) |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, the pull in flight ends empty (`409 Server Shutdown`), `auto_setup` recreates the memory stream the restart lost, and the client logs through the transport's logger (needs docker) |
 | `cluster-failover.php` | `reconnect: true` on a cluster: the server a worker is connected to stops, the client fails over to a server it learned from the cluster, and the worker receives everything (needs the cluster and docker) |
 | `handler-failing-during-failover.php` | both retry modes with `reconnect: true` on a cluster, under Symfony's Worker and retry listener: the handler stops the worker's server and fails, and the worker carries on through another server. In symfony mode Symfony's retry copy is stored there and handled at once; in nats mode the NAK reaches the cluster and the message comes back `nak_delay` later (needs the cluster and docker) |
@@ -50,9 +51,10 @@ A login example needs a server that knows the credentials it shows, so `NATS_DSN
 | `nkey-login.php` | `nats_test` (`tests/nats/nats.conf`) | 4222 |
 | `jwt-login.php` | `nats_test_jwt` (`tests/nats/nats-jwt.conf`, in operator mode) | 4229 |
 | `token-login.php` | `nats_test_token` (`tests/nats/nats-token.conf`) | 4230 |
+| `refused-pull.php` | `nats_test` (`tests/nats/nats.conf`, the user `nopull`) | 4222 |
 
-Each prints `SKIP` when its server is not running. `nkey-login.php` also prints `SKIP` when `NATS_DSN` is set, since it
-shares port 4222 with the server `NATS_DSN` replaces. `jwt-login.php` and `nkey-login.php` print `SKIP` as well when the
+Each prints `SKIP` when its server is not running. `nkey-login.php` and `refused-pull.php` also print `SKIP` when
+`NATS_DSN` is set, since they share port 4222 with the server `NATS_DSN` replaces. `jwt-login.php` and `nkey-login.php` print `SKIP` as well when the
 credentials are missing, which `composer nats:start` generates (`tests/nats/auth/README.md`). `EXAMPLES_STRICT=1` fails
 the run on any of these skips, as it does for the others.
 

@@ -799,7 +799,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * missing consumer ({@see pullMetAServerGoingAway()}, #106).
      *
      * A pull the server refuses because the connection is at its subscription limit fails with a
-     * TransportException that names the stream, the consumer and the limit ({@see fetchBatchMessages()}).
+     * TransportException that names the stream, the consumer and the limit ({@see fetchBatchMessages()}). So does
+     * a pull the server refuses because the connection's user may not pull from the consumer, naming the subject
+     * the user needs to publish to (#130).
      *
      * Each envelope carries its delivery token in a TransportMessageIdStamp, and in nats mode a
      * {@see ReceivedInNatsModeStamp} with the same token as well, by which
@@ -808,7 +810,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *
      * @return iterable<Envelope>
      *
-     * @throws TransportException If the pull fails because the connection is at its subscription limit.
+     * @throws TransportException If the pull fails because the connection is at its subscription limit, or because
+     *                            its user may not pull from the consumer.
      */
     public function get(): iterable
     {
@@ -1603,6 +1606,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * ({@see awaitOnConnection()}): the server sends the same error when an account's limit is lowered below what
      * the connection holds, and then closes the connection right behind it.
      *
+     * A pull the connection's user may not publish (`$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`) is refused by
+     * the server with a permissions violation, and the client fails it at once with a PermissionViolationException
+     * (client ideaconnect/php-nats-jetstream-client#260). It becomes a TransportException too, naming the stream, the
+     * consumer and the subject the user needs to publish to, with the client's exception as its previous one (#130),
+     * so a worker stops with that error instead of reading the refusal as an empty pull for ever. It does not count
+     * as a failure on the connection: the server answered and keeps the connection open.
+     *
      * @return list<NatsMessage>
      */
     private function fetchBatchMessages(): array
@@ -1616,6 +1626,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $this->configuration->batching(),
                 $this->configuration->maxBatchTimeoutMs()
             ));
+        } catch (PermissionViolationException $refused) {
+            throw new TransportException(sprintf(
+                'Cannot pull from NATS stream "%s", consumer "%s". Grant the worker permission to publish to "%s".',
+                $this->streamName,
+                $this->configuration->consumer(),
+                $refused->getSubject(),
+            ), previous: $refused);
         } catch (SubscriptionLimitException $limit) {
             throw new TransportException(sprintf(
                 'Cannot pull from NATS stream "%s", consumer "%s": the subscription limit was exceeded. '
@@ -1783,8 +1800,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * limit and keeps the connection open, but it sends the same error when an account's limit is lowered below
      * what the connection holds, and then closes the connection about 20 ms later. The error cannot tell the two
      * apart, so the check stays: an open connection answers the PING and is kept, a closed one is replaced. A
-     * request refused for lack of permission (PermissionViolationException, client 2.30.0) does not count: the server
-     * answered it and keeps the connection open, as it does for every publish of that user it refuses.
+     * request refused for lack of permission (PermissionViolationException, client 2.30.0) does not count, nor does a
+     * pull refused that way (#130): the server answered it and keeps the connection open, as it does for every
+     * publish of that user it refuses.
      *
      * The call is passed as a closure that starts it, not as its Future (#115). With zend.exception_ignore_args off,
      * the default without a php.ini, the trace of an exception raised in the event loop records the arguments of
@@ -2177,12 +2195,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * was gone, with no failure-transport copy (measured on nats-server 2.15.2, one server and three replicas). NATS
      * calls this intended (ADR-51, "Stream Retention Interaction"; nats-server issue #7408).
      *
-     * Checked by setup(), before it writes the stream ({@see assertTheStreamToSetUpKeepsDelayedMessages()}), and by a
-     * worker before its first pull, since a worker sends Symfony's delayed retries; a process that only publishes is
-     * not checked. A stream with limits or work-queue retention passes, and so does an interest stream with a consumer
-     * whose filter covers the delayed subjects, such as one an operator added that nobody pulls from (ADR-51's
-     * pinning consumer). Once it passes it is not checked again by this transport object. A stream or consumer list a
-     * user may not read is logged once and let through, as the permission is the user's. A stream that does not exist
+     * Checked by setup(), before it writes the stream ({@see assertTheStreamToSetUpKeepsDelayedMessages()}), which
+     * auto_setup runs for the first get() or send(), and by a worker before its first pull, since a worker sends
+     * Symfony's delayed retries; without auto_setup a process that only publishes is not checked. A stream with limits
+     * or work-queue retention passes, and so does an interest stream with a consumer whose filter covers the delayed
+     * subjects, such as one an operator added that nobody pulls from (ADR-51's pinning consumer). Once it passes it is
+     * not checked again by this transport object. A stream or consumer list a user may not read is logged once and let
+     * through, as the permission is the user's; in setup(), which reads the stream itself first
+     * ({@see assertTheStreamToSetUpKeepsDelayedMessages()}), only the consumer list is. A stream that does not exist
      * is not checked yet: the pull reports it, or auto_setup creates it and checks it. Any other failure propagates, as
      * the pull's would: the first form of 5.9.1 took a failed dial for an unreadable stream, logged it, dialled again
      * for the pull, and never checked again on that transport object.
@@ -2247,6 +2267,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * never turns it off again, so a refusal after the write, as up to the first form of 5.9.1, left the stream with
      * schedules on, and the first remedy the refusal names, turning scheduled_messages off, then failed with "message
      * schedules can not be disabled".
+     *
+     * The stream that exists is read here with {@see getExistingStream()}, so a user who may not read it
+     * ($JS.API.STREAM.INFO.<stream>) fails setup(), and with auto_setup the get() or send() that ran it, where the check
+     * before the first pull logs the refusal and lets the worker go on (#130). A consumer list the user may not read is
+     * let through with a warning here too.
      */
     private function assertTheStreamToSetUpKeepsDelayedMessages(StreamConfiguration $streamConfiguration): void
     {
