@@ -161,7 +161,9 @@ composer nats:stop               # Stop NATS
 - A pull the server refuses for lack of permission is a `TransportException` naming the subject to grant (#130), from
   the client's `PermissionViolationException` (ideaconnect/php-nats-jetstream-client#260), and is no failure of the
   connection. The plain test server's user `nopull` (`tests/nats/nats.conf`) may do everything but pull from a consumer
-  named `worker`: `nats_pull_permission.feature` and `examples/refused-pull.php` use it.
+  named `worker`: `nats_pull_permission.feature` and `examples/refused-pull.php` use it. Its user `failure` may only
+  publish to `fail.messages` and subscribe to `_INBOX.>`, the grants of a failure transport's own credentials:
+  `nats_term.feature` uses it.
 - No frame that waits on a Future takes it as a parameter (#115). With `zend.exception_ignore_args` off, the default
   without a php.ini, the trace of an exception raised in the event loop records the arguments of every frame waiting on
   it, so a Future taken as a parameter, holding that exception, makes a cycle only the cycle collector frees: one per

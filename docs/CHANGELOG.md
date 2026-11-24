@@ -33,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Cannot pull from NATS stream "<stream>", consumer "<consumer>". Grant the worker permission to publish to
   "$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>".`, the client's exception as its previous one. The pull retried after
   `auto_setup` re-provisioned the consumer gets the same treatment. It is no failure of the connection: the server
-  answered, so the next operation does not PING first. Needs the client release that carries the fix for #260.
+  answered and keeps it open, so a refused pull leaves the next operation subject to the usual `ping_after_idle`
+  check. Needs the client release that carries the fix for #260.
 
 ### Added
 
@@ -67,10 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   v2 form `$JS.ACK.<domain>.<account-hash>.<stream>.<consumer>.>` (`_` for an unset domain); to `<topic>` and, with
   `scheduled_messages`, `<topic>.delayed.>` for Symfony's retry copies; to `$JS.API.CONSUMER.INFO.<stream>.<consumer>`;
   with `scheduled_messages` to `$JS.API.STREAM.INFO.<stream>` (and `$JS.API.CONSUMER.LIST.<stream>` on an interest
-  stream) for the check before the first pull; the management API with `auto_setup`; and the topic of a NATS failure
-  transport for its credentials. Checked on nats-server 2.15.2 with the flag on and off: a user with exactly these
-  grants pulls, acknowledges and publishes both retry copies; with the flag on, one with the v1 form alone leaves the
-  delivery pending.
+  stream) for the check that the stream keeps the delayed messages; the management API with `auto_setup`; and, for a
+  NATS failure transport's own credentials, publish to its topic and subscribe to the reply inboxes `_INBOX.>`. Only
+  the check before the first pull lets a refused stream or consumer-list read through with a warning: with
+  `scheduled_messages` and `auto_setup`, the setup needs `$JS.API.STREAM.INFO.<stream>`, and a refusal fails it, and
+  with it `get()`, before the first pull. A failure transport's user without the subscribe grant gets the copy stored
+  but its send fails with `ConnectionException`, so the original stays pending and the next worker stores a second
+  copy. Checked on nats-server 2.15.2 with the flag on and off: a user with exactly these grants pulls, acknowledges
+  and publishes both retry copies; with the flag on, one with the v1 form alone leaves the delivery pending.
 
 ### Testing & CI
 
@@ -108,8 +113,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `auto_setup` off and `max_batch_timeout` 60 s, and expects a nonzero exit and the subject in the error, then consumes
   the waiting message as the admin. The 60 s pull outlasts the step's 30 s process timeout, so a refusal reported only
   when the pull expires fails the scenario: with client 2.30.1 the worker's process ran into that timeout. The example
-  `refused-pull.php` shows the same through `get()`. Unit tests: `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndTheNextOperationChecksNothing`
+  `refused-pull.php` shows the same through `get()`. Unit tests: `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndLeavesTheUsualIdleCheck`
+  (an empty pull right after the refusal PINGs nothing, one after 31 s unused with `ping_after_idle: 30` PINGs once)
   and `testAutoSetupPullRefusedForLackOfPermissionFailsWithATransportException`.
+- **A failure transport with credentials of its own (#130):** the plain test server gets a user `failure` that may
+  only publish to `fail.messages` and subscribe to `_INBOX.>`. The Behat scenario `A failure transport whose own user
+  may publish to its topic and receive its replies takes one copy and the original is settled` (`nats_term.feature`)
+  sends a message that always fails through a worker whose failure transport logs in as that user with `auto_setup`
+  off, and expects one message in the failure stream and nothing pending on the source consumer, both read as the
+  admin. With the subscribe grant taken away it fails: the copy is stored, but the send fails with
+  `ConnectionException` and the original stays awaiting acknowledgement. Unit tests for a refused read of the stream
+  with `scheduled_messages` and `auto_setup`: `testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull`
+  (`get()` fails in the setup, before any pull) and `testWithAutoSetupAConsumerListThatCannotBeReadIsLetThroughWithOneWarning`.
 
 ## [5.10.1] - 2026-11-21
 

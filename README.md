@@ -1444,15 +1444,30 @@ A worker's NATS user therefore needs, besides the subscribe permission for the c
 - publish to `$JS.API.CONSUMER.INFO.<stream>.<consumer>`, for `messenger:stats`, the diagnosis of a pull's 503 and the
   consumer's `max_deliver` with `retry_via: nak`;
 - with `scheduled_messages`, publish to `$JS.API.STREAM.INFO.<stream>`, and on a stream with interest retention to
-  `$JS.API.CONSUMER.LIST.<stream>`, for the check before the first pull that the stream keeps the delayed messages
-  (see [Delayed / Scheduled Messages](#delayed--scheduled-messages)). Without them the worker goes on, after an error
-  line from the client and a warning that the stream could not be checked, once per worker process;
+  `$JS.API.CONSUMER.LIST.<stream>`, for the check that the stream keeps the delayed messages (see
+  [Delayed / Scheduled Messages](#delayed--scheduled-messages)). A worker makes it before its first pull, and only
+  there does a refusal let the worker go on: either read refused costs an error line from the client and a warning
+  that the stream could not be checked, once per worker process, and the pulls follow;
 - with `auto_setup`, what `messenger:setup-transports` needs: the stream and consumer management API under
-  `$JS.API.STREAM.` and `$JS.API.CONSUMER.`.
+  `$JS.API.STREAM.` and `$JS.API.CONSUMER.`. With `scheduled_messages` too, the setup makes the same check before it
+  writes the stream, and `$JS.API.STREAM.INFO.<stream>` is then required: refused, it fails the setup, and with it the
+  `get()` that ran it, before the first pull (`Failed to setup NATS stream '<stream>': ...`, the client's
+  `PermissionViolationException` as the previous exception). A refused `$JS.API.CONSUMER.LIST.<stream>` is let
+  through with the warning there too.
 
 When the failure transport is a NATS transport too, the worker's process sends the messages Symfony gives up on
-through it, with the credentials of that transport's DSN: they need publish access to its topic, and with
-`auto_setup` what its setup needs.
+through it, with the credentials of that transport's DSN. They need both of these:
+
+- **publish to the failure transport's topic**, for the copy;
+- **subscribe to the client's reply inboxes (`_INBOX.>`)**, where JetStream's acknowledgement of that publish arrives.
+
+Without the second, JetStream stores the copy all the same, but the send fails with the client's `ConnectionException`
+(`request/reply is unavailable on this connection: the shared reply-inbox subscription "_INBOX.<inbox>.*" was rejected
+by the server (permissions violation). ...`). The worker stops before it settles the original, which stays pending,
+and the worker that receives it again stores a second copy of the one message. With `auto_setup` the failure
+transport's credentials need what its setup needs as well.
+
+> **Tested by:** Behat scenario `A failure transport whose own user may publish to its topic and receive its replies takes one copy and the original is settled` (`nats_term.feature`), `testAStreamThatCannotBeReadIsLetThroughWithOneWarning`, `testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull`, `testWithAutoSetupAConsumerListThatCannotBeReadIsLetThroughWithOneWarning`
 
 The server refuses a pull the user may not publish with `-ERR 'Permissions Violation for Publish to "..."'` and keeps
 the connection open. The client fails such a pull at once with its `PermissionViolationException`
@@ -1465,10 +1480,11 @@ Cannot pull from NATS stream "orders", consumer "worker". Grant the worker permi
 
 Like any exception from `get()`, it ends a worker's run, so `messenger:consume` exits nonzero and a supervisor or health
 check sees it. Before, each refused pull waited `max_batch_timeout` plus a second and ended as an empty one: the worker
-ran on, reported nothing, and the messages waited for ever (#130). The refusal is no failure of the connection, so the
-next operation does not PING first. With `auto_setup` the pull retried after re-provisioning gets the same treatment.
+ran on, reported nothing, and the messages waited for ever (#130). The refusal is no failure of the connection: the
+server answered and keeps it open, so a refused pull leaves the next operation subject to the usual `ping_after_idle`
+check. With `auto_setup` the pull retried after re-provisioning gets the same treatment.
 
-> **Tested by:** `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndTheNextOperationChecksNothing`, `testAutoSetupPullRefusedForLackOfPermissionFailsWithATransportException`, Behat scenario `A worker whose user may not pull stops with the permission it needs`, the example `refused-pull.php`
+> **Tested by:** `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndLeavesTheUsualIdleCheck`, `testAutoSetupPullRefusedForLackOfPermissionFailsWithATransportException`, Behat scenario `A worker whose user may not pull stops with the permission it needs`, the example `refused-pull.php`
 
 ### Automatic Reconnect
 
@@ -2235,11 +2251,13 @@ transport then goes on. Create the stream yourself first, with interest retentio
 `{topic}.delayed.>`, then that consumer, then run the setup, which turns the stream's schedules on. ADR-51
 calls it a pinning consumer and prefers a separate work-queue stream for the schedules: the pinning consumer costs
 work on a replicated stream, and the delayed messages are lost again if it is deleted. A process that only publishes
-does not check the stream, and a stream or consumer list the transport's user may not read is let through with one
-warning. A stream that does not exist yet is checked at the next pull, and a read that fails on the connection makes
-the pull fail, as the pull's own failure would.
+does not check the stream, and before the first pull a stream or consumer list the transport's user may not read is let
+through with one warning. The setup of `auto_setup` reads the stream before it writes it, so there a stream the user
+may not read fails the setup (see [Permissions a Worker Needs](#permissions-a-worker-needs)). A stream that does not
+exist yet is checked at the next pull, and a read that fails on the connection makes the pull fail, as the pull's own
+failure would.
 
-> **Tested by:** `testSetupRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testSetupRefusesScheduledMessagesOnAnInterestStreamItWouldCreateWithoutCreatingIt`, `testSetupKeepsScheduledMessagesOnAnInterestStreamWithAConsumerOnTheDelayedSubjects`, `testSetupAsksForNoConsumersOnAStreamThatKeepsDelayedMessages`, `testTheFirstPullRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testTheStreamIsCheckedOnceForAWorkerWhosePullsGoOn`, `testAStreamThatCannotBeReadIsLetThroughWithOneWarning`, `testWithoutScheduledMessagesAPullChecksNothing`, the Behat scenarios `scheduled_messages on an interest stream nothing has interest in the delayed subjects of is refused` and `Delayed messages on an interest stream are delivered while a consumer has interest in the delayed subjects` (`nats_delayed.feature`), the example `delayed-messages.php`
+> **Tested by:** `testSetupRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testSetupRefusesScheduledMessagesOnAnInterestStreamItWouldCreateWithoutCreatingIt`, `testSetupKeepsScheduledMessagesOnAnInterestStreamWithAConsumerOnTheDelayedSubjects`, `testSetupAsksForNoConsumersOnAStreamThatKeepsDelayedMessages`, `testTheFirstPullRefusesScheduledMessagesOnAnInterestStreamNothingHasInterestIn`, `testTheStreamIsCheckedOnceForAWorkerWhosePullsGoOn`, `testAStreamThatCannotBeReadIsLetThroughWithOneWarning`, `testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull`, `testWithAutoSetupAConsumerListThatCannotBeReadIsLetThroughWithOneWarning`, `testWithoutScheduledMessagesAPullChecksNothing`, the Behat scenarios `scheduled_messages on an interest stream nothing has interest in the delayed subjects of is refused` and `Delayed messages on an interest stream are delivered while a consumer has interest in the delayed subjects` (`nats_delayed.feature`), the example `delayed-messages.php`
 
 Enable `scheduled_messages` in the DSN to use Symfony's `DelayStamp` for deferred delivery:
 
@@ -2359,7 +2377,7 @@ or the account's or user's subscription limit, to at least two (see [Subscriptio
 The worker's NATS user may not pull from the consumer: let it publish to the subject the message names,
 `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>` (see [Permissions a Worker Needs](#permissions-a-worker-needs)).
 
-> **Tested by:** `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndTheNextOperationChecksNothing`, Behat scenario `A worker whose user may not pull stops with the permission it needs`
+> **Tested by:** `testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndLeavesTheUsualIdleCheck`, Behat scenario `A worker whose user may not pull stops with the permission it needs`
 
 **Error: "Reconnect attempts exhausted"**
 

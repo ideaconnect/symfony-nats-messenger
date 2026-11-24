@@ -2200,10 +2200,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * not checked. A stream with limits or work-queue retention passes, and so does an interest stream with a consumer
      * whose filter covers the delayed subjects, such as one an operator added that nobody pulls from (ADR-51's
      * pinning consumer). Once it passes it is not checked again by this transport object. A stream or consumer list a
-     * user may not read is logged once and let through, as the permission is the user's. A stream that does not exist
-     * is not checked yet: the pull reports it, or auto_setup creates it and checks it. Any other failure propagates, as
-     * the pull's would: the first form of 5.9.1 took a failed dial for an unreadable stream, logged it, dialled again
-     * for the pull, and never checked again on that transport object.
+     * user may not read is logged once and let through, as the permission is the user's; in setup(), which reads the
+     * stream itself first ({@see assertTheStreamToSetUpKeepsDelayedMessages()}), only the consumer list is. A stream
+     * that does not exist is not checked yet: the pull reports it, or auto_setup creates it and checks it. Any other
+     * failure propagates, as the pull's would: the first form of 5.9.1 took a failed dial for an unreadable stream,
+     * logged it, dialled again for the pull, and never checked again on that transport object.
      *
      * @throws TransportException When the stream would drop every delayed message.
      */
@@ -2265,6 +2266,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * never turns it off again, so a refusal after the write, as up to the first form of 5.9.1, left the stream with
      * schedules on, and the first remedy the refusal names, turning scheduled_messages off, then failed with "message
      * schedules can not be disabled".
+     *
+     * The stream that exists is read here with {@see getExistingStream()}, so a user who may not read it
+     * ($JS.API.STREAM.INFO.<stream>) fails setup(), and with auto_setup the get() or send() that ran it, where the check
+     * before the first pull logs the refusal and lets the worker go on (#130). A consumer list the user may not read is
+     * let through with a warning here too.
      */
     private function assertTheStreamToSetUpKeepsDelayedMessages(StreamConfiguration $streamConfiguration): void
     {
