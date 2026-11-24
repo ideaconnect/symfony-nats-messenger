@@ -1474,6 +1474,75 @@ class NatsSetupContext implements Context
         }
     }
 
+    /**
+     * The transports of "I have a messenger transport with failure transport configured", with the failure transport
+     * logging in as the user "failure" of tests/nats/nats.conf and auto setup disabled: the admin set its stream up, as
+     * an operator does for a worker in production. That user may only publish to the failure transport's topic and
+     * subscribe to the reply inboxes, "_INBOX.>", where JetStream's acknowledgement of each publish arrives: the grants
+     * the README lists for a failure transport's own credentials (#130).
+     */
+    #[Given('the failure transport logs in as its own user, who may only publish to its topic and receive its replies')]
+    public function theFailureTransportLogsInAsItsOwnUser(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n                retry_strategy:\n                    max_retries: 1\n                    delay: 100\n                    multiplier: 1\n            failed_transport:\n                dsn: 'nats-jetstream://failure:failure@localhost:4222/%s/%s?stream_max_age=900&auto_setup=false'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $this->failedStreamName,
+            $this->failedSubject,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * The messages the failure stream holds, read as the admin: `messenger:stats` would ask with the failure
+     * transport's own credentials, which a restricted user may not use for that.
+     */
+    #[Then('the failure stream should hold :count message')]
+    #[Then('the failure stream should hold :count messages')]
+    public function theFailureStreamShouldHoldMessages(int $count): void
+    {
+        $client = $this->createNatsClient();
+        try {
+            $streamInfo = $client->jetStream()->getStream($this->failedStreamName)->await();
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $state = is_array($streamInfo->raw['state'] ?? null) ? $streamInfo->raw['state'] : [];
+        $actualCount = (int) ($state['messages'] ?? 0);
+        if ($actualCount !== $count) {
+            throw new \RuntimeException(sprintf('Expected the failure stream to hold %d message(s), but it holds %d', $count, $actualCount));
+        }
+    }
+
+    /**
+     * Nothing left to deliver or settle on the transport's consumer, read as the admin: every delivery was
+     * acknowledged or TERMed. A worker that stopped before it settled a delivery leaves it pending, and the next worker
+     * receives it again once ack_wait has passed.
+     */
+    #[Then('the transport\'s consumer should have no delivery pending')]
+    public function theTransportsConsumerShouldHaveNoDeliveryPending(): void
+    {
+        $client = $this->createNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $state = [
+            'ack pending' => $info['num_ack_pending'] ?? null,
+            'pending' => $info['num_pending'] ?? null,
+        ];
+        if ($state !== ['ack pending' => 0, 'pending' => 0]) {
+            $output = $this->consumerProcess !== null ? $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput() : '';
+            throw new \RuntimeException(sprintf("Expected nothing pending on the transport's consumer, got %s.\nConsumer output: %s", json_encode($state), $output));
+        }
+    }
+
     #[Given('I have a messenger transport configured with stream max bytes of :maxBytes')]
     public function iHaveAMessengerTransportConfiguredWithStreamMaxBytes(int $maxBytes): void
     {

@@ -2283,21 +2283,28 @@ final class NatsTransportTest extends TestCase
      * the consumer and the subject the worker needs to publish to, with the client's PermissionViolationException as
      * its previous one (#130). The worker stops with that error, where the refusal used to end as an empty pull and the
      * worker looked healthy for ever. It is no failure on the connection: the server answered and kept it open, so the
-     * next operation, an empty pull here, checks nothing.
+     * refused pull leaves the next operation subject to the usual ping_after_idle check. An empty pull right after it
+     * checks nothing, and one after the connection sat idle for longer than ping_after_idle PINGs once.
      */
-    public function testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndTheNextOperationChecksNothing(): void
+    public function testPullRefusedForLackOfPermissionFailsWithATransportExceptionAndLeavesTheUsualIdleCheck(): void
     {
         $refused = self::refusedPull('test-stream', 'client');
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturnOnConsecutiveCalls(
+        $jetStream->expects(self::exactly(3))->method('fetchBatch')->willReturnOnConsecutiveCalls(
             Future::error($refused),
+            Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408)),
             Future::error(new JetStreamException('JetStream pull request ended with status 408: Request Timeout', 408)),
         );
 
         $state = ConnectionState::Idle;
         $client = $this->clientReportingState($state, [Future::complete()]);
         $client->method('jetStream')->willReturn($jetStream);
-        $client->expects(self::never())->method('rtt');
+        $pings = 0;
+        $client->expects(self::once())->method('rtt')->willReturnCallback(static function () use (&$pings): Future {
+            $pings++;
+
+            return Future::complete(0.001);
+        });
         $client->expects(self::never())->method('disconnect');
 
         $transport = new ClockedNatsTransport(self::VALID_DSN, ['ping_after_idle' => 30]);
@@ -2318,6 +2325,12 @@ final class NatsTransportTest extends TestCase
 
         // The client still reports Open, and no time has passed: a check now could only come from the refused pull.
         self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame(0, $pings);
+
+        // Unused for longer than ping_after_idle: the usual check, one PING, and the connection is kept.
+        $transport->now += 31;
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame(1, $pings);
     }
 
     public function testFailureMakesNoOperationCheckTheConnectionWhenTheCheckIsOff(): void
@@ -6414,6 +6427,63 @@ final class NatsTransportTest extends TestCase
         $transport->setJetStreamContext($jetStream);
 
         self::assertSame([], iterator_to_array($transport->get()));
+    }
+
+    /**
+     * With auto_setup, setup() reads the stream that exists before it writes it, and that read is setup()'s own: a
+     * user who may not read the stream ($JS.API.STREAM.INFO.<stream>) fails setup(), and with it the get() that ran
+     * it, before the first pull and with nothing logged. Only the check before the first pull lets the refusal through
+     * with a warning (#130).
+     */
+    public function testWithAutoSetupAStreamThatCannotBeReadFailsTheSetupBeforeThePull(): void
+    {
+        $refused = new PermissionViolationException('refused', subject: '$JS.API.STREAM.INFO.test-stream');
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('getStream')->willReturnCallback(static fn (): Future => Future::error($refused));
+        $jetStream->expects(self::never())->method('listConsumers');
+        $jetStream->expects(self::never())->method('addStream');
+        $jetStream->expects(self::never())->method('addConsumer');
+        $jetStream->expects(self::never())->method('fetchBatch');
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'auto_setup' => true], null, $logger);
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            iterator_to_array($transport->get());
+            self::fail('expected get() to fail in setup()');
+        } catch (\RuntimeException $e) {
+            self::assertSame("Failed to setup NATS stream 'test-stream': refused", $e->getMessage());
+            self::assertSame($refused, $e->getPrevious());
+        }
+
+        self::assertSame([], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * With auto_setup, a consumer list the user may not read ($JS.API.CONSUMER.LIST.<stream>, asked for on an interest
+     * stream) is let through by setup() with the one warning of the check before the first pull, and the worker pulls.
+     */
+    public function testWithAutoSetupAConsumerListThatCannotBeReadIsLetThroughWithOneWarning(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('getStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
+        $jetStream->expects(self::once())->method('listConsumers')->willReturnCallback(static fn (): Future => Future::error(new PermissionViolationException('refused', subject: '$JS.API.CONSUMER.LIST.test-stream')));
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete(self::streamWithRetention('interest')));
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->expects(self::exactly(2))->method('fetchBatch')->willReturn(Future::complete([]));
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['scheduled_messages' => true, 'stream_retention' => 'interest', 'auto_setup' => true], null, $logger);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([], iterator_to_array($transport->get()));
+        self::assertSame([
+            'scheduled_messages on stream "test-stream": the stream and its consumers could not be read (refused), so the'
+            . ' transport could not check that the stream keeps delayed messages. A stream with interest retention keeps'
+            . ' them only while a consumer has interest in "test-topic.delayed.>".',
+        ], $logger->messagesAt('warning'));
     }
 
     /**
