@@ -271,21 +271,21 @@ apply only with the option on.
   Known and left alone: an unanswered PING's `TimeoutCancellation` leaves one cycle (99 objects) per connection that
   stopped answering, which is then replaced. Measurements: `docs/PRs/PR-114-empty-pull-reference-cycle.md`.
 - **Symfony's Worker, not this transport, decides when it closes a receiver and when it reads a whole pull before
-  handling the first message of it** (#140). Measured against `Worker.php` of the releases below, with a stubbed
-  `JetStreamContext` and the Worker over this transport:
+  handling the first message of it** (#140). Run, with a stubbed `JetStreamContext` and Symfony's Worker over this
+  transport: 7.4.0, 7.4.24, 8.1.11 and 8.1.12. Read from the tagged `Worker.php`: v7.4.23, v8.0.8, v8.0.15 and
+  v8.2.0-RC1.
 
   | Symfony Messenger | closes its transports when it stops | reads the whole pull first |
   |---|---|---|
   | 7.4.0 to 7.4.23, the 8.0 line, 8.1.0 to 8.1.11 | no | no |
   | 7.4.24 | yes | no |
-  | 8.1.12, 8.2.0-RC1 and later | yes | yes |
+  | 8.1.12, 8.2.0-RC1 | yes | yes |
 
   `NatsTransport::close()` runs unchanged either way; what changed is only whether and when Symfony's Worker calls
   it, and whether it consumes `get()`'s generator eagerly (decoding every message of the pull before the first
-  handler runs) or one message at a time. A test through the Worker that checks what the client's connection
-  lifecycle logs compares the transport's own warnings (`RecordingLogger::messagesAt('warning')`), never every
-  record: the client logs its own `info` line when the Worker closes it, which a test comparing every record would
-  wrongly take as a difference made by this transport (AGENTS.md L13-L16).
+  handler runs) or one message at a time. A test through the Worker that checks what the transport logs compares
+  the transport's warnings (`RecordingLogger::messagesAt('warning')`), never every record, because the client logs
+  an `info` line of its own when the Worker closes the transport.
 
 ## Cross-library development and verification
 
