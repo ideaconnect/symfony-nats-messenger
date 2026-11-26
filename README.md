@@ -2140,6 +2140,15 @@ framework:
 > yet. Changing it on a running deployment is a no-op until you delete the consumer and let setup
 > recreate it.
 
+> **Note on the consumer's metadata and description:** NATS takes setup's request for a consumer that
+> exists as an update that replaces the consumer's whole configuration. The transport has no option for
+> the consumer's `metadata` or `description`, so it sends back what the live consumer has: an entry or
+> a description another tool wrote, such as `nats consumer edit`, stays (measured on NATS 2.10.29 and
+> 2.15.3, on one server and on a cluster). The metadata goes back whole, as the server reported it, its
+> own `_nats.` entries included. An entry written while setup runs, between its
+> lookup of the consumer and its update, is lost: NATS has no conditional update of a consumer. Up to
+> 5.10.1 every setup cleared both fields.
+
 > **Note on the deny flags:** `stream_deny_delete` and `stream_deny_purge` can be switched on but never
 > off. NATS rejects an update that cancels either one, so on a stream that already denies deletes or
 > purges the transport keeps the server's value and a `false` in your configuration is ignored. Recreate
@@ -2160,7 +2169,7 @@ framework:
 > existing stream, and with `auto_setup` every `send()` and `get()` repeats that rejected update until the
 > two are staged. See [Stream Placement](#stream-placement) for the steps.
 
-> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, and `Custom consumer name is registered in JetStream`
+> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsNoConsumerMetadataWhenTheLiveConsumerHasNone`, `testSetupSendsConsumerMetadataNamedZeroAndOneAsAMap`, `testSetupSendsAConsumerMetadataNameThatStartsWithANulByte`, `testSetupSendsNoConsumerMetadataOrDescriptionWithoutAConsumer`, `testSetupSendsTheConsumerMetadataOfTheLookupThatAnswered`, `testSetupSendsTheLiveConsumerDescriptionBack`, `testSetupSendsNoConsumerDescriptionWhenTheLiveConsumerHasNone`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, `Custom consumer name is registered in JetStream`, and `Setup again keeps the consumer metadata and the consumer description another client wrote`
 
 ### Delayed / Scheduled Messages
 

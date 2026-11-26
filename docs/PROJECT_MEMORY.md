@@ -227,7 +227,11 @@ apply only with the option on.
   not configured. The four older retention limits are authoritative, including clearing them;
   newer `max_msg_size`/`max_consumers` are preserved unless configured. Clamp inherited duplicate
   windows to finite max age; encode empty `metadata`/`consumer_limits` as objects. Older NATS
-  versions reject some updates that newer ones accept.
+  versions reject some updates that newer ones accept. An existing consumer's `metadata` and `description` go back as
+  the lookup for its replay policy reported them (#145): nats-server replaces a durable consumer's whole configuration
+  with the request, so up to 5.10.1 every `setup()` cleared both (measured 2026-11-26 on 2.10.29 and 2.15.3, on one
+  server and on the test cluster with three replicas). A decoded map named `0`, `1`, ... goes as an object and an empty
+  one not at all: the server refuses a JSON list there (`invalid JSON`, on both versions).
 - **Serialization:** strip `NonSendableStampInterface` before encoding (#46); worker `AckStamp`
   contains a closure. A custom serializer takes precedence; otherwise choose igbinary if installed
   or `PhpSerializer` with a warning. Both defaults deserialize PHP objects and require trusted
