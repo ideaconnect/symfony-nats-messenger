@@ -922,7 +922,9 @@ final class NatsTransportTest extends TestCase
      * for a receiver that implements KeepaliveReceiverInterface (this transport), the Worker reads the whole pull
      * before it handles the first message (see the README, "Retry Handler Behavior"), so the second message's decode
      * failure leaves Worker::run() before any handler ran, and nothing is settled. expectException() ends a test at
-     * the throw, so the exception is caught here and the handled and settled messages are asserted after.
+     * the throw, so the exception is caught here and the handled and settled messages are asserted after. Also pins
+     * close(): the exception that ends Worker::run() here calls it once from Messenger 7.4.24 and 8.1.12 on, the same
+     * releases and count as a normal stop, counted the same way, by overriding close() in an anonymous subclass.
      */
     public function testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails(): void
     {
@@ -956,7 +958,15 @@ final class NatsTransportTest extends TestCase
         $jetStream->expects(self::never())->method('nak');
         $jetStream->expects(self::never())->method('term');
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NATS_MODE, $serializer);
+        $transport = new class (self::VALID_DSN, self::NATS_MODE, $serializer) extends RuntimeTestableNatsTransport {
+            public int $closes = 0;
+
+            public function close(): void
+            {
+                ++$this->closes;
+                parent::close();
+            }
+        };
         $transport->setJetStreamContext($jetStream);
 
         try {
@@ -967,6 +977,7 @@ final class NatsTransportTest extends TestCase
         }
 
         self::assertSame(self::workerReadsTheWholePullFirst() ? [] : [true], $handled);
+        self::assertSame(self::workerClosesTransportsWhenItStops() ? 1 : 0, $transport->closes);
     }
 
     /**
@@ -10041,7 +10052,8 @@ final class NatsTransportTest extends TestCase
      * From Symfony Messenger 7.4.24 and 8.1.12 on, the Worker calls close() once when it stops, whatever stopped it;
      * before, nothing in Symfony calls it. Through the Worker: one message, handled and acknowledged, a stop by
      * StopWorkerOnMessageLimitListener(1). Counted by overriding close() in an anonymous subclass that calls its
-     * parent, not read from the client's log line.
+     * parent, not read from the client's log line; the client's own info line ("NATS connection Closed") is checked
+     * beside it, with a RecordingLogger.
      */
     public function testTheWorkerClosesTheTransportWhenItStopsOnTheMessengerReleasesThatDoSo(): void
     {
@@ -10050,8 +10062,9 @@ final class NatsTransportTest extends TestCase
             new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'p'),
         ]));
         $jetStream->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
 
-        $transport = new class (self::VALID_DSN, self::NATS_MODE, $this->decodingSerializer()) extends RuntimeTestableNatsTransport {
+        $transport = new class (self::VALID_DSN, self::NATS_MODE, $this->decodingSerializer(), $logger) extends RuntimeTestableNatsTransport {
             public int $closes = 0;
 
             public function close(): void
@@ -10075,6 +10088,11 @@ final class NatsTransportTest extends TestCase
 
         self::assertSame([true], $handled);
         self::assertSame(self::workerClosesTransportsWhenItStops() ? 1 : 0, $transport->closes);
+        if (self::workerClosesTransportsWhenItStops()) {
+            self::assertContains('NATS connection Closed', $logger->messagesAt('info'));
+        } else {
+            self::assertNotContains('NATS connection Closed', $logger->messagesAt('info'));
+        }
     }
 
     /**
