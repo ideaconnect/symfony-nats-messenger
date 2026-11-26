@@ -10116,6 +10116,18 @@ final class NatsTransportTest extends TestCase
         yield 'another name set: two live names that differ by a space both stay' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $twoTeams], '{"team":"core","team ":"ops","shard":"7"}'];
         yield 'a configured name sets only the live name it equals' => [['stream_metadata' => ['team' => 'new']], ['metadata' => $twoTeams], '{"team":"new","team ":"ops"}'];
         yield 'a name given null removes only the live name it equals' => [['stream_metadata' => ['team' => null]], ['metadata' => $twoTeams], '{"team ":"ops"}'];
+
+        // A live name that starts with a NUL byte goes back too: json_encode() leaves such a name out of an object,
+        // where it marks a private or protected property, so only a list is sent as an object.
+        $nulAlone = ["\0hidden" => 'v'];
+        $nulAndTeam = ["\0hidden" => 'v', 'team' => 'core'];
+
+        yield 'not set: a live name that starts with a NUL byte goes back' => [[], ['metadata' => $nulAlone], '{"\u0000hidden":"v"}'];
+        yield 'not set: a live name that starts with a NUL byte goes back with the other' => [[], ['metadata' => $nulAndTeam], '{"\u0000hidden":"v","team":"core"}'];
+        yield 'not set: a live name that starts with a NUL byte goes back with the name 0' => [[], ['metadata' => ["\0hidden" => 'v', 0 => 'a']], '{"\u0000hidden":"v","0":"a"}'];
+        yield 'another name set: a live name that starts with a NUL byte stays' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $nulAlone], '{"\u0000hidden":"v","shard":"7"}'];
+        yield 'another name set: a live name that starts with a NUL byte stays with the other' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $nulAndTeam], '{"\u0000hidden":"v","team":"core","shard":"7"}'];
+        yield 'the other entry removed: a live name that starts with a NUL byte stays' => [['stream_metadata' => ['team' => null]], ['metadata' => $nulAndTeam], '{"\u0000hidden":"v"}'];
     }
 
     /**

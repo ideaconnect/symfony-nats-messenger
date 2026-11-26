@@ -2741,12 +2741,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * builder: names trimmed, values strings), so a configured name sets or removes the live entry of exactly that
      * name. A live value that is no map reads as none.
      *
-     * The map goes out as an object, so that names that are decimal integers, which PHP holds as the integer keys
-     * 0, 1, ... of what then encodes as a JSON list, reach the server as names: it refuses a list.
+     * A map whose names are exactly 0, 1, ... in that order is a list to PHP and encodes as a JSON list, which the
+     * server refuses, so that map goes out as an object, and its names reach the server as names. Any other map goes
+     * out as the array itself, which encodes as a JSON object already: an object would lose a name that starts with
+     * a NUL byte, since json_encode() leaves such a property out (PHP's mark of a private or protected one), and the
+     * server stores such a name like any other (measured on nats-server 2.10.29 and 2.15.3). A list cannot hold
+     * such a name.
      *
      * @param mixed $liveMetadata The `metadata` entry of the live stream config, as getStream() reports it
+     * @return array<mixed>|object|null
      */
-    private function resolveUpdatedStreamMetadata(mixed $liveMetadata): ?object
+    private function resolveUpdatedStreamMetadata(mixed $liveMetadata): array|object|null
     {
         // array_replace() and not array_merge(), which would number names that are decimal integers anew.
         $metadata = array_replace(
@@ -2758,7 +2763,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             unset($metadata[$name]);
         }
 
-        return $metadata === [] ? null : (object) $metadata;
+        if ($metadata === []) {
+            return null;
+        }
+
+        return array_is_list($metadata) ? (object) $metadata : $metadata;
     }
 
     /**
