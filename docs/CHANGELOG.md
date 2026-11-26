@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `setup()` creates a stream with the entries, and on an existing stream sets each of them in the live map and changes
   nothing else, as each placement option changes only its own field: an entry another tool wrote stays. An entry
   given null (`team: ~`) is removed, whoever wrote it; a DSN has no null, so that goes through the transport's options.
-  A name starting with `_nats.`, which NATS keeps for itself, an empty map, a list, a value that is no string, integer
-  or null and a map over 128 KiB are refused when the transport is built. NATS before 2.10 has
+  A name starting with `_nats.`, which NATS keeps for itself, an empty map, a list, a map whose names are exactly `0`,
+  `1`, ... in that order (which PHP cannot tell from a list), a value that is no string, integer or null and a map over
+  128 KiB are refused when the transport is built. NATS before 2.10 has
   no stream metadata and drops the field without a word, so the setup is refused there, as for `scheduled_messages`
   before 2.12. See the README section "Stream Metadata", `examples/stream-metadata.php` and
   `nats_stream_metadata.feature`.
