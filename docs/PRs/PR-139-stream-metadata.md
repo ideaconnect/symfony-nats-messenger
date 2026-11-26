@@ -5,8 +5,9 @@
 - **PR:** https://github.com/ideaconnect/symfony-nats-messenger/pull/139; no issue is linked, so the PR's description is
   the spec.
 - **Status:** the contributor's five commits unchanged, and the changes of the
-  [review](https://github.com/ideaconnect/symfony-nats-messenger/pull/139#pullrequestreview-6076647845) on top of them,
-  one commit per item, on the same branch.
+  [review](https://github.com/ideaconnect/symfony-nats-messenger/pull/139#pullrequestreview-6076647845) and of the
+  [second review](https://github.com/ideaconnect/symfony-nats-messenger/pull/139#pullrequestreview-6077510930) on top of
+  them, one commit per item, on the same branch.
 
 ## What the PR Proposes
 
@@ -45,6 +46,19 @@ are decimal integers (`0`, `1`, ...), since PHP holds such a map as a list and t
    `examples/README.md` row did not say the example needs the cluster, and the README said the cluster runs the last four
    examples where it runs six.
 
+### The Second Review
+
+1. CI's PHP 8.5 job fails on the four unit tests of #140 (Symfony Messenger 8.1.12), which fail on `main` too, and stops
+   there, so on no head of this PR has it run the paused suite, the coverage check, the whole mutation run, or Behat and
+   the examples on the latest server. That waits for the fix of #140 on `main` (#142), merged into this branch.
+2. **A live name that starts with a NUL byte was dropped on every `setup()`**, with the option unset too. The merge cast
+   the map to an object, and `json_encode()` leaves out the properties of an object whose names start with a NUL byte,
+   which is how PHP marks private and protected ones: `{"\u0000hidden":"v","team":"core"}` went out as `{"team":"core"}`,
+   and `{"\u0000hidden":"v"}` as `{}`, which cleared the map. `main` sent both back as they came, and nats-server 2.10.29
+   and 2.15.3 store such a name. The create path is not affected: the builder trims a configured name, and `trim()` takes
+   a leading NUL byte off.
+3. The changelog's Added entry did not name the map whose names are exactly `0`, `1`, ... among the refusals.
+
 ## How It Was Implemented
 
 | Commit | Change |
@@ -62,12 +76,18 @@ are decimal integers (`0`, `1`, ...), since PHP holds such a map as a list and t
 | `docs: say that stream-metadata.php needs the cluster` | Finding 7 |
 | `docs: the cluster runs the last six examples, not four` | Finding 8 |
 | `docs: PR-139, what the PR proposed, how it is implemented and its tests` | Finding 4: this record |
+| `fix: send live stream metadata back as an array unless it is a list` | Second review, finding 2: only a map PHP holds as a list is cast to an object, any other goes out as the array, which encodes as a JSON object already and keeps a name that starts with a NUL byte. Six data sets in `metadataOnUpdate`, all failing on `e253a2b` |
+| `docs: name the map of the names 0, 1, ... among the refusals in the changelog` | Second review, finding 3 |
+| `docs: PR-139, the second review` | This record, for the second review |
 
 ## Behavioural Contract
 
-- Unset, the option changes nothing: the live map goes back as it came, names and values untouched, as an object.
+- Unset, the option changes nothing: the live map goes back as it came, names and values untouched, as a JSON object.
 - A configured entry sets the live entry of exactly its (trimmed) name; a null value removes it; every other live entry
-  stays, the server's own `_nats.` entries and names another tool wrote with space around them or empty included.
+  stays, the server's own `_nats.` entries and names another tool wrote with space around them, empty or starting with a
+  NUL byte included.
+- The map goes out as a JSON object: a map PHP holds as a list (names exactly `0`, `1`, ... in that order) as an object,
+  any other as the array, since an object would lose a name that starts with a NUL byte in `json_encode()`.
 - When the last entry goes, the field is left out, which is how the server is told to clear the map.
 - A `stream_metadata` in `options` replaces the DSN's map as a whole; a DSN cannot remove an entry.
 - Refused when the transport is built: no map, an empty map, a map whose names are exactly `0`, `1`, ... in that order, an
@@ -81,7 +101,7 @@ are decimal integers (`0`, `1`, ...), since PHP holds such a map as a list and t
 |------|-------|
 | Builder | `testBuildAcceptsStreamMetadata`, `testBuildAcceptsStreamMetadataEntriesToRemove`, `testBuildWithInvalidStreamMetadataThrowsException`, `testBuildRefusesStreamMetadataWhoseNamesAreExactlyZeroOneInOrder`, `testBuildRefusesAStreamMetadataNameNatsKeepsForItself`, `testBuildRefusesToRemoveAStreamMetadataNameNatsKeepsForItself`, `testBuildRefusesStreamMetadataLargerThanTheServerAllows` |
 | Accessors and coercion | `testStreamMetadataAccessorReadsTheMapAndTreatsAnythingElseAsUnset`, `testStreamMetadataRemovalsAccessorReadsTheNamesGivenNull`, `testStringMapValue` |
-| Create and update | `testSetupPassesStreamMetadataOnCreate`, `testSetupUpdateSetsTheConfiguredEntriesInTheLiveMetadata` (23 data sets; the eight of finding 1 fail on `349eaf0`) |
+| Create and update | `testSetupPassesStreamMetadataOnCreate`, `testSetupUpdateSetsTheConfiguredEntriesInTheLiveMetadata` (29 data sets; the eight of finding 1 fail on `349eaf0`, the six of the second review's finding 2 on `e253a2b`) |
 | Server version | `testSetupRefusesStreamMetadataOnAServerWithoutIt`, `testSetupRefusesAStreamMetadataRemovalOnAServerWithoutStreamMetadata`, `testSetupGoesOnWhenTheServerMayHoldStreamMetadataOrNoneIsSet`, `testSetupConnectsToReadTheVersionBeforeItRefusesStreamMetadata` |
 | Functional | `nats_stream_metadata.feature`, five scenarios; `examples/stream-metadata.php`, on the test server and a stream with three replicas on the test cluster |
 
@@ -104,3 +124,17 @@ Measured on the branch with the review's changes, PHP 8.5.9, PHPUnit 13.4.8, cli
   (measured on 2.15.3) the first `setup()` left two entries, `{"group":"odds","team":"ops"}`.
 - Not run: the whole Behat suite, the whole mutation run, the benchmark, and NATS 2.9 (the refusal there is covered by unit
   tests and by the example's branch for it, which CI does not reach).
+
+After the second review, same PHP, PHPUnit and client:
+
+- `composer test` with Messenger 8.1.11: PHPStan level max no errors; 1484 unit tests, 4151 assertions, OK. With 8.1.12:
+  the same four failures of #140 and no other.
+- `composer test:unit:paused` (8.1.11): OK, 1484 tests. Coverage: 99.80 % (1513 of 1516), the same three older statements
+  uncovered.
+- `composer test:mutation:canary`: 92 of 92 escaped. Infection on the lines the branch changes against `main`: 100
+  mutants, 100 killed, 100 % mutation code coverage and covered MSI; `composer test:mutation:check-log` clean.
+- Finding 2 on a real server: a stream created through the client with a name that starts with a NUL byte, alone and next
+  to `team` and `group`. nats-server 2.15.3 and 2.10.29 store the name and give it back. At `e253a2b` the first `setup()`
+  without the option dropped it on both (the map of that name alone was cleared); now it stays through a `setup()` without
+  the option, one that sets `shard`, and one that removes `team`. A stream with the names `0` and `1` still takes a
+  `setup()` without the option and one that sets `shard` on both servers.
