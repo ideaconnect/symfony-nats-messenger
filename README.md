@@ -1762,12 +1762,16 @@ dsn: 'nats-jetstream://localhost:4222/my-stream/my-topic?stream_metadata[group]=
 - A name must not be empty, and a value is a string (an integer is written as one) or null. The names and
   values to set may take 128 KiB together at most, the server's limit for the whole map. Anything else is
   refused when the transport is built, rather than quietly left out.
+- **A map whose names are exactly `0`, `1`, ... in that order is refused too**, such as `{ 0: ~ }` or
+  `stream_metadata[0]=a`: PHP holds such a map as a list and cannot tell it from one. Other names that are
+  decimal integers are fine (`{ 1: ~ }`, `stream_metadata[7]=a`), and so are `0` and `1` next to another name.
+  The entries of an existing stream are sent back as they are, whatever their names.
 - **NATS before 2.10 has no stream metadata** and drops the field without a word. `messenger:setup-transports`,
   and with `auto_setup` the first send or get, fail there with `The 'stream_metadata' option requires NATS Server
   >= 2.10, ...` instead of setting up a stream without the entries.
 - On a cluster the metadata belongs to the stream, so every replica reports it. Changing it moves nothing.
 
-> **Tested by:** `testBuildAcceptsStreamMetadata`, `testBuildAcceptsStreamMetadataEntriesToRemove`, `testBuildWithInvalidStreamMetadataThrowsException`, `testBuildRefusesAStreamMetadataNameNatsKeepsForItself`, `testBuildRefusesToRemoveAStreamMetadataNameNatsKeepsForItself`, `testBuildRefusesStreamMetadataLargerThanTheServerAllows`, `testStreamMetadataAccessorReadsTheMapAndTreatsAnythingElseAsUnset`, `testStreamMetadataRemovalsAccessorReadsTheNamesGivenNull`, `testStringMapValue`, `testSetupPassesStreamMetadataOnCreate`, `testSetupUpdateSetsTheConfiguredEntriesInTheLiveMetadata`, `testSetupRefusesStreamMetadataOnAServerWithoutIt`, `testSetupRefusesAStreamMetadataRemovalOnAServerWithoutStreamMetadata`, `testSetupGoesOnWhenTheServerMayHoldStreamMetadataOrNoneIsSet`, `testSetupConnectsToReadTheVersionBeforeItRefusesStreamMetadata`, the Behat scenarios of `nats_stream_metadata.feature`, and `examples/stream-metadata.php` (the test server and a stream with three replicas on the test cluster)
+> **Tested by:** `testBuildAcceptsStreamMetadata`, `testBuildAcceptsStreamMetadataEntriesToRemove`, `testBuildWithInvalidStreamMetadataThrowsException`, `testBuildRefusesStreamMetadataWhoseNamesAreExactlyZeroOneInOrder`, `testBuildRefusesAStreamMetadataNameNatsKeepsForItself`, `testBuildRefusesToRemoveAStreamMetadataNameNatsKeepsForItself`, `testBuildRefusesStreamMetadataLargerThanTheServerAllows`, `testStreamMetadataAccessorReadsTheMapAndTreatsAnythingElseAsUnset`, `testStreamMetadataRemovalsAccessorReadsTheNamesGivenNull`, `testStringMapValue`, `testSetupPassesStreamMetadataOnCreate`, `testSetupUpdateSetsTheConfiguredEntriesInTheLiveMetadata`, `testSetupRefusesStreamMetadataOnAServerWithoutIt`, `testSetupRefusesAStreamMetadataRemovalOnAServerWithoutStreamMetadata`, `testSetupGoesOnWhenTheServerMayHoldStreamMetadataOrNoneIsSet`, `testSetupConnectsToReadTheVersionBeforeItRefusesStreamMetadata`, the Behat scenarios of `nats_stream_metadata.feature`, and `examples/stream-metadata.php` (the test server and a stream with three replicas on the test cluster)
 
 ## Using a NATS Cluster
 

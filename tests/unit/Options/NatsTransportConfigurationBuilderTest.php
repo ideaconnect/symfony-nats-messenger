@@ -2752,9 +2752,15 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'an empty value' => [self::VALID_DSN, ['stream_metadata' => ['note' => '']], ['note' => '']];
         yield 'a name with space around it' => [self::VALID_DSN, ['stream_metadata' => [' group ' => 'odds']], ['group' => 'odds']];
         yield 'names that are decimal integers, with a name next to them' => [self::VALID_DSN, ['stream_metadata' => [7 => 'a', 'group' => 'b']], ['7' => 'a', 'group' => 'b']];
+        yield 'a name that is a decimal integer other than 0, in the DSN' => [self::VALID_DSN . '?stream_metadata[7]=a', [], ['7' => 'a']];
+        yield 'the names 0 and 1 next to another name' => [self::VALID_DSN, ['stream_metadata' => [0 => 'a', 1 => 'b', 'group' => 'x']], ['0' => 'a', '1' => 'b', 'group' => 'x']];
+        yield 'the names 1 and 0, not in that order' => [self::VALID_DSN, ['stream_metadata' => [1 => 'a', 0 => 'b']], ['1' => 'a', '0' => 'b']];
         yield 'names that only start like the reserved prefix' => [self::VALID_DSN, ['stream_metadata' => ['_nats' => 'a', '_natsx' => 'b', 'x._nats.' => 'c']], ['_nats' => 'a', '_natsx' => 'b', 'x._nats.' => 'c']];
         yield 'exactly the 128 KiB the server allows' => [self::VALID_DSN, ['stream_metadata' => ['k' => str_repeat('v', 131071)]], ['k' => str_repeat('v', 131071)]];
     }
+
+    /** The builder's refusal of a stream_metadata that is no non-empty map of non-empty names, in full. */
+    private const INVALID_STREAM_METADATA_MESSAGE = 'The stream_metadata option must be a non-empty map of non-empty names to strings, or to null for an entry to remove, as stream_metadata[name]=value in a DSN. A map whose names are exactly 0, 1, ... in that order is refused too: PHP cannot tell it from a list.';
 
     /**
      * Anything that is not a non-empty map of non-empty names to strings or integers, or to null, is refused, so
@@ -2764,9 +2770,36 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     public function testBuildWithInvalidStreamMetadataThrowsException(mixed $metadata): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('The stream_metadata option must be a non-empty map of non-empty names to strings, or to null for an entry to remove, as stream_metadata[name]=value in a DSN.');
+        $this->expectExceptionMessage(self::INVALID_STREAM_METADATA_MESSAGE);
 
         (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_metadata' => $metadata]);
+    }
+
+    /**
+     * PHP holds a map whose names are exactly 0, 1, ... in that order as a list, and cannot tell the two apart, so
+     * such a map is refused as a list is, from the options and from the DSN, and the message says so. Other names
+     * that are decimal integers pass ({@see streamMetadataProvider()}).
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('streamMetadataWhoseNamesAreZeroOneInOrder')]
+    public function testBuildRefusesStreamMetadataWhoseNamesAreExactlyZeroOneInOrder(string $dsn, array $options): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(self::INVALID_STREAM_METADATA_MESSAGE);
+
+        (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function streamMetadataWhoseNamesAreZeroOneInOrder(): iterable
+    {
+        yield 'the name 0 to remove' => [self::VALID_DSN, ['stream_metadata' => [0 => null]]];
+        yield 'the names 0 and 1 to set' => [self::VALID_DSN, ['stream_metadata' => [0 => 'a', 1 => 'b']]];
+        yield 'stream_metadata[0]=a in the DSN' => [self::VALID_DSN . '?stream_metadata[0]=a', []];
+        yield 'stream_metadata[0] and [1] in the DSN' => [self::VALID_DSN . '?stream_metadata[0]=a&stream_metadata[1]=b', []];
     }
 
     /**
@@ -2865,6 +2898,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         yield 'entries to remove only' => [self::VALID_DSN, ['stream_metadata' => ['team' => null, 'owner' => null]], null, ['team', 'owner']];
         yield 'a name to remove with space around it' => [self::VALID_DSN, ['stream_metadata' => [' team ' => null]], null, ['team']];
         yield 'a name to remove that is a decimal integer' => [self::VALID_DSN, ['stream_metadata' => [7 => null, 'group' => 'odds']], ['group' => 'odds'], ['7']];
+        yield 'the name 1 alone to remove' => [self::VALID_DSN, ['stream_metadata' => [1 => null]], null, ['1']];
         yield 'an empty value in the DSN is a value, not a removal' => [self::VALID_DSN . '?stream_metadata[team]=', [], ['team' => ''], []];
         yield 'entries to remove take none of the 128 KiB' => [
             self::VALID_DSN,

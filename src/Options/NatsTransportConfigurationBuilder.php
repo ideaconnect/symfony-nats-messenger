@@ -891,10 +891,12 @@ final class NatsTransportConfigurationBuilder
         }
 
         // Nothing usable, an entry that was dropped or named twice, or a list, which has no names:
-        // `stream_metadata[]=x` in a DSN, or a YAML list, where a map was meant.
+        // `stream_metadata[]=x` in a DSN, or a YAML list, where a map was meant. PHP holds a map whose names are
+        // exactly 0, 1, ... in that order as a list too, and cannot tell the two apart, so such a map is refused
+        // with them, and the message says so.
         if ($normalized === [] || count($normalized) !== count($entries) || array_is_list($entries)) {
             throw new InvalidArgumentException(sprintf(
-                'The %1$s option must be a non-empty map of non-empty names to strings, or to null for an entry to remove, as %1$s[name]=value in a DSN.',
+                'The %1$s option must be a non-empty map of non-empty names to strings, or to null for an entry to remove, as %1$s[name]=value in a DSN. A map whose names are exactly 0, 1, ... in that order is refused too: PHP cannot tell it from a list.',
                 TransportOption::STREAM_METADATA->value,
             ));
         }
