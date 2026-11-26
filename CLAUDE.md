@@ -12,7 +12,7 @@ NATS via the async `idct/php-nats-jetstream-client` (`^2.30.1`, amphp-based). It
 `IDCTNatsMessengerBundle` (auto-enabled by Flex), which registers the transport factory
 and the igbinary serializer so projects need no manual wiring.
 
-- **PHP:** `^8.2` · **Symfony:** `^7.3 || ^8` · **NATS:** `^2.9` (`^2.12` for scheduled messages)
+- **PHP:** `^8.2` · **Symfony:** `^7.3 || ^8` · **NATS:** `^2.9` (`^2.10` for `stream_metadata`, `^2.12` for scheduled messages)
 - Everything NATS-specific lives behind the `IDCT\NATS\…` client; this library is the synchronous adapter.
 
 ## Project memory
