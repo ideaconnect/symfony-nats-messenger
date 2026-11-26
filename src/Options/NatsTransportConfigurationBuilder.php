@@ -37,7 +37,7 @@ final class NatsTransportConfigurationBuilder
     private const MAX_STREAM_DESCRIPTION_LENGTH = 4096;
 
     /** The prefix of the metadata names NATS writes itself, such as `_nats.ver` (JSServerVersionMetadataKey). */
-    public const RESERVED_METADATA_PREFIX = '_nats.';
+    private const RESERVED_METADATA_PREFIX = '_nats.';
 
     /** The most a stream's metadata may take, its names and values together (nats-server's JSMaxMetadataLen). */
     private const MAX_METADATA_SIZE = 131072;
