@@ -2735,6 +2735,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * rest: the server drops the first two from every request and sets all three again itself, and the builder
      * keeps stream_metadata from naming any, to set or to remove.
      *
+     * The live map is taken as it came: its names and values are not trimmed, checked or dropped, since the server
+     * has no rule on names other than the size of the map, and another tool may have written a name with space
+     * around it, an empty one, or two that differ by a space only. Only the configured side is normalized (by the
+     * builder: names trimmed, values strings), so a configured name sets or removes the live entry of exactly that
+     * name. A live value that is no map reads as none.
+     *
      * The map goes out as an object, so that names that are decimal integers, which PHP holds as the integer keys
      * 0, 1, ... of what then encodes as a JSON list, reach the server as names: it refuses a list.
      *
@@ -2745,7 +2751,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         // array_replace() and not array_merge(), which would number names that are decimal integers anew.
         $metadata = array_replace(
             // An empty live map arrives as an object (normalizeStreamConfigurationForUpdate()), which reads as none.
-            TypeCoercion::stringMapValue($liveMetadata),
+            is_array($liveMetadata) ? $liveMetadata : [],
             $this->configuration->streamMetadata() ?? [],
         );
         foreach ($this->configuration->streamMetadataRemovals() as $name) {

@@ -10102,6 +10102,20 @@ final class NatsTransportTest extends TestCase
         yield 'not set, an empty live map: the field is left out' => [[], ['metadata' => []], null];
         yield 'not set, no live map: the field is left out' => [[], [], null];
         yield 'not set, a live value that is no map: the field is left out' => [[], ['metadata' => 'broken'], null];
+
+        // The live names go back as they came: only the configured names are trimmed.
+        $spaced = [' group ' => 'odds', 'team' => 'core'];
+        $emptyName = ['' => 'x', 'team' => 'core'];
+        $twoTeams = ['team' => 'core', 'team ' => 'ops'];
+
+        yield 'not set: a live name with space around it goes back unchanged' => [[], ['metadata' => $spaced], '{" group ":"odds","team":"core"}'];
+        yield 'not set: an empty live name goes back unchanged' => [[], ['metadata' => $emptyName], '{"":"x","team":"core"}'];
+        yield 'not set: two live names that differ by a space both go back' => [[], ['metadata' => $twoTeams], '{"team":"core","team ":"ops"}'];
+        yield 'another name set: a live name with space around it stays unchanged' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $spaced], '{" group ":"odds","team":"core","shard":"7"}'];
+        yield 'another name set: an empty live name stays' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $emptyName], '{"":"x","team":"core","shard":"7"}'];
+        yield 'another name set: two live names that differ by a space both stay' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $twoTeams], '{"team":"core","team ":"ops","shard":"7"}'];
+        yield 'a configured name sets only the live name it equals' => [['stream_metadata' => ['team' => 'new']], ['metadata' => $twoTeams], '{"team":"new","team ":"ops"}'];
+        yield 'a name given null removes only the live name it equals' => [['stream_metadata' => ['team' => null]], ['metadata' => $twoTeams], '{"team ":"ops"}'];
     }
 
     /**
