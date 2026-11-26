@@ -77,6 +77,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handlers failing for good, with what Symfony decided for each delivery (`willRetry()` after its retry listener:
   `[false, false]` with `max_retries: 0`, `[true, false]` with 3); on 5.10.1 it stops at the first run, where the
   message was TERMed after one run of each handler.
+- **The four tests that compared every record a `RecordingLogger` recorded now compare only the transport's own
+  warnings** (`RecordingLogger::messagesAt('warning')`), not every record (#140): `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`,
+  `testNatsModeWithoutSymfonysRetriesLogsNoWarning`, `testNakRetryFollowsSymfonysRetryStrategyThroughTheWorker`,
+  `testNakRetryRunsSymfonysStrategyToItsEndPastMaxDeliver`. From Symfony Messenger 7.4.24 and 8.1.12 on, the Worker
+  calls `close()` when it stops, which the client logs at `info` level, and these four tests failed on that extra
+  record. Each still fails when the transport itself logs one warning too many (shown in PR #140's sabotage run).
+- **Two new unit tests pin what Symfony Messenger 8.1.12 changed in its `Worker`** (#140):
+  `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails` (a pull of two messages,
+  the second's decode throwing a plain exception: before 8.1.12 the first message is handled and acknowledged
+  before the exception leaves `Worker::run()`; from 8.1.12 on, which reads the whole pull before it handles the
+  first message, neither message is handled and nothing is settled) and
+  `testTheWorkerClosesTheTransportWhenItStopsOnTheMessengerReleasesThatDoSo` (one handled message, a stop by
+  `StopWorkerOnMessageLimitListener(1)`: `close()` is called once from Messenger 7.4.24 and 8.1.12 on, and never
+  before, counted by overriding `close()` in an anonymous subclass, not read from the client's log line). Both read
+  the installed release through two new private helpers, `workerReadsTheWholePullFirst()` and
+  `workerClosesTransportsWhenItStops()`, next to the existing `workerAcknowledgesAMessageItSentForRetry()`. Run
+  against Messenger 8.1.12 (the default), and against 8.1.11 and 7.4.24 in a separate `composer update --with
+  symfony/messenger:<version>` copy of the tree; also checked against 7.4.0.
+
+### Documentation
+
+- **README, "Losing the Connection"**: who calls `close()` (Symfony's Worker, each time it stops, at a normal stop
+  and when an exception ends it, from Messenger 7.4.24 and 8.1.12 on; nothing in Symfony called it before those
+  releases), and what an operator sees (the client's `info` line `NATS connection Closed`) (#140).
+- **README, "Any other exception of the serializer"**: from Messenger 8.1.12 on, with `batching` above 1, the
+  messages of the same pull decoded before the failing one are not handled either, and are left for redelivery the
+  same way (#140).
+- **README, "Batching Explained"**: one sentence that from Messenger 8.1.12 on the Worker reads the whole pull
+  before it handles the first message, linking to the paragraph above (#140).
+- **`docs/TESTS.md` and `docs/PROJECT_MEMORY.md`** updated for the tests and the Worker behavior above (#140).
 
 ## [5.10.1] - 2026-11-21
 
