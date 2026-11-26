@@ -146,7 +146,11 @@ composer nats:stop               # stop NATS
   and limit, in `fetchBatchMessages()`. The next operation still PINGs first: the server sends the same error when
   an account's limit is lowered and then closes the connection, so the error does not prove the connection is alive.
 - **`setup()` create-then-update.** On a stream conflict it reads the live config, **merges** subjects,
-  preserves server fields, and updates - it never blindly overwrites an existing stream.
+  preserves server fields, and updates - it never blindly overwrites an existing stream. `stream_metadata`
+  follows the placement options: each entry it names is set in the live `metadata` map, or removed from it when its value is null (which the
+  placement options cannot do, and a DSN cannot say), every other entry stays (the server's `_nats.` ones included,
+  which the builder refuses to set or remove), and the map goes out as a JSON object.
+  NATS before 2.10 drops the field, so `setup()` refuses the option there (`metadataUnsupportedByTheServer()`).
 - **Retry strategy:** `retry_handler=symfony` (default) → TERM (Symfony's failure transport retries);
   `retry_handler=nats` → NAK (NATS redelivers), and `send()` skips the copy Symfony's retry sends (a received
   envelope with a retry count), so Symfony's `max_retries` has no effect in nats mode. Nats mode TERMs what can

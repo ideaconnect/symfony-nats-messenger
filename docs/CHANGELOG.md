@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`stream_metadata` option: entries the transport sets in its stream's metadata.** A map of names to strings, as a
+  YAML map or as `stream_metadata[name]=value` in the DSN; it defaults to `null`, which leaves the metadata untouched.
+  `setup()` creates a stream with the entries, and on an existing stream sets each of them in the live map and changes
+  nothing else, as each placement option changes only its own field: an entry another tool wrote stays. An entry
+  given null (`team: ~`) is removed, whoever wrote it; a DSN has no null, so that goes through the transport's options.
+  A name starting with `_nats.`, which NATS keeps for itself, an empty map, a list, a value that is no string, integer
+  or null and a map over 128 KiB are refused when the transport is built. NATS before 2.10 has
+  no stream metadata and drops the field without a word, so the setup is refused there, as for `scheduled_messages`
+  before 2.12. See the README section "Stream Metadata", `examples/stream-metadata.php` and
+  `nats_stream_metadata.feature`.
+
 ### Fixed
+
+- **`setup()` no longer fails on a stream whose metadata has only names that are decimal integers.** PHP reads a map
+  with the names `0`, `1`, ... as a list, and the transport sent it back to the server as a JSON list, which the server
+  refuses: `Failed to setup NATS stream ...: invalid JSON` (measured on nats-server 2.10.29, with a stream another tool
+  had given the entries `0` and `1`). From 2.11 on the server's own `_nats.` entries stand next to them, so the map
+  stayed a map there. The live metadata now goes back as an object.
 
 - **In nats mode a failure of several handlers is TERMed only when every handler failed for good** (#125), by the rule
   Symfony's retry listener goes by: a `HandlerFailedException` is unrecoverable only when every exception it wraps
