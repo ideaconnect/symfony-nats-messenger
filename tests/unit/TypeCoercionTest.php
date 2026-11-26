@@ -235,4 +235,36 @@ final class TypeCoercionTest extends TestCase
         self::assertSame(TypeCoercion::boolValue('yes'), TypeCoercion::boolValue('yes'));
         self::assertSame(TypeCoercion::secondsToMs('2.5'), TypeCoercion::secondsToMs('2.5'));
     }
+
+    /**
+     * @param array<string, string> $expected
+     */
+    #[DataProvider('stringMapValueProvider')]
+    public function testStringMapValue(mixed $value, array $expected): void
+    {
+        self::assertSame($expected, TypeCoercion::stringMapValue($value));
+    }
+
+    /**
+     * @return iterable<string, array{mixed, array<string, string>}>
+     */
+    public static function stringMapValueProvider(): iterable
+    {
+        yield 'a map' => [['group' => 'odds', 'team' => 'core'], ['group' => 'odds', 'team' => 'core']];
+        yield 'names are trimmed, values are not' => [[' group ' => ' odds '], ['group' => ' odds ']];
+        yield 'an integer value becomes a string' => [['shard' => 7], ['shard' => '7']];
+        yield 'an empty value stays' => [['note' => ''], ['note' => '']];
+        yield 'names that are decimal integers are strings again' => [[0 => 'a', 7 => 'b'], ['0' => 'a', '7' => 'b']];
+        yield 'an entry with an empty name is dropped' => [['' => 'x', '  ' => 'y', 'group' => 'odds'], ['group' => 'odds']];
+        yield 'an entry whose value is no string or integer is dropped' => [
+            ['a' => true, 'b' => 1.5, 'c' => null, 'd' => ['x'], 'e' => new \stdClass(), 'group' => 'odds'],
+            ['group' => 'odds'],
+        ];
+        yield 'a later name that trims to an earlier one replaces it' => [['group' => 'a', ' group' => 'b'], ['group' => 'b']];
+        yield 'an empty array' => [[], []];
+        yield 'a string' => ['group:odds', []];
+        yield 'an integer' => [7, []];
+        yield 'null' => [null, []];
+        yield 'an object' => [new \stdClass(), []];
+    }
 }

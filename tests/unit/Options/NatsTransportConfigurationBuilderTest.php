@@ -2725,4 +2725,163 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertSame(RetryVia::COPY, $builder->build(self::VALID_DSN, $options)->retryVia());
         self::assertSame([1000, 2000], $builder->build(self::VALID_DSN, $options + ['retry_via' => 'copy'])->backoffMs());
     }
+
+    /**
+     * stream_metadata takes a map, from the transport's options or as stream_metadata[name]=value in the DSN,
+     * and stores it with every name trimmed and every value a string. Unset, it is null.
+     *
+     * @param array<string, mixed>       $options
+     * @param array<string, string>|null $expected
+     */
+    #[DataProvider('streamMetadataProvider')]
+    public function testBuildAcceptsStreamMetadata(string $dsn, array $options, ?array $expected): void
+    {
+        self::assertSame($expected, (new NatsTransportConfigurationBuilder())->build($dsn, $options)->streamMetadata());
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>, array<string, string>|null}>
+     */
+    public static function streamMetadataProvider(): iterable
+    {
+        yield 'unset' => [self::VALID_DSN, [], null];
+        yield 'a map in the options' => [self::VALID_DSN, ['stream_metadata' => ['group' => 'odds-papi', 'team' => 'core']], ['group' => 'odds-papi', 'team' => 'core']];
+        yield 'in the DSN' => [self::VALID_DSN . '?stream_metadata[group]=odds-papi&stream_metadata[team]=core', [], ['group' => 'odds-papi', 'team' => 'core']];
+        yield 'the options win over the DSN, as a whole' => [self::VALID_DSN . '?stream_metadata[group]=odds-papi', ['stream_metadata' => ['team' => 'core']], ['team' => 'core']];
+        yield 'an integer value' => [self::VALID_DSN, ['stream_metadata' => ['shard' => 7]], ['shard' => '7']];
+        yield 'an empty value' => [self::VALID_DSN, ['stream_metadata' => ['note' => '']], ['note' => '']];
+        yield 'a name with space around it' => [self::VALID_DSN, ['stream_metadata' => [' group ' => 'odds']], ['group' => 'odds']];
+        yield 'names that are decimal integers, with a name next to them' => [self::VALID_DSN, ['stream_metadata' => [7 => 'a', 'group' => 'b']], ['7' => 'a', 'group' => 'b']];
+        yield 'names that only start like the reserved prefix' => [self::VALID_DSN, ['stream_metadata' => ['_nats' => 'a', '_natsx' => 'b', 'x._nats.' => 'c']], ['_nats' => 'a', '_natsx' => 'b', 'x._nats.' => 'c']];
+        yield 'exactly the 128 KiB the server allows' => [self::VALID_DSN, ['stream_metadata' => ['k' => str_repeat('v', 131071)]], ['k' => str_repeat('v', 131071)]];
+    }
+
+    /**
+     * Anything that is not a non-empty map of non-empty names to strings or integers, or to null, is refused, so
+     * that no entry is quietly left out of the stream or left on it.
+     */
+    #[DataProvider('invalidStreamMetadataProvider')]
+    public function testBuildWithInvalidStreamMetadataThrowsException(mixed $metadata): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_metadata option must be a non-empty map of non-empty names to strings, or to null for an entry to remove, as stream_metadata[name]=value in a DSN.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_metadata' => $metadata]);
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function invalidStreamMetadataProvider(): iterable
+    {
+        yield 'an empty map' => [[]];
+        yield 'a string' => ['group:odds'];
+        yield 'an integer' => [7];
+        yield 'true' => [true];
+        yield 'a list' => [['odds', 'core']];
+        yield 'a list of one' => [['odds']];
+        yield 'an empty name' => [['' => 'odds']];
+        yield 'a blank name next to a good one' => [['  ' => 'x', 'group' => 'odds']];
+        yield 'a value that is a list' => [['group' => ['odds']]];
+        yield 'a value that is true' => [['group' => true]];
+        yield 'a value that is a float' => [['group' => 1.5]];
+        yield 'two names that trim to the same one' => [['group' => 'a', ' group' => 'b']];
+        yield 'a name that is set and removed' => [['group' => 'a', ' group' => null]];
+        yield 'a name that is removed twice' => [['group' => null, ' group' => null]];
+        yield 'a blank name to remove' => [['  ' => null]];
+        yield 'a blank name to remove next to a good entry' => [['' => null, 'group' => 'odds']];
+    }
+
+    /**
+     * A name starting with _nats. is the server's own, which writes its version and API level there.
+     */
+    #[DataProvider('reservedMetadataNames')]
+    public function testBuildRefusesAStreamMetadataNameNatsKeepsForItself(string $name): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(sprintf('The stream_metadata option cannot set "%s": NATS keeps the names starting with "_nats." for itself.', $name));
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_metadata' => ['group' => 'odds', $name => 'x']]);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function reservedMetadataNames(): iterable
+    {
+        yield 'the server version' => ['_nats.ver'];
+        yield 'one the server does not write today' => ['_nats.owner'];
+        yield 'the prefix alone' => ['_nats.'];
+    }
+
+    /**
+     * One byte over the 128 KiB is refused, and an entry to remove next to it takes nothing off the count.
+     *
+     * @param array<string, string|null> $metadata
+     */
+    #[DataProvider('oversizedStreamMetadata')]
+    public function testBuildRefusesStreamMetadataLargerThanTheServerAllows(array $metadata): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_metadata option must not exceed 131072 bytes, its names and values together (got 131073): NATS rejects a larger map.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_metadata' => $metadata]);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, string|null>}>
+     */
+    public static function oversizedStreamMetadata(): iterable
+    {
+        yield 'entries to set' => [['ab' => str_repeat('v', 131070), 'c' => '']];
+        yield 'with an entry to remove' => [['ab' => str_repeat('v', 131070), 'c' => '', 'team' => null]];
+    }
+
+    /**
+     * An entry whose value is null names an entry to remove: it is not among the entries to set, and its name is
+     * trimmed as theirs are. A DSN has no null: stream_metadata[name]= is the empty string, a value to set.
+     *
+     * @param array<string, mixed>       $options
+     * @param array<string, string>|null $set
+     * @param list<string>               $removed
+     */
+    #[DataProvider('streamMetadataRemovalsProvider')]
+    public function testBuildAcceptsStreamMetadataEntriesToRemove(string $dsn, array $options, ?array $set, array $removed): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+
+        self::assertSame($set, $configuration->streamMetadata());
+        self::assertSame($removed, $configuration->streamMetadataRemovals());
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>, array<string, string>|null, list<string>}>
+     */
+    public static function streamMetadataRemovalsProvider(): iterable
+    {
+        yield 'unset' => [self::VALID_DSN, [], null, []];
+        yield 'entries to set only' => [self::VALID_DSN, ['stream_metadata' => ['group' => 'odds']], ['group' => 'odds'], []];
+        yield 'one to set and one to remove' => [self::VALID_DSN, ['stream_metadata' => ['team' => null, 'group' => 'odds']], ['group' => 'odds'], ['team']];
+        yield 'entries to remove only' => [self::VALID_DSN, ['stream_metadata' => ['team' => null, 'owner' => null]], null, ['team', 'owner']];
+        yield 'a name to remove with space around it' => [self::VALID_DSN, ['stream_metadata' => [' team ' => null]], null, ['team']];
+        yield 'a name to remove that is a decimal integer' => [self::VALID_DSN, ['stream_metadata' => [7 => null, 'group' => 'odds']], ['group' => 'odds'], ['7']];
+        yield 'an empty value in the DSN is a value, not a removal' => [self::VALID_DSN . '?stream_metadata[team]=', [], ['team' => ''], []];
+        yield 'entries to remove take none of the 128 KiB' => [
+            self::VALID_DSN,
+            ['stream_metadata' => ['k' => str_repeat('v', 131071), 'a-name-to-remove' => null]],
+            ['k' => str_repeat('v', 131071)],
+            ['a-name-to-remove'],
+        ];
+    }
+
+    /**
+     * The server's own entries cannot be removed either.
+     */
+    public function testBuildRefusesToRemoveAStreamMetadataNameNatsKeepsForItself(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The stream_metadata option cannot remove "_nats.ver": NATS keeps the names starting with "_nats." for itself.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['stream_metadata' => ['group' => 'odds', '_nats.ver' => null]]);
+    }
 }

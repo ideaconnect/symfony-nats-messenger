@@ -182,4 +182,34 @@ final class TypeCoercion
 
         return $list;
     }
+
+    /**
+     * Coerces a map-like option value to a map of names to strings.
+     *
+     * Accepts a PHP array (a YAML map, or `option[name]=value` from a DSN query string) whose values are strings
+     * or integers. A name is trimmed, and an entry is dropped when its name is empty once trimmed or its value is
+     * of any other type; a value is kept as it is, an empty one included. PHP stores a name that is a decimal
+     * integer, such as `7`, as an integer key, in the map this returns too: cast a name before using it as a
+     * string, and the map to an object before encoding it as JSON. A value that is not an array yields an empty map.
+     *
+     * @return array<int|string, string>
+     */
+    public static function stringMapValue(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $map = [];
+        foreach ($value as $name => $element) {
+            $name = trim((string) $name);
+            if ($name === '' || (!is_string($element) && !is_int($element))) {
+                continue;
+            }
+
+            $map[$name] = (string) $element;
+        }
+
+        return $map;
+    }
 }

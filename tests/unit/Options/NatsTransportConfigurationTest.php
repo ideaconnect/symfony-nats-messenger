@@ -398,4 +398,50 @@ final class NatsTransportConfigurationTest extends TestCase
         self::assertFalse($defaults->isReconnectEnabled());
         self::assertNull($defaults->maxReconnectAttempts());
     }
+
+    /**
+     * The accessor reads the map as the builder stores it, and a raw one the same way: names trimmed, integer
+     * values as strings. Missing, empty, or of a type the builder rejects, it is null: the metadata stays untouched.
+     */
+    public function testStreamMetadataAccessorReadsTheMapAndTreatsAnythingElseAsUnset(): void
+    {
+        $configuration = static fn (array $options): NatsTransportConfiguration => new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: $options,
+            natsRetryHandlerEnabled: false,
+        );
+
+        self::assertSame(['group' => 'odds', 'shard' => '7'], $configuration(['stream_metadata' => [' group ' => 'odds', 'shard' => 7]])->streamMetadata());
+        self::assertNull($configuration([])->streamMetadata());
+        self::assertNull($configuration(['stream_metadata' => null])->streamMetadata());
+        self::assertNull($configuration(['stream_metadata' => []])->streamMetadata());
+        self::assertNull($configuration(['stream_metadata' => ['  ' => 'x']])->streamMetadata());
+        self::assertNull($configuration(['stream_metadata' => 'group:odds'])->streamMetadata());
+    }
+
+    /**
+     * A null value names an entry to remove: the accessor of the entries to set leaves it out, and the one of the
+     * removals has its name, trimmed, and nothing else. A raw option of another type has none.
+     */
+    public function testStreamMetadataRemovalsAccessorReadsTheNamesGivenNull(): void
+    {
+        $configuration = static fn (array $options): NatsTransportConfiguration => new NatsTransportConfiguration(
+            topic: 'topic',
+            streamName: 'stream',
+            client: new NatsClient(),
+            options: $options,
+            natsRetryHandlerEnabled: false,
+        );
+
+        $mixed = $configuration(['stream_metadata' => ['group' => 'odds', ' team ' => null, 7 => null, '  ' => null, 'note' => '']]);
+        self::assertSame(['group' => 'odds', 'note' => ''], $mixed->streamMetadata());
+        self::assertSame(['team', '7'], $mixed->streamMetadataRemovals());
+
+        self::assertSame([], $configuration([])->streamMetadataRemovals());
+        self::assertSame([], $configuration(['stream_metadata' => ['group' => 'odds']])->streamMetadataRemovals());
+        self::assertSame([], $configuration(['stream_metadata' => 'team'])->streamMetadataRemovals());
+        self::assertNull($configuration(['stream_metadata' => ['team' => null]])->streamMetadata());
+    }
 }
