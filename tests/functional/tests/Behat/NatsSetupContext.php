@@ -54,6 +54,9 @@ use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
  */
 class NatsSetupContext implements Context
 {
+    /** The metadata entries NATS wrote itself when a scenario created the stream out-of-band. @var array<string, string> */
+    private array $serversOwnMetadata = [];
+
     /** The serializer service the igbinary steps give a transport's `serializer:` key: the README's value. */
     private const IGBINARY_SERIALIZER = IgbinarySerializer::class;
 
@@ -202,6 +205,143 @@ class NatsSetupContext implements Context
             [$this->testSubject],
             ['placement' => ['cluster' => $cluster, 'tags' => explode(',', $tags)]],
         )->await();
+    }
+
+    /**
+     * Creates the stream out-of-band with metadata, the way an operator's tooling labels a stream
+     * (`nats stream add --metadata`), and notes the entries NATS added itself (`_nats.ver` and others, from
+     * 2.11 on), for {@see theMetadataNatsWritesItselfShouldBeAsItWas()}.
+     *
+     * A STREAM.UPDATE payload that omits `metadata` clears it on the server, so this is the fixture that proves
+     * the transport sends the live map back, with the option set and unset.
+     */
+    #[Given('the NATS stream already exists with metadata :entries')]
+    public function theNatsStreamAlreadyExistsWithMetadata(string $entries): void
+    {
+        if (!$this->shouldNatsBeRunning) {
+            throw new \RuntimeException('NATS must be running to create a stream');
+        }
+
+        $client = $this->createNatsClient();
+        $client->jetStream()->createStream(
+            $this->testStreamName,
+            [$this->testSubject],
+            ['metadata' => self::metadataEntries($entries)],
+        )->await();
+
+        $this->serversOwnMetadata = $this->streamMetadata(true);
+    }
+
+    /**
+     * Configures a transport whose stream metadata arrives through the DSN query string, as
+     * stream_metadata[name]=value for each entry of "name=value,name=value".
+     */
+    #[Given('I have a messenger transport configured with stream metadata :entries')]
+    public function iHaveAMessengerTransportConfiguredWithStreamMetadata(string $entries): void
+    {
+        $query = '';
+        foreach (self::metadataEntries($entries) as $name => $value) {
+            $query .= sprintf('&stream_metadata[%s]=%s', $name, $value);
+        }
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900%s'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $query
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Configures a transport whose stream metadata is in its options, where an entry can have the null value that
+     * removes it from the stream: a DSN has no null, `stream_metadata[name]=` being the empty string.
+     */
+    #[Given('I have a messenger transport configured to set the stream metadata :entries and to remove :names')]
+    public function iHaveAMessengerTransportConfiguredToSetTheStreamMetadataAndToRemove(string $entries, string $names): void
+    {
+        $metadata = '';
+        foreach (self::metadataEntries($entries) as $name => $value) {
+            $metadata .= sprintf("                        %s: '%s'\n", $name, $value);
+        }
+        foreach (explode(',', $names) as $name) {
+            $metadata .= sprintf("                        %s: ~\n", $name);
+        }
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                options:\n                    stream_metadata:\n%s                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $metadata
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * The stream's metadata without the entries NATS writes itself must be exactly these.
+     */
+    #[Then('the stream should have the metadata :entries')]
+    public function theStreamShouldHaveTheMetadata(string $entries): void
+    {
+        $expected = self::metadataEntries($entries);
+        ksort($expected);
+        $actual = $this->streamMetadata(false);
+
+        if ($actual !== $expected) {
+            throw new \RuntimeException(sprintf('Expected the stream metadata %s, but got %s', json_encode($expected), json_encode($actual)));
+        }
+    }
+
+    #[Then('the metadata NATS writes itself should be as it was')]
+    public function theMetadataNatsWritesItselfShouldBeAsItWas(): void
+    {
+        $actual = $this->streamMetadata(true);
+
+        if ($actual !== $this->serversOwnMetadata) {
+            throw new \RuntimeException(sprintf("Expected NATS's own metadata %s, but got %s", json_encode($this->serversOwnMetadata), json_encode($actual)));
+        }
+    }
+
+    /**
+     * "name=value,name=value" as a map.
+     *
+     * @return array<string, string>
+     */
+    private static function metadataEntries(string $entries): array
+    {
+        $metadata = [];
+        foreach (explode(',', $entries) as $entry) {
+            [$name, $value] = explode('=', $entry, 2);
+            $metadata[$name] = $value;
+        }
+
+        return $metadata;
+    }
+
+    /**
+     * The stored stream metadata, sorted by name: the entries NATS writes itself (names starting with
+     * `_nats.`), or all the others.
+     *
+     * @return array<string, string>
+     */
+    private function streamMetadata(bool $serversOwn): array
+    {
+        $streamInfo = $this->createNatsClient()->jetStream()->getStream($this->testStreamName)->await();
+        $streamConfig = is_array($streamInfo->raw['config'] ?? null) ? $streamInfo->raw['config'] : [];
+
+        $metadata = [];
+        foreach (is_array($streamConfig['metadata'] ?? null) ? $streamConfig['metadata'] : [] as $name => $value) {
+            if (str_starts_with((string) $name, '_nats.') === $serversOwn) {
+                $metadata[(string) $name] = (string) $value;
+            }
+        }
+        ksort($metadata);
+
+        return $metadata;
     }
 
     /**
