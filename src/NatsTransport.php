@@ -162,6 +162,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     /** The first NATS server release with message schedules, which scheduled_messages needs. */
     private const SCHEDULES_SINCE = '2.12';
 
+    /** The first NATS server release whose streams have a `metadata` map; an earlier one drops the field. */
+    private const METADATA_SINCE = '2.10';
+
     /**
      * The delivery token (reply subject) of each received message whose retry copy {@see send()} left out, in nats
      * mode or with retry_via=nak, by message, until the worker settles that delivery
@@ -1270,6 +1273,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $subjects = $this->buildDesiredSubjects();
             $streamConfiguration = $this->buildManagedStreamConfiguration($subjects);
 
+            if ($this->configuration->streamMetadata() !== null || $this->configuration->streamMetadataRemovals() !== []) {
+                $this->connectIfNeeded();
+                $unsupported = $this->metadataUnsupportedByTheServer();
+                if ($unsupported !== null) {
+                    throw $unsupported;
+                }
+            }
+
             if ($this->configuration->isScheduledMessagesEnabled()) {
                 $this->connectIfNeeded();
                 $unsupported = $this->schedulesUnsupportedByTheServer();
@@ -2363,10 +2374,35 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
+     * The reason the connected server cannot hold stream metadata, or null when it can.
+     *
+     * NATS before 2.10 has no `metadata` on a stream, and says nothing about it: it drops the field, so setup()
+     * would succeed there and leave a stream without the entries stream_metadata names (measured on nats-server
+     * 2.9.25). As for message schedules ({@see schedulesUnsupportedByTheServer()}), the transport reads the
+     * version the server gave when the connection opened, and lets a version it cannot read through.
+     */
+    private function metadataUnsupportedByTheServer(): ?UnsupportedFeatureException
+    {
+        $version = $this->client->serverInfo()?->version;
+        $release = self::serverRelease($version);
+        if ($version === null || $release === null || version_compare($release, self::METADATA_SINCE, '>=')) {
+            return null;
+        }
+
+        return new UnsupportedFeatureException(
+            'metadata',
+            self::METADATA_SINCE,
+            $version,
+            sprintf('Stream metadata requires NATS server %s+, but the connected server reports %s.', self::METADATA_SINCE, $version),
+        );
+    }
+
+    /**
      * Builds an actionable message for a version-gated feature the connected server is too old for.
      *
-     * The only such feature this transport enables is `allow_msg_schedules` (via `scheduled_messages`),
-     * so that case gets a tailored hint; anything else falls back to a generic message.
+     * The features this transport enables are `allow_msg_schedules` (via `scheduled_messages`) and a stream's
+     * `metadata` (via `stream_metadata`), so those cases get a tailored hint; anything else falls back to a
+     * generic message.
      */
     private function describeUnsupportedFeature(UnsupportedFeatureException $exception): string
     {
@@ -2375,6 +2411,14 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         if ($this->configuration->isScheduledMessagesEnabled() && $exception->feature === 'allow_msg_schedules') {
             return sprintf(
                 "The 'scheduled_messages' option requires NATS Server >= %s, but the connected server reports %s. Disable scheduled_messages or upgrade NATS.",
+                $exception->requiredVersion,
+                $serverVersion,
+            );
+        }
+
+        if ($exception->feature === 'metadata') {
+            return sprintf(
+                "The 'stream_metadata' option requires NATS Server >= %s, but the connected server reports %s, which would drop it. Remove stream_metadata or upgrade NATS.",
                 $exception->requiredVersion,
                 $serverVersion,
             );
@@ -2481,6 +2525,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $streamConfiguration->set('placement', $placement);
         }
 
+        // As an object, through the generic setter: PHP stores a name that is a decimal integer, such as "7", as an
+        // integer key, and an array with the keys 0, 1, ... is encoded as a JSON list, which the server refuses.
+        $metadata = $this->configuration->streamMetadata();
+        if ($metadata !== null) {
+            $streamConfiguration->set('metadata', (object) $metadata);
+        }
+
         if ($this->configuration->isScheduledMessagesEnabled()) {
             $streamConfiguration->set('allow_msg_schedules', true);
         }
@@ -2561,6 +2612,15 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             unset($updatedConfiguration['placement']);
         } else {
             $updatedConfiguration['placement'] = $placement;
+        }
+
+        // Metadata is merged entry by entry too, see resolveUpdatedStreamMetadata(): the array_merge above
+        // replaced the live map with the configured entries alone.
+        $metadata = $this->resolveUpdatedStreamMetadata($serverConfiguration['metadata'] ?? null);
+        if ($metadata === null) {
+            unset($updatedConfiguration['metadata']);
+        } else {
+            $updatedConfiguration['metadata'] = $metadata;
         }
 
         // The transport authoritatively manages these retention limits. On update we always write
@@ -2651,6 +2711,63 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
         /** @var array<string, mixed> $updatedConfiguration */
         return $updatedConfiguration;
+    }
+
+    /**
+     * Resolves the `metadata` map a STREAM.UPDATE carries for an existing stream, or null to leave the field out.
+     *
+     * The live map is the starting point, as the live block is for the placement
+     * ({@see resolveUpdatedStreamPlacement()}): the server reads a missing field as the Go zero value and clears
+     * it, and other tools write entries of their own there, such as the group an operator's tooling selects streams
+     * by. Each entry stream_metadata names is set or removed, and nothing else changes:
+     *
+     *  - a name the live map has gets the configured value;
+     *  - a name it does not have is added;
+     *  - a name given null is removed, and one the live map does not have is no change;
+     *  - every other live entry stays;
+     *  - with the option unset the live map goes back as it is.
+     *
+     * Unlike a field of the placement, an entry can be removed: a metadata entry is a label, and removing one
+     * moves nothing, while clearing a placement field lets the server move the stream's replicas. When the last
+     * entry goes, the field is left out, which is how the server is told to clear the map.
+     *
+     * The server's own entries (`_nats.ver`, `_nats.level` and `_nats.req.level`, from 2.11 on) go back with the
+     * rest: the server drops the first two from every request and sets all three again itself, and the builder
+     * keeps stream_metadata from naming any, to set or to remove.
+     *
+     * The live map is taken as it came: its names and values are not trimmed, checked or dropped, since the server
+     * has no rule on names other than the size of the map, and another tool may have written a name with space
+     * around it, an empty one, or two that differ by a space only. Only the configured side is normalized (by the
+     * builder: names trimmed, values strings), so a configured name sets or removes the live entry of exactly that
+     * name. A live value that is no map reads as none.
+     *
+     * A map whose names are exactly 0, 1, ... in that order is a list to PHP and encodes as a JSON list, which the
+     * server refuses, so that map goes out as an object, and its names reach the server as names. Any other map goes
+     * out as the array itself, which encodes as a JSON object already: an object would lose a name that starts with
+     * a NUL byte, since json_encode() leaves such a property out (PHP's mark of a private or protected one), and the
+     * server stores such a name like any other (measured on nats-server 2.10.29 and 2.15.3). A list cannot hold
+     * such a name.
+     *
+     * @param mixed $liveMetadata The `metadata` entry of the live stream config, as getStream() reports it
+     * @return array<mixed>|object|null
+     */
+    private function resolveUpdatedStreamMetadata(mixed $liveMetadata): array|object|null
+    {
+        // array_replace() and not array_merge(), which would number names that are decimal integers anew.
+        $metadata = array_replace(
+            // An empty live map arrives as an object (normalizeStreamConfigurationForUpdate()), which reads as none.
+            is_array($liveMetadata) ? $liveMetadata : [],
+            $this->configuration->streamMetadata() ?? [],
+        );
+        foreach ($this->configuration->streamMetadataRemovals() as $name) {
+            unset($metadata[$name]);
+        }
+
+        if ($metadata === []) {
+            return null;
+        }
+
+        return array_is_list($metadata) ? (object) $metadata : $metadata;
     }
 
     /**

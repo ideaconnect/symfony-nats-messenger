@@ -331,6 +331,43 @@ final readonly class NatsTransportConfiguration
     }
 
     /**
+     * Returns the entries the transport sets in the stream's `metadata`, or null when it sets none.
+     *
+     * Normalized with the same {@see TypeCoercion::stringMapValue()} the builder validates with: every name
+     * trimmed, every value a string. {@see NatsTransport::setup()} writes them when it creates the stream, and on
+     * an existing stream sets each of them in the live map, where every other entry stays. An entry whose value
+     * is null is not among them: it names an entry to remove ({@see streamMetadataRemovals()}).
+     *
+     * @return array<int|string, string>|null A name that is a decimal integer is an integer key, as PHP holds it
+     */
+    public function streamMetadata(): ?array
+    {
+        $metadata = TypeCoercion::stringMapValue($this->options[TransportOption::STREAM_METADATA->value] ?? null);
+
+        return $metadata === [] ? null : $metadata;
+    }
+
+    /**
+     * Returns the names stream_metadata gives a null value: the entries {@see NatsTransport::setup()} removes from
+     * an existing stream's `metadata`. A new stream is created without them.
+     *
+     * @return list<string> Each name trimmed, as {@see streamMetadata()} has its names
+     */
+    public function streamMetadataRemovals(): array
+    {
+        $metadata = $this->options[TransportOption::STREAM_METADATA->value] ?? null;
+        $names = [];
+        foreach (is_array($metadata) ? $metadata : [] as $name => $value) {
+            $name = trim((string) $name);
+            if ($value === null && $name !== '') {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
      * Returns the JetStream `placement` block built from the two placement options, or null when
      * neither is set.
      *

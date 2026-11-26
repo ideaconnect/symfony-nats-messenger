@@ -10109,4 +10109,240 @@ final class NatsTransportTest extends TestCase
     {
         return version_compare((string) InstalledVersions::getVersion('symfony/messenger'), '8.1.12', '>=');
     }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // stream_metadata: the entries the transport sets in the stream's metadata.
+    // ---------------------------------------------------------------------------------------------------------
+
+    private const CONSUMER_CONFIG = ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic'];
+
+    /**
+     * A new stream gets the configured entries, encoded as a JSON object also when its names are the decimal
+     * integers PHP holds as the keys of a list; without the option the request has no metadata at all.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('metadataOnCreate')]
+    public function testSetupPassesStreamMetadataOnCreate(array $options, ?string $expectedJson): void
+    {
+        $sent = 'never called';
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')
+            ->willReturnCallback(static function (StreamConfiguration $config) use (&$sent): Future {
+                $array = $config->toArray();
+                $sent = array_key_exists('metadata', $array) ? json_encode($array['metadata'], JSON_THROW_ON_ERROR) : null;
+
+                return Future::complete();
+            });
+        $jetStream->expects(self::never())->method('updateStream');
+        $jetStream->method('addConsumer')->willReturn(Future::complete(new ConsumerInfo(streamName: 'test-stream', name: 'client', push: false, raw: ['config' => self::CONSUMER_CONFIG])));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options);
+        $transport->setJetStreamContext($jetStream);
+        $transport->setup();
+
+        self::assertSame($expectedJson, $sent);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string|null}>
+     */
+    public static function metadataOnCreate(): iterable
+    {
+        yield 'a map' => [['stream_metadata' => ['group' => 'odds-papi', 'shard' => 7]], '{"group":"odds-papi","shard":"7"}'];
+        yield 'names that are decimal integers' => [['stream_metadata' => [0 => 'a', 1 => 'b', 'group' => 'x']], '{"0":"a","1":"b","group":"x"}'];
+        yield 'an entry to remove is not written' => [['stream_metadata' => ['group' => 'odds-papi', 'team' => null]], '{"group":"odds-papi"}'];
+        yield 'entries to remove only: no metadata' => [['stream_metadata' => ['team' => null]], null];
+        yield 'not set' => [[], null];
+    }
+
+    /**
+     * On an existing stream each configured entry is set in the live map, or removed from it when its value is
+     * null, and nothing else changes: an entry another tool wrote stays, the server's own entries go back as they
+     * came, and a name the map has gets the configured value. With the option unset the live map goes back as it
+     * is, as a JSON object. A map that ends up empty, or a missing one with nothing to set, leaves the field out,
+     * which is how the server is told to clear it.
+     *
+     * @param array<string, mixed> $options
+     * @param array<string, mixed> $liveConfig The live stream config's entries next to its name and subjects
+     */
+    #[DataProvider('metadataOnUpdate')]
+    public function testSetupUpdateSetsTheConfiguredEntriesInTheLiveMetadata(array $options, array $liveConfig, ?string $expectedJson): void
+    {
+        $sent = 'never called';
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::error(new JetStreamException('stream name already in use', 400)));
+        $jetStream->method('getStream')->willReturn(Future::complete(new StreamInfo(
+            name: 'test-stream',
+            subjects: ['test-topic'],
+            raw: ['config' => ['name' => 'test-stream', 'subjects' => ['test-topic'], 'storage' => 'file'] + $liveConfig],
+        )));
+        $jetStream->expects(self::once())->method('updateStream')
+            ->willReturnCallback(static function (string $name, array $config) use (&$sent): Future {
+                $sent = array_key_exists('metadata', $config) ? json_encode($config['metadata'], JSON_THROW_ON_ERROR) : null;
+
+                return Future::complete();
+            });
+        $jetStream->method('getConsumer')->willReturn(Future::error(new JetStreamException('consumer not found', 404)));
+        $jetStream->method('addConsumer')->willReturn(Future::complete(new ConsumerInfo(streamName: 'test-stream', name: 'client', push: false, raw: ['config' => self::CONSUMER_CONFIG])));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options);
+        $transport->setJetStreamContext($jetStream);
+        $transport->setup();
+
+        self::assertSame($expectedJson, $sent);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, array<string, mixed>, string|null}>
+     */
+    public static function metadataOnUpdate(): iterable
+    {
+        $live = ['_nats.level' => '5', '_nats.req.level' => '0', '_nats.ver' => '2.15.0', 'group' => 'odds-papi'];
+        $liveJson = '{"_nats.level":"5","_nats.req.level":"0","_nats.ver":"2.15.0","group":"odds-papi"';
+
+        yield 'a new name is added, the live entries stay' => [['stream_metadata' => ['team' => 'core']], ['metadata' => $live], $liveJson . ',"team":"core"}'];
+        yield 'a name the map has gets the configured value' => [['stream_metadata' => ['group' => 'odds-v2']], ['metadata' => $live], '{"_nats.level":"5","_nats.req.level":"0","_nats.ver":"2.15.0","group":"odds-v2"}'];
+        yield 'a stream without metadata' => [['stream_metadata' => ['team' => 'core']], [], '{"team":"core"}'];
+        yield 'a stream with an empty map' => [['stream_metadata' => ['team' => 'core']], ['metadata' => []], '{"team":"core"}'];
+        yield 'names that are decimal integers, live and configured' => [['stream_metadata' => [1 => 'new', 2 => 'c']], ['metadata' => [0 => 'a', 1 => 'b']], '{"0":"a","1":"new","2":"c"}'];
+        yield 'a name given null is removed, the others stay' => [['stream_metadata' => ['group' => null]], ['metadata' => $live], '{"_nats.level":"5","_nats.req.level":"0","_nats.ver":"2.15.0"}'];
+        yield 'a name given null that the map does not have changes nothing' => [['stream_metadata' => ['team' => null]], ['metadata' => $live], $liveJson . '}'];
+        yield 'one entry set and another removed' => [['stream_metadata' => ['team' => 'core', 'group' => null]], ['metadata' => $live], '{"_nats.level":"5","_nats.req.level":"0","_nats.ver":"2.15.0","team":"core"}'];
+        yield 'the last entry removed: the field is left out' => [['stream_metadata' => ['group' => null]], ['metadata' => ['group' => 'odds-papi']], null];
+        yield 'a name that is a decimal integer removed' => [['stream_metadata' => [1 => null]], ['metadata' => [0 => 'a', 1 => 'b']], '{"0":"a"}'];
+        yield 'not set: the live map goes back as it is' => [[], ['metadata' => $live], $liveJson . '}'];
+        yield 'not set: live names that are decimal integers go back as an object' => [[], ['metadata' => [0 => 'a', 1 => 'b']], '{"0":"a","1":"b"}'];
+        yield 'not set, an empty live map: the field is left out' => [[], ['metadata' => []], null];
+        yield 'not set, no live map: the field is left out' => [[], [], null];
+        yield 'not set, a live value that is no map: the field is left out' => [[], ['metadata' => 'broken'], null];
+
+        // The live names go back as they came: only the configured names are trimmed.
+        $spaced = [' group ' => 'odds', 'team' => 'core'];
+        $emptyName = ['' => 'x', 'team' => 'core'];
+        $twoTeams = ['team' => 'core', 'team ' => 'ops'];
+
+        yield 'not set: a live name with space around it goes back unchanged' => [[], ['metadata' => $spaced], '{" group ":"odds","team":"core"}'];
+        yield 'not set: an empty live name goes back unchanged' => [[], ['metadata' => $emptyName], '{"":"x","team":"core"}'];
+        yield 'not set: two live names that differ by a space both go back' => [[], ['metadata' => $twoTeams], '{"team":"core","team ":"ops"}'];
+        yield 'another name set: a live name with space around it stays unchanged' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $spaced], '{" group ":"odds","team":"core","shard":"7"}'];
+        yield 'another name set: an empty live name stays' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $emptyName], '{"":"x","team":"core","shard":"7"}'];
+        yield 'another name set: two live names that differ by a space both stay' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $twoTeams], '{"team":"core","team ":"ops","shard":"7"}'];
+        yield 'a configured name sets only the live name it equals' => [['stream_metadata' => ['team' => 'new']], ['metadata' => $twoTeams], '{"team":"new","team ":"ops"}'];
+        yield 'a name given null removes only the live name it equals' => [['stream_metadata' => ['team' => null]], ['metadata' => $twoTeams], '{"team ":"ops"}'];
+
+        // A live name that starts with a NUL byte goes back too: json_encode() leaves such a name out of an object,
+        // where it marks a private or protected property, so only a list is sent as an object.
+        $nulAlone = ["\0hidden" => 'v'];
+        $nulAndTeam = ["\0hidden" => 'v', 'team' => 'core'];
+
+        yield 'not set: a live name that starts with a NUL byte goes back' => [[], ['metadata' => $nulAlone], '{"\u0000hidden":"v"}'];
+        yield 'not set: a live name that starts with a NUL byte goes back with the other' => [[], ['metadata' => $nulAndTeam], '{"\u0000hidden":"v","team":"core"}'];
+        yield 'not set: a live name that starts with a NUL byte goes back with the name 0' => [[], ['metadata' => ["\0hidden" => 'v', 0 => 'a']], '{"\u0000hidden":"v","0":"a"}'];
+        yield 'another name set: a live name that starts with a NUL byte stays' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $nulAlone], '{"\u0000hidden":"v","shard":"7"}'];
+        yield 'another name set: a live name that starts with a NUL byte stays with the other' => [['stream_metadata' => ['shard' => 7]], ['metadata' => $nulAndTeam], '{"\u0000hidden":"v","team":"core","shard":"7"}'];
+        yield 'the other entry removed: a live name that starts with a NUL byte stays' => [['stream_metadata' => ['team' => null]], ['metadata' => $nulAndTeam], '{"\u0000hidden":"v"}'];
+    }
+
+    /**
+     * NATS before 2.10 has no stream metadata and drops the field without a word, so the transport reads the
+     * server's version and refuses the setup before it creates anything.
+     */
+    #[DataProvider('serversWithoutStreamMetadata')]
+    public function testSetupRefusesStreamMetadataOnAServerWithoutIt(string $version): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('addStream');
+        $jetStream->expects(self::never())->method('updateStream');
+        $jetStream->expects(self::never())->method('addConsumer');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['stream_metadata' => ['group' => 'odds-papi']]);
+        $transport->setClient($this->clientOfAServer($version));
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("The 'stream_metadata' option requires NATS Server >= 2.10, but the connected server reports $version, which would drop it. Remove stream_metadata or upgrade NATS.");
+
+        $transport->setup();
+    }
+
+    /**
+     * The same goes for an option that only removes entries: it is refused before 2.10 as a whole.
+     */
+    public function testSetupRefusesAStreamMetadataRemovalOnAServerWithoutStreamMetadata(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('addStream');
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['stream_metadata' => ['team' => null]]);
+        $transport->setClient($this->clientOfAServer('2.9.25'));
+        $transport->setJetStreamContext($jetStream);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("The 'stream_metadata' option requires NATS Server >= 2.10, but the connected server reports 2.9.25");
+
+        $transport->setup();
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function serversWithoutStreamMetadata(): iterable
+    {
+        yield 'NATS 2.9' => ['2.9.25'];
+        yield 'a version with a leading v' => ['v2.9.0'];
+        yield 'a version without its patch number' => ['2.9'];
+    }
+
+    /**
+     * From 2.10 on the setup goes on, and also when the server gave no version or one the transport cannot read.
+     * Without the option the version is not looked at: a 2.9 server sets a stream up as before.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('serversThatGetASetup')]
+    public function testSetupGoesOnWhenTheServerMayHoldStreamMetadataOrNoneIsSet(array $options, ?string $version): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())->method('addConsumer')->willReturn(Future::complete(new ConsumerInfo(streamName: 'test-stream', name: 'client', push: false, raw: ['config' => self::CONSUMER_CONFIG])));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options);
+        $transport->setClient($this->clientOfAServer($version));
+        $transport->setJetStreamContext($jetStream);
+
+        $transport->setup();
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string|null}>
+     */
+    public static function serversThatGetASetup(): iterable
+    {
+        $metadata = ['stream_metadata' => ['group' => 'odds-papi']];
+
+        yield 'NATS 2.10.0, the first release with it' => [$metadata, '2.10.0'];
+        yield 'NATS 2.15' => [$metadata, '2.15.2'];
+        yield 'no version' => [$metadata, null];
+        yield 'a version the transport cannot read' => [$metadata, 'dev'];
+        yield 'NATS 2.9 without the option' => [[], '2.9.25'];
+    }
+
+    /**
+     * The server gives its version when the connection opens, so a setup that runs before any other operation
+     * connects first: the refusal holds for a transport that has not connected yet too.
+     */
+    public function testSetupConnectsToReadTheVersionBeforeItRefusesStreamMetadata(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method('addStream');
+
+        $transport = new RealConnectNatsTransport(self::VALID_DSN, ['stream_metadata' => ['group' => 'odds-papi']]);
+        $transport->setClient($this->clientThatLearnsItsServersVersionOnConnect('2.9.25', $jetStream));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("The 'stream_metadata' option requires NATS Server >= 2.10, but the connected server reports 2.9.25");
+
+        $transport->setup();
+    }
 }

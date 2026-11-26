@@ -36,6 +36,12 @@ final class NatsTransportConfigurationBuilder
     /** Longest stream description NATS accepts. */
     private const MAX_STREAM_DESCRIPTION_LENGTH = 4096;
 
+    /** The prefix of the metadata names NATS writes itself, such as `_nats.ver` (JSServerVersionMetadataKey). */
+    private const RESERVED_METADATA_PREFIX = '_nats.';
+
+    /** The most a stream's metadata may take, its names and values together (nats-server's JSMaxMetadataLen). */
+    private const MAX_METADATA_SIZE = 131072;
+
     /** Added by Symfony's FrameworkBundle to the options of every transport it creates. */
     private const TRANSPORT_NAME_OPTION = 'transport_name';
 
@@ -80,6 +86,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::STREAM_ALLOW_ROLLUP_HEADERS->value => null,
         TransportOption::STREAM_PLACEMENT_CLUSTER->value => null,
         TransportOption::STREAM_PLACEMENT_TAGS->value => null,
+        TransportOption::STREAM_METADATA->value => null,
         TransportOption::RETRY_HANDLER->value => RetryHandler::SYMFONY->value,
         // null reads as 'copy' in symfony mode, and lets the builder tell a value someone set from the default.
         TransportOption::RETRY_VIA->value => null,
@@ -540,6 +547,7 @@ final class NatsTransportConfigurationBuilder
         $this->assertStreamDescriptionLength($configuration);
         $this->assertTriStateBooleans($configuration);
         $this->normalizeStreamPlacement($configuration);
+        $this->normalizeStreamMetadata($configuration);
         $this->assertNonNegativeNumber($configuration, TransportOption::NAK_DELAY);
         $this->assertPositiveNumber($configuration, TransportOption::ACK_WAIT);
         $this->assertPositiveNumber($configuration, TransportOption::MAX_DELIVER, true);
@@ -838,6 +846,88 @@ final class NatsTransportConfigurationBuilder
         }
 
         $configuration[TransportOption::STREAM_PLACEMENT_TAGS->value] = $normalizedTags;
+    }
+
+    /**
+     * Validates and normalizes the stream_metadata option: the entries the transport sets in the stream's
+     * `metadata`, a map of names to strings, and the ones it removes from it.
+     *
+     * It accepts a map (a YAML map, or `stream_metadata[name]=value` in a DSN query string) of non-empty names to
+     * strings or integers, or to null for an entry to remove, and stores it back with every name trimmed and
+     * every value a string or null. It defaults to null, which leaves the stream's metadata untouched. An empty
+     * map is refused rather than read as "remove everything": the option only touches the entries it names (see
+     * {@see \IDCT\NatsMessenger\NatsTransport::setup()}), as an empty stream_placement_tags is refused.
+     *
+     * A DSN has no null: `stream_metadata[name]=` is the empty string, which is a value NATS accepts, so an entry
+     * is removed through the transport's options only.
+     *
+     * Each entry is checked, since one that is quietly dropped would leave the stream without a label something
+     * else may select it by, or with one that was to go:
+     *  - a name starting with `_nats.` is the server's own, to set and to remove: NATS writes `_nats.ver`,
+     *    `_nats.level` and `_nats.req.level` there (2.11 and later) and keeps the prefix for itself;
+     *  - the names and values to set may take 128 KiB together at most, which is the server's limit for the whole
+     *    map.
+     *
+     * The normalization is {@see TypeCoercion::stringMapValue()}, which the {@see NatsTransportConfiguration}
+     * accessors apply as well.
+     *
+     * @param array<string, mixed> $configuration Merged configuration array
+     */
+    private function normalizeStreamMetadata(#[\SensitiveParameter] array &$configuration): void
+    {
+        $metadata = $configuration[TransportOption::STREAM_METADATA->value] ?? null;
+        if ($metadata === null) {
+            return;
+        }
+
+        $entries = is_array($metadata) ? $metadata : [];
+        // The entries to set, and after them the names to remove, each with a null value.
+        $normalized = TypeCoercion::stringMapValue($entries);
+        foreach ($entries as $name => $value) {
+            $name = trim((string) $name);
+            if ($value === null && $name !== '' && !array_key_exists($name, $normalized)) {
+                $normalized[$name] = null;
+            }
+        }
+
+        // Nothing usable, an entry that was dropped or named twice, or a list, which has no names:
+        // `stream_metadata[]=x` in a DSN, or a YAML list, where a map was meant. PHP holds a map whose names are
+        // exactly 0, 1, ... in that order as a list too, and cannot tell the two apart, so such a map is refused
+        // with them, and the message says so.
+        if ($normalized === [] || count($normalized) !== count($entries) || array_is_list($entries)) {
+            throw new InvalidArgumentException(sprintf(
+                'The %1$s option must be a non-empty map of non-empty names to strings, or to null for an entry to remove, as %1$s[name]=value in a DSN. A map whose names are exactly 0, 1, ... in that order is refused too: PHP cannot tell it from a list.',
+                TransportOption::STREAM_METADATA->value,
+            ));
+        }
+
+        $size = 0;
+        foreach ($normalized as $name => $value) {
+            // PHP holds a name that is a decimal integer, such as "7", as an integer key.
+            $name = (string) $name;
+            if (str_starts_with($name, self::RESERVED_METADATA_PREFIX)) {
+                throw new InvalidArgumentException(sprintf(
+                    'The %s option cannot %s "%s": NATS keeps the names starting with "%s" for itself.',
+                    TransportOption::STREAM_METADATA->value,
+                    $value === null ? 'remove' : 'set',
+                    $name,
+                    self::RESERVED_METADATA_PREFIX,
+                ));
+            }
+
+            $size += $value === null ? 0 : strlen($name) + strlen($value);
+        }
+
+        if ($size > self::MAX_METADATA_SIZE) {
+            throw new InvalidArgumentException(sprintf(
+                'The %s option must not exceed %d bytes, its names and values together (got %d): NATS rejects a larger map.',
+                TransportOption::STREAM_METADATA->value,
+                self::MAX_METADATA_SIZE,
+                $size,
+            ));
+        }
+
+        $configuration[TransportOption::STREAM_METADATA->value] = $normalized;
     }
 
     /**

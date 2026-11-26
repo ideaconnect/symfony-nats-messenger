@@ -21,6 +21,8 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 📊 **Stream Configuration** - Configurable retention policies and replication
 - 📍 **Stream Placement** - Pin a stream to a JetStream cluster and to tagged servers; an option you set
   changes only its own half of an existing placement (see [Stream Placement](#stream-placement))
+- 🏷️ **Stream Metadata** - Set or remove entries in a stream's metadata; the entries other tools wrote there stay
+  (see [Stream Metadata](#stream-metadata))
 - 🔁 **Automatic Reconnect** - Optional mode in which the NATS client recovers a lost connection and a worker
   polls through an outage instead of exiting (see [Automatic Reconnect](#automatic-reconnect))
 - 🌐 **NATS Clusters** - One server in the DSN, the others learned from the cluster; failover, replicated streams
@@ -40,8 +42,8 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 ### System Requirements
 - **PHP**: ^8.2
 - **Symfony**: ^7.3 || ^8
-- **NATS Server**: ^2.9 with JetStream enabled, ^2.12 for scheduled messages support and for `!` exclusion
-  tags in `stream_placement_tags`.
+- **NATS Server**: ^2.9 with JetStream enabled, ^2.10 for `stream_metadata`, ^2.12 for scheduled messages
+  support and for `!` exclusion tags in `stream_placement_tags`.
 
 ## Installation
 
@@ -502,8 +504,9 @@ the test server and print `OK` when what they show held:
 | `handler-succeeding-during-failover.php` | both retry modes on a cluster: a handler succeeds while the worker's server stops, and its ACK reaches the cluster through another server, so the message is not handled again |
 | `nats-retry-on-a-cluster.php` | `retry_handler: nats` with `max_deliver` on a cluster: NATS deletes a message stopped at `max_deliver` from an interest stream, and `setup()` warns about it; a work-queue stream keeps it |
 | `stream-placement.php` | `stream_placement_tags` and `stream_placement_cluster` on a cluster, and staging a move with a replica change |
+| `stream-metadata.php` | `stream_metadata`: entries set in a stream's metadata next to the ones another tool wrote, and one removed, on the test server and on a cluster |
 
-`composer nats:start` runs a three-server JetStream cluster for the last four next to the single test servers;
+`composer nats:start` runs a three-server JetStream cluster for the last six next to the single test servers;
 [`examples/README.md`](examples/README.md#the-test-cluster) describes it, and
 [Using a NATS Cluster](#using-a-nats-cluster) what they mean for an application.
 
@@ -647,6 +650,12 @@ framework:
           stream_placement_tags: null       # Only place the stream on servers carrying ALL of these
                                             # tags, e.g. ['ssd', 'eu-west'] (or 'ssd,eu-west' in a DSN)
                                             # (null = leave the stream's placement untouched)
+          stream_metadata: null             # Entries to set in the stream's metadata, e.g.
+                                            # { group: 'odds', team: 'core' } (or
+                                            # stream_metadata[group]=odds in a DSN). An entry given
+                                            # null (~) is removed; entries it does not name stay.
+                                            # Needs NATS 2.10.
+                                            # (null = leave the stream's metadata untouched)
 
           # Failure Handling Strategy
           retry_handler: 'symfony'          # symfony|nats (default: symfony)
@@ -1710,6 +1719,70 @@ options:
   stream_replicas: 3
   stream_placement_tags: ['ssd']
 ```
+
+### Stream Metadata
+
+A JetStream stream has a `metadata` map of names to strings (NATS 2.10 and later), for labels such as the team
+that owns it or the group a tool selects streams by. `stream_metadata` sets entries in it:
+
+```yaml
+options:
+  stream_metadata:
+    group: 'odds'
+    team: 'core'
+```
+
+In a DSN each entry is `stream_metadata[name]=value`:
+
+```yaml
+dsn: 'nats-jetstream://localhost:4222/my-stream/my-topic?stream_metadata[group]=odds&stream_metadata[team]=core'
+```
+
+- It defaults to `null`, which leaves the stream's metadata untouched: a new stream gets none, and an existing
+  stream keeps what it has. A JetStream update that omits `metadata` clears it, so the transport sends the live
+  map back whenever the option is unset, as it always did.
+- **A `stream_metadata` in the transport's `options` replaces the DSN's map as a whole**, as any option set in
+  both places does: with `?stream_metadata[group]=odds` in the DSN and `stream_metadata: { team: core }` in the
+  options, only `team` is set, and `group` is not. Keep the entries in one place.
+- A name you configure is trimmed: `' group '` sets `group`. The names already on the stream are left as they
+  are, space and all, so an entry another tool named `' group '` stays next to yours.
+- **On an existing stream each entry you name is set in the live map and nothing else changes**, as each
+  placement option changes only its own field of the live placement:
+  - a name the stream has gets your value;
+  - a name it does not have is added;
+  - every other entry stays, such as one an operator's tooling wrote with `nats stream edit --metadata`.
+- **A null value removes an entry:**
+
+  ```yaml
+  options:
+    stream_metadata:
+      group: 'odds'
+      team: ~      # removed from the stream, whoever wrote it
+  ```
+
+  A name the stream does not have is no change, and a new stream is created without it. Taking a name out of
+  the configuration removes nothing: the entry stays on the stream until it is given null. An empty map is
+  refused for that reason. This is where metadata differs from the placement options, which cannot clear a
+  field: an entry is a label, and removing one moves nothing, while clearing a placement field lets the server
+  move the stream's replicas.
+- **A DSN cannot remove an entry.** It has no null: `stream_metadata[team]=` is the empty string, which is a
+  value NATS accepts and the transport sets. Put the map in the transport's `options` to remove one.
+- **Names starting with `_nats.` are NATS's own** and are refused, to set and to remove. From 2.11 on the
+  server writes `_nats.ver`, `_nats.level` and `_nats.req.level` there; the transport sends them back as they
+  came, and the server sets them again itself.
+- A name must not be empty, and a value is a string (an integer is written as one) or null. The names and
+  values to set may take 128 KiB together at most, the server's limit for the whole map. Anything else is
+  refused when the transport is built, rather than quietly left out.
+- **A map whose names are exactly `0`, `1`, ... in that order is refused too**, such as `{ 0: ~ }` or
+  `stream_metadata[0]=a`: PHP holds such a map as a list and cannot tell it from one. Other names that are
+  decimal integers are fine (`{ 1: ~ }`, `stream_metadata[7]=a`), and so are `0` and `1` next to another name.
+  The entries of an existing stream are sent back as they are, whatever their names.
+- **NATS before 2.10 has no stream metadata** and drops the field without a word. `messenger:setup-transports`,
+  and with `auto_setup` the first send or get, fail there with `The 'stream_metadata' option requires NATS Server
+  >= 2.10, ...` instead of setting up a stream without the entries.
+- On a cluster the metadata belongs to the stream, so every replica reports it. Changing it moves nothing.
+
+> **Tested by:** `testBuildAcceptsStreamMetadata`, `testBuildAcceptsStreamMetadataEntriesToRemove`, `testBuildWithInvalidStreamMetadataThrowsException`, `testBuildRefusesStreamMetadataWhoseNamesAreExactlyZeroOneInOrder`, `testBuildRefusesAStreamMetadataNameNatsKeepsForItself`, `testBuildRefusesToRemoveAStreamMetadataNameNatsKeepsForItself`, `testBuildRefusesStreamMetadataLargerThanTheServerAllows`, `testStreamMetadataAccessorReadsTheMapAndTreatsAnythingElseAsUnset`, `testStreamMetadataRemovalsAccessorReadsTheNamesGivenNull`, `testStringMapValue`, `testSetupPassesStreamMetadataOnCreate`, `testSetupUpdateSetsTheConfiguredEntriesInTheLiveMetadata`, `testSetupRefusesStreamMetadataOnAServerWithoutIt`, `testSetupRefusesAStreamMetadataRemovalOnAServerWithoutStreamMetadata`, `testSetupGoesOnWhenTheServerMayHoldStreamMetadataOrNoneIsSet`, `testSetupConnectsToReadTheVersionBeforeItRefusesStreamMetadata`, the Behat scenarios of `nats_stream_metadata.feature`, and `examples/stream-metadata.php` (the test server and a stream with three replicas on the test cluster)
 
 ## Using a NATS Cluster
 
