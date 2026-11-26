@@ -506,7 +506,7 @@ the test server and print `OK` when what they show held:
 | `stream-placement.php` | `stream_placement_tags` and `stream_placement_cluster` on a cluster, and staging a move with a replica change |
 | `stream-metadata.php` | `stream_metadata`: entries set in a stream's metadata next to the ones another tool wrote, and one removed, on the test server and on a cluster |
 
-`composer nats:start` runs a three-server JetStream cluster for the last four next to the single test servers;
+`composer nats:start` runs a three-server JetStream cluster for the last six next to the single test servers;
 [`examples/README.md`](examples/README.md#the-test-cluster) describes it, and
 [Using a NATS Cluster](#using-a-nats-cluster) what they mean for an application.
 
