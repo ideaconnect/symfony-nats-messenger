@@ -1345,10 +1345,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             // A setup() that changed stream_replicas reaches the consumer while NATS may still be moving it.
-            $replayPolicy = $this->whileTheClusterSettles($this->resolveReplayPolicy(...));
+            $existingConsumer = $this->whileTheClusterSettles($this->getExistingConsumer(...));
+            $replayPolicy = $this->resolveReplayPolicy($existingConsumer);
             if ($replayPolicy !== null) {
                 $consumerConfiguration->replayPolicy($replayPolicy);
             }
+
+            $this->keepTheExistingConsumerLabels($consumerConfiguration, $existingConsumer);
 
             $consumerInfo = $this->whileTheClusterSettles(fn (): ConsumerInfo => $this->awaitOnConnection(fn (): Future => $this->jetStream()->addConsumer($this->streamName, $consumerConfiguration)));
             $this->assertConsumerMatchesConfiguration($consumerInfo);
@@ -1998,10 +2001,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * applies only to a consumer that does not exist yet, exactly like stream_retention applies only to
      * a stream that does not exist yet. That keeps setup() idempotent no matter how the option is
      * changed on a live deployment.
+     *
+     * @param ConsumerInfo|null $existingConsumer The live consumer setup() looked up, null when there is none yet
      */
-    private function resolveReplayPolicy(): ?ReplayPolicy
+    private function resolveReplayPolicy(?ConsumerInfo $existingConsumer): ?ReplayPolicy
     {
-        $existingConsumer = $this->getExistingConsumer();
         if ($existingConsumer === null) {
             return $this->configuration->replayPolicy();
         }
@@ -2033,6 +2037,46 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             throw $exception;
+        }
+    }
+
+    /**
+     * Writes the live consumer's metadata and description into the configuration setup() sends, so that they stay.
+     *
+     * nats-server takes the request for a durable consumer that exists as an update and replaces the stored
+     * configuration with the one it received, metadata and description included: an entry or a description another
+     * tool wrote (`nats consumer edit`, an operator's label) was cleared by every setup(), on one server and on a
+     * cluster (measured on 2.10.29 and 2.15.3, #145). The transport has no option for either field, so it sends back
+     * what the consumer has, read from the lookup the replay policy comes from.
+     *
+     * The live map goes back whole, names and values as the server reported them, its `_nats.` entries included: the
+     * server drops `_nats.ver` and `_nats.level` from a request and writes `_nats.req.level` itself (read in its source
+     * at v2.15.3; 2.10 writes none of them). It is decoded as a PHP array, and json_encode() writes an array whose
+     * names are 0, 1, ... in order as a JSON list, which the server refuses ("invalid JSON", measured on 2.10.29 and
+     * 2.15.3). So such a map goes back as an object, any other one as the array: an object cast would drop a name that
+     * starts with a NUL byte. A consumer with no metadata, an empty map or a value that is no map sends no field (an
+     * empty array would be the list `[]`), and a consumer with no description sends none. With no consumer yet,
+     * neither field is sent.
+     *
+     * Not covered: an entry written between the lookup and the request is lost, as the consumer API has no conditional
+     * update.
+     */
+    private function keepTheExistingConsumerLabels(ConsumerConfiguration $consumerConfiguration, ?ConsumerInfo $existingConsumer): void
+    {
+        if ($existingConsumer === null) {
+            return;
+        }
+
+        $config = self::configOf($existingConsumer);
+
+        $metadata = $config['metadata'] ?? null;
+        if (is_array($metadata) && $metadata !== []) {
+            $consumerConfiguration->set('metadata', array_is_list($metadata) ? (object) $metadata : $metadata);
+        }
+
+        $description = $config['description'] ?? null;
+        if (is_string($description) && $description !== '') {
+            $consumerConfiguration->description($description);
         }
     }
 

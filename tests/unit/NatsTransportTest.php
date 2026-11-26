@@ -3630,6 +3630,158 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * Runs setup() against a stream whose durable consumer the lookup reports with $liveConsumerConfig, or as missing
+     * (404) when it is null, and returns the consumer request as JSON, encoded as the client encodes it: compared with
+     * `==`, as consumerConfigEquals() does, a JSON list and the map it was decoded from look the same.
+     *
+     * @param array<string, mixed>|null $liveConsumerConfig
+     * @param list<Future<ConsumerInfo>> $earlierConsumerLookups Answers the lookup gives before the one with the config
+     */
+    private function consumerRequestJsonOfSetup(?array $liveConsumerConfig, array $earlierConsumerLookups = []): string
+    {
+        $lookups = $earlierConsumerLookups;
+        $lookups[] = $liveConsumerConfig === null
+            ? Future::error(new JetStreamException('consumer not found', 404, null, 10014))
+            : Future::complete(new ConsumerInfo(streamName: 'test-stream', name: 'client', push: false, raw: ['config' => $liveConsumerConfig]));
+
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(count($lookups)))
+            ->method('getConsumer')
+            ->with('test-stream', 'client')
+            ->willReturnOnConsecutiveCalls(...$lookups);
+        $request = null;
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturnCallback(static function (string $stream, ConsumerConfiguration $configuration) use (&$request): Future {
+                $request = json_encode($configuration->toArray(), JSON_THROW_ON_ERROR);
+
+                return Future::complete(self::liveConsumer('instant'));
+            });
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+        $transport->setup();
+
+        self::assertIsString($request);
+
+        return $request;
+    }
+
+    /**
+     * The fields of every consumer request in the tests below, up to the replay policy of the live consumer.
+     */
+    private const CONSUMER_REQUEST_FIELDS = '"durable_name":"client","filter_subject":"test-topic","ack_policy":"explicit","deliver_policy":"all","replay_policy":"instant"';
+
+    /**
+     * @param array<string, mixed> $fields
+     * @return array<string, mixed>
+     */
+    private static function liveConsumerConfigWith(array $fields): array
+    {
+        return ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic', 'replay_policy' => 'instant'] + $fields;
+    }
+
+    public function testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries(): void
+    {
+        $request = $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith(['metadata' => [
+            '_nats.level' => '5',
+            '_nats.req.level' => '0',
+            '_nats.ver' => '2.15.3',
+            'owner' => 'billing-team',
+        ]]));
+
+        self::assertSame(
+            '{' . self::CONSUMER_REQUEST_FIELDS . ',"metadata":{"_nats.level":"5","_nats.req.level":"0","_nats.ver":"2.15.3","owner":"billing-team"}}',
+            $request,
+        );
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function liveConsumersWithoutMetadata(): iterable
+    {
+        yield 'no metadata field (nats-server 2.10 with nothing written)' => [[]];
+        yield 'an empty map, decoded as an empty array' => [['metadata' => []]];
+        yield 'null' => [['metadata' => null]];
+        yield 'a value that is no map' => [['metadata' => 'owner=billing-team']];
+    }
+
+    /**
+     * @param array<string, mixed> $metadataField
+     */
+    #[DataProvider('liveConsumersWithoutMetadata')]
+    public function testSetupSendsNoConsumerMetadataWhenTheLiveConsumerHasNone(array $metadataField): void
+    {
+        // Not "metadata":[]: the server refuses a JSON list where it expects a map, and an empty array is one.
+        self::assertSame('{' . self::CONSUMER_REQUEST_FIELDS . '}', $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith($metadataField)));
+    }
+
+    public function testSetupSendsConsumerMetadataNamedZeroAndOneAsAMap(): void
+    {
+        // {"0":"a","1":"b"} as the client decodes it: a PHP list, which json_encode() would write as ["a","b"].
+        $request = $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith(['metadata' => [0 => 'a', 1 => 'b']]));
+
+        self::assertSame('{' . self::CONSUMER_REQUEST_FIELDS . ',"metadata":{"0":"a","1":"b"}}', $request);
+    }
+
+    public function testSetupSendsAConsumerMetadataNameThatStartsWithANulByte(): void
+    {
+        // A cast to an object would drop "\0x": PHP reads such a property name as a mangled private or protected one.
+        $request = $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith(['metadata' => ["\0x" => '1', 'y' => '2']]));
+
+        self::assertSame('{' . self::CONSUMER_REQUEST_FIELDS . ',"metadata":{"\u0000x":"1","y":"2"}}', $request);
+    }
+
+    public function testSetupSendsNoConsumerMetadataOrDescriptionWithoutAConsumer(): void
+    {
+        self::assertSame(
+            '{"durable_name":"client","filter_subject":"test-topic","ack_policy":"explicit","deliver_policy":"all"}',
+            $this->consumerRequestJsonOfSetup(null),
+        );
+    }
+
+    public function testSetupSendsTheConsumerMetadataOfTheLookupThatAnswered(): void
+    {
+        $request = $this->consumerRequestJsonOfSetup(
+            self::liveConsumerConfigWith(['metadata' => ['owner' => 'billing-team'], 'description' => 'Read by the billing workers']),
+            [Future::error(self::clusterNotAvailable())],
+        );
+
+        self::assertSame(
+            '{' . self::CONSUMER_REQUEST_FIELDS . ',"metadata":{"owner":"billing-team"},"description":"Read by the billing workers"}',
+            $request,
+        );
+    }
+
+    public function testSetupSendsTheLiveConsumerDescriptionBack(): void
+    {
+        $request = $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith(['description' => 'Read by the billing workers']));
+
+        self::assertSame('{' . self::CONSUMER_REQUEST_FIELDS . ',"description":"Read by the billing workers"}', $request);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function liveConsumersWithoutADescription(): iterable
+    {
+        yield 'no description field' => [[]];
+        yield 'an empty description' => [['description' => '']];
+        yield 'a value that is no string' => [['description' => ['Read by the billing workers']]];
+    }
+
+    /**
+     * @param array<string, mixed> $descriptionField
+     */
+    #[DataProvider('liveConsumersWithoutADescription')]
+    public function testSetupSendsNoConsumerDescriptionWhenTheLiveConsumerHasNone(array $descriptionField): void
+    {
+        self::assertSame('{' . self::CONSUMER_REQUEST_FIELDS . '}', $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith($descriptionField)));
+    }
+
+    /**
      * What nats-server 2.10 answers to a consumer request while it moves the consumer after a change of
      * stream_replicas, and the consumer has no leader for a moment.
      */
