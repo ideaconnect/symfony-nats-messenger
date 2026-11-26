@@ -1735,6 +1735,11 @@ dsn: 'nats-jetstream://localhost:4222/my-stream/my-topic?stream_metadata[group]=
 - It defaults to `null`, which leaves the stream's metadata untouched: a new stream gets none, and an existing
   stream keeps what it has. A JetStream update that omits `metadata` clears it, so the transport sends the live
   map back whenever the option is unset, as it always did.
+- **A `stream_metadata` in the transport's `options` replaces the DSN's map as a whole**, as any option set in
+  both places does: with `?stream_metadata[group]=odds` in the DSN and `stream_metadata: { team: core }` in the
+  options, only `team` is set, and `group` is not. Keep the entries in one place.
+- A name you configure is trimmed: `' group '` sets `group`. The names already on the stream are left as they
+  are, space and all, so an entry another tool named `' group '` stays next to yours.
 - **On an existing stream each entry you name is set in the live map and nothing else changes**, as each
   placement option changes only its own field of the live placement:
   - a name the stream has gets your value;
