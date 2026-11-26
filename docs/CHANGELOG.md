@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MSG_NAKED`, then `MSG_TERMINATED`, for the message. Failures that are all unrecoverable are TERMed at once, as
   before, and a message with one handler is settled as before. A failure Symfony retried is still NAKed in place of its
   retry copy, through `ack()` or `reject()`. `isAFailureNatsModeCannotRetry()`.
+- **`setup()` keeps the metadata and the description of a durable consumer that exists** (#145). It sent the consumer's
+  configuration built from the options alone, and nats-server takes that request as an update that replaces the whole
+  stored configuration, so every `setup()` (`messenger:setup-transports`, and with `auto_setup` the first send or get
+  of a process) cleared a metadata entry or a description another tool had written onto the consumer, such as
+  `nats consumer edit` or an operator's label: measured on nats-server 2.10.29 and 2.15.3, on one server and on a
+  cluster of three with three replicas. The transport has no option for either field, so it now sends back what the
+  live consumer has, read from the lookup it already makes for the replay policy: the metadata whole, names and values
+  as the server reported them, the server's own `_nats.` entries included, and the description when there is one. A
+  map whose names are `0`, `1`, ... in order goes as a JSON object, not the list PHP's `json_encode()` makes of it,
+  which the server refuses (`invalid JSON`, on both servers); a consumer with no metadata, or an empty map, sends no
+  field. A new consumer gets neither field, as before. An entry written between that lookup and the update is still
+  lost: the consumer API has no conditional update. `keepTheExistingConsumerLabels()`.
 
 ### Added
 
