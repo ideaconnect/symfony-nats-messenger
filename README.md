@@ -1242,7 +1242,8 @@ transports:
 - **Optimal batching**: Depends on message size and processing time
 
 From Symfony Messenger 8.1.12 on, the Worker reads the whole pull before it handles the first message (see
-[Retry Handler Behavior](#retry-handler-behavior) for what that means when a message of the pull cannot be decoded).
+[Retry Handler Behavior](#retry-handler-behavior) for what that means when the serializer throws another exception
+while a message of the pull is decoded).
 
 ```yaml
 options:
@@ -1404,7 +1405,7 @@ options:
   ping_after_idle: 30   # seconds; 0 turns the check off
 ```
 
-> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testPingAfterIdleZeroTurnsTheCheckBeforeSettlingAFailedDeliveryOff`, `testBuildWithInvalidPingAfterIdleThrowsException`, `testTheWorkerClosesTheTransportWhenItStopsOnTheMessengerReleasesThatDoSo`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
+> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testPingAfterIdleZeroTurnsTheCheckBeforeSettlingAFailedDeliveryOff`, `testBuildWithInvalidPingAfterIdleThrowsException`, `testTheWorkerClosesTheTransportWhenItStopsOnTheMessengerReleasesThatDoSo`, `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
 
 ### Subscription Limits
 
