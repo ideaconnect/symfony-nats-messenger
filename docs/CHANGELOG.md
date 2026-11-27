@@ -101,6 +101,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SendFailedMessageForRetryListener`, which left the old `$subscribed[1]` lookup reading past the end of the array.
   Run with `symfony/messenger` 7.4.0, 8.1.12 and 8.2.0-RC1, `symfony/event-dispatcher` 7.4.17, 8.1.5 and 8.2.0-BETA1,
   and PHPUnit 11.5.58 and 13.4.8.
+- **One new unit test pins what Symfony Messenger 8.2 changes for a `DispatchOnFailureStamp` in nats mode** (#154):
+  `testDispatchOnFailureStampIsDispatchedOnlyWhenSymfonyGivesUpThroughTheWorker` (data provider: through Symfony's
+  Worker, nats mode with `max_retries: 0` dispatches the stamp's failure message at every failed delivery, with
+  retries left on only an unrecoverable failure dispatches it, and `retry_via: nak` dispatches it once, at the
+  delivery Symfony gives up on; no row leaves a copy in the failure transport). Skipped before Symfony Messenger
+  8.2; run against `symfony/messenger` 8.2.0-RC1.
 - **Two new unit tests pin what Symfony Messenger 8.1.12 changed in its `Worker`** (#140):
   `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails` (a pull of two messages,
   the second's decode throwing a plain exception: before 8.1.12 the first message is handled and acknowledged
@@ -128,6 +134,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **README, "Batching Explained"**: one sentence that from Messenger 8.1.12 on the Worker reads the whole pull
   before it handles the first message, linking to the paragraph above (#140).
 - **`docs/TESTS.md` and `docs/PROJECT_MEMORY.md`** updated for the tests and the Worker behavior above (#140).
+- **README, "Retry Handler Behavior"**: one paragraph on what a `DispatchOnFailureStamp` (Symfony Messenger 8.2)
+  does in nats mode and with `retry_via: nak`, and the sentence in `docs/symfony_retry_via.md` that the stamp's
+  failure message is dispatched on each run Symfony gives up on (#154).
 - **README, "Upgrading from 5.10.1"**: a section naming the unreleased changes an operator can notice (nats mode
   with several handlers, #125; `setup()` keeping a consumer's metadata and description, #145), and the sentence
   in `docs/PROJECT_MEMORY.md` that the "Upgrading from" sections get such a bullet on the branch that makes the

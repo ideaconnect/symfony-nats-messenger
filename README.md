@@ -1029,6 +1029,18 @@ subscriber can add Symfony's `SentToFailureTransportStamp` to every earlier fail
 itself. Symfony Messenger 7.4.6 to 7.4.8 and 8.0.6 to 8.0.8 ignore that stamp, and send every failed delivery. No
 such subscriber exists yet.
 
+**Nor is a `DispatchOnFailureStamp`** (Symfony Messenger 8.2). The stamp names a message to dispatch when the
+stamped one fails for good, in place of a failure transport, and Symfony dispatches it each time it treats a
+failure as final, as it sends a message to a failure transport. With `max_retries: 0` the failure message is
+therefore dispatched at every failed delivery, up to `max_deliver` times, while NATS redelivers the message. With
+retries left on it is dispatched for an unrecoverable failure only: a message that keeps failing never has it
+dispatched, also not when NATS stops redelivering it. To have it dispatched once, when the retries are used up,
+use [`retry_via: nak`](#retrying-through-a-nak-retry_via-nak): Symfony's retry strategy decides, NATS redelivers
+the original, and the failure message is dispatched at the delivery Symfony gives up on.
+
+> **Tested by:** `testDispatchOnFailureStampIsDispatchedOnlyWhenSymfonyGivesUpThroughTheWorker`, through
+> Symfony's Worker; skipped before Symfony Messenger 8.2.
+
 NATS's handling keeps the message in the stream after its last delivery only on some streams. NATS keeps it on a
 stream with limits retention, and on a work-queue stream with one replica, or with three on NATS 2.12.5 and later.
 It deletes it from a stream with interest retention inside a cluster, within seconds to about two minutes, and from
