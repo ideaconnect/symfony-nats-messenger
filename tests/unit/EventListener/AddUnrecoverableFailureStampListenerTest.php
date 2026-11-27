@@ -9,6 +9,7 @@ use IDCT\NatsMessenger\Stamp\ReceivedInNatsModeStamp;
 use IDCT\NatsMessenger\Stamp\UnrecoverableFailureStamp;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Psr\Container\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
@@ -164,7 +165,10 @@ final class AddUnrecoverableFailureStampListenerTest extends TestCase
     /**
      * After Symfony's error-details listener and its retry and failure-transport listeners, which take their copies
      * of the envelope before the stamp is on it: an in-memory transport without a serializer keeps the stamps of the
-     * envelope it is given (the copies themselves are tested in NatsTransportTest, through the worker).
+     * envelope it is given (the copies themselves are tested in NatsTransportTest, through the worker). The
+     * priorities are read from an EventDispatcher the four listeners were added to with addSubscriber(), never from
+     * Symfony's getSubscribedEvents() arrays directly: EventDispatcher 8.2 lets a listener name those keys instead of
+     * the old [method, priority] position, which Messenger 8.2 does for two of its three listeners here.
      */
     public function testRunsAfterSymfonysListenersHaveTakenTheirCopies(): void
     {
@@ -173,10 +177,27 @@ final class AddUnrecoverableFailureStampListenerTest extends TestCase
             AddUnrecoverableFailureStampListener::getSubscribedEvents(),
         );
 
-        foreach ([AddErrorDetailsStampListener::class, SendFailedMessageForRetryListener::class, SendFailedMessageToFailureTransportListener::class] as $symfonys) {
-            $subscribed = $symfonys::getSubscribedEvents()[WorkerMessageFailedEvent::class];
-            self::assertIsArray($subscribed);
-            self::assertGreaterThan(AddUnrecoverableFailureStampListener::PRIORITY, $subscribed[1], $symfonys);
+        $locator = $this->createStub(ContainerInterface::class);
+        $ours = new AddUnrecoverableFailureStampListener();
+        $symfonys = [
+            new AddErrorDetailsStampListener(),
+            new SendFailedMessageForRetryListener($locator, $locator),
+            new SendFailedMessageToFailureTransportListener($locator),
+        ];
+        $dispatcher = new EventDispatcher();
+        foreach ($symfonys as $symfonysListener) {
+            $dispatcher->addSubscriber($symfonysListener);
+        }
+        $dispatcher->addSubscriber($ours);
+
+        $priority = $dispatcher->getListenerPriority(WorkerMessageFailedEvent::class, [$ours, 'onMessageFailed']);
+        self::assertIsInt($priority);
+        foreach ($symfonys as $symfonysListener) {
+            self::assertGreaterThan(
+                $priority,
+                $dispatcher->getListenerPriority(WorkerMessageFailedEvent::class, [$symfonysListener, 'onMessageFailed']),
+                $symfonysListener::class,
+            );
         }
     }
 
