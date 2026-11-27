@@ -51,6 +51,7 @@ use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Psr\Container\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\Messenger\EventListener\DispatchOnFailureListener;
 use Symfony\Component\Messenger\EventListener\SendFailedMessageForRetryListener;
 use Symfony\Component\Messenger\EventListener\SendFailedMessageToFailureTransportListener;
 use Symfony\Component\Messenger\EventListener\StopWorkerOnMessageLimitListener;
@@ -60,6 +61,7 @@ use Symfony\Component\Messenger\MessageBus;
 use Symfony\Component\Messenger\Middleware\HandleMessageMiddleware;
 use Symfony\Component\Messenger\Retry\MultiplierRetryStrategy;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
+use Symfony\Component\Messenger\Stamp\DispatchOnFailureStamp;
 use Symfony\Component\Messenger\Stamp\ErrorDetailsStamp;
 use Symfony\Component\Messenger\Stamp\NonSendableStampInterface;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
@@ -7828,6 +7830,102 @@ final class NatsTransportTest extends TestCase
     {
         yield 'the failure copy, with max_retries 0' => [0];
         yield 'the retry copy, with max_retries 1' => [1];
+    }
+
+    /**
+     * Symfony's DispatchOnFailureListener (WorkerMessageFailedEvent, priority 0, between the retry listener (100)
+     * and the failure-transport listener (-100)) dispatches the DispatchOnFailureStamp's failure message, on the
+     * bus it is given, whenever willRetry() is false, and reads nothing else about the delivery. In nats mode with
+     * max_retries 0 that is every failed delivery, since nats mode settles every ordinary failure as final to
+     * Symfony regardless of max_retries; with retries left on it is only an unrecoverable failure; with
+     * retry_via=nak it is the delivery Symfony gives up on. The listener's own SentToFailureTransportStamp, added
+     * right after a dispatch, makes the failure-transport listener skip the delivery, so no row leaves a copy there.
+     *
+     * @param array<string, mixed> $options
+     * @param list<string>         $settled
+     */
+    #[DataProvider('dispatchOnFailureRows')]
+    public function testDispatchOnFailureStampIsDispatchedOnlyWhenSymfonyGivesUpThroughTheWorker(
+        array $options,
+        int $maxRetries,
+        string $exceptionClass,
+        int $deliveries,
+        array $settled,
+        int $failureMessages,
+    ): void {
+        if (!class_exists(DispatchOnFailureStamp::class)) {
+            self::markTestSkipped('Symfony Messenger before 8.2 has no DispatchOnFailureStamp.');
+        }
+
+        $messages = [];
+        for ($delivery = 1; $delivery <= $deliveries; ++$delivery) {
+            $messages[] = new NatsMessage(subject: 'test-topic', sid: 1, replyTo: sprintf('$JS.ACK.test-stream.client.%d.1.%d.0.0', $delivery, $delivery), payload: 'p');
+        }
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete($messages));
+        $jetStream->method('getConsumer')->willReturn(Future::complete(self::consumerLimitedTo(null)));
+        $settledCalls = [];
+        foreach (['term', 'nak', 'ack'] as $method) {
+            $jetStream->method($method)->willReturnCallback(static function (NatsMessage $message) use (&$settledCalls, $method): Future {
+                $settledCalls[] = $method;
+
+                return Future::complete();
+            });
+        }
+        $jetStream->method('nakWithDelay')->willReturnCallback(static function (NatsMessage $message, int $delayMs) use (&$settledCalls): Future {
+            $settledCalls[] = 'nak ' . $delayMs;
+
+            return Future::complete();
+        });
+
+        $failureMessage = new class () {};
+        $failureHandlerCalls = 0;
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willReturnCallback(
+            static fn (): Envelope => new Envelope(new \stdClass(), [new DispatchOnFailureStamp($failureMessage)]),
+        );
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $serializer);
+        $transport->setJetStreamContext($jetStream);
+        $failureTransport = new InMemoryTransport();
+
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function () use ($exceptionClass): void {
+                throw new $exceptionClass('always fails');
+            }],
+            $failureMessage::class => [static function () use (&$failureHandlerCalls): void {
+                ++$failureHandlerCalls;
+            }],
+        ]))]);
+
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
+            self::singleServiceLocator($transport),
+            self::singleServiceLocator(new MultiplierRetryStrategy($maxRetries, 1000, 2, 0, 0.0)),
+        ));
+        $dispatcher->addSubscriber(new DispatchOnFailureListener($bus));
+        $dispatcher->addSubscriber(new SendFailedMessageToFailureTransportListener(self::singleServiceLocator($failureTransport)));
+        $dispatcher->addSubscriber(new AddUnrecoverableFailureStampListener());
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener($deliveries));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
+
+        self::assertSame($settled, $settledCalls);
+        self::assertSame($failureMessages, $failureHandlerCalls);
+        self::assertCount(0, $failureTransport->getSent());
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, int, string, int, list<string>, int}>
+     */
+    public static function dispatchOnFailureRows(): iterable
+    {
+        yield 'nats mode, max_retries 0: at every failed delivery' => [self::NATS_MODE, 0, \RuntimeException::class, 3, ['nak', 'nak', 'nak'], 3];
+        yield 'nats mode, retries left on: never' => [self::NATS_MODE, 3, \RuntimeException::class, 3, ['nak', 'nak', 'nak'], 0];
+        yield 'nats mode, max_retries 0, an unrecoverable failure: once' => [self::NATS_MODE, 0, UnrecoverableMessageHandlingException::class, 1, ['term'], 1];
+        yield 'nats mode, retries left on, an unrecoverable failure: once' => [self::NATS_MODE, 3, UnrecoverableMessageHandlingException::class, 1, ['term'], 1];
+        yield 'retry_via: nak, max_retries 2: once, when Symfony gives up' => [self::NAK_RETRIES, 2, \RuntimeException::class, 3, ['nak 1000', 'nak 2000', 'term'], 1];
     }
 
     /**
