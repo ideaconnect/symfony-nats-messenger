@@ -16,8 +16,9 @@ use Symfony\Component\Messenger\Stamp\StampInterface;
  * itself, for example after a send() that timed out, since a new envelope would otherwise get a new id. An
  * id the application adds is used even with the option off.
  *
- * The transport publishes it in the Nats-Msg-Id header, followed by Symfony's retry count, so that each
- * retry is a message of its own, and by a marker on the copy sent to a failure transport. JetStream drops a
+ * The transport publishes it in the Nats-Msg-Id header, followed by the subject the message is delivered to and
+ * Symfony's retry count, so that each subject and each retry is a message of its own, and by a marker on the copy
+ * sent to a failure transport. JetStream drops a
  * message whose Nats-Msg-Id it stored within the stream's duplicate window (`stream_duplicate_window`).
  */
 final class DeduplicationIdStamp implements StampInterface

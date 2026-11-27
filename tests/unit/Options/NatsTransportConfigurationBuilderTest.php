@@ -2644,6 +2644,93 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         self::assertNull($this->extractNatsOptions($withoutLogger->client)->logger);
     }
 
+    public function testBuildLeavesAdditionalSubjectsEmptyByDefault(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, []);
+
+        self::assertSame([], $configuration->additionalSubjects());
+    }
+
+    public function testBuildAcceptsAdditionalSubjectsAsList(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, [
+            'additional_subjects' => ['test-topic.updated.>', ' test-topic.deleted.* ', 'test-topic.updated.>'],
+        ]);
+
+        self::assertSame(['test-topic.updated.>', 'test-topic.deleted.*'], $configuration->additionalSubjects());
+    }
+
+    public function testBuildParsesAdditionalSubjectsFromDsnQueryString(): void
+    {
+        $commaForm = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?additional_subjects=test-topic.updated.%3E,other.subject',
+            []
+        );
+        $listForm = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?additional_subjects[]=test-topic.updated.>&additional_subjects[]=other.subject',
+            []
+        );
+
+        self::assertSame(['test-topic.updated.>', 'other.subject'], $commaForm->additionalSubjects());
+        self::assertSame(['test-topic.updated.>', 'other.subject'], $listForm->additionalSubjects());
+    }
+
+    #[DataProvider('invalidAdditionalSubjectsShapeProvider')]
+    public function testBuildWithInvalidAdditionalSubjectsShapeThrowsException(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The additional_subjects option must be a non-empty list of subjects, or a comma-separated string of them.');
+
+        (new NatsTransportConfigurationBuilder())->build(self::VALID_DSN, ['additional_subjects' => $value]);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('unusableAdditionalSubjectsProvider')]
+    public function testBuildRefusesAnAdditionalSubjectSetupCouldNotUse(array $options, string $message): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage($message);
+
+        (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/stream/t', $options);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function unusableAdditionalSubjectsProvider(): iterable
+    {
+        $notAPattern = 'The additional_subjects entry "%s" is not a subject pattern';
+
+        yield 'the topic itself' => [['additional_subjects' => 't'], 'The additional_subjects entry "t" overlaps the topic.'];
+        yield 'two entries that overlap' => [['additional_subjects' => 't.updated.>,t.updated.42'], 'The additional_subjects entry "t.updated.42" overlaps the entry "t.updated.>".'];
+        yield 'an entry that overlaps an earlier one through a *' => [['additional_subjects' => 't.a.x,t.*.x'], 'The additional_subjects entry "t.*.x" overlaps the entry "t.a.x".'];
+        yield 'an entry that an earlier one overlaps through a *' => [['additional_subjects' => 't.*.x,t.a.x'], 'The additional_subjects entry "t.a.x" overlaps the entry "t.*.x".'];
+        yield 'an empty token' => [['additional_subjects' => 't..updated'], sprintf($notAPattern, 't..updated')];
+        yield '> before the last token' => [['additional_subjects' => 't.>.updated'], sprintf($notAPattern, 't.>.updated')];
+        yield 'whitespace in a token' => [['additional_subjects' => ['t.up dated']], sprintf($notAPattern, 't.up dated')];
+        yield 'a wildcard inside a token' => [['additional_subjects' => 't.up*dated'], sprintf($notAPattern, 't.up*dated')];
+        yield 'the subjects scheduled messages wait on' => [
+            ['additional_subjects' => 't.>', 'scheduled_messages' => true],
+            'The additional_subjects entry "t.>" overlaps "t.delayed.>", the subjects scheduled messages wait on.',
+        ];
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function invalidAdditionalSubjectsShapeProvider(): iterable
+    {
+        yield 'empty string' => [''];
+        yield 'only separators' => [' , ,'];
+        yield 'empty list' => [[]];
+        yield 'list with a nested array' => [['a.b', ['nested']]];
+        yield 'list with an integer' => [['a.b', 5]];
+        yield 'boolean' => [true];
+        yield 'integer' => [5];
+    }
+
     public function testRetryViaIsCopyUnlessSetToNak(): void
     {
         $builder = new NatsTransportConfigurationBuilder();

@@ -100,6 +100,7 @@ tests/
   (see [docs/symfony_retry_via.md](docs/symfony_retry_via.md))
 - **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers; refused on a server
   before NATS 2.12, at `setup()` and at the send of a delayed message
+- **Per-message subjects**: `NatsSubjectStamp` overrides the topic per message; `additional_subjects` adds the patterns the stream and the one consumer cover (`filter_subjects`); retries go back to the subject a message arrived on (`NatsReceivedSubjectStamp`)
 - **Option names**: an option that is not a `TransportOption` case (or `transport_name`) is refused, with the closest one
 - **TLS/mTLS**: full TLS config options including client certificates
 - **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`)

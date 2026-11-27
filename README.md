@@ -40,7 +40,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 ### System Requirements
 - **PHP**: ^8.2
 - **Symfony**: ^7.3 || ^8
-- **NATS Server**: ^2.9 with JetStream enabled, ^2.12 for scheduled messages support and for `!` exclusion
+- **NATS Server**: ^2.9 with JetStream enabled, ^2.10 for `additional_subjects`, ^2.12 for scheduled messages support and for `!` exclusion
   tags in `stream_placement_tags`.
 
 ## Installation
@@ -255,8 +255,15 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
 - **`setup()` keeps the metadata and the description of a durable consumer that exists** (#145): up to 5.10.1
   every `setup()` cleared both fields; there is nothing to do (see
   [Note on the consumer's metadata and description](#provisioning-the-stream--consumer)).
+- **`additional_subjects` is rolled out in two steps,** as a process of 5.10.1 or older that runs `setup()` narrows
+  the consumer to the topic: see "Rolling it out and back" under [Per-Message Subjects](#per-message-subjects).
+- **`setup()` keeps the filters of a durable consumer that exists, with `additional_subjects` or without:** a topic
+  renamed in the DSN, with the stream and the consumer name kept, is added beside the old one on NATS 2.10 and
+  later, where 5.10.1 replaced it. The old one stays on the consumer until you remove it with `nats consumer edit`
+  (see "Removing a pattern" under [Per-Message Subjects](#per-message-subjects)). A server before 2.10 gets the
+  topic, as before.
 
-> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`)
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testSetupAddsARenamedTopicBesideTheOldOneOnAnExistingConsumer`, `testSetupSendsTheTopicAloneToAServerBeforeNats210`
 
 ### Logging
 
@@ -569,6 +576,10 @@ framework:
         options:
           # Consumer Configuration
           consumer: 'my-consumer'           # Consumer group name (default: 'client')
+          additional_subjects: null         # Subject patterns the stream and this consumer cover next to
+                                            # the topic, so a message stamped with NatsSubjectStamp reaches
+                                            # the same consumer (list, or comma-separated in the DSN).
+                                            # See "Per-Message Subjects". Needs NATS >= 2.10.
 
           # Performance Tuning
           batching: 5                       # Messages per batch (default: 1)
@@ -1352,10 +1363,13 @@ and the copy for a failure transport, gets an id of its own, so none of them is 
 you add yourself, as above, is used with the option off as well, and covers a message your application
 dispatches again as a new envelope, which would otherwise get a new id.
 
-The header holds the id together with the transport's subject and the retry count, and on a failure-transport
-copy the transport the message failed on. JetStream deduplicates per stream whatever the subject, and Symfony
-hands each transport a message is routed to the envelope the one before returned, id included, so transports
-that share a stream (see [Multi-Subject Streams](#multi-subject-streams)) each keep their copy.
+The header holds the id together with the subject the message is delivered to and the retry count, and on a
+failure-transport copy the transport the message failed on. The subject is the topic, a `NatsSubjectStamp`'s
+subject, or for Symfony's retry the subject the message arrived on; for a delayed message it is the subject the
+schedule delivers to. JetStream deduplicates per stream whatever the subject, and Symfony hands each transport a
+message is routed to the envelope the one before returned, id included, so transports that share a stream (see
+[Multi-Subject Streams](#multi-subject-streams)) each keep their copy, and so does each stamped subject you send
+one id to.
 
 ```yaml
 options:
@@ -1366,7 +1380,7 @@ With [`reconnect: true`](#automatic-reconnect), `resend_on_reconnect: true` puts
 server went away after it took the message and before it answered goes out once more on the recovered connection,
 where JetStream drops it if the first copy was stored.
 
-> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, `testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn`, `testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn`, Behat scenarios `A message dispatched again with the same deduplication id is stored once`, `Distinct messages are all stored with the deduplicate option` and `A message routed to two deduplicating transports on one stream is stored for each`
+> **Tested by:** `testSendWithDeduplicationStampsTheEnvelopeAndPublishesItsMessageId`, `testSendKeepsTheDeduplicationIdTheEnvelopeCarries`, `testSendGivesEachRetryAndTheFailureTransportCopyAMessageIdOfItsOwn`, `testSendWithoutDeduplicationSendsNoMessageIdAndAddsNoStamp`, `testSendUsesAnApplicationDeduplicationIdWithTheOptionOff`, `testSendDelayedMessageWithDeduplicationPublishesItsMessageId`, `testDeduplicateIsOffByDefaultAndCanBeEnabled`, `testSendGivesTheCopiesForTwoTransportsOnOneStreamMessageIdsOfTheirOwn`, `testSendGivesTheFailureCopiesOfTwoTransportsMessageIdsOfTheirOwn`, `testSendGivesTheCopiesForTwoStampedSubjectsMessageIdsOfTheirOwn`, `testSendGivesATransportThatDoesNotReadTheStampedSubjectAMessageIdOfItsOwn`, `testSendNamesTheScheduleTargetInTheMessageIdOfADelayedStampedMessage`, `testSendNamesTheReceivedSubjectInTheMessageIdOfARetry`, `testSendNamesTheTopicInTheMessageIdOfAFailureTransportCopy`, Behat scenarios `A message dispatched again with the same deduplication id is stored once`, `Distinct messages are all stored with the deduplicate option` and `A message routed to two deduplicating transports on one stream is stored for each`
 
 ### Losing the Connection
 
@@ -2059,6 +2073,82 @@ The `events` stream will have both `orders` and `payments` as subjects.
 > **Tested by:** `testReadmeDsnExamplesParseSuccessfully[README: multi-subject orders]`, `testReadmeDsnExamplesParseSuccessfully[README: multi-subject payments]`, `testReadmeMultiSubjectOptionsAreAccepted`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenario `Setup command merges subjects for transports sharing one stream`
 
 > **Note:** When a stream already exists, setup reads the current JetStream configuration, merges in any new subjects, and then overlays the stream settings managed by this transport. Existing subjects are preserved, duplicate subjects are not added, and the existing storage backend is kept for already-created streams.
+
+### Per-Message Subjects
+
+The topic in the DSN is the subject a message is published to by default. To publish one message to a subject of
+its own, such as one per entity, stamp it with `NatsSubjectStamp`, and list the patterns those subjects fall under
+in `additional_subjects`. The stream stores them, and the transport's one durable consumer reads them next to the
+topic, so every message of the transport still goes through one consumer, in stream order:
+
+```yaml
+framework:
+  messenger:
+    transports:
+      nats_orders:
+        dsn: 'nats-jetstream://localhost/events/orders?consumer=order-consumer&additional_subjects=orders.updated.>'
+```
+
+```php
+use IDCT\NatsMessenger\Stamp\NatsSubjectStamp;
+use Symfony\Component\Messenger\Envelope;
+
+$bus->dispatch(new Envelope(new OrderUpdated($orderId), [
+    new NatsSubjectStamp('orders.updated.' . $orderId),
+]));
+```
+
+- **Stream and consumer.** `setup()` adds the patterns to the stream's subjects. The consumer filters on the topic
+  and the patterns with `filter_subjects`, which needs NATS 2.10 or later. Without `additional_subjects` a new
+  consumer gets the single `filter_subject` it always had; one that exists keeps its filters (see "Existing
+  consumers" below). A transport uses the stamp only for a subject its
+  consumer reads, the topic or one a pattern matches, and publishes any other stamped message to its topic, so a
+  message routed to several transports reaches each of them once.
+- **The stamp checks its subject.** A subject a message cannot be published to, one that is empty, contains
+  whitespace or an empty token, or has a `*` or `>` in a token, is refused with an `InvalidArgumentException` when
+  the stamp is made, at dispatch, instead of breaking the connection's protocol frame later.
+- **The entries are checked when the transport is built.** JetStream refuses a stream whose subjects overlap each
+  other, so an entry that overlaps the topic, another entry or, with `scheduled_messages`, the subjects scheduled
+  messages wait on (`orders.delayed.{uuid}`, which a pattern such as `orders.>` matches) is refused with an
+  `InvalidArgumentException` that names it, and so is one that is not a subject pattern. List the subjects under
+  their own token instead, such as `orders.updated.>`.
+- **Retries.** The stamp is not sent with the message. Symfony's retry of a received message goes back to the
+  subject the message arrived on, which the transport records in a `NatsReceivedSubjectStamp`. The consumer
+  delivered the message from that subject, so it reads the retry there too. With `retry_handler=nats`, NATS
+  redelivers the original on its own subject.
+- **Failure transport.** A failed message sent to a failure transport goes to that transport's topic.
+- **Delayed messages.** A delayed stamped message waits under the topic (`{topic}.delayed.{uuid}`) and is delivered
+  to the stamped subject when it is due.
+- **Existing consumers.** `setup()` adds the patterns to a durable consumer that already exists and keeps the
+  filters it finds there, as it keeps the stream's subjects. A new pattern therefore applies on the next
+  `messenger:setup-transports`, or with `auto_setup` on the next worker's first pull or the next sender's first
+  send, and a process whose configuration lacks a pattern does not narrow the consumer. The consumer keeps its
+  position in the stream, so a pattern added later covers what is published from then on; messages the stream
+  already held on that pattern are not replayed once the consumer has moved past them.
+  This holds for every transport, with `additional_subjects` or without: a topic renamed in the DSN, with the
+  stream and the consumer name kept, is added beside the old one, where 5.10.1 replaced it, and the old one stays
+  until you remove it (see "Removing a pattern"). A server that reports a release before NATS 2.10 is the
+  exception: its consumer has one filter at most, so `setup()` writes the topic there, as 5.10.1 did.
+- **Rolling it out and back.** A release without `additional_subjects` (5.10.1 or older) writes the topic as the
+  consumer's only filter whenever it runs `setup()`: from `messenger:setup-transports`, or with `auto_setup` on each
+  process's first send or pull, which under PHP-FPM is every request that dispatches a message. While the consumer
+  is narrowed, its position moves past the stamped messages, and they are never delivered, without any error. So
+  roll out in two steps: deploy this release with `additional_subjects` everywhere and make sure nothing older runs
+  `setup()`, then deploy the code that stamps messages. Back out in reverse: stop stamping, let the workers drain
+  the patterns, and only then roll back.
+- **Removing a pattern.** Drain it first: stop publishing to the pattern, let the workers empty it, then remove it
+  from the configuration. The pattern stays on the consumer and on the stream: `setup()` removes no filter and no
+  subject it cannot derive from its own configuration, so whatever is still published to the pattern is stored and
+  delivered. Remove it yourself, from the consumer with `nats consumer edit` and from the stream with
+  `nats stream edit`, which takes the full list of the subjects the stream keeps (those of every transport sharing
+  it). Messages still stored on the pattern when it leaves the consumer are neither delivered nor counted by
+  `getMessageCount()`. The transport cannot remove the pattern for you: on a stream that several transports share,
+  or one an operator edited, it cannot tell its own old pattern from a subject someone else needs. The same goes
+  for the old topic after a rename. A new pattern that overlaps one the stream still has, such as `orders.eu.>` in
+  place of `orders.*.updated`, is refused by the server at the stream update (`subject "orders.*.updated" overlaps
+  with "orders.eu.>"`), and `setup()` changes nothing: remove the old pattern this way first, then add the new one.
+
+> **Tested by:** `testAcceptsASubjectAMessageCanBePublishedTo`, `testRefusesASubjectAMessageCannotBePublishedTo`, `testSendPublishesToTheStampedSubject`, `testSendPublishesToAStampedSubjectTheConsumerReads`, `testSendPublishesToTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testAStampedMessageRoutedToTwoTransportsGoesToItsSubjectFromOneAndToTheTopicFromTheOther`, `testSendPublishesARetryToTheSubjectTheMessageArrivedOn`, `testSendPublishesAFailureTransportCopyToTheTopic`, `testSendPublishesARetryOnTheFailureTransportToTheSubjectItArrivedOn`, `testSendIgnoresTheReceivedSubjectWithoutAReceivedStamp`, `testSendPublishesARetryToTheReceivedSubjectEvenWhenTheOptionsDoNotListIt`, `testSendSchedulesADelayedStampedMessageUnderTheTopicForTheStampedSubject`, `testSendSchedulesADelayedMessageForTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testGetStampsTheSubjectTheMessageArrivedOn`, `testGetAddsNoReceivedSubjectStampWithoutAdditionalSubjects`, `testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects`, `testSetupAddsTheAdditionalSubjectsToAnExistingStream`, `testSetupRefusesAdditionalSubjectsOnAServerBeforeNats210`, `testTheFirstSetupOfATransportThatHasNotConnectedRefusesAdditionalSubjectsOnAServerBeforeNats210`, `testSetupLetsAServerWhoseReleaseItCannotReadThroughWithAdditionalSubjects`, `testSetupKeepsTheScheduledMessagesRefusalWithAdditionalSubjects`, `testBuildRefusesAnAdditionalSubjectSetupCouldNotUse`, `testSetupKeepsTheFiltersOfAnExistingConsumer`, `testSetupAddsARenamedTopicBesideTheOldOneOnAnExistingConsumer`, `testSetupSendsTheTopicAloneToAServerBeforeNats210`, `testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects`, `testSetupComparesTheFilterSubjectsAsStrings`, Behat scenarios `One consumer reads messages published to the topic and to a stamped subject`, `A delayed stamped message is delivered once, to its subject, after the scheduled time`, `Symfony's retry of a stamped message keeps its subject`, `A stamped message routed to two transports is handled once by each`, `Setup widens the filters of an existing consumer when a pattern is added`, `Setup keeps the filters of an existing consumer when its configuration lacks a pattern` and `A pattern added after the consumer moved past its stored messages does not replay them`
 
 ### Provisioning the Stream & Consumer
 

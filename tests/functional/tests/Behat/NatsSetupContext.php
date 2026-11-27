@@ -70,6 +70,7 @@ class NatsSetupContext implements Context
     private string $testStreamName = 'stream';
     private string $testSubject = 'test.messages';
     private ?string $secondaryTestSubject = null;
+    private ?string $secondStreamName = null;
     private string $failedStreamName = 'failed_stream';
     private string $failedSubject = 'fail.messages';
     private bool $shouldNatsBeRunning = false;
@@ -273,6 +274,7 @@ class NatsSetupContext implements Context
     }
 
     #[When('I run the messenger setup command for both shared transports')]
+    #[When('I run the messenger setup command for both transports')]
     public function iRunTheMessengerSetupCommandForBothSharedTransports(): void
     {
         $command = [
@@ -441,7 +443,7 @@ class NatsSetupContext implements Context
     #[When('I send :count messages to the transport')]
     public function iSendMessagesToTheTransport(int $count): void
     {
-        $this->messagesSent = $count;
+        $this->messagesSent += $count;
 
         // Use a simple command to send messages
         $command = [
@@ -758,6 +760,17 @@ class NatsSetupContext implements Context
     #[When('I start :consumerCount consumer that processes :messageCount messages')]
     public function iStartConsumerThatProcessesMessages(int $consumerCount, int $messageCount): void
     {
+        $this->startConsumersThatProcessMessages('test_transport', $consumerCount, $messageCount);
+    }
+
+    #[When('I start a consumer of the second transport that processes :messageCount messages')]
+    public function iStartAConsumerOfTheSecondTransportThatProcessesMessages(int $messageCount): void
+    {
+        $this->startConsumersThatProcessMessages('test_transport_two', 1, $messageCount);
+    }
+
+    private function startConsumersThatProcessMessages(string $transport, int $consumerCount, int $messageCount): void
+    {
         $this->consumerProcesses = [];
 
         for ($i = 1; $i <= $consumerCount; $i++) {
@@ -765,7 +778,7 @@ class NatsSetupContext implements Context
                 'php',
                 'bin/console',
                 'messenger:consume',
-                'test_transport',
+                $transport,
                 '--limit=' . $messageCount,
                 '--time-limit=1800', // 30 minutes for extreme volume processing
                 '--env=test',
@@ -1209,7 +1222,7 @@ class NatsSetupContext implements Context
     #[When('I send :count retryable failing messages')]
     public function iSendRetryableFailingMessages(int $count): void
     {
-        $this->messagesSent = $count;
+        $this->messagesSent += $count;
 
         $command = [
             'php',
@@ -1240,7 +1253,7 @@ class NatsSetupContext implements Context
     #[When('I send :count always-failing messages')]
     public function iSendAlwaysFailingMessages(int $count): void
     {
-        $this->messagesSent = $count;
+        $this->messagesSent += $count;
 
         $command = [
             'php',
@@ -2206,7 +2219,7 @@ class NatsSetupContext implements Context
     #[When('I send :count messages with :delay milliseconds delay to the transport')]
     public function iSendMessagesWithDelayToTheTransport(int $count, int $delay): void
     {
-        $this->messagesSent = $count;
+        $this->messagesSent += $count;
 
         $command = [
             'php',
@@ -2233,10 +2246,174 @@ class NatsSetupContext implements Context
         }
     }
 
+    #[Given('I have a messenger transport configured with additional subjects :subjects')]
+    public function iHaveAMessengerTransportConfiguredWithAdditionalSubjects(string $subjects): void
+    {
+        $this->writeTransportWithAdditionalSubjects($subjects, '');
+    }
+
+    #[Given('I have a messenger transport configured with scheduled messages and additional subjects :subjects')]
+    public function iHaveAMessengerTransportConfiguredWithScheduledMessagesAndAdditionalSubjects(string $subjects): void
+    {
+        $this->writeTransportWithAdditionalSubjects($subjects, '&scheduled_messages=true');
+    }
+
+    /**
+     * The failure-transport setup of {@see iHaveAMessengerTransportWithFailureTransportConfiguredUsingTheSerializer()},
+     * with the subjects added to the main transport, so a retry of a stamped message can be followed.
+     */
+    #[Given('I have a messenger transport with failure transport configured and additional subjects :subjects')]
+    public function iHaveAMessengerTransportWithFailureTransportConfiguredAndAdditionalSubjects(string $subjects): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&additional_subjects=%s'\n                serializer: 'messenger.transport.native_php_serializer'\n                retry_strategy:\n                    max_retries: 1\n                    delay: 100\n                    multiplier: 1\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $subjects,
+            $this->failedStreamName,
+            $this->failedSubject,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    #[Given('I have a messenger transport configured with additional subjects :subjects and a second transport on stream :stream with topic :topic, the test message routed to both')]
+    public function iHaveAMessengerTransportWithAdditionalSubjectsAndASecondTransportOnAStreamOfItsOwn(string $subjects, string $stream, string $topic): void
+    {
+        $this->secondStreamName = $stream;
+
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&additional_subjects=%s'\n                serializer: 'messenger.transport.native_php_serializer'\n            test_transport_two:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': [test_transport, test_transport_two]\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $subjects,
+            $stream,
+            $topic,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    private function writeTransportWithAdditionalSubjects(string $subjects, string $extraQuery): void
+    {
+        // The wildcards go into the DSN as they are: parse_url() and parse_str() keep them, and a %3E would be
+        // read as the start of a container parameter once a DSN holds two of them.
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&additional_subjects=%s%s'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $subjects,
+            $extraQuery,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    #[When('I send :count messages to the subject :subject starting at message :firstId')]
+    public function iSendMessagesToTheSubjectStartingAtMessage(int $count, string $subject, int $firstId): void
+    {
+        $this->messagesSent += $count;
+        $this->runConsoleCommand(['app:send-test-messages', (string) $count, '--subject=' . $subject, '--first-id=' . $firstId], 'messages to a subject');
+    }
+
+    #[When('I send :count messages with :delay milliseconds delay to the subject :subject')]
+    public function iSendMessagesWithDelayToTheSubject(int $count, int $delay, string $subject): void
+    {
+        $this->messagesSent += $count;
+        $this->runConsoleCommand(['app:send-test-messages', (string) $count, '--delay=' . $delay, '--subject=' . $subject], 'delayed messages to a subject');
+    }
+
+    #[When('I send :count retryable failing message to the subject :subject')]
+    public function iSendRetryableFailingMessageToTheSubject(int $count, string $subject): void
+    {
+        $this->messagesSent += $count;
+        $this->runConsoleCommand(['app:send-failing-messages', (string) $count, '--retryable', '--subject=' . $subject], 'failing messages to a subject');
+    }
+
+    /**
+     * @param list<string> $arguments
+     */
+    private function runConsoleCommand(array $arguments, string $what): void
+    {
+        $process = new Process(['php', 'bin/console', ...$arguments, '--env=test'], __DIR__ . '/../..');
+        $process->setTimeout(60);
+        $process->run();
+
+        if (!$process->isSuccessful()) {
+            throw new \RuntimeException(sprintf(
+                'Failed to send %s. Exit code: %d. Output: %s. Error: %s',
+                $what,
+                $process->getExitCode(),
+                $process->getOutput(),
+                $process->getErrorOutput(),
+            ));
+        }
+    }
+
+    #[Then('the durable consumer :consumerName should filter on :subjects')]
+    public function theDurableConsumerShouldFilterOn(string $consumerName, string $subjects): void
+    {
+        $consumerInfo = $this->createNatsClient()->jetStream()->getConsumer($this->testStreamName, $consumerName)->await();
+        $config = is_array($consumerInfo->raw['config'] ?? null) ? $consumerInfo->raw['config'] : [];
+        $actual = [];
+        if (is_array($config['filter_subjects'] ?? null) && $config['filter_subjects'] !== []) {
+            $actual = array_map('strval', $config['filter_subjects']);
+        } elseif (isset($config['filter_subject'])) {
+            $actual = [(string) $config['filter_subject']];
+        }
+        $expected = array_map('trim', explode(',', $subjects));
+        sort($actual, SORT_STRING);
+        sort($expected, SORT_STRING);
+
+        if ($actual !== $expected) {
+            throw new \RuntimeException(sprintf(
+                'Expected consumer "%s" to filter on [%s], but it filters on [%s]',
+                $consumerName,
+                implode(', ', $expected),
+                implode(', ', $actual),
+            ));
+        }
+    }
+
+    /**
+     * Counts the stored messages on one subject with one stream info request filtered to it: the reply's
+     * `state.subjects` holds the count of each matching subject, and leaves out a subject with no messages. The
+     * stream's default limits retention keeps acknowledged messages, so this sees every message published to the
+     * subject. The client's stream info call takes no filter, so the request goes to the API subject directly.
+     */
+    #[Then('the NATS stream should hold :count messages on subject :subject')]
+    public function theNatsStreamShouldHoldMessagesOnSubject(int $count, string $subject): void
+    {
+        $this->theNatsStreamNamedShouldHoldMessagesOnSubject($this->testStreamName, $count, $subject);
+    }
+
+    #[Then('the NATS stream :stream should hold :count messages on subject :subject')]
+    public function theNatsStreamNamedShouldHoldMessagesOnSubject(string $stream, int $count, string $subject): void
+    {
+        $reply = $this->createNatsClient()->request(
+            '$JS.API.STREAM.INFO.' . $stream,
+            json_encode(['subjects_filter' => $subject], JSON_THROW_ON_ERROR),
+        )->await();
+        $info = json_decode($reply->payload, true, 512, JSON_THROW_ON_ERROR);
+        if (!is_array($info) || isset($info['error'])) {
+            throw new \RuntimeException(sprintf('Stream info for "%s" failed: %s', $stream, $reply->payload));
+        }
+
+        $subjects = is_array($info['state'] ?? null) ? ($info['state']['subjects'] ?? []) : [];
+        $actual = is_array($subjects) ? (int) ($subjects[$subject] ?? 0) : 0;
+
+        if ($actual !== $count) {
+            throw new \RuntimeException(sprintf('Expected %d messages on subject "%s", but the stream "%s" holds %d', $count, $subject, $stream, $actual));
+        }
+    }
+
     #[When('I send :count messages of :sizeKb KB to the transport')]
     public function iSendMessagesOfKbToTheTransport(int $count, int $sizeKb): void
     {
-        $this->messagesSent = $count;
+        $this->messagesSent += $count;
 
         $command = [
             'php',
@@ -2285,7 +2462,7 @@ class NatsSetupContext implements Context
     #[When('I send a slow message that takes :seconds seconds to handle')]
     public function iSendASlowMessageThatTakesSecondsToHandle(int $seconds): void
     {
-        $this->messagesSent = 1;
+        $this->messagesSent += 1;
 
         $command = [
             'php',
@@ -2452,7 +2629,7 @@ class NatsSetupContext implements Context
     #[When('I send :count messages with deduplication ids, and then the first one again')]
     public function iSendMessagesWithDeduplicationIdsAndThenTheFirstOneAgain(int $count): void
     {
-        $this->messagesSent = $count;
+        $this->messagesSent += $count;
 
         $command = [
             'php',
@@ -2947,6 +3124,14 @@ class NatsSetupContext implements Context
                 // Ignore cleanup errors
             }
 
+            if ($this->secondStreamName !== null) {
+                try {
+                    $this->createNatsClient()->jetStream()->deleteStream($this->secondStreamName)->await();
+                } catch (\Exception $e) {
+                    // Ignore cleanup errors
+                }
+            }
+
             // Clean up failure stream if it exists
             if (!$this->useTls && !$this->useMtls) {
                 try {
@@ -3014,6 +3199,7 @@ class NatsSetupContext implements Context
         $this->testStreamName = 'stream';
         $this->testSubject = 'test.messages';
         $this->secondaryTestSubject = null;
+        $this->secondStreamName = null;
     }
 
     private function startNatsServer(): void

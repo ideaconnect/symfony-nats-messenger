@@ -59,6 +59,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy. An application without the bundle registers it in its services.yaml with the `kernel.event_subscriber` tag,
   and a worker built by hand adds it to its event dispatcher with `addSubscriber()` (README, "Retry Handler Behavior").
 
+- **Per-message subjects: `NatsSubjectStamp` and the `additional_subjects` option.** The topic in the DSN stays the
+  default publish subject. A `NatsSubjectStamp` publishes one message to another subject, such as
+  `orders.updated.42` for one entity. `additional_subjects` lists the patterns those subjects fall under:
+  `setup()` adds them to the stream, and the transport's one durable consumer filters on the topic and the
+  patterns with `filter_subjects` (NATS 2.10+), so every message still goes through one consumer in stream order.
+  Without the option a new consumer gets its single `filter_subject`, as before; one that exists keeps its filters
+  (see `### Changed`). A transport uses the stamp
+  only for a subject its consumer reads, the topic or one a pattern matches, and publishes any other stamped message
+  to its topic, so a message routed to several transports reaches each of them once. `get()` records the
+  subject a message arrived on in a `NatsReceivedSubjectStamp`, and Symfony's retry goes back to that subject.
+  A retry is an envelope a worker received (its `ReceivedStamp`) re-sent with a retry count, the one rule the
+  transport applies to the subject and, in nats mode, to the copy it leaves out. A copy for a failure transport
+  goes to that transport's topic. A delayed stamped message waits under the topic
+  and is delivered to the stamped subject. `setup()` adds the patterns to an existing durable consumer as well and
+  keeps the filters it finds there, as it keeps the stream's subjects, so a process whose configuration lacks a
+  pattern does not narrow the consumer. A removed pattern stays on the consumer and the stream; the README describes
+  draining it first and removing it by hand. Upgrade note: a process of 5.10.1 or older that runs `setup()` writes the topic as
+  the consumer's only filter, and messages stamped meanwhile are never delivered, so roll the option out before the
+  code that stamps messages and back out in reverse (README, "Rolling it out and back"). The entries are checked
+  when the transport is built: one that is not a subject pattern, or that overlaps the topic, another entry or the
+  subjects scheduled messages wait on, is refused by name. `setup()` refuses the option on a server before NATS
+  2.10, which would ignore the filters and leave the consumer reading the whole stream. The stamp refuses a subject
+  a message cannot be published to (empty, whitespace, an empty token, a `*` or `>` in a token) with an
+  `InvalidArgumentException`.
+
+### Changed
+
+- **`Nats-Msg-Id` names the subject the message is delivered to, not the topic:** `<id>:<subject>:<retry count>`.
+  With `NatsSubjectStamp` one transport publishes to many subjects, and an id naming only the topic made JetStream
+  drop the copy one deduplication id sent to a second subject. The subject is the topic, the stamped subject or,
+  for Symfony's retry, the subject the message arrived on; for a delayed message it is the schedule's target.
+  Messages without a stamp keep the ids they had.
+- **`setup()` keeps the filters of a durable consumer that exists, for every transport, with `additional_subjects`
+  or without.** It writes the union of the configured filters and the live consumer's, so a topic renamed in the
+  DSN, with the stream and the consumer name kept, is added beside the old one on NATS 2.10 and later, where 5.10.1
+  replaced it; the old filter stays until it is removed with `nats consumer edit` (README, "Removing a pattern").
+  A server that reports a release before NATS 2.10 gets `filter_subject` with the topic, as from 5.10.1: its
+  consumer has one filter at most, and it takes a changed one. The union there would have needed
+  `filter_subjects`, which such a server ignores: measured on nats-server 2.9.25, client 2.30.1 left the consumer
+  without a filter, reading the whole stream, and client 2.33.0 refused the request, so `setup()` failed (the
+  client checks a request's fields against the server's version since 2.32.0, by its changelog).
+
 ### Testing & CI
 
 - **Two handlers through Symfony's Worker** with its error-details and retry listeners and `max_retries: 0`:
@@ -110,6 +152,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `workerAcknowledgesAMessageItSentForRetry()`. Run against Messenger 8.1.12 (the default), and against 8.1.11 and
   7.4.24 in a separate `composer update --with symfony/messenger:<version>` copy of the tree; also checked against
   7.4.0.
+- **The tests of per-message subjects close the gaps the mutation run showed:** the first `setup()` of a transport
+  that has not connected refuses `additional_subjects` on NATS 2.9, a server that reports no release is let
+  through, the `scheduled_messages` refusal keeps its own message next to `additional_subjects`, the builder
+  refuses entries that overlap through a `*`, and the renamed topic and the server before 2.10 have a test each.
+  `JetStreamInjectedNatsTransport` fails a test after 60 pauses, as the other transport doubles do, so a
+  `whileTheClusterSettles()` that never returns fails at once instead of timing out, and `LoginCombinationsTest`
+  checks that the client it builds does not reconnect, so a mutant that turns the reconnect on fails at once
+  instead of waiting out every attempt.
 
 ### Documentation
 

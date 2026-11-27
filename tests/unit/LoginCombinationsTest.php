@@ -161,6 +161,9 @@ final class LoginCombinationsTest extends TestCase
         self::assertIsObject($connection);
         $natsOptions = (new \ReflectionProperty($connection, 'options'))->getValue($connection);
         self::assertInstanceOf(NatsOptions::class, $natsOptions);
+        // A login the server refuses has to fail at the first dial: with the client's reconnect on, the test would
+        // wait out every attempt, over 40 seconds, before it failed.
+        self::assertFalse($natsOptions->reconnectEnabled, 'The builder turns the client reconnect off by default.');
 
         return new NatsClient($natsOptions, $server);
     }
