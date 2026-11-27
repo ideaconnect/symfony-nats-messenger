@@ -122,6 +122,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **README, "Batching Explained"**: one sentence that from Messenger 8.1.12 on the Worker reads the whole pull
   before it handles the first message, linking to the paragraph above (#140).
 - **`docs/TESTS.md` and `docs/PROJECT_MEMORY.md`** updated for the tests and the Worker behavior above (#140).
+- **README, "Upgrading from 5.10.1"**: a section naming the unreleased changes an operator can notice (nats mode
+  with several handlers, #125; `setup()` keeping a consumer's metadata and description, #145), and the sentence
+  in `docs/PROJECT_MEMORY.md` that the "Upgrading from" sections get such a bullet on the branch that makes the
+  change (#147).
 
 ## [5.10.1] - 2026-11-21
 
