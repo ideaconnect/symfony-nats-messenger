@@ -22,7 +22,6 @@ use IDCT\NATS\JetStream\Enum\AckPolicy;
 use IDCT\NATS\JetStream\Enum\DeliverPolicy;
 use IDCT\NATS\JetStream\Enum\NoRespondersCause;
 use IDCT\NATS\JetStream\Enum\ReplayPolicy;
-use IDCT\NATS\JetStream\FeatureSupport;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NATS\JetStream\Models\ConsumerInfo;
 use IDCT\NATS\JetStream\Models\JsMessageMetadata;
@@ -164,6 +163,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
     /** The first NATS server release with message schedules, which scheduled_messages needs. */
     private const SCHEDULES_SINCE = '2.12';
+
+    /** The first NATS server release with a consumer's `filter_subjects`, which additional_subjects needs. */
+    private const FILTER_SUBJECTS_SINCE = '2.10';
 
     /**
      * The delivery token (reply subject) of each received message whose retry copy {@see send()} left out, in nats
@@ -640,7 +642,17 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
     private function consumerReads(string $subject): bool
     {
-        foreach ($this->consumerFilterSubjects() as $filter) {
+        return self::matchedByOneOf($this->consumerFilterSubjects(), $subject);
+    }
+
+    /**
+     * Whether one of the filters matches $subject, which may be a filter itself ({@see subjectMatches()}).
+     *
+     * @param array<string> $filters
+     */
+    private static function matchedByOneOf(array $filters, string $subject): bool
+    {
+        foreach ($filters as $filter) {
             if (self::subjectMatches($filter, $subject)) {
                 return true;
             }
@@ -654,14 +666,21 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * another configuration does not narrow it. A filter that another one covers is left out, as JetStream refuses
      * overlapping filters.
      *
+     * A server before NATS 2.10 gets the configured filter alone, the topic, as 5.10.1 sent it: setup() refuses
+     * additional_subjects there, its consumer has one filter at most, and it takes a changed one. The union could
+     * have two entries, in `filter_subjects`, which such a server ignores: on nats-server 2.9.25 client 2.30.1 left
+     * the consumer unfiltered, and client 2.32.0 and later refuse the request before sending it.
+     *
      * @return list<string>
      */
     private function filterSubjectsKeepingThoseOf(?ConsumerInfo $existingConsumer): array
     {
         $filters = $this->consumerFilterSubjects();
-        if ($existingConsumer !== null) {
-            $filters = array_values(array_unique([...$filters, ...self::filterSubjectsOf($existingConsumer)]));
+        if ($existingConsumer === null || $this->serverVersionBeforeFilterSubjects() !== null) {
+            return $filters;
         }
+
+        $filters = array_unique([...$filters, ...self::filterSubjectsOf($existingConsumer)]);
 
         return array_values(array_filter($filters, static function (string $filter) use ($filters): bool {
             foreach ($filters as $other) {
@@ -2047,22 +2066,16 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         $expectedFilters = $this->consumerFilterSubjects();
         $actualFilters = self::filterSubjectsOf($consumerInfo);
 
-        sort($expectedFilters, SORT_STRING);
-        sort($actualFilters, SORT_STRING);
         foreach ($expectedFilters as $expectedFilter) {
-            foreach ($actualFilters as $actualFilter) {
-                if (self::subjectMatches($actualFilter, $expectedFilter)) {
-                    continue 2;
-                }
+            if (!self::matchedByOneOf($actualFilters, $expectedFilter)) {
+                throw new RuntimeException(count($expectedFilters) === 1
+                    ? 'Consumer filter subject does not match the configured topic.'
+                    : sprintf(
+                        'Consumer filter subjects [%s] do not match the topic and additional_subjects [%s].',
+                        implode(', ', $actualFilters),
+                        implode(', ', $expectedFilters),
+                    ));
             }
-
-            throw new RuntimeException(count($expectedFilters) === 1
-                ? 'Consumer filter subject does not match the configured topic.'
-                : sprintf(
-                    'Consumer filter subjects [%s] do not match the topic and additional_subjects [%s].',
-                    implode(', ', $actualFilters),
-                    implode(', ', $expectedFilters),
-                ));
         }
 
         if ($consumerInfo->push) {
@@ -2537,7 +2550,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
     /**
      * NATS before 2.10 ignores `filter_subjects` and leaves the consumer unfiltered, so additional_subjects is
-     * refused there before setup() changes anything.
+     * refused there before setup() changes anything. The version is the one the server gave when the connection
+     * opened, so the transport connects first: `messenger:setup-transports` calls setup() on a transport that has
+     * not connected yet.
      */
     private function assertServerKnowsFilterSubjects(): void
     {
@@ -2546,20 +2561,29 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         $this->jetStream();
-        $required = FeatureSupport::requiredVersion('filter_subjects');
-        $version = $this->client->serverInfo()?->version;
-        $release = self::serverRelease($version);
-        if ($required === null || $version === null || $release === null) {
+        $version = $this->serverVersionBeforeFilterSubjects();
+        if ($version === null) {
             return;
         }
 
-        if (version_compare($release, $required, '<')) {
-            throw new UnsupportedFeatureException('filter_subjects', $required, $version, sprintf(
-                'filter_subjects requires NATS Server >= %s, but the connected server reports %s.',
-                $required,
-                $version,
-            ));
-        }
+        throw new UnsupportedFeatureException('filter_subjects', self::FILTER_SUBJECTS_SINCE, $version, sprintf(
+            'filter_subjects requires NATS Server >= %s, but the connected server reports %s.',
+            self::FILTER_SUBJECTS_SINCE,
+            $version,
+        ));
+    }
+
+    /**
+     * The version the connected server reports when it names a release before NATS 2.10, which has no
+     * `filter_subjects`, or null: for a later release, and for a server that reports no version or one the
+     * transport cannot read, which is let through for the server to decide.
+     */
+    private function serverVersionBeforeFilterSubjects(): ?string
+    {
+        $version = $this->client->serverInfo()?->version;
+        $release = self::serverRelease($version);
+
+        return $release !== null && version_compare($release, self::FILTER_SUBJECTS_SINCE, '<') ? $version : null;
     }
 
     /**

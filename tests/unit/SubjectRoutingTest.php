@@ -415,6 +415,114 @@ final class SubjectRoutingTest extends TestCase
         $transport->setup();
     }
 
+    /**
+     * `messenger:setup-transports` calls setup() on a transport that has not connected yet, whose client knows no
+     * server version until it connects: the version is read after the connect.
+     */
+    public function testTheFirstSetupOfATransportThatHasNotConnectedRefusesAdditionalSubjectsOnAServerBeforeNats210(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method(self::anything());
+        $transport = new JetStreamInjectedNatsTransport(self::DSN, ['additional_subjects' => self::EXTRA], $this->encodingSerializer());
+        $transport->connectsTo($this->clientOfAServerReporting('2.9.25'), $jetStream);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("The 'additional_subjects' option requires NATS Server >= 2.10, but the connected server reports 2.9.25.");
+
+        $transport->setup();
+    }
+
+    /**
+     * A server that reports no version, or one that names no release, is let through, for the server to decide.
+     */
+    #[DataProvider('serverVersionsWithoutAReleaseProvider')]
+    public function testSetupLetsAServerWhoseReleaseItCannotReadThroughWithAdditionalSubjects(?string $version): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturn(Future::complete($this->consumerInfo(['filter_subjects' => ['test-topic', self::EXTRA]])));
+        $transport = $this->transport($jetStream);
+        $transport->setClient($this->clientOfAServerReporting($version));
+
+        $transport->setup();
+    }
+
+    /**
+     * @return iterable<string, array{?string}>
+     */
+    public static function serverVersionsWithoutAReleaseProvider(): iterable
+    {
+        yield 'no server info' => [null];
+        yield 'an empty version' => [''];
+        yield 'a version that names no release' => ['unknown'];
+    }
+
+    /**
+     * additional_subjects does not take over the message of another feature the server lacks.
+     */
+    public function testSetupKeepsTheScheduledMessagesRefusalWithAdditionalSubjects(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::never())->method(self::anything());
+        $transport = $this->transport($jetStream, ['scheduled_messages' => true]);
+        $transport->setClient($this->clientOfAServerReporting('2.11.17'));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("The 'scheduled_messages' option requires NATS Server >= 2.12, but the connected server reports 2.11.17. Disable scheduled_messages or upgrade NATS.");
+
+        $transport->setup();
+    }
+
+    /**
+     * A server before NATS 2.10 gets `filter_subject` with the topic, as from 5.10.1, whatever filter its consumer
+     * has: it ignores `filter_subjects`, which the union with the live filter would need, and would leave the
+     * consumer unfiltered (measured on nats-server 2.9.25 with client 2.30.1), and it takes a changed filter.
+     */
+    public function testSetupSendsTheTopicAloneToAServerBeforeNats210(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete());
+        $jetStream->method('getConsumer')->willReturn(Future::complete($this->consumerInfo(['filter_subject' => 'old-topic'])));
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static function (ConsumerConfiguration $config): bool {
+                $options = $config->toArray();
+
+                return ($options['filter_subject'] ?? null) === 'test-topic' && !array_key_exists('filter_subjects', $options);
+            }))
+            ->willReturn(Future::complete($this->consumerInfo(['filter_subject' => 'test-topic'])));
+        $transport = $this->transport($jetStream, ['additional_subjects' => null]);
+        $transport->setClient($this->clientOfAServerReporting('2.9.25'));
+
+        $transport->setup();
+    }
+
+    /**
+     * Without additional_subjects too: a topic renamed in the DSN, the stream and the consumer name kept, is added
+     * beside the old one on NATS 2.10 and later, where 5.10.1 replaced it. The old filter stays until someone removes
+     * it (README, "Removing a pattern").
+     */
+    public function testSetupAddsARenamedTopicBesideTheOldOneOnAnExistingConsumer(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete());
+        $jetStream->method('getConsumer')->willReturn(Future::complete($this->consumerInfo(['filter_subject' => 'old-topic'])));
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->with('test-stream', self::callback(static function (ConsumerConfiguration $config): bool {
+                $options = $config->toArray();
+
+                return ($options['filter_subjects'] ?? null) === ['test-topic', 'old-topic'] && !array_key_exists('filter_subject', $options);
+            }))
+            ->willReturn(Future::complete($this->consumerInfo(['filter_subjects' => ['test-topic', 'old-topic']])));
+        $transport = $this->transport($jetStream, ['additional_subjects' => null]);
+        $transport->setClient($this->clientOfAServerReporting('2.10.29'));
+
+        $transport->setup();
+    }
+
     public function testSetupAddsTheAdditionalSubjectsToAnExistingStream(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
@@ -505,19 +613,21 @@ final class SubjectRoutingTest extends TestCase
     }
 
     /**
-     * The lists are compared sorted as strings. PHP's default comparison reads `10` and `1e1` as equal numbers, so
-     * the two lists, each sorted stably from its own order, could differ in order and fail the strict comparison.
+     * The filters are compared as strings: a reply with `10` does not cover a configured `1e1`, though PHP's loose
+     * comparison takes the two for the same number. The message lists both sides in their own order, the reply's
+     * as the server gave it.
      */
     public function testSetupComparesTheFilterSubjectsAsStrings(): void
     {
         $jetStream = $this->createStub(JetStreamContext::class);
         $jetStream->method('addStream')->willReturn(Future::complete());
-        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo(['filter_subjects' => ['1e1', '10', 'test-topic']])));
-        $transport = $this->transport($jetStream, ['additional_subjects' => '10,1e1']);
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo(['filter_subjects' => ['test-topic', '10']])));
+        $transport = $this->transport($jetStream, ['additional_subjects' => '1e1,10']);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Consumer filter subjects [test-topic, 10] do not match the topic and additional_subjects [test-topic, 1e1, 10].');
 
         $transport->setup();
-
-        $this->addToAssertionCount(1);
     }
 
     /**
@@ -617,11 +727,11 @@ final class SubjectRoutingTest extends TestCase
         return $jetStream;
     }
 
-    private function clientOfAServerReporting(string $version): NatsClient
+    private function clientOfAServerReporting(?string $version): NatsClient
     {
         $client = $this->createStub(NatsClient::class);
         $client->method('state')->willReturn(ConnectionState::Open);
-        $client->method('serverInfo')->willReturn(new ServerInfo('id', 'name', $version, true, 1048576, true));
+        $client->method('serverInfo')->willReturn($version === null ? null : new ServerInfo('id', 'name', $version, true, 1048576, true));
 
         return $client;
     }

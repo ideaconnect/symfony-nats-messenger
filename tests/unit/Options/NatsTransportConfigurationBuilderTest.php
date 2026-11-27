@@ -2705,6 +2705,8 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
         yield 'the topic itself' => [['additional_subjects' => 't'], 'The additional_subjects entry "t" overlaps the topic.'];
         yield 'two entries that overlap' => [['additional_subjects' => 't.updated.>,t.updated.42'], 'The additional_subjects entry "t.updated.42" overlaps the entry "t.updated.>".'];
+        yield 'an entry that overlaps an earlier one through a *' => [['additional_subjects' => 't.a.x,t.*.x'], 'The additional_subjects entry "t.*.x" overlaps the entry "t.a.x".'];
+        yield 'an entry that an earlier one overlaps through a *' => [['additional_subjects' => 't.*.x,t.a.x'], 'The additional_subjects entry "t.a.x" overlaps the entry "t.*.x".'];
         yield 'an empty token' => [['additional_subjects' => 't..updated'], sprintf($notAPattern, 't..updated')];
         yield '> before the last token' => [['additional_subjects' => 't.>.updated'], sprintf($notAPattern, 't.>.updated')];
         yield 'whitespace in a token' => [['additional_subjects' => ['t.up dated']], sprintf($notAPattern, 't.up dated')];
