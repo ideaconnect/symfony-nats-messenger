@@ -777,7 +777,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Pulls and decodes a batch of envelopes from JetStream.
      *
      * Fetches up to {@see NatsTransportConfiguration::batching()} messages with the
-     * configured timeout. A pull that found no messages (JetStream status 408, or 404) is an
+     * configured timeout. Symfony's Worker passes Messenger's fetch size from Messenger 8.1 on; it is not
+     * used here, because {@see NatsTransportConfiguration::batching()} decides the pull and a larger pull
+     * waits up to {@see NatsTransportConfiguration::maxBatchTimeoutMs()} for its messages. A pull that found
+     * no messages (JetStream status 408, or 404) is an
      * empty result, and so is one the server did not answer, though the next operation then checks
      * the connection first, unless ping_after_idle is 0. A missing consumer or stream does not report
      * 404 but 503, or 409 when the consumer is deleted mid-pull, and without auto_setup that
@@ -806,11 +809,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * {@see EventListener\AddUnrecoverableFailureStampListener} tells the deliveries whose failure this
      * mode reads from those of other receivers (#125).
      *
+     * @param int $fetchSize Messenger's best-effort hint, since Messenger 8.1; not used (see above).
+     *
      * @return iterable<Envelope>
      *
      * @throws TransportException If the pull fails because the connection is at its subscription limit.
      */
-    public function get(): iterable
+    public function get(/* int $fetchSize = 1 */): iterable // @phpstan-ignore parameter.notFound (declared in a comment, as ReceiverInterface declares it until Symfony 9)
     {
         $this->autoSetupIfEnabled();
         // A worker is the process that sends Symfony's delayed retries, so it checks before its first pull.
