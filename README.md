@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1404 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1409 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -1032,6 +1032,18 @@ subscriber can add Symfony's `SentToFailureTransportStamp` to every earlier fail
 `SendFailedMessageToFailureTransportListener` then skips, with `max_retries: 0` so that Symfony retries nothing
 itself. Symfony Messenger 7.4.6 to 7.4.8 and 8.0.6 to 8.0.8 ignore that stamp, and send every failed delivery. No
 such subscriber exists yet.
+
+**Nor is a `DispatchOnFailureStamp`** (Symfony Messenger 8.2). The stamp names a message to dispatch when the
+stamped one fails for good, in place of a failure transport, and Symfony dispatches it each time it treats a
+failure as final, as it sends a message to a failure transport. With `max_retries: 0` the failure message is
+therefore dispatched at every failed delivery, up to `max_deliver` times, while NATS redelivers the message. With
+retries left on it is dispatched for an unrecoverable failure only: a message that keeps failing never has it
+dispatched, also not when NATS stops redelivering it. To have it dispatched once, when the retries are used up,
+use [`retry_via: nak`](#retrying-through-a-nak-retry_via-nak): Symfony's retry strategy decides, NATS redelivers
+the original, and the failure message is dispatched at the delivery Symfony gives up on.
+
+> **Tested by:** `testDispatchOnFailureStampIsDispatchedOnlyWhenSymfonyGivesUpThroughTheWorker`, through
+> Symfony's Worker; skipped before Symfony Messenger 8.2.
 
 NATS's handling keeps the message in the stream after its last delivery only on some streams. NATS keeps it on a
 stream with limits retention, and on a work-queue stream with one replica, or with three on NATS 2.12.5 and later.

@@ -75,7 +75,9 @@ With `nak_delay: 1`, `max_deliver: 3` and, as the README asks for in this mode, 
 
 Symfony gives up on every run, so a failure transport gets a copy each time. That is why a failure transport
 does not combine well with nats mode, and why `retry_via: nak` is the setup to use when Symfony's strategy
-should decide while NATS redelivers.
+should decide while NATS redelivers. On Symfony Messenger 8.2 the same goes for a message with a
+`DispatchOnFailureStamp`: its failure message is dispatched on each of those runs too (README,
+"Retry Handler Behavior").
 
 ## What `retry_via: nak` changes in the transport
 

@@ -200,6 +200,13 @@ apply only with the option on.
   each a `HandlerDescriptor` with its own `alias`. A test of the retry path proves that Symfony's retry ran (the example
   reads `willRetry()` after the retry listener, Behat counts the transport's warning that the retry strategy is on):
   the advisories and runs come out the same when it does not.
+- **A `DispatchOnFailureStamp` in nats mode (Symfony Messenger 8.2, #154):** Symfony's `DispatchOnFailureListener`
+  (`WorkerMessageFailedEvent`, priority 0) dispatches the stamp's failure message whenever `willRetry()` is false,
+  and reads nothing else. In nats mode with `max_retries: 0` that is every failed delivery; with retries left on,
+  only an unrecoverable failure; with `retry_via: nak`, the delivery Symfony gives up on. It then adds a
+  `SentToFailureTransportStamp` to the envelope the worker settles, which the transport reads only for the
+  `Nats-Msg-Id` of a send (`src/NatsTransport.php:549`). A subscriber that gave nats mode one failure-transport
+  copy by adding that stamp to the earlier deliveries (the README's sketch) would not hold this listener back.
 - **Scheduled messages need a server that has them:** NATS before 2.12 ignores the stream's `allow_msg_schedules`
   setting without rejecting it, so up to 5.8.1 `setup()` succeeded there and every delayed message was stored on
   `<topic>.delayed.<uuid>` and never delivered (measured on 2.9.25, 2.10.29 and 2.11.17). The client's
