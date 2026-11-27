@@ -206,6 +206,11 @@ apply only with the option on.
   `UnsupportedFeatureException` only comes from a server that rejects the setting, so the transport reads
   `serverInfo()->version` once connected (`schedulesUnsupportedByTheServer()`) and refuses in `setup()` and in the
   send of a delayed message. A server that gives no version, or one that cannot be read, is let through.
+- **Consumer filters on a server before NATS 2.10:** it ignores `filter_subjects` and leaves the consumer without a
+  filter, reading the whole stream (#112; measured on 2.9.25 with client 2.30.1, while 2.32.0 and later refuse the
+  request before sending it). So `setup()` refuses `additional_subjects` there, after connecting, and otherwise
+  sends `filter_subject` with the topic, which 2.9.25 takes as a change of the filter. On 2.10 and later it writes
+  the union of the configured filters and the live consumer's, with or without the option (#111, PR #100).
 - **Keepalive:** Symfony invokes it from SIGALRM. It queues `inProgress()->ignore()` without
   awaiting, pinging, or connecting, because a signal handler cannot switch fibers (#48).
   The event loop must run for the queued write to leave. Plain blocking PHP work therefore
