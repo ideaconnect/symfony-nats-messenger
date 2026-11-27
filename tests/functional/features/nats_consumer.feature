@@ -35,3 +35,12 @@ Feature: Custom NATS Consumer
     Then 100 messages should have been processed by the consumers
     And the test files directory should contain exactly 100 files
     And the messenger stats should show 0 messages waiting
+
+  @consumer
+  Scenario: Setup again keeps the consumer metadata and the consumer description another client wrote
+    Given I have a messenger transport configured with max age of 15 minutes
+    And the NATS stream is set up
+    And another client adds the consumer metadata entry "owner" with "billing-team" and the consumer description "Read by the billing workers"
+    When I run the messenger setup command
+    Then the setup should complete successfully
+    And the transport's consumer should still have the consumer metadata entry "owner" with "billing-team" and the consumer description "Read by the billing workers"

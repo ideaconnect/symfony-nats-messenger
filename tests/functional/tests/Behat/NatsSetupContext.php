@@ -3760,6 +3760,77 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * Writes a metadata entry and a description onto the transport's durable consumer behind the transport's back, as
+     * an operator's `nats consumer edit` does, after "the NATS stream is set up" created it with neither: the
+     * consumer's configuration as the transport sends it plus the two fields, then a check that the server took them.
+     * Up to 5.10.1 the next setup() sent the consumer's configuration without either, and the server cleared both
+     * (#145).
+     */
+    #[Given('another client adds the consumer metadata entry :name with :value and the consumer description :description')]
+    public function anotherClientAddsTheConsumerMetadataEntryAndTheConsumerDescription(string $name, string $value, string $description): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $jetStream = $client->jetStream();
+            $jetStream->addConsumer($this->testStreamName, ConsumerConfiguration::create()
+                ->durable('client')
+                ->filterSubject($this->testSubject)
+                ->ackPolicy(AckPolicy::Explicit)
+                ->deliverPolicy(DeliverPolicy::All)
+                ->metadata([$name => $value])
+                ->description($description))->await();
+
+            $config = $jetStream->getConsumer($this->testStreamName, 'client')->await()->raw['config'] ?? [];
+            if (!is_array($config) || $this->consumerMetadataWithoutTheServersEntries($config) !== [$name => $value] || ($config['description'] ?? null) !== $description) {
+                throw new \RuntimeException(sprintf('The consumer did not take the metadata entry and the description: %s', json_encode($config)));
+            }
+        } finally {
+            $client->disconnect()->await();
+        }
+    }
+
+    #[Then('the transport\'s consumer should still have the consumer metadata entry :name with :value and the consumer description :description')]
+    public function theTransportsConsumerShouldStillHaveTheConsumerMetadataEntryAndTheConsumerDescription(string $name, string $value, string $description): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $config = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw['config'] ?? [];
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        if (!is_array($config) || $this->consumerMetadataWithoutTheServersEntries($config) !== [$name => $value] || ($config['description'] ?? null) !== $description) {
+            throw new \RuntimeException(sprintf(
+                'Expected the consumer to keep the metadata entry "%s" => "%s" and the description "%s", but its configuration is: %s',
+                $name,
+                $value,
+                $description,
+                json_encode($config),
+            ));
+        }
+    }
+
+    /**
+     * The entries of a consumer's metadata but the server's own: from 2.11 on the server writes `_nats.req.level`,
+     * `_nats.ver` and `_nats.level` into every consumer's, 2.10 none.
+     *
+     * @param array<mixed> $config
+     * @return array<string, mixed>
+     */
+    private function consumerMetadataWithoutTheServersEntries(array $config): array
+    {
+        $metadata = is_array($config['metadata'] ?? null) ? $config['metadata'] : [];
+        $entries = [];
+        foreach ($metadata as $name => $value) {
+            if (!str_starts_with((string) $name, '_nats.')) {
+                $entries[(string) $name] = $value;
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
      * The transport logs once per transport object that the consumer's max_deliver is not the option's, through the
      * logger the bundle gives it: FrameworkBundle's default logger writes it to the consumer's stderr.
      */

@@ -229,7 +229,11 @@ apply only with the option on.
   not configured. The four older retention limits are authoritative, including clearing them;
   newer `max_msg_size`/`max_consumers` are preserved unless configured. Clamp inherited duplicate
   windows to finite max age; encode empty `metadata`/`consumer_limits` as objects. Older NATS
-  versions reject some updates that newer ones accept.
+  versions reject some updates that newer ones accept. An existing consumer's `metadata` and `description` go back as
+  the lookup for its replay policy reported them (#145): nats-server replaces a durable consumer's whole configuration
+  with the request, so up to 5.10.1 every `setup()` cleared both (measured 2026-11-26 on 2.10.29 and 2.15.3, on one
+  server and on the test cluster with three replicas). A decoded map named `0`, `1`, ... goes as an object and an empty
+  one not at all: the server refuses a JSON list there (`invalid JSON`, on both versions).
 - **Serialization:** strip `NonSendableStampInterface` before encoding (#46); worker `AckStamp`
   contains a closure. A custom serializer takes precedence; otherwise choose igbinary if installed
   or `PhpSerializer` with a warning. Both defaults deserialize PHP objects and require trusted
@@ -272,6 +276,22 @@ apply only with the option on.
   (`EventLoop::defer()`): one passed to `Future::error()` is made before the wait and passes on the broken code too.
   Known and left alone: an unanswered PING's `TimeoutCancellation` leaves one cycle (99 objects) per connection that
   stopped answering, which is then replaced. Measurements: `docs/PRs/PR-114-empty-pull-reference-cycle.md`.
+- **Symfony's Worker, not this transport, decides when it closes a receiver and when it reads a whole pull before
+  handling the first message of it** (#140). Run, with a stubbed `JetStreamContext` and Symfony's Worker over this
+  transport: 7.4.0, 7.4.24, 8.1.11 and 8.1.12. Read from the tagged `Worker.php`: v7.4.23, v8.0.8, v8.0.15 and
+  v8.2.0-RC1.
+
+  | Symfony Messenger | closes its transports when it stops | reads the whole pull first |
+  |---|---|---|
+  | 7.4.0 to 7.4.23, the 8.0 line, 8.1.0 to 8.1.11 | no | no |
+  | 7.4.24 | yes | no |
+  | 8.1.12, 8.2.0-RC1 | yes | yes |
+
+  `NatsTransport::close()` runs unchanged either way; what changed is only whether and when Symfony's Worker calls
+  it, and whether it consumes `get()`'s generator eagerly (decoding every message of the pull before the first
+  handler runs) or one message at a time. A test through the Worker that checks what the transport logs compares
+  the transport's warnings (`RecordingLogger::messagesAt('warning')`), never every record, because the client logs
+  an `info` line of its own when the Worker closes the transport.
 
 ## Cross-library development and verification
 
@@ -286,7 +306,11 @@ apply only with the option on.
    own `vendor/` and client requirement; its autoloader reads transport code directly from `../../src/`.
 5. `TransportOption` defines keys; every case needs a builder default. Prefer `TypeCoercion` and
    sensitive DSN/credential parameters. Update README examples and `docs/TESTS.md` with test changes,
-   `docs/CHANGELOG.md` under Unreleased, and `docs/PRs/` when a PR is merged or adapted.
+   `docs/CHANGELOG.md` under Unreleased, and `docs/PRs/` when a PR is merged or adapted. A change that
+   alters what the operator of an existing deployment sees (behaviour, an option, a requirement, a log
+   line, something to register) gets a bullet in the README's "Upgrading from" section named after the
+   latest release, on the branch that makes the change, with its "Tested by" line; #134 and #146 merged
+   without one (#147).
 
 Transport checks: `composer test` (PHPStan max on `src` plus fast unit tests) after code changes.
 Coverage: `composer test:unit`, then `composer coverage:check` (>= 90%). Live transport changes:

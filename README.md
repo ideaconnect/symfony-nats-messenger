@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1377 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1379 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -247,8 +247,18 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
 
 ### Upgrading from 5.10.1
 
+- **Nats mode with several handlers goes by every handler's failure, in either order** (#125): a mix of an
+  unrecoverable failure and an ordinary one is NAKed, whichever handler ran first, and the delivery is TERMed only
+  once every handler that failed has failed for good. An application without the bundle, or a worker built by
+  hand, registers `AddUnrecoverableFailureStampListener` itself (see
+  [Retry Handler Behavior](#retry-handler-behavior)). With the bundle there is nothing to do.
+- **`setup()` keeps the metadata and the description of a durable consumer that exists** (#145): up to 5.10.1
+  every `setup()` cleared both fields; there is nothing to do (see
+  [Note on the consumer's metadata and description](#provisioning-the-stream--consumer)).
 - **`additional_subjects` is rolled out in two steps,** as a process of 5.10.1 or older that runs `setup()` narrows
   the consumer to the topic: see "Rolling it out and back" under [Per-Message Subjects](#per-message-subjects).
+
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`)
 
 ### Logging
 
@@ -947,7 +957,9 @@ application's error handler instead, and the message decodes (see
   which stops the worker that pulled it, as Symfony's own transports do. The next worker does not get it.
 - **Any other exception of the serializer** propagates, and the message is left for redelivery after `ack_wait` (5.10.0):
   a serializer whose store or service failed for a moment may decode it then. Up to 5.9.x the transport took any
-  exception for a decode failure and TERMed the message.
+  exception for a decode failure and TERMed the message. From Symfony Messenger 8.1.12 on, with `batching` above 1,
+  the messages of the same pull decoded before the failing one are not handled either, and are left for redelivery
+  the same way (see [Batching Explained](#batching-explained)).
 
 In symfony mode, `retry_via` chooses how a retry Symfony decides on reaches NATS: as a copy (the default) or as a
 NAK with Symfony's delay (see [Retrying through a NAK](#retrying-through-a-nak-retry_via-nak)).
@@ -1059,7 +1071,7 @@ framework:
           max_retries: 0
 ```
 
-> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testBeforeMessenger81AMessageThatCannotBeDecodedIsTermedAndItsErrorThrown`, `testBeforeMessenger81ATermThatFailsLeavesTheDecodeErrorThrown`, `testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled`, `testFromMessenger81AMessageThatCannotBeDecodedGoesOnAsTheDecodingFailure`, `testNatsModeTermsAMessageThatCouldNotBeDecodedWhenTheWorkerSettlesIt`, `testSymfonyModeLeavesAMessageThatCouldNotBeDecodedToSymfonysRetryStrategy`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testNatsModeRunsAnUnrecoverableFailureOnceThroughTheWorker`, the Behat scenarios `A message that cannot be decoded is TERMed in nats mode, so no worker gets it again`, `A message that cannot be decoded is settled in symfony mode` and `An unrecoverable failure runs once in nats mode`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSymfonyModeAcksADeliveryItPublishedTheRetryCopyOf`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testNatsModeWithoutSymfonysRetriesLogsNoWarning`, `testNoWarningWhenSendLeavesOutNoRetryCopy`, `testEachTransportWarnsOnceAboutItsOwnStreamAndSubject`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
+> **Tested by:** `testRejectUsesTermByDefault`, `testRejectUsesNakWhenRetryHandlerIsNats`, `testBeforeMessenger81AMessageThatCannotBeDecodedIsTermedAndItsErrorThrown`, `testBeforeMessenger81ATermThatFailsLeavesTheDecodeErrorThrown`, `testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled`, `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails`, `testFromMessenger81AMessageThatCannotBeDecodedGoesOnAsTheDecodingFailure`, `testNatsModeTermsAMessageThatCouldNotBeDecodedWhenTheWorkerSettlesIt`, `testSymfonyModeLeavesAMessageThatCouldNotBeDecodedToSymfonysRetryStrategy`, `testNatsModeTermsAnUnrecoverableFailureAndNaksTheRest`, `testNatsModeRunsAnUnrecoverableFailureOnceThroughTheWorker`, the Behat scenarios `A message that cannot be decoded is TERMed in nats mode, so no worker gets it again`, `A message that cannot be decoded is settled in symfony mode` and `An unrecoverable failure runs once in nats mode`, `testHandleFailedDeliveryUsesNakWithDelayWhenConfigured`, `testSetupAppliesConsumerRetryTuning`, `testBuildAcceptsNatsRetryTuningOptions`, `testBuildUsesRetryHandlerFromQuery`, `testNatsModeDoesNotPublishTheCopySymfonysRetrySends`, `testWorkerRetryInNatsModeNaksTheOriginalWithoutPublishingACopy`, `testWorkerInNatsModeNaksOnlyTheDeliveryItSentForRetry`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSymfonyModeAcksADeliveryItPublishedTheRetryCopyOf`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testNatsModeWithoutSymfonysRetriesLogsNoWarning`, `testNoWarningWhenSendLeavesOutNoRetryCopy`, `testEachTransportWarnsOnceAboutItsOwnStreamAndSubject`, Behat scenarios `nats_nak.feature` (with `A message that fails once is redelivered with Symfony's default retry strategy`), `nats_term.feature` and `Symfony's retry strategy is ignored with the NATS retry handler`, the example `nats-retry.php`
 
 #### Retrying through a NAK (`retry_via: nak`)
 
@@ -1248,6 +1260,10 @@ transports:
 - **Lower batching**: Lower latency, slightly reduced throughput
 - **Optimal batching**: Depends on message size and processing time
 
+From Symfony Messenger 8.1.12 on, the Worker reads the whole pull before it handles the first message (see
+[Retry Handler Behavior](#retry-handler-behavior) for what that means when the serializer throws another exception
+while a message of the pull is decoded).
+
 ```yaml
 options:
   batching: 1        # Fetch 1 message at a time (low latency)
@@ -1255,7 +1271,7 @@ options:
   batching: 20       # Fetch 20 messages (high throughput)
 ```
 
-> **Tested by:** `testReadmeBatchingExamplesAreAccepted` - values 1, 5, 10, 20, 50 are all verified.
+> **Tested by:** `testReadmeBatchingExamplesAreAccepted` - values 1, 5, 10, 20, 50 are all verified; `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails`.
 
 ### Batch Timeout
 
@@ -1363,9 +1379,10 @@ where JetStream drops it if the first copy was stored.
 
 ### Losing the Connection
 
-Unless [`reconnect`](#automatic-reconnect) is on, the transport does not reconnect in the background, and
-nothing in Symfony calls `close()`. When the connection has been lost, the next operation dials again
-instead:
+Unless [`reconnect`](#automatic-reconnect) is on, the transport does not reconnect in the background. From Symfony
+Messenger 7.4.24 and 8.1.12 on, the Worker calls `close()` once each time it stops - at a normal stop and when an
+exception ends it; nothing in Symfony called it before those releases. An operator sees the client's `info` line
+`NATS connection Closed` when it runs. When the connection has been lost, the next operation dials again instead:
 
 - A connection is lost when the NATS server restarts, when the network drops it, or when the server closes
   it because the client stopped answering its pings. A PHP process answers them only while it is inside a
@@ -1410,7 +1427,7 @@ options:
   ping_after_idle: 30   # seconds; 0 turns the check off
 ```
 
-> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testPingAfterIdleZeroTurnsTheCheckBeforeSettlingAFailedDeliveryOff`, `testBuildWithInvalidPingAfterIdleThrowsException`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
+> **Tested by:** `testOperationAfterTheClientClosedDialsAgain`, `testAutoSetupVerifiesTheNewConnectionBeforeTheSameCallPublishes`, `testFailedDialAfterTheClientClosedSurfacesAsTheConnectionErrorAndIsRetried`, `testIdleConnectionIsCheckedWithAPingAndKeptWhenTheServerAnswers`, `testIdleConnectionThatDoesNotAnswerThePingIsReplacedBeforeTheOperation`, `testPingUnansweredWithinTheConnectionTimeoutReplacesTheConnection`, `testRecentlyUsedConnectionIsNotPinged`, `testPingAfterIdleZeroTurnsTheCheckOff`, `testKeepaliveNeitherPingsNorDials`, `testOperationThatFailedOnTheConnectionMakesTheNextOneCheckItFirst`, `testJetStreamReplyDoesNotMakeTheNextOperationCheckTheConnection`, `testPullTheServerDidNotAnswerMakesTheNextOperationCheckTheConnection`, `testOnlyAPullTheServerDidNotAnswerMakesTheNextOneCheckTheConnection`, `testIdleTimeCountsFromTheEndOfAnEmptyPull`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testPingAfterIdleZeroTurnsTheCheckBeforeSettlingAFailedDeliveryOff`, `testBuildWithInvalidPingAfterIdleThrowsException`, `testTheWorkerClosesTheTransportWhenItStopsOnTheMessengerReleasesThatDoSo`, `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails`, Behat scenarios `A message sent after the server dropped the idle connection goes out` and `Without the check the message sent after the server dropped the connection fails`
 
 ### Subscription Limits
 
@@ -2213,6 +2230,15 @@ framework:
 > yet. Changing it on a running deployment is a no-op until you delete the consumer and let setup
 > recreate it.
 
+> **Note on the consumer's metadata and description:** NATS takes setup's request for a consumer that
+> exists as an update that replaces the consumer's whole configuration. The transport has no option for
+> the consumer's `metadata` or `description`, so it sends back what the live consumer has: an entry or
+> a description another tool wrote, such as `nats consumer edit`, stays (measured on NATS 2.10.29 and
+> 2.15.3, on one server and on a cluster). The metadata goes back whole, as the server reported it, its
+> own `_nats.` entries included. An entry written while setup runs, between its
+> lookup of the consumer and its update, is lost: NATS has no conditional update of a consumer. Up to
+> 5.10.1 every setup cleared both fields.
+
 > **Note on the deny flags:** `stream_deny_delete` and `stream_deny_purge` can be switched on but never
 > off. NATS rejects an update that cancels either one, so on a stream that already denies deletes or
 > purges the transport keeps the server's value and a `false` in your configuration is ignored. Recreate
@@ -2233,7 +2259,7 @@ framework:
 > existing stream, and with `auto_setup` every `send()` and `get()` repeats that rejected update until the
 > two are staged. See [Stream Placement](#stream-placement) for the steps.
 
-> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, and `Custom consumer name is registered in JetStream`
+> **Tested by:** `testSetupCreatesStreamAndConsumer`, `testSetupPassesConfiguredStreamOptions`, `testSetupPassesNewStreamPolicyOptions`, `testSetupPassesNewConsumerOptions`, `testSetupPassesStreamPlacementOnCreate`, `testSetupUpdateAppliesConfiguredStreamPlacementToAnExistingStream`, `testSetupUpdatePreservesServerStreamPlacementWhenNotConfigured`, `testAutoSetupProvisionsOnFirstSendOnce`, `testAutoSetupProvisionsOnFirstGet`, `testAutoSetupDisabledByDefaultDoesNotProvisionOnSend`, `testSetupUpdatesExistingStreamMergesSubjectsAndPreservesServerConfig`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsNoConsumerMetadataWhenTheLiveConsumerHasNone`, `testSetupSendsConsumerMetadataNamedZeroAndOneAsAMap`, `testSetupSendsAConsumerMetadataNameThatStartsWithANulByte`, `testSetupSendsNoConsumerMetadataOrDescriptionWithoutAConsumer`, `testSetupSendsTheConsumerMetadataOfTheLookupThatAnswered`, `testSetupSendsTheLiveConsumerDescriptionBack`, `testSetupSendsNoConsumerDescriptionWhenTheLiveConsumerHasNone`, Behat scenarios `Setup NATS stream with max age configuration`, `Setup command handles existing streams gracefully`, `Custom consumer name is registered in JetStream`, and `Setup again keeps the consumer metadata and the consumer description another client wrote`
 
 ### Delayed / Scheduled Messages
 

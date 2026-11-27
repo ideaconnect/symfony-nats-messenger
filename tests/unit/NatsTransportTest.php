@@ -915,6 +915,72 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * As {@see testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled}, through
+     * Symfony's Worker: a pull of two messages, the second of which makes the serializer throw a plain
+     * \RuntimeException. Before Messenger 8.1.12 the Worker decodes one message at a time, so the first message's
+     * handler runs and is acknowledged before the second one's decode failure leaves Worker::run(). From 8.1.12 on,
+     * for a receiver that implements KeepaliveReceiverInterface (this transport), the Worker reads the whole pull
+     * before it handles the first message (see the README, "Retry Handler Behavior"), so the second message's decode
+     * failure leaves Worker::run() before any handler ran, and nothing is settled. expectException() ends a test at
+     * the throw, so the exception is caught here and the handled and settled messages are asserted after. Also pins
+     * close(): the exception that ends Worker::run() here calls it once from Messenger 7.4.24 and 8.1.12 on, the same
+     * releases and count as a normal stop, counted the same way, by overriding close() in an anonymous subclass.
+     */
+    public function testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails(): void
+    {
+        $handled = [];
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function () use (&$handled): void {
+                $handled[] = true;
+            }],
+        ]))]);
+
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willReturnCallback(static function (array $encoded): Envelope {
+            if ($encoded['body'] === 'second') {
+                throw new \RuntimeException('the schema registry did not answer');
+            }
+
+            return new Envelope(new \stdClass());
+        });
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'first'),
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.2.2.0.0', payload: 'second'),
+        ]));
+        if (self::workerReadsTheWholePullFirst()) {
+            $jetStream->expects(self::never())->method('ack');
+        } else {
+            $jetStream->expects(self::once())->method('ack')->with(self::callback(
+                static fn (NatsMessage $message): bool => $message->replyTo === '$JS.ACK.test-stream.client.1.1.1.0.0',
+            ))->willReturn(Future::complete());
+        }
+        $jetStream->expects(self::never())->method('nak');
+        $jetStream->expects(self::never())->method('term');
+
+        $transport = new class (self::VALID_DSN, self::NATS_MODE, $serializer) extends RuntimeTestableNatsTransport {
+            public int $closes = 0;
+
+            public function close(): void
+            {
+                ++$this->closes;
+                parent::close();
+            }
+        };
+        $transport->setJetStreamContext($jetStream);
+
+        try {
+            (new Worker(['async' => $transport], $bus, new EventDispatcher()))->run(['sleep' => 0]);
+            self::fail('Worker::run() should have thrown.');
+        } catch (\RuntimeException $failure) {
+            self::assertSame('the schema registry did not answer', $failure->getMessage());
+        }
+
+        self::assertSame(self::workerReadsTheWholePullFirst() ? [] : [true], $handled);
+        self::assertSame(self::workerClosesTransportsWhenItStops() ? 1 : 0, $transport->closes);
+    }
+
+    /**
      * Through Symfony's Worker, with the transport's igbinary serializer, a message whose __wakeup() raises a warning it
      * suppresses is handled once and acknowledged, in each retry mode, and the warning goes to the application's error
      * handler. On 5.10.0 the warning made it a message that cannot be decoded: its handler never ran, and it was TERMed
@@ -2831,15 +2897,14 @@ final class NatsTransportTest extends TestCase
         $transport->setJetStreamContext($jetStream);
         self::runWorkerOverFailingMessages($transport, new MultiplierRetryStrategy(3, 1000, 2), 2);
 
-        self::assertSame([[
-            'level' => 'warning',
-            'message' => 'retry_handler=nats on stream "test-stream", subject "test-topic": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (Symfony still retries a RecoverableExceptionInterface), or have NATS carry out Symfony\'s retries with retry_handler: symfony and retry_via: nak (README, "Retry Handler Behavior").',
-        ]], $logger->records);
+        self::assertSame([
+            'retry_handler=nats on stream "test-stream", subject "test-topic": Symfony\'s retry strategy retried a message that NATS redelivers itself. Set max_retries: 0 on this transport (Symfony still retries a RecoverableExceptionInterface), or have NATS carry out Symfony\'s retries with retry_handler: symfony and retry_via: nak (README, "Retry Handler Behavior").',
+        ], $logger->messagesAt('warning'));
     }
 
     /**
      * With max_retries: 0, as the README asks for in nats mode, Symfony's Worker sends no retry copy and rejects the
-     * failed delivery, which is NAKed, and nothing is logged (#94).
+     * failed delivery, which is NAKed, and no warning is logged (#94).
      */
     public function testNatsModeWithoutSymfonysRetriesLogsNoWarning(): void
     {
@@ -2855,7 +2920,7 @@ final class NatsTransportTest extends TestCase
         $transport->setJetStreamContext($jetStream);
         self::runWorkerOverFailingMessages($transport, new MultiplierRetryStrategy(0), 1);
 
-        self::assertSame([], $logger->records);
+        self::assertSame([], $logger->messagesAt('warning'));
     }
 
     /**
@@ -3585,6 +3650,158 @@ final class NatsTransportTest extends TestCase
         $this->expectExceptionMessage('permissions violation');
 
         $transport->setup();
+    }
+
+    /**
+     * Runs setup() against a stream whose durable consumer the lookup reports with $liveConsumerConfig, or as missing
+     * (404) when it is null, and returns the consumer request as JSON, encoded as the client encodes it: compared with
+     * `==`, as consumerConfigEquals() does, a JSON list and the map it was decoded from look the same.
+     *
+     * @param array<string, mixed>|null $liveConsumerConfig
+     * @param list<Future<ConsumerInfo>> $earlierConsumerLookups Answers the lookup gives before the one with the config
+     */
+    private function consumerRequestJsonOfSetup(?array $liveConsumerConfig, array $earlierConsumerLookups = []): string
+    {
+        $lookups = $earlierConsumerLookups;
+        $lookups[] = $liveConsumerConfig === null
+            ? Future::error(new JetStreamException('consumer not found', 404, null, 10014))
+            : Future::complete(new ConsumerInfo(streamName: 'test-stream', name: 'client', push: false, raw: ['config' => $liveConsumerConfig]));
+
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('addStream')->willReturn(Future::complete());
+        $jetStream->expects(self::exactly(count($lookups)))
+            ->method('getConsumer')
+            ->with('test-stream', 'client')
+            ->willReturnOnConsecutiveCalls(...$lookups);
+        $request = null;
+        $jetStream->expects(self::once())
+            ->method('addConsumer')
+            ->willReturnCallback(static function (string $stream, ConsumerConfiguration $configuration) use (&$request): Future {
+                $request = json_encode($configuration->toArray(), JSON_THROW_ON_ERROR);
+
+                return Future::complete(self::liveConsumer('instant'));
+            });
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, []);
+        $transport->setJetStreamContext($jetStream);
+        $transport->setup();
+
+        self::assertIsString($request);
+
+        return $request;
+    }
+
+    /**
+     * The fields of every consumer request in the tests below, up to the replay policy of the live consumer.
+     */
+    private const CONSUMER_REQUEST_FIELDS = '"durable_name":"client","filter_subject":"test-topic","ack_policy":"explicit","deliver_policy":"all","replay_policy":"instant"';
+
+    /**
+     * @param array<string, mixed> $fields
+     * @return array<string, mixed>
+     */
+    private static function liveConsumerConfigWith(array $fields): array
+    {
+        return ['ack_policy' => 'explicit', 'deliver_policy' => 'all', 'filter_subject' => 'test-topic', 'replay_policy' => 'instant'] + $fields;
+    }
+
+    public function testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries(): void
+    {
+        $request = $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith(['metadata' => [
+            '_nats.level' => '5',
+            '_nats.req.level' => '0',
+            '_nats.ver' => '2.15.3',
+            'owner' => 'billing-team',
+        ]]));
+
+        self::assertSame(
+            '{' . self::CONSUMER_REQUEST_FIELDS . ',"metadata":{"_nats.level":"5","_nats.req.level":"0","_nats.ver":"2.15.3","owner":"billing-team"}}',
+            $request,
+        );
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function liveConsumersWithoutMetadata(): iterable
+    {
+        yield 'no metadata field (nats-server 2.10 with nothing written)' => [[]];
+        yield 'an empty map, decoded as an empty array' => [['metadata' => []]];
+        yield 'null' => [['metadata' => null]];
+        yield 'a value that is no map' => [['metadata' => 'owner=billing-team']];
+    }
+
+    /**
+     * @param array<string, mixed> $metadataField
+     */
+    #[DataProvider('liveConsumersWithoutMetadata')]
+    public function testSetupSendsNoConsumerMetadataWhenTheLiveConsumerHasNone(array $metadataField): void
+    {
+        // Not "metadata":[]: the server refuses a JSON list where it expects a map, and an empty array is one.
+        self::assertSame('{' . self::CONSUMER_REQUEST_FIELDS . '}', $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith($metadataField)));
+    }
+
+    public function testSetupSendsConsumerMetadataNamedZeroAndOneAsAMap(): void
+    {
+        // {"0":"a","1":"b"} as the client decodes it: a PHP list, which json_encode() would write as ["a","b"].
+        $request = $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith(['metadata' => [0 => 'a', 1 => 'b']]));
+
+        self::assertSame('{' . self::CONSUMER_REQUEST_FIELDS . ',"metadata":{"0":"a","1":"b"}}', $request);
+    }
+
+    public function testSetupSendsAConsumerMetadataNameThatStartsWithANulByte(): void
+    {
+        // A cast to an object would drop "\0x": PHP reads such a property name as a mangled private or protected one.
+        $request = $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith(['metadata' => ["\0x" => '1', 'y' => '2']]));
+
+        self::assertSame('{' . self::CONSUMER_REQUEST_FIELDS . ',"metadata":{"\u0000x":"1","y":"2"}}', $request);
+    }
+
+    public function testSetupSendsNoConsumerMetadataOrDescriptionWithoutAConsumer(): void
+    {
+        self::assertSame(
+            '{"durable_name":"client","filter_subject":"test-topic","ack_policy":"explicit","deliver_policy":"all"}',
+            $this->consumerRequestJsonOfSetup(null),
+        );
+    }
+
+    public function testSetupSendsTheConsumerMetadataOfTheLookupThatAnswered(): void
+    {
+        $request = $this->consumerRequestJsonOfSetup(
+            self::liveConsumerConfigWith(['metadata' => ['owner' => 'billing-team'], 'description' => 'Read by the billing workers']),
+            [Future::error(self::clusterNotAvailable())],
+        );
+
+        self::assertSame(
+            '{' . self::CONSUMER_REQUEST_FIELDS . ',"metadata":{"owner":"billing-team"},"description":"Read by the billing workers"}',
+            $request,
+        );
+    }
+
+    public function testSetupSendsTheLiveConsumerDescriptionBack(): void
+    {
+        $request = $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith(['description' => 'Read by the billing workers']));
+
+        self::assertSame('{' . self::CONSUMER_REQUEST_FIELDS . ',"description":"Read by the billing workers"}', $request);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function liveConsumersWithoutADescription(): iterable
+    {
+        yield 'no description field' => [[]];
+        yield 'an empty description' => [['description' => '']];
+        yield 'a value that is no string' => [['description' => ['Read by the billing workers']]];
+    }
+
+    /**
+     * @param array<string, mixed> $descriptionField
+     */
+    #[DataProvider('liveConsumersWithoutADescription')]
+    public function testSetupSendsNoConsumerDescriptionWhenTheLiveConsumerHasNone(array $descriptionField): void
+    {
+        self::assertSame('{' . self::CONSUMER_REQUEST_FIELDS . '}', $this->consumerRequestJsonOfSetup(self::liveConsumerConfigWith($descriptionField)));
     }
 
     /**
@@ -9338,8 +9555,8 @@ final class NatsTransportTest extends TestCase
      * Through Symfony's Worker, its retry listener and its failure-transport listener, with
      * MultiplierRetryStrategy(3, 1000, 2) and no jitter, over four deliveries of a message that keeps failing: the
      * multiplier follows the deliveries (NAKs of 1, 2 and 4 s), willRetry() is true three times and then false, the
-     * fourth delivery is TERMed, and the failure transport receives one copy. Nothing is published to NATS and
-     * nothing is logged.
+     * fourth delivery is TERMed, and the failure transport receives one copy. Nothing is published to NATS and no
+     * warning is logged.
      */
     public function testNakRetryFollowsSymfonysRetryStrategyThroughTheWorker(): void
     {
@@ -9404,7 +9621,7 @@ final class NatsTransportTest extends TestCase
         self::assertSame([true, true, true, false], $willRetry);
         self::assertCount(1, $failureTransport->getSent());
         self::assertNotNull($failureTransport->getSent()[0]->last(SentToFailureTransportStamp::class));
-        self::assertSame([], $logger->records);
+        self::assertSame([], $logger->messagesAt('warning'));
     }
 
     /**
@@ -9664,7 +9881,6 @@ final class NatsTransportTest extends TestCase
         self::assertSame([true, true, true, false], $willRetry);
         self::assertCount(1, $failureTransport->getSent());
         self::assertSame([self::lastDeliveryCopyWithoutItsDelay(2000)], $logger->messagesAt('warning'));
-        self::assertCount(1, $logger->records);
     }
 
     /**
@@ -10008,6 +10224,53 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * From Symfony Messenger 7.4.24 and 8.1.12 on, the Worker calls close() once when it stops, whatever stopped it;
+     * before, nothing in Symfony calls it. Through the Worker: one message, handled and acknowledged, a stop by
+     * StopWorkerOnMessageLimitListener(1). Counted by overriding close() in an anonymous subclass that calls its
+     * parent, not read from the client's log line; the client's own info line ("NATS connection Closed") is checked
+     * beside it, with a RecordingLogger.
+     */
+    public function testTheWorkerClosesTheTransportWhenItStopsOnTheMessengerReleasesThatDoSo(): void
+    {
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0', payload: 'p'),
+        ]));
+        $jetStream->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new class (self::VALID_DSN, self::NATS_MODE, $this->decodingSerializer(), $logger) extends RuntimeTestableNatsTransport {
+            public int $closes = 0;
+
+            public function close(): void
+            {
+                ++$this->closes;
+                parent::close();
+            }
+        };
+        $transport->setJetStreamContext($jetStream);
+
+        $handled = [];
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function () use (&$handled): void {
+                $handled[] = true;
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
+
+        self::assertSame([true], $handled);
+        self::assertSame(self::workerClosesTransportsWhenItStops() ? 1 : 0, $transport->closes);
+        if (self::workerClosesTransportsWhenItStops()) {
+            self::assertContains('NATS connection Closed', $logger->messagesAt('info'));
+        } else {
+            self::assertNotContains('NATS connection Closed', $logger->messagesAt('info'));
+        }
+    }
+
+    /**
      * Whether the installed Symfony Messenger acknowledges a message it sent for retry, as 7.4.22, 8.1.10 and later
      * do (symfony/symfony#67038), or rejects it, as earlier releases do.
      */
@@ -10017,5 +10280,26 @@ final class NatsTransportTest extends TestCase
 
         return version_compare($version, '8.1.10', '>=')
             || (version_compare($version, '8.0.0', '<') && version_compare($version, '7.4.22', '>='));
+    }
+
+    /**
+     * Whether the installed Symfony Messenger's Worker closes its receivers when it stops, whatever stopped it:
+     * from 7.4.24 on the 7.4 line, and from 8.1.12 on (the 8.0 line and 8.1.0 to 8.1.11 never do).
+     */
+    private static function workerClosesTransportsWhenItStops(): bool
+    {
+        $version = (string) InstalledVersions::getVersion('symfony/messenger');
+
+        return version_compare($version, '8.1.12', '>=')
+            || (version_compare($version, '8.0.0', '<') && version_compare($version, '7.4.24', '>='));
+    }
+
+    /**
+     * Whether the installed Symfony Messenger's Worker reads the whole pull before it handles the first message,
+     * for a receiver that implements KeepaliveReceiverInterface (this transport): from 8.1.12 on.
+     */
+    private static function workerReadsTheWholePullFirst(): bool
+    {
+        return version_compare((string) InstalledVersions::getVersion('symfony/messenger'), '8.1.12', '>=');
     }
 }
