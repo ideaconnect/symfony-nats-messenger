@@ -95,6 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `testNakRetryRunsSymfonysStrategyToItsEndPastMaxDeliver`. From Symfony Messenger 7.4.24 and 8.1.12 on, the Worker
   calls `close()` when it stops, which the client logs at `info` level, and these four tests failed on that extra
   record. Each still fails when the transport itself logs one warning too many (shown in PR #142's review).
+- **`testRunsAfterSymfonysListenersHaveTakenTheirCopies` reads the priorities from an `EventDispatcher`** (#149),
+  never from Symfony's `getSubscribedEvents()` arrays by position: EventDispatcher 8.2 lets a listener name those
+  keys instead, and Messenger 8.2.0-RC1 does so for `AddErrorDetailsStampListener` and
+  `SendFailedMessageForRetryListener`, which left the old `$subscribed[1]` lookup reading past the end of the array.
+  Run with `symfony/messenger` 7.4.0, 8.1.12 and 8.2.0-RC1, `symfony/event-dispatcher` 7.4.17, 8.1.5 and 8.2.0-BETA1,
+  and PHPUnit 11.5.58 and 13.4.8.
 - **Two new unit tests pin what Symfony Messenger 8.1.12 changed in its `Worker`** (#140):
   `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails` (a pull of two messages,
   the second's decode throwing a plain exception: before 8.1.12 the first message is handled and acknowledged

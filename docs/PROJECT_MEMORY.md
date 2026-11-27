@@ -290,6 +290,12 @@ apply only with the option on.
   handler runs) or one message at a time. A test through the Worker that checks what the transport logs compares
   the transport's warnings (`RecordingLogger::messagesAt('warning')`), never every record, because the client logs
   an `info` line of its own when the Worker closes the transport.
+- **From EventDispatcher 8.2 on, an entry of `getSubscribedEvents()` may name its keys** instead of the old
+  `[method, priority]` position, and Messenger 8.2 does so for two of its three `WorkerMessageFailedEvent`
+  listeners (`AddErrorDetailsStampListener`, `SendFailedMessageForRetryListener`); its third,
+  `SendFailedMessageToFailureTransportListener`, keeps the positional form. A test reads a listener's priority from
+  an `EventDispatcher` the subscribers were added to (`getListenerPriority()`), never from the array by hand
+  (#149).
 
 ## Cross-library development and verification
 
