@@ -7838,10 +7838,10 @@ final class NatsTransportTest extends TestCase
      * and the failure-transport listener (-100)) dispatches the DispatchOnFailureStamp's failure message, on the
      * bus it is given, whenever willRetry() is false, and reads nothing else about the delivery. In nats mode with
      * max_retries 0 that is every failed delivery, since nats mode NAKs an ordinary failure regardless of
-     * max_retries, and with max_retries 0 that NAK is final to Symfony too; with retries left on it is only an
-     * unrecoverable failure; with
-     * retry_via=nak it is the delivery Symfony gives up on. The listener's own SentToFailureTransportStamp, added
-     * right after a dispatch, makes the failure-transport listener skip the delivery, so no row leaves a copy there.
+     * max_retries, and with max_retries 0 that failure is final to Symfony too; with retries left on it is only
+     * an unrecoverable failure; with retry_via=nak it is the delivery Symfony gives up on. The listener's own
+     * SentToFailureTransportStamp, added right after a dispatch, makes the failure-transport listener skip the
+     * delivery, so no row leaves a copy there.
      *
      * @param array<string, mixed> $options
      * @param list<string>         $settled
