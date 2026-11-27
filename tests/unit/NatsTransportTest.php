@@ -8216,6 +8216,18 @@ final class NatsTransportTest extends TestCase
         )));
     }
 
+    /**
+     * `get()` declares `$fetchSize` in a comment, never as a real parameter: a real parameter would break a
+     * subclass that overrides `get(): iterable` with "Declaration of ...::get() must be compatible with
+     * ...::get(int $fetchSize = 1)" (#150). `ReflectionMethod` sees the method the way PHP does, which is the
+     * one check a passing deprecation test or a clean PHPStan run does not give: both pass just as well with a
+     * real parameter.
+     */
+    public function testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads(): void
+    {
+        self::assertSame(0, (new \ReflectionMethod(NatsTransport::class, 'get'))->getNumberOfParameters());
+    }
+
     public function testSetupWrapsConsumerCreationError(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);

@@ -809,6 +809,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * {@see EventListener\AddUnrecoverableFailureStampListener} tells the deliveries whose failure this
      * mode reads from those of other receivers (#125).
      *
+     * The fetch size is declared in a comment, as ReceiverInterface declares it until Symfony 9, and never as
+     * a real parameter: a real one would stop a subclass that overrides get(): iterable from loading.
+     *
      * @param int $fetchSize Messenger's best-effort hint, since Messenger 8.1; not used (see above).
      *
      * @return iterable<Envelope>
