@@ -7836,8 +7836,9 @@ final class NatsTransportTest extends TestCase
      * Symfony's DispatchOnFailureListener (WorkerMessageFailedEvent, priority 0, between the retry listener (100)
      * and the failure-transport listener (-100)) dispatches the DispatchOnFailureStamp's failure message, on the
      * bus it is given, whenever willRetry() is false, and reads nothing else about the delivery. In nats mode with
-     * max_retries 0 that is every failed delivery, since nats mode settles every ordinary failure as final to
-     * Symfony regardless of max_retries; with retries left on it is only an unrecoverable failure; with
+     * max_retries 0 that is every failed delivery, since nats mode NAKs an ordinary failure regardless of
+     * max_retries, and with max_retries 0 that NAK is final to Symfony too; with retries left on it is only an
+     * unrecoverable failure; with
      * retry_via=nak it is the delivery Symfony gives up on. The listener's own SentToFailureTransportStamp, added
      * right after a dispatch, makes the failure-transport listener skip the delivery, so no row leaves a copy there.
      *
@@ -7922,7 +7923,7 @@ final class NatsTransportTest extends TestCase
     public static function dispatchOnFailureRows(): iterable
     {
         yield 'nats mode, max_retries 0: at every failed delivery' => [self::NATS_MODE, 0, \RuntimeException::class, 3, ['nak', 'nak', 'nak'], 3];
-        yield 'nats mode, retries left on: never' => [self::NATS_MODE, 3, \RuntimeException::class, 3, ['nak', 'nak', 'nak'], 0];
+        yield 'nats mode, retries left on: never' => [self::NATS_MODE, 1, \RuntimeException::class, 3, ['nak', 'nak', 'nak'], 0];
         yield 'nats mode, max_retries 0, an unrecoverable failure: once' => [self::NATS_MODE, 0, UnrecoverableMessageHandlingException::class, 1, ['term'], 1];
         yield 'nats mode, retries left on, an unrecoverable failure: once' => [self::NATS_MODE, 3, UnrecoverableMessageHandlingException::class, 1, ['term'], 1];
         yield 'retry_via: nak, max_retries 2: once, when Symfony gives up' => [self::NAK_RETRIES, 2, \RuntimeException::class, 3, ['nak 1000', 'nak 2000', 'term'], 1];

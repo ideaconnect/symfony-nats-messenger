@@ -101,7 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SendFailedMessageForRetryListener`, which left the old `$subscribed[1]` lookup reading past the end of the array.
   Run with `symfony/messenger` 7.4.0, 8.1.12 and 8.2.0-RC1, `symfony/event-dispatcher` 7.4.17, 8.1.5 and 8.2.0-BETA1,
   and PHPUnit 11.5.58 and 13.4.8.
-- **One new unit test pins what Symfony Messenger 8.2 changes for a `DispatchOnFailureStamp` in nats mode** (#154):
+- **One new unit test pins what a `DispatchOnFailureStamp` (new in Symfony Messenger 8.2) does in nats mode** (#154):
   `testDispatchOnFailureStampIsDispatchedOnlyWhenSymfonyGivesUpThroughTheWorker` (data provider: through Symfony's
   Worker, nats mode with `max_retries: 0` dispatches the stamp's failure message at every failed delivery, with
   retries left on only an unrecoverable failure dispatches it, and `retry_via: nak` dispatches it once, at the
