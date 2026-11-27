@@ -245,6 +245,19 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
 
 > **Tested by:** `decode_OfAMessageWhoseRestoreRaisesAnError_DecodesAndPassesTheErrorOn`, `testAMessageWhoseWakeupRaisesASuppressedWarningIsHandledAndAcknowledgedOnce`, `testAnExceptionOfTheApplicationsErrorHandlerPropagatesFromGetWithTheMessageUnsettled`, the Behat scenarios `A message whose __wakeup raises a suppressed warning is handled and acknowledged in nats mode` and `A message whose __wakeup raises a suppressed warning is handled and acknowledged in symfony mode`; `testWithTheRealClientAndReconnectARefusedQuestionOnAServerGoingAwayIsAnEmptyBatchWhileTheNextDialIsHeld`, `testWithTheRealClientARefusedQuestionOnAConnectionThatStaysReachesItsDeadlineAndThe503Propagates`.
 
+### Upgrading from 5.10.1
+
+- **Nats mode with several handlers goes by every handler's failure, in either order** (#125): a mix of an
+  unrecoverable failure and an ordinary one is NAKed, whichever handler ran first, and the delivery is TERMed only
+  once every handler that failed has failed for good. An application without the bundle, or a worker built by
+  hand, registers `AddUnrecoverableFailureStampListener` itself (see
+  [Retry Handler Behavior](#retry-handler-behavior)). With the bundle there is nothing to do.
+- **`setup()` keeps the metadata and the description of a durable consumer that exists** (#145): up to 5.10.1
+  every `setup()` cleared both fields; there is nothing to do (see
+  [Note on the consumer's metadata and description](#provisioning-the-stream--consumer)).
+
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`)
+
 ### Logging
 
 The NATS client reports what it does with the connection through a PSR-3 logger: the connection's lifecycle
