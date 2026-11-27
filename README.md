@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1379 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1404 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -255,8 +255,12 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
 - **`setup()` keeps the metadata and the description of a durable consumer that exists** (#145): up to 5.10.1
   every `setup()` cleared both fields; there is nothing to do (see
   [Note on the consumer's metadata and description](#provisioning-the-stream--consumer)).
+- **`get()` declares Messenger's fetch size** (#150): a parameter in a comment, as `ReceiverInterface` declares
+  it until Symfony 9, so Symfony's `DebugClassLoader` (the dev environment) no longer reports that `get()` will
+  require it. The fetch size (`--fetch-size`, and `--concurrency` on Messenger 8.2) was never read and still is
+  not: `batching` decides a pull's size (see [Batching Explained](#batching-explained)); there is nothing to do.
 
-> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`)
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testGetsFetchSizeParameterSilencesSymfonysDebugClassLoaderDeprecation`, `testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads`
 
 ### Logging
 
@@ -1270,6 +1274,13 @@ From Symfony Messenger 8.1.12 on, the Worker reads the whole pull before it hand
 [Retry Handler Behavior](#retry-handler-behavior) for what that means when the serializer throws another exception
 while a message of the pull is decoded).
 
+From Messenger 8.1 on, the Worker passes its `fetch_size` (the `messenger:consume --fetch-size` option) to
+`get()`, which does not use it: `batching` alone decides how many messages a pull asks for, because a larger
+pull waits up to [`max_batch_timeout`](#batch-timeout) for its messages. To take more per call, set `batching`.
+On Messenger 8.2, `--concurrency` sets the fetch size to the same value unless `--fetch-size` is given
+([`ConsumeMessagesCommand.php`](https://github.com/symfony/messenger/blob/v8.2.0-RC1/Command/ConsumeMessagesCommand.php#L388)
+at `v8.2.0-RC1`); read there, not tested, since CI installs no 8.2.
+
 ```yaml
 options:
   batching: 1        # Fetch 1 message at a time (low latency)
@@ -1277,7 +1288,7 @@ options:
   batching: 20       # Fetch 20 messages (high throughput)
 ```
 
-> **Tested by:** `testReadmeBatchingExamplesAreAccepted` - values 1, 5, 10, 20, 50 are all verified; `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails`.
+> **Tested by:** `testReadmeBatchingExamplesAreAccepted` - values 1, 5, 10, 20, 50 are all verified; `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails`, `testGetCalledDirectlyPullsBatchingWhateverFetchSizeItIsGiven`, `testTheWorkersFetchSizeReachesGetButBatchingDecidesThePullSize`.
 
 ### Batch Timeout
 

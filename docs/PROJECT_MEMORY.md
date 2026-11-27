@@ -298,11 +298,17 @@ apply only with the option on.
   the transport's warnings (`RecordingLogger::messagesAt('warning')`), never every record, because the client logs
   an `info` line of its own when the Worker closes the transport.
 - **From EventDispatcher 8.2 on, an entry of `getSubscribedEvents()` may name its keys** instead of the old
-  `[method, priority]` position, and Messenger 8.2 does so for two of its three `WorkerMessageFailedEvent`
-  listeners (`AddErrorDetailsStampListener`, `SendFailedMessageForRetryListener`); its third,
-  `SendFailedMessageToFailureTransportListener`, keeps the positional form. A test reads a listener's priority from
-  an `EventDispatcher` the subscribers were added to (`getListenerPriority()`), never from the array by hand
-  (#149).
+  `[method, priority]` position. Of the three `WorkerMessageFailedEvent` listeners of Messenger that
+  `testRunsAfterSymfonysListenersHaveTakenTheirCopies` compares the transport's own listener with, Messenger 8.2
+  names the keys of two (`AddErrorDetailsStampListener`, `SendFailedMessageForRetryListener`); the third,
+  `SendFailedMessageToFailureTransportListener`, keeps the positional form. (Messenger v8.2.0-RC1 has seven
+  listeners of that event in all, four of them with named keys; at -101 the transport's own listener runs after
+  all seven of them.)
+  A test reads a listener's priority from an `EventDispatcher` the subscribers were added to
+  (`getListenerPriority()`), never from the array by hand (#149). The transport's own listener,
+  `AddUnrecoverableFailureStampListener`, keeps `['onMessageFailed', self::PRIORITY]`: a named entry needs
+  EventDispatcher 8.2, which `composer.json` does not require, and on an older EventDispatcher `addSubscriber()`
+  throws a `TypeError`, in a dispatcher built by hand and when a container with the bundle is compiled (#153).
 
 ## Cross-library development and verification
 

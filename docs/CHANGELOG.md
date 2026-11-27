@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`get()` now declares Messenger's fetch size** (#150). Symfony Messenger 8.1 added a `$fetchSize` hint to
+  `ReceiverInterface::get()`, which the Worker passes on every pull (`messenger:consume --fetch-size`, and
+  `--concurrency` on Messenger 8.2); without a matching parameter, Symfony's `DebugClassLoader` (the dev
+  environment) reported a deprecation when it loaded the class. `get()` declares the parameter as a comment,
+  with a matching `@param` line, as `ReceiverInterface` itself declares it until Symfony 9 - the deprecation is
+  gone, and `get()` stays compatible with a subclass that overrides it. The fetch size is still not used: a
+  pull asks for `batching()`'s own count, since a pull that waits for a larger one holds the connection until
+  `max_batch_timeout` runs out, and little is lost with one message per pull, as the Worker pulls again while
+  its strategy has a free slot. Nothing changes for a running deployment; whoever wants more messages per call
+  sets `batching`.
 - **In nats mode a failure of several handlers is TERMed only when every handler failed for good** (#125), by the rule
   Symfony's retry listener goes by: a `HandlerFailedException` is unrecoverable only when every exception it wraps
   directly is an `UnrecoverableExceptionInterface`. 5.10.0 and 5.10.1 read the failure from Symfony's

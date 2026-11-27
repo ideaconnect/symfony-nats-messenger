@@ -40,6 +40,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
 use Revolt\EventLoop;
+use Symfony\Component\ErrorHandler\DebugClassLoader;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\EventListener\AddErrorDetailsStampListener;
 use Symfony\Component\Messenger\Exception\HandlerFailedException;
@@ -8200,6 +8201,130 @@ final class NatsTransportTest extends TestCase
         $envelopes = array_values(iterator_to_array($transport->get()));
 
         self::assertSame([], $envelopes);
+    }
+
+    /**
+     * `get($fetchSize)` called directly pulls `batching()`'s own count, whatever is passed or left out: the
+     * method declares no real parameter (#150), and PHP passes an extra argument to a method that does not
+     * declare it without complaint, on every Symfony Messenger release.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('fetchSizesPassedDirectlyToGet')]
+    public function testGetCalledDirectlyPullsBatchingWhateverFetchSizeItIsGiven(array $options, ?int $fetchSize, int $expectedBatchSize): void
+    {
+        $serializer = $this->createMock(SerializerInterface::class);
+        $serializer->expects(self::never())->method('decode');
+
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())
+            ->method('fetchBatch')
+            ->with('test-stream', 'client', $expectedBatchSize, self::anything())
+            ->willReturn(Future::complete([]));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        $envelopes = $fetchSize === null
+            ? array_values(iterator_to_array($transport->get()))
+            : array_values(iterator_to_array($transport->get($fetchSize)));
+
+        self::assertSame([], $envelopes);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, int|null, int}>
+     */
+    public static function fetchSizesPassedDirectlyToGet(): iterable
+    {
+        foreach ([null, 1, 5, 50] as $fetchSize) {
+            $label = $fetchSize === null ? 'left out' : (string) $fetchSize;
+            yield "default options, fetch size {$label}" => [[], $fetchSize, 1];
+            yield "batching: 20, fetch size {$label}" => [['batching' => 20], $fetchSize, 20];
+        }
+    }
+
+    /**
+     * Through Symfony's Worker, the fetch size it passes (`fetch_size`, from Messenger 8.1 on) reaches `get()` but
+     * changes nothing: the pull still asks for `batching()`'s own count. Holds without a version check: before
+     * 8.1 the Worker calls `get()` with no argument, which pulls the same count, since `batching()` decides it
+     * either way (#150).
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('optionsAndTheBatchSizeTheyPull')]
+    public function testTheWorkersFetchSizeReachesGetButBatchingDecidesThePullSize(array $options, int $expectedBatchSize): void
+    {
+        $serializer = $this->createStub(SerializerInterface::class);
+        $serializer->method('decode')->willReturn(new Envelope(new \stdClass()));
+
+        $batchSizesPulled = [];
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturnCallback(
+            static function (string $stream, string $consumer, int $batchSize, int $timeoutMs) use (&$batchSizesPulled): Future {
+                $batchSizesPulled[] = $batchSize;
+
+                return Future::complete([new NatsMessage(
+                    subject: 'test-topic',
+                    sid: 1,
+                    replyTo: '$JS.ACK.test-stream.client.1.1.1.0.0',
+                    payload: 'encoded',
+                )]);
+            },
+        );
+        $jetStream->method('ack')->willReturn(Future::complete());
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $serializer);
+        $transport->setJetStreamContext($jetStream);
+
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function (): void {
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0, 'fetch_size' => 5]);
+
+        self::assertSame([$expectedBatchSize], $batchSizesPulled);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, int}>
+     */
+    public static function optionsAndTheBatchSizeTheyPull(): iterable
+    {
+        yield 'default options' => [[], 1];
+        yield 'batching: 20' => [['batching' => 20], 20];
+    }
+
+    /**
+     * Symfony's `DebugClassLoader` (the dev environment's autoloader) reports that a method of a class will
+     * require a new parameter once its interface announces one the method does not declare. `get()` declares
+     * `$fetchSize` as a comment, with a matching `@param` line ({@see NatsTransport::get()}), which is enough to
+     * silence it (#150). Runs the checker directly, in-process, without registering it as the autoloader.
+     */
+    public function testGetsFetchSizeParameterSilencesSymfonysDebugClassLoaderDeprecation(): void
+    {
+        $deprecations = (new DebugClassLoader(static function (): void {
+        }))->checkAnnotations(new \ReflectionClass(NatsTransport::class), NatsTransport::class);
+
+        self::assertSame([], array_values(array_filter(
+            $deprecations,
+            static fn (string $deprecation): bool => str_contains($deprecation, '::get()'),
+        )));
+    }
+
+    /**
+     * `get()` declares `$fetchSize` in a comment, never as a real parameter: a real parameter would break a
+     * subclass that overrides `get(): iterable` with "Declaration of ...::get() must be compatible with
+     * ...::get(int $fetchSize = 1)" (#150). `ReflectionMethod` sees the method the way PHP does, which is the
+     * one check a passing deprecation test or a clean PHPStan run does not give: both pass just as well with a
+     * real parameter.
+     */
+    public function testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads(): void
+    {
+        self::assertSame(0, (new \ReflectionMethod(NatsTransport::class, 'get'))->getNumberOfParameters());
     }
 
     public function testSetupWrapsConsumerCreationError(): void
