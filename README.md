@@ -257,8 +257,13 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
   [Note on the consumer's metadata and description](#provisioning-the-stream--consumer)).
 - **`additional_subjects` is rolled out in two steps,** as a process of 5.10.1 or older that runs `setup()` narrows
   the consumer to the topic: see "Rolling it out and back" under [Per-Message Subjects](#per-message-subjects).
+- **`setup()` keeps the filters of a durable consumer that exists, with `additional_subjects` or without:** a topic
+  renamed in the DSN, with the stream and the consumer name kept, is added beside the old one on NATS 2.10 and
+  later, where 5.10.1 replaced it. The old one stays on the consumer until you remove it with `nats consumer edit`
+  (see "Removing a pattern" under [Per-Message Subjects](#per-message-subjects)). A server before 2.10 gets the
+  topic, as before.
 
-> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`)
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testSetupAddsARenamedTopicBesideTheOldOneOnAnExistingConsumer`, `testSetupSendsTheTopicAloneToAServerBeforeNats210`
 
 ### Logging
 
@@ -2094,8 +2099,9 @@ $bus->dispatch(new Envelope(new OrderUpdated($orderId), [
 ```
 
 - **Stream and consumer.** `setup()` adds the patterns to the stream's subjects. The consumer filters on the topic
-  and the patterns with `filter_subjects`, which needs NATS 2.10 or later. Without `additional_subjects` the
-  consumer keeps the single `filter_subject` it always had. A transport uses the stamp only for a subject its
+  and the patterns with `filter_subjects`, which needs NATS 2.10 or later. Without `additional_subjects` a new
+  consumer gets the single `filter_subject` it always had; one that exists keeps its filters (see "Existing
+  consumers" below). A transport uses the stamp only for a subject its
   consumer reads, the topic or one a pattern matches, and publishes any other stamped message to its topic, so a
   message routed to several transports reaches each of them once.
 - **The stamp checks its subject.** A subject a message cannot be published to, one that is empty, contains
@@ -2119,6 +2125,10 @@ $bus->dispatch(new Envelope(new OrderUpdated($orderId), [
   send, and a process whose configuration lacks a pattern does not narrow the consumer. The consumer keeps its
   position in the stream, so a pattern added later covers what is published from then on; messages the stream
   already held on that pattern are not replayed once the consumer has moved past them.
+  This holds for every transport, with `additional_subjects` or without: a topic renamed in the DSN, with the
+  stream and the consumer name kept, is added beside the old one, where 5.10.1 replaced it, and the old one stays
+  until you remove it (see "Removing a pattern"). A server that reports a release before NATS 2.10 is the
+  exception: its consumer has one filter at most, so `setup()` writes the topic there, as 5.10.1 did.
 - **Rolling it out and back.** A release without `additional_subjects` (5.10.1 or older) writes the topic as the
   consumer's only filter whenever it runs `setup()`: from `messenger:setup-transports`, or with `auto_setup` on each
   process's first send or pull, which under PHP-FPM is every request that dispatches a message. While the consumer
@@ -2133,9 +2143,12 @@ $bus->dispatch(new Envelope(new OrderUpdated($orderId), [
   `nats stream edit`, which takes the full list of the subjects the stream keeps (those of every transport sharing
   it). Messages still stored on the pattern when it leaves the consumer are neither delivered nor counted by
   `getMessageCount()`. The transport cannot remove the pattern for you: on a stream that several transports share,
-  or one an operator edited, it cannot tell its own old pattern from a subject someone else needs.
+  or one an operator edited, it cannot tell its own old pattern from a subject someone else needs. The same goes
+  for the old topic after a rename. A new pattern that overlaps one the stream still has, such as `orders.eu.>` in
+  place of `orders.*.updated`, is refused by the server at the stream update (`subject "orders.*.updated" overlaps
+  with "orders.eu.>"`), and `setup()` changes nothing: remove the old pattern this way first, then add the new one.
 
-> **Tested by:** `testAcceptsASubjectAMessageCanBePublishedTo`, `testRefusesASubjectAMessageCannotBePublishedTo`, `testSendPublishesToTheStampedSubject`, `testSendPublishesToAStampedSubjectTheConsumerReads`, `testSendPublishesToTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testAStampedMessageRoutedToTwoTransportsGoesToItsSubjectFromOneAndToTheTopicFromTheOther`, `testSendPublishesARetryToTheSubjectTheMessageArrivedOn`, `testSendPublishesAFailureTransportCopyToTheTopic`, `testSendPublishesARetryOnTheFailureTransportToTheSubjectItArrivedOn`, `testSendIgnoresTheReceivedSubjectWithoutAReceivedStamp`, `testSendPublishesARetryToTheReceivedSubjectEvenWhenTheOptionsDoNotListIt`, `testSendSchedulesADelayedStampedMessageUnderTheTopicForTheStampedSubject`, `testSendSchedulesADelayedMessageForTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testGetStampsTheSubjectTheMessageArrivedOn`, `testGetAddsNoReceivedSubjectStampWithoutAdditionalSubjects`, `testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects`, `testSetupAddsTheAdditionalSubjectsToAnExistingStream`, `testSetupRefusesAdditionalSubjectsOnAServerBeforeNats210`, `testBuildRefusesAnAdditionalSubjectSetupCouldNotUse`, `testSetupKeepsTheFiltersOfAnExistingConsumer`, `testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects`, `testSetupComparesTheFilterSubjectsAsStrings`, Behat scenarios `One consumer reads messages published to the topic and to a stamped subject`, `A delayed stamped message is delivered once, to its subject, after the scheduled time`, `Symfony's retry of a stamped message keeps its subject`, `A stamped message routed to two transports is handled once by each`, `Setup widens the filters of an existing consumer when a pattern is added`, `Setup keeps the filters of an existing consumer when its configuration lacks a pattern` and `A pattern added after the consumer moved past its stored messages does not replay them`
+> **Tested by:** `testAcceptsASubjectAMessageCanBePublishedTo`, `testRefusesASubjectAMessageCannotBePublishedTo`, `testSendPublishesToTheStampedSubject`, `testSendPublishesToAStampedSubjectTheConsumerReads`, `testSendPublishesToTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testAStampedMessageRoutedToTwoTransportsGoesToItsSubjectFromOneAndToTheTopicFromTheOther`, `testSendPublishesARetryToTheSubjectTheMessageArrivedOn`, `testSendPublishesAFailureTransportCopyToTheTopic`, `testSendPublishesARetryOnTheFailureTransportToTheSubjectItArrivedOn`, `testSendIgnoresTheReceivedSubjectWithoutAReceivedStamp`, `testSendPublishesARetryToTheReceivedSubjectEvenWhenTheOptionsDoNotListIt`, `testSendSchedulesADelayedStampedMessageUnderTheTopicForTheStampedSubject`, `testSendSchedulesADelayedMessageForTheTopicWhenTheConsumerDoesNotReadTheStampedSubject`, `testGetStampsTheSubjectTheMessageArrivedOn`, `testGetAddsNoReceivedSubjectStampWithoutAdditionalSubjects`, `testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects`, `testSetupAddsTheAdditionalSubjectsToAnExistingStream`, `testSetupRefusesAdditionalSubjectsOnAServerBeforeNats210`, `testTheFirstSetupOfATransportThatHasNotConnectedRefusesAdditionalSubjectsOnAServerBeforeNats210`, `testSetupLetsAServerWhoseReleaseItCannotReadThroughWithAdditionalSubjects`, `testSetupKeepsTheScheduledMessagesRefusalWithAdditionalSubjects`, `testBuildRefusesAnAdditionalSubjectSetupCouldNotUse`, `testSetupKeepsTheFiltersOfAnExistingConsumer`, `testSetupAddsARenamedTopicBesideTheOldOneOnAnExistingConsumer`, `testSetupSendsTheTopicAloneToAServerBeforeNats210`, `testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects`, `testSetupComparesTheFilterSubjectsAsStrings`, Behat scenarios `One consumer reads messages published to the topic and to a stamped subject`, `A delayed stamped message is delivered once, to its subject, after the scheduled time`, `Symfony's retry of a stamped message keeps its subject`, `A stamped message routed to two transports is handled once by each`, `Setup widens the filters of an existing consumer when a pattern is added`, `Setup keeps the filters of an existing consumer when its configuration lacks a pattern` and `A pattern added after the consumer moved past its stored messages does not replay them`
 
 ### Provisioning the Stream & Consumer
 

@@ -201,7 +201,7 @@ The functional Behat suite also exercises the bundle end-to-end: the test app en
 | **Stream placement** | `testBuildAcceptsStreamPlacementOptions`, `testBuildSplitsCommaSeparatedStreamPlacementTags`, `testBuildParsesStreamPlacementFromDsnQueryString`, `testBuildLeavesStreamPlacementUnsetByDefault`, `testBuildWithInvalidStreamPlacementClusterThrowsException`, `testBuildWithInvalidStreamPlacementTagsThrowsException` |
 | **Reconnect** | `testBuildTurnsClientReconnectAndPedanticModeOff`, `testBuildWithReconnectOptionsPropagatesToNatsOptions`, `testBuildWithReconnectFromDsnQueryString`, `testBuildKeepsTheClientReconnectAttemptDefaultWhenOnlyReconnectIsEnabled`, `testBuildWithInvalidMaxReconnectAttemptsThrowsException`, `testBuildRejectsAMaxReconnectAttemptsThatDoesNotSurviveTheCastToAnInt`, `testBuildRejectsAMaxReconnectAttemptsInTheDsnThatDoesNotSurviveTheCastToAnInt`, `testBuildPassesALargeMaxReconnectAttemptsToTheClient`, `testBuildPassesALargeMaxReconnectAttemptsFromTheDsnToTheClient`, `testBuildPassesTheLoggerToTheClientAndNoneByDefault` |
 | **Sending again on the recovered connection (`resend_on_reconnect`)** | `testResendOnReconnectIsOffByDefault`, `testBuildWithResendOnReconnectPropagatesToNatsOptions` (options, DSN, options over DSN), `testBuildWithResendOnReconnectWithoutReconnectThrowsException`, `testBuildWithResendOnReconnectAndADuplicateWindowNotLongerThanTheRequestTimeoutThrowsException` (equal, and shorter), `testBuildWithResendOnReconnectAcceptsALongerOrAnUnsetDuplicateWindow` |
-| **Additional subjects (`additional_subjects`)** | `testBuildLeavesAdditionalSubjectsEmptyByDefault`, `testBuildAcceptsAdditionalSubjectsAsList`, `testBuildParsesAdditionalSubjectsFromDsnQueryString` (comma and list forms, raw and encoded `>`), `testBuildWithInvalidAdditionalSubjectsShapeThrowsException` (data provider), `testBuildRefusesAnAdditionalSubjectSetupCouldNotUse` (data provider: the topic itself, two entries that overlap, an empty token, `>` before the last token, whitespace, a wildcard inside a token, a pattern over `{topic}.delayed.>` with scheduled messages) |
+| **Additional subjects (`additional_subjects`)** | `testBuildLeavesAdditionalSubjectsEmptyByDefault`, `testBuildAcceptsAdditionalSubjectsAsList`, `testBuildParsesAdditionalSubjectsFromDsnQueryString` (comma and list forms, raw and encoded `>`), `testBuildWithInvalidAdditionalSubjectsShapeThrowsException` (data provider), `testBuildRefusesAnAdditionalSubjectSetupCouldNotUse` (data provider: the topic itself, two entries that overlap, an entry that overlaps an earlier one through a `*` and one that an earlier one overlaps through a `*`, an empty token, `>` before the last token, whitespace, a wildcard inside a token, a pattern over `{topic}.delayed.>` with scheduled messages) |
 | **Option completeness** | `testDefaultOptionsCoversAllTransportOptionCases` |
 
 ### Secrets in Exceptions (`tests/unit/Options/SecretsInExceptionsTest.php`)
@@ -228,6 +228,9 @@ The boundary between the transport and the client, on every `composer test`: the
 the real client to the scripted server, with no Docker. The other unit tests stop at the values reaching `NatsOptions`, which
 is how `jwt` and `nkey` shipped unable to log in. This cannot show that a server accepts a login: the functional suite and
 the examples do. With the client's `encodeConnect` made to ignore credentials or to throw on JWT and NKey, these tests fail.
+Each test checks that the client the builder made does not reconnect, so that a login the server refuses fails at the first
+dial: with the reconnect on, a test waits out every attempt, over 40 seconds, which is how a mutant that turns it on timed
+out in the mutation run instead of failing.
 
 | Feature | Tests |
 |---------|-------|
@@ -298,7 +301,7 @@ the examples do. With the client's `encodeConnect` made to ignore credentials or
 | **Delayed stamped message** | `testSendSchedulesADelayedStampedMessageUnderTheTopicForTheStampedSubject`, `testSendSchedulesADelayedMessageForTheTopicWhenTheConsumerDoesNotReadTheStampedSubject` |
 | **Nats-Msg-Id names the delivered subject** | `testSendGivesTheCopiesForTwoStampedSubjectsMessageIdsOfTheirOwn`, `testSendGivesATransportThatDoesNotReadTheStampedSubjectAMessageIdOfItsOwn`, `testSendNamesTheScheduleTargetInTheMessageIdOfADelayedStampedMessage`, `testSendNamesTheReceivedSubjectInTheMessageIdOfARetry`, `testSendNamesTheTopicInTheMessageIdOfAFailureTransportCopy` |
 | **Received subject** | `testGetStampsTheSubjectTheMessageArrivedOn`, `testGetAddsNoReceivedSubjectStampWithoutAdditionalSubjects` |
-| **Stream subjects and consumer filters** | `testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects`, `testSetupAddsTheAdditionalSubjectsToAnExistingStream`, `testSetupRefusesAdditionalSubjectsOnAServerBeforeNats210` (before any stream or consumer request), `testSetupGoesOnWithAdditionalSubjectsOnNats210`, `testSetupKeepsASingleFilterSubjectWithoutAdditionalSubjects`, `testSetupKeepsTheFiltersOfAnExistingConsumer` (data provider: a pattern the configuration lacks, one a configured pattern covers, one that covers a configured pattern), `testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects` (the guard for a server before NATS 2.10, which does not know `filter_subjects`), `testSetupRejectsAConsumerWithDifferentFilterSubjects`, `testSetupComparesTheFilterSubjectsAsStrings` (`10` and `1e1` as subjects), `testSetupAcceptsEitherFilterFieldTheServerReports` (data provider: `filter_subject`, one-element `filter_subjects`, empty `filter_subjects` beside `filter_subject`, reordered list, empty `filter_subject` beside the list, a filter reported as a number), `testSetupRejectsAConsumerReportingNoFilter` |
+| **Stream subjects and consumer filters** | `testSetupCreatesTheStreamAndConsumerWithTheAdditionalSubjects`, `testSetupAddsTheAdditionalSubjectsToAnExistingStream`, `testSetupRefusesAdditionalSubjectsOnAServerBeforeNats210` (before any stream or consumer request), `testTheFirstSetupOfATransportThatHasNotConnectedRefusesAdditionalSubjectsOnAServerBeforeNats210` (the version read after the connect, as `messenger:setup-transports` calls `setup()` before any), `testSetupGoesOnWithAdditionalSubjectsOnNats210`, `testSetupLetsAServerWhoseReleaseItCannotReadThroughWithAdditionalSubjects` (data provider: no server info, an empty version, a version that names no release), `testSetupKeepsTheScheduledMessagesRefusalWithAdditionalSubjects` (NATS 2.11), `testSetupKeepsASingleFilterSubjectWithoutAdditionalSubjects`, `testSetupKeepsTheFiltersOfAnExistingConsumer` (data provider: a pattern the configuration lacks, one a configured pattern covers, one that covers a configured pattern), `testSetupAddsARenamedTopicBesideTheOldOneOnAnExistingConsumer` (without `additional_subjects`, on NATS 2.10), `testSetupSendsTheTopicAloneToAServerBeforeNats210` (`filter_subject` with the topic and no `filter_subjects` on 2.9.25, whatever filter the consumer has), `testSetupRejectsAConsumerTheServerCreatedWithoutTheFilterSubjects` (the guard for a server before NATS 2.10, which does not know `filter_subjects`), `testSetupRejectsAConsumerWithDifferentFilterSubjects`, `testSetupComparesTheFilterSubjectsAsStrings` (a reply with `10` does not cover a configured `1e1`; the message lists both sides in their own order), `testSetupAcceptsEitherFilterFieldTheServerReports` (data provider: `filter_subject`, one-element `filter_subjects`, empty `filter_subjects` beside `filter_subject`, reordered list, empty `filter_subject` beside the list, a filter reported as a number), `testSetupRejectsAConsumerReportingNoFilter` |
 
 ### Event Listener (`tests/unit/EventListener/AddUnrecoverableFailureStampListenerTest.php`)
 
@@ -639,8 +642,8 @@ does not survive it.
 
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
-on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.6% MSI and covered
-MSI: 1768 of 1793 mutants killed, none timed out, with 100% mutation code coverage.
+on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.7% MSI and covered
+MSI: 1969 of 1994 mutants killed, none timed out or ended in an error, with 100% mutation code coverage.
 
 Scores reported before, 100% among them, were not real. Infection runs each mutant in a PHPUnit process
 whose bootstrap puts its include interceptor on `file://`; the interceptor dropped the wrapper BypassFinals
@@ -718,8 +721,15 @@ Infection's 60-second per-mutant timeout, which counts as detected. The unit tes
 test once `pause()` ran more often than `setup()` ever pauses (60 real pauses, 1000 recorded ones), so the
 mutant fails a test within seconds and counts as killed. `tests/Support/ClientInjectedNatsTransport.php` has the
 same 60-pause limit since #106: the tests of an `auto_setup` pull reach `setup()` through it, and are among the
-first Infection runs for that line, so without the limit the mutant timed out again. The 60-second `timeout` in
-`infection.json5` stays, for any other loop that never ends.
+first Infection runs for that line, so without the limit the mutant timed out again. So has
+`tests/Support/JetStreamInjectedNatsTransport.php`, the double of the per-message subject tests, since PR #100,
+for the same reason. The 60-second `timeout` in `infection.json5` stays, for any other loop that never ends.
+
+A mutant that drops `reconnectEnabled` from the client options the builder makes (the client's default is to
+reconnect) timed out the same way in a run of PR #100: `testASeedOnAServerThatSendsNoNonceCannotLogIn`, among the
+first tests Infection ran for it, waited out every reconnect attempt, over 40 seconds, before it failed.
+`LoginCombinationsTest` now checks that the client it builds does not reconnect, so each of its tests kills the
+mutant at once.
 
 ## README Example Coverage
 
