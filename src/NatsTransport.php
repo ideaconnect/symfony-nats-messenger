@@ -177,10 +177,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     private ?LoggerInterface $logger;
 
     /**
-     * Whether this transport has logged that Symfony's retry strategy is on while it is in nats mode
-     * ({@see warnThatSymfonysRetryStrategyIsOn()}), which it does once.
+     * The warnings this transport has logged, by name: each one is logged once per transport object
+     * ({@see firstReportOf()}).
+     *
+     * @var array<string, true>
      */
-    private bool $symfonysRetryStrategyReported = false;
+    private array $reportedOnce = [];
 
     /**
      * How long the max_deliver of the consumer, as the server last reported it, is trusted before
@@ -202,25 +204,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private bool $consumerUnreadableOnThisConnection = false;
 
-    /** Whether {@see consumersMaxDeliver()} has logged that the consumer could not be read, which it does once. */
-    private bool $consumerUnreadableReported = false;
-
-    /**
-     * Whether {@see consumersMaxDeliver()} has logged that the consumer's max_deliver is not the option's, which it
-     * does once.
-     */
-    private bool $maxDeliverMismatchReported = false;
-
     /**
      * Whether the stream was found to keep the delayed messages scheduled_messages publishes, or could not be checked
      * ({@see assertTheStreamKeepsDelayedMessages()}): then neither setup() nor a pull checks it again.
      */
     private bool $delayedMessagesChecked = false;
-
-    /**
-     * Whether {@see warnIfARetryLosesItsDelay()} has logged, which it does once.
-     */
-    private bool $retryDelayDroppedReported = false;
 
     /**
      * Creates a transport instance from DSN/options and optional serializer override.
@@ -458,11 +446,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function warnIfARetryLosesItsDelay(Envelope $envelope, int $delayMs, bool $hadADeliveryToken): void
     {
-        if ($this->retryDelayDroppedReported || $envelope->last(ReceivedStamp::class) === null || RedeliveryStamp::getRetryCountFromEnvelope($envelope) <= 0) {
+        if ($envelope->last(ReceivedStamp::class) === null || RedeliveryStamp::getRetryCountFromEnvelope($envelope) <= 0 || !$this->firstReportOf('retry-delay-dropped')) {
             return;
         }
 
-        $this->retryDelayDroppedReported = true;
         if ($this->configuration->retryVia() !== RetryVia::NAK) {
             $this->logger?->warning(sprintf(
                 'retry_via=copy on stream "%s", subject "%s": Symfony\'s retry was published at once, without its delay of'
@@ -694,11 +681,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function warnThatTheConsumerCouldNotBeRead(\Throwable $failure, ?array $known): void
     {
-        if ($this->consumerUnreadableReported) {
+        if (!$this->firstReportOf('consumer-unreadable')) {
             return;
         }
 
-        $this->consumerUnreadableReported = true;
         $this->logger?->warning(sprintf(
             'retry_via=nak on stream "%s": consumer "%s" could not be read for its max_deliver (%s), so %s tells which'
             . ' delivery is the last one.%s',
@@ -719,11 +705,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function warnThatTheConsumersMaxDeliverIsNotTheOptions(?int $consumers, ?int $option): void
     {
-        if ($this->maxDeliverMismatchReported) {
+        if (!$this->firstReportOf('max-deliver-mismatch')) {
             return;
         }
 
-        $this->maxDeliverMismatchReported = true;
         $this->logger?->warning(sprintf(
             'retry_via=nak on stream "%s": consumer "%s" has max_deliver %s and the max_deliver option is %s. The'
             . ' transport follows the consumer, whose limit NATS applies. Run messenger:setup-transports to give the'
@@ -733,6 +718,20 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             self::describeMaxDeliver($consumers),
             self::describeMaxDeliver($option),
         ));
+    }
+
+    /**
+     * Whether the warning $name is logged now: true the first time this transport object asks, false after that.
+     */
+    private function firstReportOf(string $name): bool
+    {
+        if (isset($this->reportedOnce[$name])) {
+            return false;
+        }
+
+        $this->reportedOnce[$name] = true;
+
+        return true;
     }
 
     private static function describeMaxDeliver(?int $maxDeliver): string
@@ -758,11 +757,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     private function warnThatSymfonysRetryStrategyIsOn(): void
     {
-        if ($this->symfonysRetryStrategyReported) {
+        if (!$this->firstReportOf('symfonys-retry-strategy')) {
             return;
         }
 
-        $this->symfonysRetryStrategyReported = true;
         $this->logger?->warning(sprintf(
             'retry_handler=nats on stream "%s", subject "%s": Symfony\'s retry strategy retried a message that NATS'
             . ' redelivers itself. Set max_retries: 0 on this transport (Symfony still retries a'
