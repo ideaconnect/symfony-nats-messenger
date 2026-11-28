@@ -216,7 +216,12 @@ apply only with the option on.
 - **Keepalive:** Symfony invokes it from SIGALRM. It queues `inProgress()->ignore()` without
   awaiting, pinging, or connecting, because a signal handler cannot switch fibers (#48).
   The event loop must run for the queued write to leave. Plain blocking PHP work therefore
-  still needs an `ack_wait` long enough to cover the handler.
+  still needs an `ack_wait` long enough to cover the handler. From Messenger 8.1.12 on (8.2 included), the
+  Worker reads the whole pull before it handles the first message, so the alarm also covers the messages of
+  that pull still waiting for their turn; before, it covers only the message being handled, which still needs
+  `batching: 1` or an `ack_wait` longer than a whole pull. A stop inside a pull (`--limit`, a stop signal)
+  settles only the message in hand: the Worker never registers the rest for keepalive, or clears them from its
+  own bookkeeping once it stops, so none of them is ACKed, NAKed, TERMed or kept alive, on any release.
 - **Deduplication:** `deduplicate` adds a sendable `DeduplicationIdStamp` before encoding.
   An application-supplied stamp works with the option off too. Wire ID is
   `<id>:<topic>:<retry count>`, plus `:failed:<original receiver>` for a failure copy. JetStream
