@@ -87,6 +87,10 @@ the user's guide.
   stream on a standalone server before 2.12.9 (measured on nats-server 2.10.29 to 2.15.2). The option would have needed
   the stream's retention, replicas and server version to decide, and a warning wherever it could not keep the message. The
   modes stay two: in symfony mode Symfony decides, in nats mode NATS does, and what can never succeed is TERMed in both.
+  What the option would have added is narrow: a message Symfony gives up on, kept on a work-queue or interest stream
+  that has no failure transport. A failure transport on a NATS stream of its own keeps such a message in JetStream
+  today, and so does a stream with limits retention, from which a TERM removes nothing (README, [Keeping a message
+  Symfony gives up on](../../README.md#keeping-a-message-symfony-gives-up-on)).
 - **Applying Symfony's retry options to the consumer in nats mode.** The transport never sees the strategy:
   FrameworkBundle keeps it in a service of its own. A consumer cannot express most of it either: `backoff` does not delay
   a plain NAK, and it replaces `ack_wait` with its first step. And `max_retries: 0`, which the README asks for in nats
