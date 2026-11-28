@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A positive `nak_delay` with `retry_handler: symfony` now warns once per transport object (#117)**: only
+  `sendNak()` reads the option, and only nats mode's NAKs reach it, so in symfony mode, the default, it never
+  applied. Symfony mode TERMs a failed message and Symfony's own retry strategy times the retry; the warning is
+  logged from `get()` (a worker) and from `setup()` run directly (`messenger:setup-transports`), not from the
+  `setup()` a send's `auto_setup` runs, which a PHP-FPM process runs once per request and would otherwise repeat
+  it there. Refusing the option outright is left for a future major release (#167).
 - **`AddUnrecoverableFailureStampListener`**, a `WorkerMessageFailedEvent` subscriber the bundle registers
   (`kernel.event_subscriber`), for the fix above. For a `HandlerFailedException` it adds an `UnrecoverableFailureStamp`
   (not sendable) saying whether every exception it wraps directly is unrecoverable, and the worker passes that envelope
@@ -71,6 +77,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing & CI
 
+- **A positive `nak_delay` with `retry_handler: symfony` (#117)**: `testGetWarnsOnceAboutANakDelayThatHasNoEffect`
+  (data provider: `nak_delay` from the options, from the DSN, with `retry_via: copy` spelled out, and with
+  `auto_setup`; two pulls give one warning with the value in seconds, and a `setup()` afterwards still leaves
+  that one), `testSetupAloneWarnsOnceAboutANakDelayThatHasNoEffect` (`messenger:setup-transports` runs only
+  `setup()`), `testSendNeverWarnsAboutANakDelayThatHasNoEffect` (data provider: `auto_setup` on and off; two
+  sends log nothing, a `setup()` afterwards logs the one warning), `testNoNakDelayWarningFromGetSetupOrSend`
+  (data provider: no `nak_delay`, `nak_delay: 0` from the options and the DSN, nats mode with `nak_delay` from
+  the options and the DSN; `get()`, `setup()` and `send()` log nothing),
+  `testNakDelayWarningGoesNowhereWithoutALoggerAndGetSetupAndSendStillRun` (without a logger, `get()`, `setup()`
+  and `send()` all still run).
 - **Two new unit tests pin what `--keepalive` and a stop inside a pull settle, through Symfony's Worker**
   (#141): `testKeepaliveThroughTheWorkerCoversTheWholePullFromMessenger8112On` (`batching: 2`, a pull of two,
   `StopWorkerOnMessageLimitListener(2)`, a handler that calls `$worker->keepalive(null)` once per run: from

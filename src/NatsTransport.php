@@ -104,9 +104,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
 
     /**
      * Whether the setup() now running warns about a nats-mode stream that loses what max_deliver stops
-     * ({@see warnIfNatsModeLosesWhatMaxDeliverStops()}): not when auto_setup runs it for a send.
+     * ({@see warnIfNatsModeLosesWhatMaxDeliverStops()}) and about a positive nak_delay that has no effect in
+     * symfony mode ({@see warnIfNakDelayHasNoEffect()}): not when auto_setup runs it for a send.
      */
-    private bool $warnAboutWhatMaxDeliverStops = true;
+    private bool $setupWarnsTheOperator = true;
 
     /** Tracks whether the one-shot {@see autoSetupIfEnabled()} provisioning has already run this instance. */
     private bool $autoSetupDone = false;
@@ -221,6 +222,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * Whether {@see warnIfARetryLosesItsDelay()} has logged, which it does once.
      */
     private bool $retryDelayDroppedReported = false;
+
+    /**
+     * Whether {@see warnIfNakDelayHasNoEffect()} has logged, which it does once.
+     */
+    private bool $nakDelayWithoutEffectReported = false;
 
     /**
      * Creates a transport instance from DSN/options and optional serializer override.
@@ -774,6 +780,35 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
     }
 
     /**
+     * Logs a warning, once per transport object, when symfony mode has a positive nak_delay, which has no effect
+     * there (#117): only {@see sendNak()} reads {@see NatsTransportConfiguration::nakDelayMs()}, and only nats
+     * mode reaches it, through {@see handleFailedDelivery()} and through the NAK of a retry nats mode left out
+     * ({@see nakForRetry()}). Symfony mode TERMs a failed message instead, and Symfony's own retry strategy times
+     * its retry.
+     *
+     * Called from {@see get()} (a worker) and from {@see setup()}, guarded there the same as
+     * {@see warnIfNatsModeLosesWhatMaxDeliverStops()}: not when auto_setup runs setup() for a send. A send is not
+     * provisioning and never calls this on its own, for the same reason that guard exists - the transport is
+     * built once per request under PHP-FPM, and a warning at every send would repeat on every such request.
+     */
+    private function warnIfNakDelayHasNoEffect(): void
+    {
+        if ($this->nakDelayWithoutEffectReported || $this->configuration->nakDelayMs() === 0 || $this->configuration->retryHandler() !== RetryHandler::SYMFONY) {
+            return;
+        }
+
+        $this->nakDelayWithoutEffectReported = true;
+        $this->logger?->warning(sprintf(
+            'nak_delay=%s on stream "%s", subject "%s" has no effect with retry_handler: symfony: the transport'
+            . ' TERMs a failed message, and Symfony\'s retry strategy times its retry. Remove nak_delay, or use'
+            . ' retry_handler: nats.',
+            $this->configuration->nakDelayMs() / 1000,
+            $this->streamName,
+            $this->topic,
+        ));
+    }
+
+    /**
      * Pulls and decodes a batch of envelopes from JetStream.
      *
      * Fetches up to {@see NatsTransportConfiguration::batching()} messages with the
@@ -820,6 +855,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      */
     public function get(/* int $fetchSize = 1 */): iterable // @phpstan-ignore parameter.notFound (declared in a comment, as ReceiverInterface declares it until Symfony 9)
     {
+        $this->warnIfNakDelayHasNoEffect();
         $this->autoSetupIfEnabled();
         // A worker is the process that sends Symfony's delayed retries, so it checks before its first pull.
         $this->assertTheStreamKeepsDelayedMessages(null);
@@ -1316,8 +1352,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             }
 
             // The live stream: an update leaves an existing stream's retention as it was.
-            if ($this->warnAboutWhatMaxDeliverStops) {
+            if ($this->setupWarnsTheOperator) {
                 $this->warnIfNatsModeLosesWhatMaxDeliverStops($streamInfo);
+                $this->warnIfNakDelayHasNoEffect();
             }
 
             $consumerConfiguration = ConsumerConfiguration::create()
@@ -1398,9 +1435,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * done-flag is set only after {@see setup()} succeeds, so a transient provisioning failure is
      * retried on the next call rather than silently skipped.
      *
-     * A setup for a send does not warn about a nats-mode stream that loses what max_deliver stops: that warning is
-     * for the operator, who runs `messenger:setup-transports` or a worker, and a process that only sends sets the
-     * stream up once per transport object, which is once per request under PHP-FPM.
+     * A setup for a send does not warn about a nats-mode stream that loses what max_deliver stops, nor about a
+     * nak_delay without effect: those warnings are for the operator, who runs `messenger:setup-transports` or a
+     * worker, and a process that only sends sets the stream up once per transport object, which is once per request
+     * under PHP-FPM.
      */
     private function autoSetupIfEnabled(bool $toSend = false): void
     {
@@ -1417,11 +1455,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             return;
         }
 
-        $this->warnAboutWhatMaxDeliverStops = !$toSend;
+        $this->setupWarnsTheOperator = !$toSend;
         try {
             $this->setup();
         } finally {
-            $this->warnAboutWhatMaxDeliverStops = true;
+            $this->setupWarnsTheOperator = true;
         }
         $this->autoSetupDone = true;
         $this->reconnectsAtSetup = $this->clientOwnsRecovery() ? $this->client->statistics()->reconnects : null;

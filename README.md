@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1411 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1424 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -259,8 +259,12 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
   it until Symfony 9, so Symfony's `DebugClassLoader` (the dev environment) no longer reports that `get()` will
   require it. The fetch size (`--fetch-size`, and `--concurrency` on Messenger 8.2) was never read and still is
   not: `batching` decides a pull's size (see [Batching Explained](#batching-explained)); there is nothing to do.
+- **A positive `nak_delay` with `retry_handler: symfony` now logs a warning once per worker and at
+  `messenger:setup-transports`** (#117): the option only applies to nats mode's NAKs, and in symfony mode the
+  transport TERMs a failed message while Symfony's own retry strategy times the retry, so it had no effect there.
+  Nothing else changes: remove `nak_delay`, or use `retry_handler: nats`.
 
-> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testGetsFetchSizeParameterSilencesSymfonysDebugClassLoaderDeprecation`, `testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads`
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testGetsFetchSizeParameterSilencesSymfonysDebugClassLoaderDeprecation`, `testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads`, `testGetWarnsOnceAboutANakDelayThatHasNoEffect`, `testSetupAloneWarnsOnceAboutANakDelayThatHasNoEffect`, `testSendNeverWarnsAboutANakDelayThatHasNoEffect`, `testNoNakDelayWarningFromGetSetupOrSend`, `testNakDelayWarningGoesNowhereWithoutALoggerAndGetSetupAndSendStillRun`
 
 ### Logging
 
@@ -281,6 +285,10 @@ The transport writes lines of its own to the same logger, each warning once per 
 - a warning from `setup()` in nats mode on a stream from which NATS deletes a message that reached
   `max_deliver`, though not from the setup `auto_setup` runs for a send, which a PHP-FPM process runs once per
   request; and with `scheduled_messages` a warning when the stream and its consumers could not be read;
+- a warning when a positive `nak_delay` has no effect, with `retry_handler: symfony`, where the transport TERMs a
+  failed message and Symfony's own retry strategy times the retry (#117); from `get()` and from `setup()` run
+  directly (`messenger:setup-transports`), not from the setup a send's `auto_setup` runs, for the same reason as
+  above (see [Retry Handler Behavior](#retry-handler-behavior));
 
 With the bundle, the application's `logger` service is handed to the factory, tagged for Monolog's
 `messenger` channel, so the client's lines land next to the worker's. Without that service, or without the
@@ -296,7 +304,7 @@ services:
         tags: [messenger.transport_factory]
 ```
 
-> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, the examples `reconnect.php` and `cluster-failover.php`
+> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testGetWarnsOnceAboutANakDelayThatHasNoEffect`, `testSetupAloneWarnsOnceAboutANakDelayThatHasNoEffect`, `testSendNeverWarnsAboutANakDelayThatHasNoEffect`, `testNoNakDelayWarningFromGetSetupOrSend`, `testNakDelayWarningGoesNowhereWithoutALoggerAndGetSetupAndSendStillRun`, the examples `reconnect.php` and `cluster-failover.php`
 
 ### Development Setup
 
@@ -677,7 +685,9 @@ framework:
           # NATS-native Redelivery Tuning (mainly relevant with retry_handler: nats)
           nak_delay: 0                      # Seconds to wait before NATS redelivers a NAK'd
                                             # message (default: 0 = immediate). Use to back off
-                                            # instead of hot-looping a failing message.
+                                            # instead of hot-looping a failing message. Only with
+                                            # retry_handler: nats; with retry_handler: symfony it
+                                            # has no effect, and a positive value logs a warning.
           ack_wait: null                    # Seconds JetStream waits for an ACK before redelivering
                                             # (default: null = server default, ~30s). Raise it for
                                             # slow handlers to avoid premature redelivery.

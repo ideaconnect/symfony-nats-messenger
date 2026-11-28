@@ -3179,6 +3179,194 @@ final class NatsTransportTest extends TestCase
         self::assertCount(2, $logger->records);
     }
 
+    /**
+     * In symfony mode, get() warns once about a positive nak_delay, which has no effect there (#117): only nats
+     * mode's sendNak() reads it. A worker pulls repeatedly, so the warning is logged on the first pull and not
+     * again, whether nak_delay comes from the options or the DSN, with retry_via: copy spelled out, or with
+     * auto_setup enabled, where get()'s own call logs it before setup()'s guarded one would. A setup() run
+     * afterwards, as messenger:setup-transports would run between pulls, still leaves that one warning.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('nakDelayConfigurationsWithNoEffectForAWorker')]
+    public function testGetWarnsOnceAboutANakDelayThatHasNoEffect(string $dsn, array $options, string $expectedValue): void
+    {
+        $logger = new RecordingLogger();
+        $transport = $this->transportForNakDelayWarningTests($dsn, $options, $logger);
+
+        iterator_to_array($transport->get(), false);
+        iterator_to_array($transport->get(), false);
+
+        self::assertSame([sprintf(
+            'nak_delay=%s on stream "test-stream", subject "test-topic" has no effect with retry_handler: symfony:'
+            . ' the transport TERMs a failed message, and Symfony\'s retry strategy times its retry. Remove'
+            . ' nak_delay, or use retry_handler: nats.',
+            $expectedValue,
+        )], $logger->messagesAt('warning'));
+
+        $transport->setup();
+
+        self::assertCount(1, $logger->messagesAt('warning'));
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>, string}>
+     */
+    public static function nakDelayConfigurationsWithNoEffectForAWorker(): iterable
+    {
+        yield 'nak_delay in the options' => [self::VALID_DSN, ['nak_delay' => 10], '10'];
+        yield 'nak_delay in the DSN' => [self::VALID_DSN . '?nak_delay=2.5', [], '2.5'];
+        yield 'retry_via: copy, spelled out' => [self::VALID_DSN, ['nak_delay' => 10, 'retry_via' => 'copy'], '10'];
+        yield 'auto_setup: true' => [self::VALID_DSN, ['nak_delay' => 10, 'auto_setup' => true], '10'];
+    }
+
+    /**
+     * messenger:setup-transports runs only setup(), never get(): the warning fires from there too.
+     */
+    public function testSetupAloneWarnsOnceAboutANakDelayThatHasNoEffect(): void
+    {
+        $logger = new RecordingLogger();
+        $transport = $this->transportForNakDelayWarningTests(self::VALID_DSN, ['nak_delay' => 10], $logger);
+
+        $transport->setup();
+
+        self::assertSame([
+            'nak_delay=10 on stream "test-stream", subject "test-topic" has no effect with retry_handler: symfony:'
+            . ' the transport TERMs a failed message, and Symfony\'s retry strategy times its retry. Remove'
+            . ' nak_delay, or use retry_handler: nats.',
+        ], $logger->messagesAt('warning'));
+    }
+
+    /**
+     * A process that only sends never triggers this warning, whether or not its send provisions the stream via
+     * auto_setup: that setup runs once per transport object, once per request under PHP-FPM, and would otherwise
+     * repeat the warning on every request (same reason {@see testAutoSetupWarnsAboutAStreamThatLosesWhatMaxDeliverStopsForAWorkerOnly()}
+     * keeps quiet for a send). A setup() run afterwards on the same object, as messenger:setup-transports would,
+     * still warns once.
+     */
+    #[DataProvider('autoSetupOnAndOffForNakDelay')]
+    public function testSendNeverWarnsAboutANakDelayThatHasNoEffect(bool $autoSetup): void
+    {
+        $logger = new RecordingLogger();
+        $transport = $this->transportForNakDelayWarningTests(self::VALID_DSN, ['nak_delay' => 10, 'auto_setup' => $autoSetup], $logger);
+
+        $transport->send(new Envelope(new \stdClass()));
+        $transport->send(new Envelope(new \stdClass()));
+
+        self::assertSame([], self::nakDelayWarnings($logger));
+
+        $transport->setup();
+
+        self::assertSame([
+            'nak_delay=10 on stream "test-stream", subject "test-topic" has no effect with retry_handler: symfony:'
+            . ' the transport TERMs a failed message, and Symfony\'s retry strategy times its retry. Remove'
+            . ' nak_delay, or use retry_handler: nats.',
+        ], self::nakDelayWarnings($logger));
+    }
+
+    /**
+     * @return iterable<string, array{bool}>
+     */
+    public static function autoSetupOnAndOffForNakDelay(): iterable
+    {
+        yield 'auto_setup: true' => [true];
+        yield 'auto_setup: false' => [false];
+    }
+
+    /**
+     * No warning at all: without nak_delay, with nak_delay: 0 (from the options or the DSN, the default), or in
+     * nats mode, where nak_delay applies and sendNak() reads it. get(), setup() and send() each leave no trace.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('configurationsThatNeverWarnAboutNakDelay')]
+    public function testNoNakDelayWarningFromGetSetupOrSend(string $dsn, array $options): void
+    {
+        $logger = new RecordingLogger();
+        $transport = $this->transportForNakDelayWarningTests($dsn, $options, $logger);
+
+        iterator_to_array($transport->get(), false);
+        $transport->setup();
+        $transport->send(new Envelope(new \stdClass()));
+
+        self::assertSame([], self::nakDelayWarnings($logger));
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function configurationsThatNeverWarnAboutNakDelay(): iterable
+    {
+        yield 'no nak_delay' => [self::VALID_DSN, []];
+        yield 'nak_delay: 0 in the options' => [self::VALID_DSN, ['nak_delay' => 0]];
+        yield 'nak_delay=0 in the DSN' => [self::VALID_DSN . '?nak_delay=0', []];
+        yield 'nats mode, nak_delay in the options' => [self::VALID_DSN, self::NATS_MODE + ['nak_delay' => 10]];
+        yield 'nats mode, nak_delay in the DSN' => [self::VALID_DSN . '?nak_delay=10', self::NATS_MODE];
+    }
+
+    /**
+     * Without a logger the warning goes nowhere, and get(), setup() and send() all still run (#117): like
+     * {@see testSetupInNatsModeWithoutALoggerStillSetsUpAStreamThatLosesWhatMaxDeliverStops()}, this is what a
+     * transport has without the bundle or without a logger service (README, "Logging").
+     */
+    public function testNakDelayWarningGoesNowhereWithoutALoggerAndGetSetupAndSendStillRun(): void
+    {
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete(StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic']]])));
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->method('publish')->willReturn(Future::complete());
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([]));
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn(new ServerInfo('S', 'n', '2.15.2', true, 1_048_576, true));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['nak_delay' => 10, 'ping_after_idle' => 0], $this->encodingSerializer());
+        $transport->setClient($client);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame([], iterator_to_array($transport->get(), false));
+        $transport->setup();
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
+     * The warnings logged about nak_delay specifically, filtering out any other warning the doubles might cause.
+     *
+     * @return list<string>
+     */
+    private static function nakDelayWarnings(RecordingLogger $logger): array
+    {
+        return array_values(array_filter(
+            $logger->messagesAt('warning'),
+            static fn (string $message): bool => str_contains($message, 'nak_delay'),
+        ));
+    }
+
+    /**
+     * Builds a transport whose client is open and whose JetStream creates the stream and the consumer, publishes,
+     * and returns an empty batch: enough for get(), setup() and send() to run without a live server. ping_after_idle
+     * defaults to 0 unless $options sets it, so no case has to stub a PING.
+     *
+     * @param array<string, mixed> $options
+     */
+    private function transportForNakDelayWarningTests(string $dsn, array $options, RecordingLogger $logger): RuntimeTestableNatsTransport
+    {
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete(StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic']]])));
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->method('publish')->willReturn(Future::complete());
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([]));
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn(new ServerInfo('S', 'n', '2.15.2', true, 1_048_576, true));
+
+        $transport = new RuntimeTestableNatsTransport($dsn, $options + ['ping_after_idle' => 0], $this->encodingSerializer(), $logger);
+        $transport->setClient($client);
+        $transport->setJetStreamContext($jetStream);
+
+        return $transport;
+    }
+
     /** A serializer that decodes every payload into an envelope of its own. */
     private function decodingSerializer(): SerializerInterface
     {
