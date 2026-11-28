@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1409 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1411 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -1174,6 +1174,12 @@ possibly to another worker, even while a handler is still working on it. `messen
 prevents that: every few seconds (5 by default, `--keepalive=N` to change it) Symfony has the transport tell
 NATS that the message is still in progress, which restarts its `ack_wait`.
 
+From Symfony Messenger 8.1.12 on (8.2 included), each alarm covers the message being handled and the messages
+of the same pull that still wait for their turn: the Worker reads the whole pull before it handles the first
+message (see [Batching Explained](#batching-explained)) and keeps everything it already pulled alive. On every
+earlier release (7.4, 8.0, and 8.1.0 to 8.1.11), it covers only the message being handled. So before 8.1.12,
+with `batching` above 1, set an `ack_wait` longer than a whole pull takes, or use `batching: 1`.
+
 ```bash
 symfony console messenger:consume nats_transport --keepalive=10
 ```
@@ -1187,12 +1193,13 @@ the event loop runs:
   a message to a NATS transport, or amphp-based I/O - lets it out at once, so the keepalive works as intended.
 - **A handler that only blocks** - plain PHP work, or blocking calls such as PDO queries or curl requests -
   lets it out only once it returns, too late to restart the timer. For such a handler, set `ack_wait` longer
-  than its longest run instead.
+  than its longest run instead; with `batching` above 1, make it cover a whole pull too, the setting that is
+  safe on every release.
 
 Keep the keepalive interval well below `ack_wait`, so a keepalive that goes out a little late still arrives in
 time.
 
-> **Tested by:** `testKeepaliveSendsInProgressForReplyToken`, `testKeepaliveFromASignalHandlerQueuesTheAcknowledgementInsteadOfWaiting`, `testKeepaliveDoesNotWaitForTheAcknowledgement`, `testKeepaliveWithoutAConnectionSendsNothingAndDoesNotDial`, `testKeepaliveWhoseAcknowledgementFailsRaisesNoUnhandledError`, Behat scenario `A message handled for longer than ack_wait is not redelivered while keepalive runs`
+> **Tested by:** `testKeepaliveSendsInProgressForReplyToken`, `testKeepaliveFromASignalHandlerQueuesTheAcknowledgementInsteadOfWaiting`, `testKeepaliveDoesNotWaitForTheAcknowledgement`, `testKeepaliveWithoutAConnectionSendsNothingAndDoesNotDial`, `testKeepaliveWhoseAcknowledgementFailsRaisesNoUnhandledError`, `testKeepaliveThroughTheWorkerCoversTheWholePullFromMessenger8112On`, Behat scenario `A message handled for longer than ack_wait is not redelivered while keepalive runs`
 
 ## Important: Consumer Strategies
 
@@ -1276,12 +1283,24 @@ From Symfony Messenger 8.1.12 on, the Worker reads the whole pull before it hand
 [Retry Handler Behavior](#retry-handler-behavior) for what that means when the serializer throws another exception
 while a message of the pull is decoded).
 
+- A pull's messages are delivered together, and `ack_wait` counts from then for each one, so a message waits
+  for the handlers of those before it. Unless `--keepalive` covers it (see "Long-Running Handlers" above),
+  NATS redelivers it after `ack_wait`, possibly to another worker, while the first worker still holds it and
+  handles it later. Without `--keepalive` this holds on every release. See
+  [Ack responses and redelivery](https://docs.nats.io/learn/jetstream/acknowledgment): "If a delivery is not
+  ack'd, nak'd, or kept alive with in-progress before AckWait runs out, the server treats it as a silent
+  failure and redelivers".
+- A worker that stops inside a pull (`--limit`, a stop signal) handles the message in hand and settles
+  nothing for the rest. Each of the rest comes back after `ack_wait` with one more delivery counted against
+  `max_deliver`, which counts as a retry with `retry_via: nak` (see [Retry Handler Behavior](#retry-handler-behavior)).
+  What to set: `batching: 1` for workers that stop often or that have a low `max_deliver`.
+
 From Messenger 8.1 on, the Worker passes its `fetch_size` (the `messenger:consume --fetch-size` option) to
 `get()`, which does not use it: `batching` alone decides how many messages a pull asks for, because a larger
 pull waits up to [`max_batch_timeout`](#batch-timeout) for its messages. To take more per call, set `batching`.
 On Messenger 8.2, `--concurrency` sets the fetch size to the same value unless `--fetch-size` is given
-([`ConsumeMessagesCommand.php`](https://github.com/symfony/messenger/blob/v8.2.0-RC1/Command/ConsumeMessagesCommand.php#L388)
-at `v8.2.0-RC1`); read there, not tested, since CI installs no 8.2.
+([`ConsumeMessagesCommand.php`](https://github.com/symfony/messenger/blob/v8.2.0/Command/ConsumeMessagesCommand.php#L388)
+at `v8.2.0`); read there, not tested.
 
 ```yaml
 options:
@@ -1290,7 +1309,7 @@ options:
   batching: 20       # Fetch 20 messages (high throughput)
 ```
 
-> **Tested by:** `testReadmeBatchingExamplesAreAccepted` - values 1, 5, 10, 20, 50 are all verified; `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails`, `testGetCalledDirectlyPullsBatchingWhateverFetchSizeItIsGiven`, `testTheWorkersFetchSizeReachesGetButBatchingDecidesThePullSize`.
+> **Tested by:** `testReadmeBatchingExamplesAreAccepted` - values 1, 5, 10, 20, 50 are all verified; `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails`, `testGetCalledDirectlyPullsBatchingWhateverFetchSizeItIsGiven`, `testTheWorkersFetchSizeReachesGetButBatchingDecidesThePullSize`, `testKeepaliveThroughTheWorkerCoversTheWholePullFromMessenger8112On`, `testTheWorkerStoppingInsideAPullSettlesNothingForTheRestOfIt`.
 
 ### Batch Timeout
 
