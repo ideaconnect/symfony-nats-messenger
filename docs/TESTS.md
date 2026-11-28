@@ -245,10 +245,10 @@ JWT-shaped strings whose claims the test chooses. The failures run with `zend.ex
 |---------|-------|
 | **What the client gets: a provider and a signer from the file, no static JWT, no `nkey`** | `testTheClientGetsAProviderAndASignerFromTheFileAndNoStaticJwt`, `testTheDsnQueryTakesThePath`, `testNullMeansNoFile`, `theReadmesCredsFileFormGivesTheClientAProviderAndASignerAndNoStaticJwt` |
 | **Refused when built: a value that is no path, another credential next to it** | `testAValueThatIsNoPathIsRefused` (empty, blank, a number, a boolean, a list), `testAnotherCredentialNextToTheFileIsRefused` (`jwt`, `nkey`, `nkey_seed`, a username, password or token option, a user in the DSN, a token or a `jwt` in the DSN query) |
-| **Refused when built: a file that cannot be used, without its text or its seed** | `testAnUnusableFileIsRefusedWhenBuiltWithoutItsSeed` (a missing file, a directory, an unreadable file, no JWT block, no seed block, the seed's END line cut, a JWT block without a JWT, a mistyped seed, an account seed: each message names the option and the path, chains nothing, and no frame of the chain holds the seed), `testTheConfigurationKeepsNoSeed`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive` (`CredentialsFile` included) |
+| **Refused when built: a file that cannot be used, without its text or its seed** | `testAnUnusableFileIsRefusedWhenBuiltWithoutItsSeed` (a missing file, a directory, an unreadable file, no JWT block, no seed block, the seed's END line cut, a JWT block without a JWT, a mistyped seed, an account seed: each message names the option and the path, chains nothing, and no frame of the chain holds the seed), `testADisabledSodiumFunctionIsRefusedWhenBuiltWithoutChainingTheError` (in a child process: the `\Error` of a disabled sodium function is not chained either), `testTheConfigurationKeepsNoSeed`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive` (`CredentialsFile` included) |
 | **One read per connect** | `testTheSignatureIsMadeWithTheSeedOfTheReadThatGaveTheJwt` (provider, file replaced, `sign()`: the signature verifies against the first file's key; a `sign()` that reads the file again fails it), `testTheNextConnectReadsTheReplacedFile`, `testNoSeedIsKeptAfterTheSignatureOrTheCheck`, `testASignatureWithoutAReadBeforeItReadsTheFile` |
 | **A file that fails at a connect** | `testAFileDeletedAfterTheBuildFailsTheConnectNamingTheOptionAndThePath`, `testAFileThatIsNoLongerACredsFileFailsTheConnectWithoutItsText` (the parser's exception, whose frame holds the text, is not chained), `testAMistypedSeedFailsTheSignatureWithoutTheSeed` |
-| **Whether the file's JWT has expired** | `testAJwtWithAnExpiryLaterThanNowHasNotExpired`, `testAJwtWithoutAnExpiryHasNotExpired`, `testAJwtWithAnExpiryInThePastHasExpired`, `testTheExpiryIsReadFromTheFileAsItIsNow`, `testAFileWhoseExpiryCannotBeReadDoesNotCountAsRenewed` (claims that are not JSON, an expiry that is not a number, no file) |
+| **Whether the file's JWT has expired** | `testAJwtWithAnExpiryLaterThanNowHasNotExpired`, `testAJwtWithoutAnExpiryHasNotExpired`, `testAJwtWithAnExpiryInThePastHasExpired`, `testAJwtWhoseExpiryIsNowHasExpired`, `testTheExpiryIsReadFromTheFileAsItIsNow`, `testAFileWhoseExpiryCannotBeReadDoesNotCountAsRenewed` (a JWT block without a JWT, claims that are not JSON, an expiry that is not a number, no file) |
 | **Read per connect, with the real client** | `testTheConnectionAfterALostOneLogsInWithTheReplacedFile` (over `FaultInjectingNatsServer`: the file replaced by another user's and the connection dropped; the second CONNECT carries that user's JWT and a signature for that user's seed, with reconnect off, where the transport dials again, and on, where the client recovers) |
 | **`get()` at the expiry of the JWT** | `testAWorkerKeepsPullingThroughTheExpiryOfItsJwtWhenTheFileWasRenewed` (the real client over the scripted server, both reconnect modes: `-ERR 'User Authentication Expired'` during a pull and the server closes; `get()` returns `[]`, and the next `get()` runs on a new connection whose CONNECT carries the renewed JWT and receives the message sent before the expiry), `testAWorkerStopsWithTheServersReasonWhenTheFileStillHoldsTheExpiredJwt`, `testAnExpiryIsAnEmptyBatchWhileTheFileHoldsAJwtThatHasNotExpired` (the frame's error, and `Reconnect is disabled` over it; the next pull PINGs first), `testOtherConnectionFailuresAndAnExpiryNoFileCuresStillEndTheWorker` (an expired JWT in the file, no `creds_file`, `Account Authentication Expired`, `Stale Connection`, `Reconnect is disabled` over a broken pipe: the exception propagates as it is) |
 
@@ -638,7 +638,7 @@ does not survive it.
 Mutation testing is configured via [Infection](https://infection.github.io/) (`infection.json5`) and run
 with `composer test:mutation`. It enforces a minimum MSI of 90% and a minimum covered MSI of 95%; CI runs it
 on the PHP 8.5 job and daily (`.github/workflows/mutation.yml`). The suite scores 98.6% MSI and covered
-MSI: 1768 of 1793 mutants killed, none timed out, with 100% mutation code coverage.
+MSI: 1879 of 1906 mutants killed, none timed out, with 100% mutation code coverage.
 
 Scores reported before, 100% among them, were not real. Infection runs each mutant in a PHPUnit process
 whose bootstrap puts its include interceptor on `file://`; the interceptor dropped the wrapper BypassFinals
@@ -667,13 +667,13 @@ mutation step fails.
 
 ### Surviving mutants
 
-Of the 25 mutants that survive:
+Of the 27 mutants that survive:
 
-- **20 are equivalent**: no input makes them behave differently.
+- **21 are equivalent**: no input makes them behave differently.
 - **2 make no difference with the real client**: its acknowledgement calls do not read the `sid` of the
   message `buildAckMessage()` gives them. A test could kill them only by asserting on the `sid` its client
   double receives, which would pin a detail rather than behaviour.
-- **3 are caught by the suite where Infection cannot see it**: only a child process can disable or replace a sodium
+- **4 are caught by the suite where Infection cannot see it**: only a child process can disable or replace a sodium
   function, and Infection applies a mutant in the test's own process, so the child loads the original class. Made by
   hand, each fails a plain `composer test`.
 
@@ -693,6 +693,8 @@ Of the 25 mutants that survive:
 | `assertTheStreamKeepsDelayedMessages()`: the sample delayed subject without its UUID | A filter tells `{topic}.delayed.<uuid>` from `{topic}.delayed.` (an empty last token) only by naming that token, and NATS refuses a subject with an empty token |
 | `requiredString()`: `&&` instead of `\|\|` | `parseDsn()` already requires a host, and `parse_url()` never gives an empty one |
 | `resolveNkeySigner()`: `\Error` removed from the catch, and `\|\|` for either `&&` of the condition on the seed advice (3 mutants) | Between them `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError` and `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike` fail on each, but they run in a child process, which the mutant does not reach |
+| `CredentialsFile::signerFor()`: `\Error` removed from the catch | `testADisabledSodiumFunctionIsRefusedWhenBuiltWithoutChainingTheError` (in `CredsFileOptionTest`) fails on it, but it runs in a child process, which the mutant does not reach |
+| `build()`: the client's nonce signer `$nkeySigner ?? $credentialsFile` instead of `$credentialsFile ?? $nkeySigner` | The builder refuses `creds_file` next to `nkey_seed`, so at most one of the two is set |
 | `raisedByTheDecoder()`: the walk out of the call stack stopped by the `deserializeOrFail()` of any serializer, not only this one's | The nearest `deserializeOrFail()` is that of the decode whose handler PHP calls. The handler of a decode further out runs only when that one hands it an error, and then the frame running is the other serializer's handler, which neither form takes for this serializer's code, while a parser call on the stack lies at the same depth or deeper, which neither takes for the decoder |
 
 Before PR #98 dealt with them, 32 survived. Two of those, the round-up of a delayed message's delivery time
