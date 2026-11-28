@@ -89,6 +89,7 @@ tests/
                                                 # (nats-cluster*.conf: the three-server cluster "east" for the examples;
                                                 # nats-jwt.conf: the server in operator mode; nats-token.conf: the server
                                                 # with a token; auth/: the generator of the NKey and JWT credentials)
+                                                # consumer-info-proxy.php: drops consumer info requests (#127)
 
 examples/                                       # Runnable scripts, one per behaviour (composer examples)
 ├── _bootstrap.php                              # shared setup: autoloader, server, stream, test cluster and docker helpers
@@ -98,7 +99,7 @@ examples/                                       # Runnable scripts, one per beha
                                                 # connection-checks, jwt-login, nkey-login, token-login, reconnect, cluster-failover,
                                                 # handler-failing-during-failover, handler-succeeding-during-failover,
                                                 # stream-placement, delayed-messages, retry-via-nak, retry-via-nak-edge-cases,
-                                                # retry-via-nak-past-max-deliver, retry-via-nak-server-behaviour,
+                                                # retry-via-nak-past-max-deliver, retry-via-nak-consumer-info, retry-via-nak-server-behaviour,
                                                 # retry-via-nak-across-a-restart, retry-via-copy-or-nak,
                                                 # nats-retry-several-handlers
 

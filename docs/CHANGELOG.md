@@ -44,6 +44,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which the server refuses (`invalid JSON`, on both servers); a consumer with no metadata, or an empty map, sends no
   field. A new consumer gets neither field, as before. An entry written between that lookup and the update is still
   lost: the consumer API has no conditional update. `keepTheExistingConsumerLabels()`.
+- **With `retry_via: nak`, a read of the consumer that fails on the connection or gets no answer no longer stops the
+  worker** (#127). The transport reads the consumer's own `max_deliver` to tell the last delivery, whose retry has to
+  go out as a copy. A JetStream error already left the value read before, or the `max_deliver` option when nothing was
+  read, to decide that one retry, with one warning, and the next retry asked again; a read that failed on the
+  connection, as during a server restart, or got no answer within `request_timeout` made the send of the retry fail,
+  and the exception stopped `messenger:consume`. That lost the very delivery it was meant to protect: the read decides
+  only the retry of what may be the last delivery `max_deliver` allows, and NATS redelivers nothing after that one. On
+  nats-server 2.15.3 and 2.10.29 with `max_deliver: 2`, `max_retries: 3`, `ack_wait: 2` and `request_timeout: 1`,
+  behind a proxy that swallowed every `$JS.API.CONSUMER.INFO` request and with a supervisor restarting the worker,
+  5.10.1 stopped after the first delivery and again after the second, and the message was gone: 2 handler runs, no
+  failure-transport copy, one `MAX_DELIVERIES` advisory. With `batching: 3` and the failing message first, the two
+  messages behind it in the batch were never handled (3 `MAX_DELIVERIES` advisories). Such a read now decides as a
+  JetStream error does: one worker run, 4 handler runs, 1 failure-transport copy and one warning, and in the batch both
+  messages handled. When the connection really is gone, the NAK or the copy that follows fails and stops the worker,
+  as before. Any other exception of the read still propagates, and only a refusal for lack of permission stops the
+  asking on that connection. `consumersMaxDeliver()`.
 
 ### Added
 
@@ -111,6 +127,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handlers failing for good, with what Symfony decided for each delivery (`willRetry()` after its retry listener:
   `[false, false]` with `max_retries: 0`, `[true, false]` with 3); on 5.10.1 it stops at the first run, where the
   message was TERMed after one run of each handler.
+- **The tests of #127, and row 23 of #123**: `testAConsumerReadThatFailsOnTheConnectionOrTimesOutLeavesTheOptionForThisRetryAndIsAskedAgain`
+  and `testAConsumerReadThatFailsOnTheConnectionOrTimesOutLaterLeavesTheValueReadBefore` (data provider: a
+  `TimeoutException`, a `ConnectionException`) replace `testAConsumerReadThatFailsOnTheConnectionPropagatesAndIsAskedAgain`,
+  and `testAConsumerReadThatFailsOtherwisePropagatesFromTheSendOfTheRetry` (data provider: a `LogicException`, the
+  client's `ProtocolException`) keeps any other exception of the read propagating. Each wrong shape of the fix turns
+  one of them red, with the rest of the suite green: 5.10.1 itself and the issue's option 3 (a stop unless a value read
+  before equals the option) the first two, its option 2 (a stop unless a value was read before) and a fallback that
+  also stops asking on that connection the first, a fallback to the option over the value read the second, a catch of
+  `\Throwable` the third, and a catch of `NatsException` or `NatsThrowable` the third's `ProtocolException` row. The
+  Behat feature `nats_retry_via_consumer_info.feature` runs the worker behind `tests/nats/consumer-info-proxy.php`, a
+  PHP script without a Composer package that forwards a connection byte for byte and drops only a client's `PUB` or
+  `HPUB` to `$JS.API.CONSUMER.INFO.`, and as a user of `tests/nats/nats.conf` who may not ask for consumer info
+  (`no_consumer_info`): 4 handler runs, 1 failure-transport copy and one warning in each, and the consumer exits with
+  code 0. On 5.10.1 the first scenario fails: the consumer stops on a `TimeoutException` after the first run. The
+  example `retry-via-nak-consumer-info.php` shows both, and the batch whose two messages behind the failing one are
+  handled; on 5.10.1 it stops on the `TimeoutException`.
 - **The four tests that compared every record a `RecordingLogger` recorded now compare only the transport's own
   warnings** (`RecordingLogger::messagesAt('warning')`), not every record (#140): `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`,
   `testNatsModeWithoutSymfonysRetriesLogsNoWarning`, `testNakRetryFollowsSymfonysRetryStrategyThroughTheWorker`,

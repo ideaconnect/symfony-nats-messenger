@@ -95,8 +95,10 @@ should decide while NATS redelivers. On Symfony Messenger 8.2 the same goes for 
   and again once the answer is a minute old: one request a minute at most, only while deliveries fail. A limit
   that differs from the option is followed and logged once. A user who may not ask for consumer info, refused at
   once by the server, leaves the option to decide, with one warning, and is not asked again on that connection; a
-  JetStream error, such as a consumer that does not exist, leaves it to decide for that retry only; a read that
-  fails on the connection makes the send of the retry fail, and the delivery comes back after `ack_wait`. `setup()`'s own answer is not taken, since another
+  JetStream error, such as a consumer that does not exist, a read that fails on the connection and one that gets no
+  answer within `request_timeout` leave the value read before, or the option, to decide for that retry only, and the
+  next retry asks again; up to 5.10.1 the last two made the send of the retry fail and stopped the worker, which lost
+  the last delivery `max_deliver` allows, since NATS redelivers nothing after it. `setup()`'s own answer is not taken, since another
   configuration's setup can change the consumer right after. Up to 5.9.0 the option decided: with the option at 5,
   or unset, on a consumer limited to 3, and `max_retries` 4, the retry of the third delivery was NAKed, NATS
   redelivered nothing, and the message was gone after 3 runs, with no failure-transport copy and one MAX_DELIVERIES
