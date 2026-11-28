@@ -109,15 +109,24 @@ composer nats:stop               # stop NATS
   Nats-Msg-Id written again on the recovered connection); the builder requires `reconnect: true` with it and a
   configured `stream_duplicate_window` longer than `request_timeout`.
 - **Logins with a signature.** `jwt` and `nkey` need a signer: the client throws before it writes the CONNECT without one, on
-  every server. The transport's one source of a signer is `nkey_seed`, so the builder refuses `jwt` or `nkey` without it, a
+  every server. The transport's sources of a signer are `nkey_seed` and `creds_file`, so the builder refuses `jwt` or `nkey` without a seed, a
   seed next to a username, password or token (a server with both kinds of users ignores them without a word), a blank or
   non-string seed, a seed that is not a user's, a `jwt` that does not have a JWT's three parts, and a credential after a second
   `?` or a `;` in the DSN query. `nkey` stays as an optional check of the seed's key, and an external signer would need it.
-  Word such a rule as "no signer", not "no seed". On each `composer test` `LoginCombinationsTest` refuses the 32 combinations
-  of a user, token, `jwt`, `nkey` and seed when built, or sends them through the real client as a CONNECT; the other refusals
-  are in the builder's tests and `SecretsInExceptionsTest`, and the real logins are in `nats_nkey.feature`,
+  Word such a rule as "no signer", not "no seed". `creds_file` (#104) is the path of a `.creds` file and holds the whole
+  login: it is refused next to `jwt`, `nkey`, `nkey_seed`, a username, a password or a token, and checked when built.
+  `Options\CredentialsFile` is the client's `jwtProvider` and its nonce signer, and gives both from **one read per
+  CONNECT**: the provider's read keeps the seed for the `sign()` that follows and drops it there; a second read could pair
+  one user's JWT with another's seed. Its errors name the option and the path and chain no exception of the client's
+  `CredentialsParser`, whose frames hold the file's text. With `creds_file`, `get()` reads `User Authentication Expired`
+  (on the exception or a previous one, as the client reports it as `Reconnect is disabled` too) as an empty pull while the
+  JWT the file holds now has not expired (`pullEndedByAnExpiryTheFileRenewed()`); the failed pull has already armed the
+  connection check. Not `Account Authentication Expired`, and not without `creds_file`.
+  On each `composer test` `LoginCombinationsTest` refuses the 64 combinations
+  of a user, token, `jwt`, `nkey`, seed and `creds_file` when built, or sends them through the real client as a CONNECT; the other refusals
+  are in the builder's tests, `CredsFileOptionTest` and `SecretsInExceptionsTest`, and the real logins are in `nats_nkey.feature`,
   `nats_jwt.feature`, `nats_token.feature` and the examples. Test keys are never committed (#9): the unit tests build theirs
-  with `TestNkeys`, and `tests/nats/auth/generate.sh` makes the servers' at `composer nats:start`. An option stored in
+  with `TestNkeys` (and `.creds` files with `TestCredsFiles`), and `tests/nats/auth/generate.sh` makes the servers' at `composer nats:start`. An option stored in
   `NatsOptions` proves nothing about a login, which is how `jwt` and `nkey` shipped unable to log in.
 - **Pull consumers + explicit ACK.** A message is only "processed" once ACK'd. This underpins
   `retry_handler` and shared-consumer load balancing.

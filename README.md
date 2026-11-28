@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1409 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1493 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -511,6 +511,7 @@ the test server and print `OK` when what they show held:
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it |
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
 | `jwt-login.php` | `jwt` with `nkey_seed`: a user of a server in operator mode logs in; its JWT with another user's seed and an expired JWT are refused by the server, and the JWT alone when the transport is built |
+| `creds-login.php` | `creds_file`: a user logs in from its `.creds` file, then as another user once that user's file replaced it, and is refused by the server once an expired user's file is in its place; `creds_file` next to a `jwt` and a missing file are refused when the transport is built |
 | `nkey-login.php` | `nkey_seed`: a user the server knows by its public key logs in; a seed it does not know is refused by the server, and the public key alone or a seed next to a password when the transport is built |
 | `token-login.php` | `token`: a client logs in with the server's token, and a wrong one is refused |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, and `auto_setup` recreates the memory stream the restart lost |
@@ -727,6 +728,7 @@ framework:
           jwt: null                         # User JWT; needs nkey_seed, see NKey Authentication
           nkey: null                        # Leave unset: the public key is derived from nkey_seed
           nkey_seed: null                   # NKey seed (SU...) that signs the server's nonce; see NKey Authentication
+          creds_file: null                  # Path of a user's .creds file, read on every connect; see JWT Users
 ```
 
 **An option the transport does not know is refused** (5.10.0), in the `options` and in the DSN query, with the
@@ -814,9 +816,50 @@ authorization {
 
 #### JWT Users (Operator Mode)
 
-On a server in operator mode a user has a JWT as well as an NKey. Give the transport both: `jwt` is the user's JWT, and
-`nkey_seed` is that user's seed. Both values are in the user's `.creds` file, under its `BEGIN NATS USER JWT` and
-`BEGIN USER NKEY SEED` lines. The transport does not read the file itself, so pass the two values:
+On a server in operator mode a user has a JWT as well as an NKey, and `nsc generate creds` writes both into the user's
+`.creds` file. Give the transport the path of that file in `creds_file`, with no other credential:
+
+```yaml
+framework:
+    messenger:
+        transports:
+            orders:
+                dsn: 'nats-jetstream://nats.example.com:4222/orders/orders.created'
+                options:
+                    creds_file: '%env(NATS_CREDS_FILE)%'
+                    reconnect: true             # for a worker that keeps running through a rotation, see below
+                    # Optional: %env(default::NATS_CREDS_FILE)% is null, so no file, when the variable is unset
+                    # creds_file: '%env(default::NATS_CREDS_FILE)%'
+```
+
+- The transport reads the file on every connect, the first one and every one after a lost connection, with or without
+  `reconnect`, not when it is built. To rotate a short-lived JWT, write the new file next to the old one and rename it
+  over the old one (`mv user.creds.new user.creds`), so that a connect never reads half a file: the next connection
+  logs in with the new JWT, without a restart or a redeploy.
+- Each connect takes the JWT and the seed that signs the server's nonce from one read of the file, so a file replaced in
+  between cannot pair one user's JWT with another user's seed. The transport holds on to that seed only until that
+  signature, and it does not fall back on an earlier read: a file that is missing or cannot be used at a connect fails
+  that connection, with an error that names `creds_file` and the path, never the file's text. This says what the
+  transport keeps, not what PHP's memory holds: the process can read the file, so treat it as holding the seed.
+- At the JWT's expiry the server sends `User Authentication Expired` and closes the connection. A running worker then
+  goes on while the file holds a JWT that has not expired (no `exp` claim, or one later than now): the pull the expiry
+  ended reads as an empty batch, the next operation checks the connection first, and the next connection logs in with
+  the JWT in the file. While the file still holds the expired JWT, the worker stops with the server's
+  `User Authentication Expired`, which names the cause, rather than one pull later with a bare `Authorization Violation`.
+  Use `reconnect: true` for a worker that keeps running through a rotation: with reconnect off the expiry can also reach
+  the worker as a lost connection with no mention of it (the next write failed before the server's error was read),
+  and a lost connection ends a worker in that mode, as it always has. `Account Authentication Expired` is not read
+  this way, as a new user JWT cannot cure it.
+- The file is checked when the transport is built: a path that is not a readable file, a file without both blocks,
+  a JWT block without a JWT and a seed that is not a user's are refused then, and nothing of the file is kept. Only
+  `null` means no file: an empty or blank value is refused, as for `nkey_seed`. A path is no secret, so it also works in
+  the DSN query (`?creds_file=/run/secrets/orders.creds`).
+- `creds_file` is refused next to `jwt`, `nkey`, `nkey_seed`, a username, a password or a token, from the DSN or the
+  options: the file holds the whole login.
+- It needs the `sodium` extension, as for `nkey_seed`: the signature is made in the process.
+
+The transport also takes the two values themselves: `jwt` is the user's JWT, and `nkey_seed` is that user's seed, from
+the file's `BEGIN NATS USER JWT` and `BEGIN USER NKEY SEED` lines:
 
 ```bash
 export NATS_USER_JWT=$(awk '/BEGIN NATS USER JWT/ { getline; print }' user.creds)
@@ -849,12 +892,13 @@ framework:
   needs one as well, so add `jetstream {}` next to it, as `tests/nats/nats-jwt.conf` does: without it setup fails with
   `No responders for subject $JS.API.STREAM.CREATE.orders`. `tests/nats/auth/generate.sh` has the `nsc` commands for a whole
   test setup.
-- The transport keeps the JWT it was built with and never fetches a new one. At the JWT's expiry the server sends
-  `User Authentication Expired` and closes the connection, which ends a running worker with that message. After that
+- With `jwt` the transport keeps the JWT it was built with and never fetches a new one. At the JWT's expiry the server
+  sends `User Authentication Expired` and closes the connection, which ends a running worker with that message. After that
   each new connection with the same JWT is refused with `Authorization Violation`, which does not mention the expiry.
-  A new JWT needs a new transport, so restart the workers with the new value.
+  A new JWT needs a new transport, so restart the workers with the new value, or use `creds_file`, above, which reads
+  the new JWT at the next connection.
 
-> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `theReadmesJwtFormGivesTheClientTheJwtAndASigner`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt`, `testBuildAcceptsAJwtWithSpaceAroundItAndBase64UrlCharacters`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the Behat scenarios of `nats_jwt.feature` (real logins on a server in operator mode, with a user's JWT and seed as in the configuration above and with a bearer JWT, across a server restart, and what is refused: a value that is not a JWT when the transport is built, and by the server another user's seed, a seed with no JWT, an expired JWT, an account without JetStream), the example `jwt-login.php`. Not in the suite: a JWT that expires under a running worker, which was measured by hand on NATS 2.9.25 and 2.15.1.
+> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `theReadmesJwtFormGivesTheClientTheJwtAndASigner`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt`, `testBuildAcceptsAJwtWithSpaceAroundItAndBase64UrlCharacters`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the Behat scenarios of `nats_jwt.feature` (real logins on a server in operator mode, with a user's JWT and seed as in the configuration above and with a bearer JWT, across a server restart, and what is refused: a value that is not a JWT when the transport is built, and by the server another user's seed, a seed with no JWT, an expired JWT, an account without JetStream), the example `jwt-login.php`. For `creds_file`: `theReadmesCredsFileFormGivesTheClientAProviderAndASignerAndNoStaticJwt`, `testTheClientGetsAProviderAndASignerFromTheFileAndNoStaticJwt`, `testTheDsnQueryTakesThePath`, `testNullMeansNoFile`, `testTheConfigurationKeepsNoSeed`, `testAValueThatIsNoPathIsRefused`, `testAnotherCredentialNextToTheFileIsRefused`, `testAnUnusableFileIsRefusedWhenBuiltWithoutItsSeed`, `testTheSignatureIsMadeWithTheSeedOfTheReadThatGaveTheJwt`, `testTheNextConnectReadsTheReplacedFile`, `testNoSeedIsKeptAfterTheSignatureOrTheCheck`, `testAFileDeletedAfterTheBuildFailsTheConnectNamingTheOptionAndThePath`, `testAFileThatIsNoLongerACredsFileFailsTheConnectWithoutItsText`, `testAMistypedSeedFailsTheSignatureWithoutTheSeed`, the expiry tests of `CredentialsFileTest`, `testTheConnectionAfterALostOneLogsInWithTheReplacedFile`, `testAWorkerKeepsPullingThroughTheExpiryOfItsJwtWhenTheFileWasRenewed`, `testAWorkerStopsWithTheServersReasonWhenTheFileStillHoldsTheExpiredJwt`, `testAnExpiryIsAnEmptyBatchWhileTheFileHoldsAJwtThatHasNotExpired`, `testOtherConnectionFailuresAndAnExpiryNoFileCuresStillEndTheWorker`, the `creds_file` cases of `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the `@creds` scenarios of `nats_jwt.feature` (a login from nsc's own file, a worker across a server restart that logs in again with another user's file and stops with an expired user's, and the refusals through the console), the example `creds-login.php`. The expiry under a running worker is held by the unit tests over a scripted server, with the server's `-ERR 'User Authentication Expired'`; a live run through an expiry needs a key that can sign users, which `generate.sh` keeps out of the repository (#9), so it is not in the suite: it was measured by hand on NATS 2.10.29 to 2.15.3.
 
 ### Retry Handler Behavior
 
