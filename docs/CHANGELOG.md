@@ -163,6 +163,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **README, "Retry Handler Behavior"**: one paragraph on what a `DispatchOnFailureStamp` (Symfony Messenger 8.2)
   does in nats mode and with `retry_via: nak`, and the sentence in `docs/symfony_retry_via.md` that the stamp's
   failure message is dispatched on each run Symfony gives up on (#154).
+- **README, "Keeping a message Symfony gives up on"**: a new part of "Retry Handler Behavior" on the two setups that
+  keep a message Symfony gives up on, which #119's `give_up_via: nak` would have kept on a work-queue or interest
+  stream: a failure transport on a NATS stream of its own, with what Symfony's commands do on it (`messenger:stats`
+  counts it and `messenger:consume` handles it; `messenger:failed:retry` without ids takes one message per run, in an
+  interactive terminal; `messenger:failed:show`, `messenger:failed:remove` and a retry by id refuse it), and a stream
+  with limits retention. The "Rejected Alternatives" entry of `docs/PRs/PR-113-symfony-retry-via.md` points to it
+  (#128).
 - **README, "Upgrading from 5.10.1"**: a section naming the unreleased changes an operator can notice (nats mode
   with several handlers, #125; `setup()` keeping a consumer's metadata and description, #145), and the sentence
   in `docs/PROJECT_MEMORY.md` that the "Upgrading from" sections get such a bullet on the branch that makes the

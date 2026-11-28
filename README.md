@@ -862,7 +862,8 @@ The transport has two modes, set by `retry_handler`:
 
 - **`symfony` (the default): Symfony decides.** Symfony's retry strategy (`max_retries`, `delay`, `multiplier`)
   decides whether and when a failed message runs again, and Symfony's failure transport keeps a message it gives
-  up on. `retry_via` chooses how a retry reaches NATS: as a copy (the default) or as a NAK with Symfony's delay.
+  up on (see [Keeping a message Symfony gives up on](#keeping-a-message-symfony-gives-up-on)). `retry_via` chooses
+  how a retry reaches NATS: as a copy (the default) or as a NAK with Symfony's delay.
 - **`nats`: NATS decides.** The transport NAKs a failed delivery, and NATS redelivers it after `nak_delay`, up to
   `max_deliver`. Symfony's retry strategy has no effect, and a failure transport is not for this mode (see
   below). What can never succeed is TERMed instead: a failure Symfony marks as unrecoverable, and a message that
@@ -1164,6 +1165,51 @@ it below `stream_max_age`: a message that expires while it waits leaves the stre
 delivery, what the server does with a NAK, and what was measured.
 
 > **Tested by:** `testRetryViaIsCopyUnlessSetToNak`, `testBuildWithInvalidRetryViaThrowsException`, `testBuildRefusesRetryViaInNatsMode`, `testBuildRefusesAPositiveNakDelayWithNakRetries`, `testBuildRefusesBackoffWithNakRetries`, `testRetryViaCopyStillAcceptsNakDelayAndBackoff`, `testNakRetryNaksWithTheDelaySymfonyComputed`, `testNakRetryNaksPlainlyForADelayOfZero`, `testNakRetryNaksWithTheDelayOfARecoverableException`, `testNakRetryCutsADelayThatWouldOverflow`, `testNakRetryFollowsSymfonysRetryStrategyThroughTheWorker`, `testNakRetryTermsADeliverySymfonyDoesNotRetry`, `testNakRetryTermsAnUnrecoverableFailure`, `testFromMessenger81TheDecodingFailureOfARedeliveryCarriesItsRetryCount`, `testNakRetryPublishesTheCopyOfTheLastDeliveryMaxDeliverAllows`, `testNakRetryNaksADeliveryThatIsNotKnownToBeTheLast`, `testNakRetryRunsSymfonysStrategyToItsEndPastMaxDeliver`, `testNakRetryPublishesTheCopyOfTheConsumersLastDeliveryWhateverTheOptionSays`, `testNakRetryNaksADeliveryTheConsumerStillRedelivers`, `testTheConsumersMaxDeliverIsReadAgainOnceItIsAMinuteOld`, `testAConsumerThatCannotBeReadLeavesTheOptionAndIsNotAskedAgainOnThatConnection`, `testAConsumerUnreadableLaterLeavesTheValueReadBefore`, `testARetryAfterSetupAsksForTheConsumersLimitAgain`, `testGetGivesARedeliveredMessageItsEarlierDeliveriesAsRetryCount`, `testGetAddsTheEarlierDeliveriesToTheRetryCountTheMessageCarries`, the Behat feature `nats_retry_via.feature`, and the examples `retry-via-nak.php`, `retry-via-nak-edge-cases.php`, `retry-via-nak-past-max-deliver.php`, `retry-via-nak-server-behaviour.php`, `retry-via-nak-across-a-restart.php` and `retry-via-copy-or-nak.php`. CI's lowest leg runs them on a Symfony Messenger that rejects a retried message (7.4.0 in the unit tests, 7.4.21 in the functional test app), the PHP 8.5 leg on one that acknowledges it.
+
+#### Keeping a message Symfony gives up on
+
+In symfony mode, with either `retry_via`, a message Symfony gives up on (its retries used up, an unrecoverable
+failure, no retries configured) is TERMed. A TERM removes it from a stream with work-queue or interest retention, so
+on such a stream only a failure transport keeps it. Two setups keep such a message:
+
+- **A failure transport that is a NATS transport, on a stream of its own.** Symfony stores its copy of the message
+  there, in JetStream:
+
+  ```yaml
+  framework:
+    messenger:
+      failure_transport: failed
+      transports:
+        async:
+          dsn: 'nats-jetstream://localhost:4222/my-stream/my-topic?retry_via=nak'
+          retry_strategy: { max_retries: 3, delay: 1000, multiplier: 2 }
+        failed:
+          dsn: 'nats-jetstream://localhost:4222/my-failed-stream/my-failed-topic?stream_max_age=604800'
+  ```
+
+  The transport does not implement Symfony's `ListableReceiverInterface`, so only some of Symfony's commands work
+  on it:
+
+  | Command | On a NATS failure transport |
+  |---|---|
+  | `messenger:stats` | counts the messages waiting there |
+  | `messenger:consume failed` | handles them again, as on any transport |
+  | `messenger:failed:retry` without ids | in an interactive terminal only: shows the next message, asks whether to retry, delete or skip it (`--force` retries it without asking), and ends, so it takes one message per run; with nothing waiting, it waits for one (Ctrl-C ends it). With `-n`, or without a terminal, it refuses: `Message id must be passed when in non-interactive mode.` |
+  | `messenger:failed:show`, `messenger:failed:remove` (`--all` too), `messenger:failed:retry` with ids | refused: `The "failed" receiver does not support listing or showing specific messages.` (`removing specific messages.`, `retrying messages by id.`) |
+
+  The failure transport's stream has limits retention unless `stream_retention` says otherwise, so a message
+  handled again stays stored there until the stream's limits remove it: give it `stream_max_age` or another limit.
+- **A stream with limits retention, without a failure transport.** A TERM does not remove a message from it, so the
+  message stays until the stream's limits (`stream_max_age` and the others) remove it. The stream keeps every
+  handled message as well: the one Symfony gave up on is named by its `MSG_TERMINATED` advisory
+  (`$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.<stream>.<consumer>`), whose `stream_seq` is its stream sequence,
+  or found with a consumer of your own.
+
+The transport has no option that leaves such a message in a work-queue or interest stream instead: that was
+`give_up_via: nak` ([#119](https://github.com/ideaconnect/symfony-nats-messenger/pull/119)), not taken for the
+reasons in [docs/PRs/PR-113-symfony-retry-via.md](docs/PRs/PR-113-symfony-retry-via.md) ("Rejected Alternatives").
+
+> **Tested by:** the Behat scenarios `Failed message routed to Symfony failure transport via TERM` (`nats_term.feature`) and `A message that keeps failing is retried through NAKs, then given up on with one failure copy` (`nats_retry_via.feature`), each with a failure transport on a NATS stream of its own that `messenger:stats` counts. Not in the suite: Symfony's `messenger:failed:*` commands on that transport, and what a TERM leaves on each retention, measured by hand with Symfony's Worker and commands on Symfony Messenger 7.4.0 and 8.2.0 and nats-server 2.10.29 and 2.15.3 (#128).
 
 ### Long-Running Handlers (`--keepalive`)
 
