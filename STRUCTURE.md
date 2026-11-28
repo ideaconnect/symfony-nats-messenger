@@ -82,7 +82,7 @@ tests/
 │       ├── AbstractEnveloperSerializerTest.php
 │       └── IgbinarySerializerTest.php
 ├── functional/                                 # Behat - requires a running NATS server (Docker)
-│   ├── features/*.feature                      # setup, batching, consumer, nak, term, retry_via, delayed, tls, mtls, stream_limits, nkey, jwt, token
+│   ├── features/*.feature                      # setup, batching, consumer, nak, term, retry_via, retry_copy, delayed, tls, mtls, stream_limits, nkey, jwt, token
 │   ├── tests/Behat/NatsSetupContext.php        # all step definitions
 │   └── src/, config/, bin/, public/            # a minimal Symfony app exercising the transport end-to-end
 └── nats/                                       # Docker Compose + NATS configs + test TLS certificate generator
@@ -92,15 +92,15 @@ tests/
 
 examples/                                       # Runnable scripts, one per behaviour (composer examples)
 ├── _bootstrap.php                              # shared setup: autoloader, server, stream, test cluster and docker helpers
-├── _retry_via.php                              # shared by the retry-via-* examples: Symfony's Worker with its retry and
-                                                # failure-transport listeners, and a record of one run
+├── _retry_via.php                              # shared by the retry-via-* examples and nats-retry-backoff: Symfony's Worker
+                                                # with its retry and failure-transport listeners, and a record of one run
 └── *.php                                       # send-and-consume, duplicate-protection, nats-retry, request-timeout, keepalive,
                                                 # connection-checks, jwt-login, nkey-login, token-login, reconnect, cluster-failover,
                                                 # handler-failing-during-failover, handler-succeeding-during-failover,
                                                 # stream-placement, delayed-messages, retry-via-nak, retry-via-nak-edge-cases,
                                                 # retry-via-nak-past-max-deliver, retry-via-nak-server-behaviour,
                                                 # retry-via-nak-across-a-restart, retry-via-copy-or-nak,
-                                                # nats-retry-several-handlers
+                                                # nats-retry-several-handlers, retry-via-copy, nats-retry-backoff
 
 scripts/
 ├── run-examples.sh                             # runs examples/*.php, strict mode for CI

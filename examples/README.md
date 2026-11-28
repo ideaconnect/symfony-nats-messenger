@@ -16,6 +16,8 @@ behaviour still works. In an application the same DSN and options go under `fram
 | `retry-via-nak-server-behaviour.php` | what the server does with a NAK retry it holds: a delay too long for it is cut and the message held, a retry that waits longer than `stream_max_age` loses its message, and a consumer's `backoff` adds `backoff[n] - backoff[0]` to each retry |
 | `retry-via-nak-across-a-restart.php` | a NAK retry that waits while the server restarts is still redelivered, once, up to a second early (needs docker) |
 | `retry-via-copy-or-nak.php` | the same failure under `retry_via: copy` and `nak`: what a second consumer on the subject receives and the stream stores, what a waiting retry holds back with `max_ack_pending: 1`, and how long a 0.3 s retry waits, with `scheduled_messages` as well on NATS 2.12 and later |
+| `retry-via-copy.php` | `retry_via: copy`, the default, under Symfony's Worker with its retry and failure-transport listeners: a message that keeps failing is retried through copies that run at once, as a copy drops its delay without `scheduled_messages`, then TERMed with one copy in the failure transport and the message and its copies in the stream; a message given up on without a failure transport, under `copy` and `nak`, stays on a limits stream and leaves a work-queue or interest one; an unrecoverable failure runs once; a `RecoverableMessageHandlingException` is retried past `max_retries` until it is handled; a message that cannot be decoded fails once as unrecoverable on Symfony Messenger 8.1.11 and later, and before 8.1 is TERMed at once with `get()` throwing the decode error |
+| `nats-retry-backoff.php` | `retry_handler: nats` with `max_deliver: 3` and `backoff: [1, 2]` under Symfony's Worker: with `nak_delay` the redeliveries of a message that keeps failing come `nak_delay` plus `backoff[n] - backoff[0]` after the failures, without it a plain NAK comes back at once, and a delivery nobody settled comes back after the backoff, which replaces `ack_wait` |
 | `delayed-messages.php` | `scheduled_messages`: a message sent with a `DelayStamp` arrives when its time has come, on NATS 2.12 and later; on an older server `setup()` and the send of a delayed message are refused, so nothing is stored that would never be delivered; on a stream with interest retention `setup()` is refused until a consumer has interest in the delayed subjects |
 | `request-timeout.php` | `request_timeout`, and sending again, with the same deduplication id, a message whose send timed out |
 | `keepalive.php` | `keepalive()` from a SIGALRM handler, as `messenger:consume --keepalive` calls it (needs pcntl) |
@@ -38,8 +40,8 @@ php examples/keepalive.php          # or one at a time
 
 `NATS_DSN` points the single-server examples at another server, as `nats-jetstream://[user:password@]host:port`.
 Each example works on a stream of its own and deletes it when done. `_bootstrap.php` holds what they share, and
-`_retry_via.php` what the `retry-via-*` examples share (Symfony's Worker with its retry and failure-transport
-listeners); neither is an example.
+`_retry_via.php` what the `retry-via-*` examples and `nats-retry-backoff.php` share (Symfony's Worker with its retry and
+failure-transport listeners); neither is an example.
 
 ## The login examples
 
