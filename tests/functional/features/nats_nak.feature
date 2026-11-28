@@ -146,3 +146,32 @@ Feature: NATS-native retry via NAK
       | nak_delay | waits        | slack |
       | 0.5       | 500 and 1500 | 3     |
       | 0         | 0 and 0      | 1     |
+
+  # Both retry modes, with reconnect on, on a stream with three replicas on the test cluster, and a worker connected to
+  # the server that leads the stream. That server stops while the handler holds the message's first run, which then
+  # fails; the worker carries on through another server of the cluster. In symfony mode Symfony's retry copy is
+  # published there and runs at once, as a copy drops its delay; in nats mode the NAK reaches the cluster and the
+  # message comes back nak_delay later. A retry lost on the way would come back only after ack_wait (30 s), past the
+  # bound, and request_timeout (10 s) is the bound itself (examples/handler-failing-during-failover.php).
+  @nak @cluster
+  Scenario Outline: A worker whose handler fails while its server goes away carries on through another server, in <mode> mode
+    Given NATS server is running
+    And the test cluster is running
+    And the retry state directory is clean
+    And the test files directory is clean
+    And I have a messenger transport on the test cluster configured with "stream_max_age=900&stream_replicas=3&retry_handler=<mode>&nak_delay=1&ack_wait=30&reconnect=1&max_reconnect_attempts=30" and the retry strategy "{ max_retries: 3, delay: 1000, multiplier: 2, jitter: 0 }"
+    And the NATS stream is set up
+    And the transport connects to the server that leads its stream
+    When I send 1 retryable failing message whose first run is held
+    And I start a messenger consumer that stops after 2 deliveries
+    And the server the consumer is connected to stops while the handler holds the message's first run
+    And I wait for the consumer to finish or timeout
+    Then the retryable message should have been processed successfully
+    And the failing message should have run again at least <wait> ms and less than 10 s after its held run failed
+    And the consumer should have reconnected
+    And the transport's consumer should have nothing left to deliver or to wait for
+
+    Examples:
+      | mode    | wait |
+      | symfony | 0    |
+      | nats    | 1000 |

@@ -3390,6 +3390,9 @@ class NatsSetupContext implements Context
      */
     private function createAppropriateNatsClient(): NatsClient
     {
+        if ($this->clusterServer !== null) {
+            return $this->createNatsClusterClient();
+        }
         if ($this->useStaleServer) {
             return $this->createNatsStaleClient();
         }
@@ -4235,6 +4238,233 @@ class NatsSetupContext implements Context
                 $expected,
                 $held,
             ));
+        }
+    }
+
+    /** The servers of the test cluster ("east", tests/nats/nats-cluster*.conf), by container, and their client ports. */
+    private const CLUSTER = ['nats_cluster_1' => 4226, 'nats_cluster_2' => 4227, 'nats_cluster_3' => 4228];
+
+    /** The server of the test cluster the transport connects to, while a scenario runs on the cluster. */
+    private ?string $clusterServer = null;
+
+    /** The server of the test cluster a scenario stopped, which {@see restoreTheTestCluster()} starts again. */
+    private ?string $stoppedClusterServer = null;
+
+    /** @var array{query: string, strategy: string}|null The cluster transport's options, to write it again for another server. */
+    private ?array $clusterTransport = null;
+
+    /** When the test released the failing message's held first run, which then failed. */
+    private ?float $heldRunReleasedAt = null;
+
+    /**
+     * Waits until each server of the test cluster takes part in placing a stream with three replicas, as after a
+     * scenario or an example that stopped one of them.
+     */
+    #[Given('the test cluster is running')]
+    public function theTestClusterIsRunning(): void
+    {
+        $this->shouldNatsBeRunning = true;
+        $this->waitUntilTheTestClusterPlacesThreeReplicas();
+    }
+
+    /**
+     * The test transport on the test cluster, through its first server, with the given DSN query and retry strategy, no
+     * failure transport, and the failing and the test messages routed to it.
+     */
+    #[Given('I have a messenger transport on the test cluster configured with :query and the retry strategy :strategy')]
+    public function iHaveAMessengerTransportOnTheTestClusterConfiguredWithTheRetryStrategy(string $query, string $strategy): void
+    {
+        $this->clusterServer = array_key_first(self::CLUSTER);
+        $this->clusterTransport = ['query' => $query, 'strategy' => $strategy];
+        $this->writeRetryTransportConfiguration($query, $strategy, false, 'messenger.transport.native_php_serializer', '127.0.0.1:' . self::CLUSTER[$this->clusterServer]);
+    }
+
+    /** Points the transport at the server that leads its stream, which a scenario then stops: the hardest case. */
+    #[Given('the transport connects to the server that leads its stream')]
+    public function theTransportConnectsToTheServerThatLeadsItsStream(): void
+    {
+        if ($this->clusterTransport === null) {
+            throw new \RuntimeException('No transport on the test cluster');
+        }
+
+        $client = $this->createNatsClusterClient();
+        try {
+            $info = $client->jetStream()->getStream($this->testStreamName)->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $leader = is_array($info['cluster'] ?? null) ? ($info['cluster']['leader'] ?? null) : null;
+        if (!is_string($leader) || !isset(self::CLUSTER[$leader])) {
+            throw new \RuntimeException('The stream has no leader on the test cluster: ' . json_encode($info['cluster'] ?? null));
+        }
+
+        $this->clusterServer = $leader;
+        $this->writeRetryTransportConfiguration($this->clusterTransport['query'], $this->clusterTransport['strategy'], false, 'messenger.transport.native_php_serializer', '127.0.0.1:' . self::CLUSTER[$leader]);
+    }
+
+    #[When('I send :count retryable failing message whose first run is held')]
+    #[When('I send :count retryable failing messages whose first run is held')]
+    public function iSendRetryableFailingMessagesWhoseFirstRunIsHeld(int $count): void
+    {
+        $this->sendFailingMessages($count, ['--retryable', '--hold-first-run']);
+    }
+
+    /**
+     * Once the handler holds the message's first run, stops the server the consumer is connected to with `docker stop`,
+     * as a deploy or a rolling restart does, and then releases the run, which fails. The server closes the connection on
+     * its way out, and the client, which reads the socket only while an operation waits for a reply, has not read that
+     * close when the handler returns.
+     */
+    #[When('the server the consumer is connected to stops while the handler holds the message\'s first run')]
+    public function theServerTheConsumerIsConnectedToStopsWhileTheHandlerHoldsTheMessagesFirstRun(): void
+    {
+        if ($this->clusterServer === null) {
+            throw new \RuntimeException('No transport on the test cluster');
+        }
+
+        $deadline = microtime(true) + 30;
+        while (!file_exists($this->retryStateDir . '/message_1.held')) {
+            if (microtime(true) > $deadline || !$this->consumerProcess?->isRunning()) {
+                throw new \RuntimeException(sprintf("The handler did not hold the message's first run.\nConsumer output: %s\nConsumer error: %s", $this->consumerProcess?->getOutput() ?? 'N/A', $this->consumerProcess?->getErrorOutput() ?? 'N/A'));
+            }
+            usleep(50000);
+        }
+
+        $server = $this->clusterServer;
+        $this->stoppedClusterServer = $server;
+        $stop = new Process(['docker', 'stop', $server]);
+        $stop->setTimeout(60);
+        $stop->run();
+        if (!$stop->isSuccessful()) {
+            throw new \RuntimeException(sprintf('docker stop %s failed: %s', $server, $stop->getErrorOutput()));
+        }
+
+        touch($this->retryStateDir . '/message_1.release');
+        $this->heldRunReleasedAt = microtime(true);
+    }
+
+    /**
+     * How long after the release of its held first run, which then failed, the failing message ran again: its retry
+     * reached the cluster through another server rather than coming back after ack_wait.
+     */
+    #[Then('the failing message should have run again at least :ms ms and less than :seconds s after its held run failed')]
+    public function theFailingMessageShouldHaveRunAgainAfterItsHeldRunFailed(int $ms, int $seconds): void
+    {
+        $runs = $this->runsOfTheFailingMessage();
+        if ($this->heldRunReleasedAt === null || count($runs) < 2) {
+            throw new \RuntimeException(sprintf("Expected a second run after the held one, got %d run(s).\nConsumer output: %s\nConsumer error: %s", count($runs), $this->consumerProcess?->getOutput() ?? 'N/A', $this->consumerProcess?->getErrorOutput() ?? 'N/A'));
+        }
+
+        $waited = (int) round(($runs[1] - $this->heldRunReleasedAt) * 1000);
+        if ($waited < $ms || $waited >= $seconds * 1000) {
+            throw new \RuntimeException(sprintf("Expected the second run at least %d ms and less than %d s after the held run failed, it came %d ms after.\nConsumer error: %s", $ms, $seconds, $waited, $this->consumerProcess?->getErrorOutput() ?? 'N/A'));
+        }
+    }
+
+    /** The transport's consumer has delivered everything and waits for no acknowledgement. */
+    #[Then('the transport\'s consumer should have nothing left to deliver or to wait for')]
+    public function theTransportsConsumerShouldHaveNothingLeftToDeliverOrToWaitFor(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $state = ['ack pending' => $info['num_ack_pending'] ?? null, 'pending' => $info['num_pending'] ?? null];
+        if ($state !== ['ack pending' => 0, 'pending' => 0]) {
+            throw new \RuntimeException('Expected nothing left, got ' . json_encode($state));
+        }
+    }
+
+    /**
+     * Starts the server of the test cluster a scenario stopped and waits until the cluster places three replicas again,
+     * so that the next scenario and the examples find the cluster as it was; deletes the scenario's stream there.
+     */
+    #[AfterScenario]
+    public function restoreTheTestCluster(): void
+    {
+        if ($this->clusterServer === null && $this->stoppedClusterServer === null) {
+            return;
+        }
+
+        try {
+            if ($this->stoppedClusterServer !== null) {
+                (new Process(['docker', 'start', $this->stoppedClusterServer]))->setTimeout(60)->run();
+            }
+            $client = $this->createNatsClusterClient();
+            try {
+                $client->jetStream()->deleteStream($this->testStreamName)->await();
+            } catch (\Throwable) {
+                // Gone already, with the cleanup above.
+            } finally {
+                $client->disconnect()->await();
+            }
+            $this->stoppedClusterServer = null;
+            $this->waitUntilTheTestClusterPlacesThreeReplicas();
+        } finally {
+            $this->clusterServer = null;
+            $this->stoppedClusterServer = null;
+            $this->clusterTransport = null;
+            $this->heldRunReleasedAt = null;
+        }
+    }
+
+    /** A client on a server of the test cluster that is running: the transport's own, unless a scenario stopped it. */
+    private function createNatsClusterClient(): NatsClient
+    {
+        $servers = array_keys(self::CLUSTER);
+        if ($this->clusterServer !== null && $this->clusterServer !== $this->stoppedClusterServer) {
+            array_unshift($servers, $this->clusterServer);
+        }
+
+        $failure = null;
+        foreach (array_unique($servers) as $server) {
+            if ($server === $this->stoppedClusterServer) {
+                continue;
+            }
+            $client = new NatsClient(new NatsOptions(
+                servers: ['nats://127.0.0.1:' . self::CLUSTER[$server]],
+                username: 'admin',
+                password: 'password',
+                connectTimeoutMs: 5000,
+            ));
+            try {
+                $client->connect()->await();
+
+                return $client;
+            } catch (\Throwable $e) {
+                $failure = $e;
+            }
+        }
+
+        throw new \RuntimeException('No server of the test cluster answers: ' . $failure?->getMessage());
+    }
+
+    private function waitUntilTheTestClusterPlacesThreeReplicas(): void
+    {
+        $probe = 'cluster_probe';
+        $deadline = microtime(true) + 60;
+        while (true) {
+            try {
+                $client = $this->createNatsClusterClient();
+                try {
+                    $jetStream = $client->jetStream();
+                    $jetStream->addStream((new StreamConfiguration($probe))->subjects($probe . '.messages')->replicas(3))->await();
+                    $jetStream->deleteStream($probe)->await();
+                } finally {
+                    $client->disconnect()->await();
+                }
+
+                return;
+            } catch (\Throwable $e) {
+                if (microtime(true) > $deadline) {
+                    throw new \RuntimeException('The test cluster did not place a stream with three replicas within 60 s: ' . $e->getMessage());
+                }
+                usleep(500000);
+            }
         }
     }
 }
