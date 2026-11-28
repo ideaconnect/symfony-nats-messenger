@@ -109,15 +109,7 @@ final class CredentialsFile implements NonceSignerInterface
             self::wipe($seed);
         }
 
-        try {
-            return $signer->sign($nonce);
-        } catch (NatsException $failed) {
-            // Not chained: the signer's exception chains sodium's, whose frame holds the secret key.
-            $reason = $failed->getMessage();
-            unset($failed);
-
-            throw new NatsException(sprintf('The creds_file option names a file whose seed could not sign the server\'s nonce (%s): %s.', $reason, $this->path));
-        }
+        return $signer->sign($nonce);
     }
 
     /**

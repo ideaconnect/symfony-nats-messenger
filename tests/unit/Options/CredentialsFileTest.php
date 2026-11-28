@@ -191,6 +191,9 @@ final class CredentialsFileTest extends TestCase
         $path = $this->files->write();
         $file = CredentialsFile::checkedAt($path);
 
+        $this->files->writeText('user.creds', TestCredsFiles::text('not-a-jwt', TestNkeys::seed()));
+        self::assertFalse($file->holdsAnUnexpiredJwt(), 'a JWT block without a JWT');
+
         $this->files->writeText('user.creds', TestCredsFiles::text('aGVhZGVy.bm90IGpzb24.c2ln', TestNkeys::seed()));
         self::assertFalse($file->holdsAnUnexpiredJwt(), 'claims that are not JSON');
 
