@@ -47,6 +47,12 @@ final class NatsTransportConfigurationBuilder
      */
     public const NONCE_SIGNER_TAG = 'idct_nats_messenger.nonce_signer';
 
+    /** The refusal of a signer from nkey_seed next to a username, a password or a token. */
+    private const NKEY_SEED_STANDS_ALONE = 'The nkey_seed option cannot be combined with a username, password or token, from the '
+        . 'DSN or the options: a server with NKey users would log the connection in with the NKey and ignore them, even wrong '
+        . 'ones, and on a server that sends no nonce the client would refuse the login, as there is nothing to sign. Remove '
+        . 'them, or remove the seed.';
+
     /** The refusal of a signer from nonce_signer next to a seed, a username, a password or a token. */
     private const NONCE_SIGNER_STANDS_ALONE = 'The nonce_signer option cannot be combined with nkey_seed, a username, password '
         . 'or token, from the DSN or the options: nkey_seed would be a second signer, and a server with NKey users would log '
@@ -1244,10 +1250,7 @@ final class NatsTransportConfigurationBuilder
     ): void {
         if ($signer !== null && ($username !== null || $password !== null || $token !== null)) {
             throw new InvalidArgumentException($signer instanceof NkeySeedSigner
-                ? 'The nkey_seed option cannot be combined with a username, password or token, from the DSN or the options: a '
-                    . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and on '
-                    . 'a server that sends no nonce the client would refuse the login, as there is nothing to sign. Remove them, '
-                    . 'or remove the seed.'
+                ? self::NKEY_SEED_STANDS_ALONE
                 : self::NONCE_SIGNER_STANDS_ALONE);
         }
     }
@@ -1267,21 +1270,17 @@ final class NatsTransportConfigurationBuilder
     private function resolveNkey(#[\SensitiveParameter] array $configuration, #[\SensitiveParameter] ?NonceSignerInterface $signer): ?string
     {
         $configured = $this->toNullableString($configuration[TransportOption::NKEY->value]);
-        if ($signer === null) {
-            if ($configured !== null) {
-                throw new InvalidArgumentException(
-                    'The nkey option needs a signer, from nkey_seed or nonce_signer: the client must sign the server\'s nonce, '
-                    . 'so nkey alone can never connect. Put the seed (SU...) in nkey_seed and leave nkey unset, as the public '
-                    . 'key is derived from it, or name a service that signs the nonce in nonce_signer.'
-                );
-            }
-
-            return null;
+        if ($signer === null && $configured !== null) {
+            throw new InvalidArgumentException(
+                'The nkey option needs a signer, from nkey_seed or nonce_signer: the client must sign the server\'s nonce, '
+                . 'so nkey alone can never connect. Put the seed (SU...) in nkey_seed and leave nkey unset, as the public '
+                . 'key is derived from it, or name a service that signs the nonce in nonce_signer.'
+            );
         }
 
         if (!$signer instanceof NkeySeedSigner) {
-            // The CONNECT carries the value as it is, and a tracing server logs it, so a seed put here by mistake stops
-            // here. The value is not repeated.
+            // A signer from nonce_signer, or none, and then no nkey either: null. The CONNECT carries the value as it is,
+            // and a tracing server logs it, so a seed put here by mistake stops here. The value is not repeated.
             if ($configured !== null && preg_match('/^U[A-Z2-7]{55}$/', $configured) !== 1) {
                 throw new InvalidArgumentException(
                     'The nkey option is not the public key of a user, a U followed by 55 capital letters and digits from 2 to '
