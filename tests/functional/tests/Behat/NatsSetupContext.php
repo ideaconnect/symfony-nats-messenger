@@ -3573,6 +3573,172 @@ class NatsSetupContext implements Context
         }
     }
 
+    /** The proxy that leaves the transport's consumer info requests unanswered, while a scenario runs it (#127). */
+    private ?Process $consumerInfoProxy = null;
+
+    /** The server and the login the transport of the consumer info scenarios connects with. */
+    private string $consumerInfoServer = 'admin:password@localhost:4222';
+
+    /** @var array{maxDeliver: int, maxRetries: int, requestTimeout: int, ackWait: int} */
+    private array $consumerInfoOptions = ['maxDeliver' => 2, 'maxRetries' => 3, 'requestTimeout' => 1, 'ackWait' => 2];
+
+    /**
+     * The transport of the consumer info scenarios (#127): Symfony's retries carried out by NAKs, with the given
+     * max_deliver, max_retries, request_timeout and ack_wait, and a failure transport. It starts on the main test
+     * server as the admin, so that "the NATS stream is set up" creates the consumer with these options; a later step
+     * moves it behind the proxy or to a user who may not ask for consumer info.
+     */
+    #[Given('I have a messenger transport configured for the consumer info reads with NAK retries, max_deliver :maxDeliver, max_retries :maxRetries, request_timeout :requestTimeout, ack_wait :ackWait and a failure transport')]
+    public function iHaveAMessengerTransportConfiguredForTheConsumerInfoReads(int $maxDeliver, int $maxRetries, int $requestTimeout, int $ackWait): void
+    {
+        $this->consumerInfoServer = 'admin:password@localhost:4222';
+        $this->consumerInfoOptions = ['maxDeliver' => $maxDeliver, 'maxRetries' => $maxRetries, 'requestTimeout' => $requestTimeout, 'ackWait' => $ackWait];
+        $this->writeConsumerInfoTransportConfiguration();
+    }
+
+    /**
+     * Starts tests/nats/consumer-info-proxy.php in front of the main test server, and points the transport at it: the
+     * proxy drops every consumer info request and forwards everything else, so each read of the consumer's max_deliver
+     * runs into request_timeout. The failure transport stays on the server itself.
+     */
+    #[Given('the transport\'s consumer info requests go unanswered')]
+    public function theTransportsConsumerInfoRequestsGoUnanswered(): void
+    {
+        $this->consumerInfoProxy = new Process(['php', __DIR__ . '/../../../nats/consumer-info-proxy.php', '127.0.0.1:4222', '300']);
+        $this->consumerInfoProxy->setTimeout(null);
+        $this->consumerInfoProxy->start();
+
+        $deadline = microtime(true) + 10;
+        while (!preg_match('/^LISTENING (\d+)$/m', $this->consumerInfoProxy->getOutput(), $listening)) {
+            if (!$this->consumerInfoProxy->isRunning() || microtime(true) > $deadline) {
+                throw new \RuntimeException("The consumer info proxy did not start.\nOutput: " . $this->consumerInfoProxy->getOutput() . "\nError: " . $this->consumerInfoProxy->getErrorOutput());
+            }
+            usleep(50000);
+        }
+
+        $this->consumerInfoServer = 'admin:password@127.0.0.1:' . $listening[1];
+        $this->writeConsumerInfoTransportConfiguration();
+    }
+
+    /**
+     * Points the transport at the user of tests/nats/nats.conf who may publish anything but a consumer info request:
+     * the server refuses each read of the consumer's max_deliver at once, for lack of permission.
+     */
+    #[Given('the transport connects as a user who may not ask for consumer info')]
+    public function theTransportConnectsAsAUserWhoMayNotAskForConsumerInfo(): void
+    {
+        $this->consumerInfoServer = 'no_consumer_info:password@localhost:4222';
+        $this->writeConsumerInfoTransportConfiguration();
+    }
+
+    /**
+     * The consumer ran until its message limit and exited with code 0: no read of the consumer info, unanswered or
+     * refused, left the send of a retry and stopped it, as a read that got no answer did up to 5.10.1.
+     */
+    #[Then('the consumer should have run to its limit, not stopped by a consumer info read')]
+    public function theConsumerShouldHaveRunToItsLimitNotStoppedByAConsumerInfoRead(): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $this->consumerProcess->wait();
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        if ($this->consumerProcess->getExitCode() !== 0 || str_contains($output, 'TimeoutException') || str_contains($output, 'ConnectionException')) {
+            throw new \RuntimeException(sprintf("Expected the consumer to run to its limit and exit with code 0, it exited with code %s.\nConsumer output: %s", var_export($this->consumerProcess->getExitCode(), true), $output));
+        }
+    }
+
+    /**
+     * The proxy dropped at least one consumer info request of the transport's consumer, and nothing else: without
+     * that the scenario would not have shown a read that got no answer.
+     */
+    #[Then('the transport\'s consumer info requests should have gone unanswered')]
+    public function theTransportsConsumerInfoRequestsShouldHaveGoneUnanswered(): void
+    {
+        if ($this->consumerInfoProxy === null) {
+            throw new \RuntimeException('The consumer info proxy was not started');
+        }
+
+        preg_match_all('/^DROPPED (\S+)$/m', $this->consumerInfoProxy->getOutput(), $dropped);
+        $expected = sprintf('$JS.API.CONSUMER.INFO.%s.client', $this->testStreamName);
+        if ($dropped[1] === [] || array_unique($dropped[1]) !== [$expected]) {
+            throw new \RuntimeException(sprintf('Expected the proxy to drop requests to %s only, it dropped: %s', $expected, json_encode($dropped[1])));
+        }
+
+        echo sprintf("The proxy dropped %d consumer info request(s).\n", count($dropped[1]));
+    }
+
+    /**
+     * The transport warned once per consumer process that the consumer info could not be read and that the
+     * max_deliver option decided, through FrameworkBundle's default logger on the consumer's stderr: with the advice to
+     * let the user ask for consumer info after a refusal, and that it is asked again otherwise.
+     */
+    #[Then('the consumer should have warned once that the consumer info could not be read, so the max_deliver option decided')]
+    public function theConsumerShouldHaveWarnedOnceThatTheConsumerInfoCouldNotBeRead(): void
+    {
+        $this->assertConsumerInfoWarning(' It is asked again at the next retry.');
+    }
+
+    #[Then('the consumer should have warned once that the user may not ask for consumer info, so the max_deliver option decided')]
+    public function theConsumerShouldHaveWarnedOnceThatTheUserMayNotAskForConsumerInfo(): void
+    {
+        $this->assertConsumerInfoWarning(sprintf(' Let this user ask for consumer info ($JS.API.CONSUMER.INFO.%s.client).', $this->testStreamName));
+    }
+
+    private function assertConsumerInfoWarning(string $ending): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        $pattern = sprintf(
+            '/%s\(.+?\), so the max_deliver option \(%d\) tells which delivery is the last one\.%s/',
+            preg_quote(sprintf('retry_via=nak on stream "%s": consumer "client" could not be read for its max_deliver ', $this->testStreamName), '/'),
+            $this->consumerInfoOptions['maxDeliver'],
+            preg_quote($ending, '/'),
+        );
+        $found = preg_match_all($pattern, $output);
+        $any = substr_count($output, 'could not be read for its max_deliver');
+        if ($found !== 1 || $any !== 1) {
+            throw new \RuntimeException(sprintf("Expected the consumer info warning once, ending \"%s\"; found it %d time(s), and %d such warning(s) in all.\nConsumer output: %s", $ending, $found, $any, $output));
+        }
+    }
+
+    #[AfterScenario]
+    public function stopTheConsumerInfoProxy(): void
+    {
+        if ($this->consumerInfoProxy !== null) {
+            $this->consumerInfoProxy->stop(1);
+            $this->consumerInfoProxy = null;
+        }
+        $this->consumerInfoServer = 'admin:password@localhost:4222';
+    }
+
+    /**
+     * The consumer info scenarios' transport on $consumerInfoServer, and its failure transport on the main test server
+     * as the admin. A delivery left unsettled comes back after ack_wait, which setup() writes to the consumer.
+     */
+    private function writeConsumerInfoTransportConfiguration(): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        failure_transport: failed_transport\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://%s/%s/%s?stream_max_age=900&retry_via=nak&max_deliver=%d&request_timeout=%d&ack_wait=%d'\n                serializer: 'messenger.transport.native_php_serializer'\n                retry_strategy:\n                    max_retries: %d\n                    delay: 100\n                    multiplier: 2\n            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: 'messenger.transport.native_php_serializer'\n        routing:\n            'App\\Async\\FailingMessage': test_transport\n",
+            $this->consumerInfoServer,
+            $this->testStreamName,
+            $this->testSubject,
+            $this->consumerInfoOptions['maxDeliver'],
+            $this->consumerInfoOptions['requestTimeout'],
+            $this->consumerInfoOptions['ackWait'],
+            $this->consumerInfoOptions['maxRetries'],
+            $this->failedStreamName,
+            $this->failedSubject,
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
     /**
      * Writes a metadata entry and a description onto the transport's durable consumer behind the transport's back, as
      * an operator's `nats consumer edit` does, after "the NATS stream is set up" created it with neither: the
