@@ -21,8 +21,13 @@ use InvalidArgumentException;
  * Violation. A file that is missing or cannot be used fails that connection; nothing of an earlier read is kept to fall
  * back on.
  *
+ * What this class keeps is a reference, which it drops. It does not overwrite memory: PHP copies strings as it parses
+ * and trims them, so overwriting one copy would leave the others, and nothing here is a promise about the process's
+ * memory. The process can read the file anyway.
+ *
  * No error repeats the file's text. Each names the option and the path, and none chains an exception of the client's
- * parser or signer: with zend.exception_ignore_args off their frames hold the text or the seed as an argument.
+ * parser or of its signer's constructor: with zend.exception_ignore_args off their frames hold the text or the seed as
+ * an argument.
  */
 final class CredentialsFile implements NonceSignerInterface
 {
@@ -49,29 +54,24 @@ final class CredentialsFile implements NonceSignerInterface
 
         try {
             $credentials = $file->read();
+            $signer = self::signerFor($credentials['nkeySeed'], $path);
         } catch (NatsException $unusable) {
             throw new InvalidArgumentException($unusable->getMessage());
         }
 
-        try {
-            if (preg_match(self::JWT_PATTERN, $credentials['jwt']) !== 1) {
-                throw new InvalidArgumentException(sprintf(
-                    'The creds_file option names a file whose NATS USER JWT block does not hold a JWT, which has three parts '
-                    . 'separated by dots: %s.',
-                    $path,
-                ));
-            }
+        if (preg_match(self::JWT_PATTERN, $credentials['jwt']) !== 1) {
+            throw new InvalidArgumentException(sprintf(
+                'The creds_file option names a file whose NATS USER JWT block does not hold a JWT, which has three parts '
+                . 'separated by dots: %s.',
+                $path,
+            ));
+        }
 
-            if (!str_starts_with(self::signerFor($credentials['nkeySeed'], $path)->publicKey(), 'U')) {
-                throw new InvalidArgumentException(sprintf(
-                    'The creds_file option names a file whose USER NKEY SEED block does not hold a user seed (SU...): %s.',
-                    $path,
-                ));
-            }
-        } catch (NatsException $unusable) {
-            throw new InvalidArgumentException($unusable->getMessage());
-        } finally {
-            self::wipe($credentials['nkeySeed']);
+        if (!str_starts_with($signer->publicKey(), 'U')) {
+            throw new InvalidArgumentException(sprintf(
+                'The creds_file option names a file whose USER NKEY SEED block does not hold a user seed (SU...): %s.',
+                $path,
+            ));
         }
 
         return $file;
@@ -86,7 +86,6 @@ final class CredentialsFile implements NonceSignerInterface
     public function jwt(): string
     {
         $credentials = $this->read();
-        self::wipe($this->seedOfTheLatestRead);
         $this->seedOfTheLatestRead = $credentials['nkeySeed'];
 
         return $credentials['jwt'];
@@ -103,13 +102,7 @@ final class CredentialsFile implements NonceSignerInterface
         $seed = $this->seedOfTheLatestRead ?? $this->read()['nkeySeed'];
         $this->seedOfTheLatestRead = null;
 
-        try {
-            $signer = self::signerFor($seed, $this->path);
-        } finally {
-            self::wipe($seed);
-        }
-
-        return $signer->sign($nonce);
+        return self::signerFor($seed, $this->path)->sign($nonce);
     }
 
     /**
@@ -122,13 +115,11 @@ final class CredentialsFile implements NonceSignerInterface
     public function holdsAnUnexpiredJwt(): bool
     {
         try {
-            $credentials = $this->read();
+            $claims = self::claimsOf($this->read()['jwt']);
         } catch (NatsException) {
             return false;
         }
 
-        self::wipe($credentials['nkeySeed']);
-        $claims = self::claimsOf($credentials['jwt']);
         if ($claims === null) {
             return false;
         }
@@ -138,6 +129,7 @@ final class CredentialsFile implements NonceSignerInterface
             return true;
         }
 
+        // A JWT has expired once its exp claim, a time in seconds, has come.
         return (is_int($expiry) || is_float($expiry)) && $expiry > time();
     }
 
@@ -150,9 +142,14 @@ final class CredentialsFile implements NonceSignerInterface
      */
     private function read(): array
     {
-        $contents = is_file($this->path) && is_readable($this->path) ? @file_get_contents($this->path) : false;
+        // A directory is checked for apart: reading one gives an empty string or false, depending on the error handler.
+        if (!is_file($this->path)) {
+            throw new NatsException(sprintf('The creds_file option names no file: %s does not exist or is a directory.', $this->path));
+        }
+
+        $contents = @file_get_contents($this->path);
         if ($contents === false) {
-            throw new NatsException(sprintf('The creds_file option does not name a file that can be read: %s.', $this->path));
+            throw new NatsException(sprintf('The creds_file option names a file that cannot be read: %s.', $this->path));
         }
 
         try {
@@ -164,8 +161,6 @@ final class CredentialsFile implements NonceSignerInterface
             unset($unparsable);
 
             throw new NatsException(sprintf('The creds_file option names a file that is not a .creds file (%s): %s.', $missing, $this->path));
-        } finally {
-            self::wipe($contents);
         }
     }
 
@@ -203,24 +198,5 @@ final class CredentialsFile implements NonceSignerInterface
         $claims = $json === false ? null : json_decode($json, true);
 
         return is_array($claims) ? $claims : null;
-    }
-
-    /**
-     * Overwrites a copy of a secret this class holds, where sodium can, and drops it. Best effort: PHP may hold other
-     * copies, and the polyfill's sodium_memzero() always fails.
-     *
-     * @param-out null $secret
-     */
-    private static function wipe(#[\SensitiveParameter] ?string &$secret): void
-    {
-        if ($secret !== null && function_exists('sodium_memzero')) {
-            try {
-                sodium_memzero($secret);
-            } catch (\SodiumException) {
-                // Dropped below all the same.
-            }
-        }
-
-        $secret = null;
     }
 }

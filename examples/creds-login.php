@@ -95,6 +95,6 @@ try {
 }
 
 assertRefusedWhenBuilt(OPERATOR_MODE_PORT, ['creds_file' => generatedCredsFile('test-user'), 'jwt' => $credentials['jwt_user']['jwt']], 'The creds_file option cannot be combined with jwt');
-assertRefusedWhenBuilt(OPERATOR_MODE_PORT, ['creds_file' => sys_get_temp_dir() . '/no-such-file.creds'], 'The creds_file option does not name a file that can be read');
+assertRefusedWhenBuilt(OPERATOR_MODE_PORT, ['creds_file' => sys_get_temp_dir() . '/no-such-file.creds'], 'The creds_file option names no file');
 
 echo "OK creds-login: one transport sent and received as the user of its .creds file, then as the user whose file replaced it, and was refused with Authorization Violation once an expired user's file was in its place; creds_file next to a jwt and a missing file were refused when the transport was built\n";

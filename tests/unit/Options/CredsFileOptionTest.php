@@ -8,6 +8,7 @@ use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NatsMessenger\Options\CredentialsFile;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use IDCT\NatsMessenger\Tests\Support\PhpProcess;
 use IDCT\NatsMessenger\Tests\Support\TestCredsFiles;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use InvalidArgumentException;
@@ -153,7 +154,11 @@ final class CredsFileOptionTest extends TestCase
         }
 
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('The creds_file option cannot be combined with jwt, nkey, nkey_seed, a username, a password or a token, from the DSN or the options');
+        $this->expectExceptionMessage(
+            'The creds_file option cannot be combined with jwt, nkey, nkey_seed, a username, a password or a token, from the '
+            . 'DSN or the options: the file holds the user\'s JWT and seed, and the transport logs in with those alone. Remove '
+            . 'the others, or remove creds_file.'
+        );
 
         (new NatsTransportConfigurationBuilder())->build($dsn, $options + ['creds_file' => $this->files->write()]);
     }
@@ -166,9 +171,9 @@ final class CredsFileOptionTest extends TestCase
      */
     public static function unusableFiles(): iterable
     {
-        yield 'a missing file' => ['missing', 'The creds_file option does not name a file that can be read: %s.'];
-        yield 'a directory' => ['directory', 'The creds_file option does not name a file that can be read: %s.'];
-        yield 'an unreadable file' => ['unreadable', 'The creds_file option does not name a file that can be read: %s.'];
+        yield 'a missing file' => ['missing', 'The creds_file option names no file: %s does not exist or is a directory.'];
+        yield 'a directory' => ['directory', 'The creds_file option names no file: %s does not exist or is a directory.'];
+        yield 'an unreadable file' => ['unreadable', 'The creds_file option names a file that cannot be read: %s.'];
         yield 'a file without a JWT block' => ['no JWT block', 'The creds_file option names a file that is not a .creds file (Credentials file does not contain a NATS USER JWT block): %s.'];
         yield 'a file without a seed block' => ['no seed block', 'The creds_file option names a file that is not a .creds file (Credentials file does not contain a USER NKEY SEED block): %s.'];
         yield 'a seed block whose END line was cut' => ['seed END line cut', 'The creds_file option names a file that is not a .creds file (Credentials file does not contain a USER NKEY SEED block): %s.'];
@@ -193,6 +198,33 @@ final class CredsFileOptionTest extends TestCase
             }
             self::assertStringNotContainsString(TestCredsFiles::jwt(), $refused->getMessage());
         }
+    }
+
+    /**
+     * A sodium function the client calls can be disabled while the one it checks for is not: an \Error, whose frames hold
+     * the seed, so it is not chained either. Only a child process can disable a function.
+     */
+    public function testADisabledSodiumFunctionIsRefusedWhenBuiltWithoutChainingTheError(): void
+    {
+        $path = $this->files->write();
+        $script = <<<'PHP'
+            require 'vendor/autoload.php';
+            try {
+                (new IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['creds_file' => $argv[1]]);
+                echo 'built';
+            } catch (InvalidArgumentException $refused) {
+                echo $refused->getMessage(), $refused->getPrevious() === null ? '|not chained' : '|chained';
+            }
+            PHP;
+
+        $process = PhpProcess::run(['-d', 'disable_functions=sodium_memzero', '-d', 'zend.exception_ignore_args=0', '-r', $script, '--', $path], dirname(__DIR__, 3));
+
+        self::assertSame(0, $process['exitCode'], PhpProcess::describe($process));
+        self::assertSame(
+            'The creds_file option names a file whose seed cannot be used (Call to undefined function IDCT\NATS\Auth\sodium_memzero()): ' . $path . '.|not chained',
+            $process['stdout'],
+            PhpProcess::describe($process),
+        );
     }
 
     private function unusableFile(string $case): string

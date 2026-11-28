@@ -111,7 +111,7 @@ final class CredentialsFileTest extends TestCase
         $failure = self::failureOf(static fn () => $file->jwt());
 
         self::assertInstanceOf(NatsException::class, $failure);
-        self::assertSame('The creds_file option does not name a file that can be read: ' . $path . '.', $failure->getMessage());
+        self::assertSame('The creds_file option names no file: ' . $path . ' does not exist or is a directory.', $failure->getMessage());
         self::assertNull($failure->getPrevious());
     }
 
@@ -167,6 +167,15 @@ final class CredentialsFileTest extends TestCase
     public function testAJwtWithAnExpiryInThePastHasExpired(): void
     {
         self::assertFalse(CredentialsFile::checkedAt($this->files->write(expiresAt: time() - 1))->holdsAnUnexpiredJwt());
+    }
+
+    /**
+     * A JWT has expired once its time has come, so one whose expiry is now has expired: the server ends the connection
+     * at that second.
+     */
+    public function testAJwtWhoseExpiryIsNowHasExpired(): void
+    {
+        self::assertFalse(CredentialsFile::checkedAt($this->files->write(expiresAt: time()))->holdsAnUnexpiredJwt());
     }
 
     /**

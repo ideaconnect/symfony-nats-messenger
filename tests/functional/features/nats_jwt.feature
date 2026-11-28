@@ -138,4 +138,4 @@ Feature: JWT authentication
     Examples:
       | configuration                                        | message                                                     |
       | the user's .creds file and its JWT in the jwt option | The creds_file option cannot be combined with jwt           |
-      | a .creds file that does not exist                    | The creds_file option does not name a file that can be read |
+      | a .creds file that does not exist                    | The creds_file option names no file                         |
