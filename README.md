@@ -520,7 +520,8 @@ the test server and print `OK` when what they show held:
 | `nats-retry-on-a-cluster.php` | `retry_handler: nats` with `max_deliver` on a cluster: NATS deletes a message stopped at `max_deliver` from an interest stream, and `setup()` warns about it; a work-queue stream keeps it |
 | `stream-placement.php` | `stream_placement_tags` and `stream_placement_cluster` on a cluster, and staging a move with a replica change |
 
-`composer nats:start` runs a three-server JetStream cluster for the last four next to the single test servers;
+`composer nats:start` runs a three-server JetStream cluster, next to the single test servers, for the examples
+whose row says "on a cluster";
 [`examples/README.md`](examples/README.md#the-test-cluster) describes it, and
 [Using a NATS Cluster](#using-a-nats-cluster) what they mean for an application.
 
@@ -1108,7 +1109,7 @@ framework:
 | `willRetry()` and the retry count | right | right, from the delivery count | false and 0, with `max_retries: 0` |
 | Given up on | a TERM, one failure-transport copy | a TERM, one failure-transport copy | NATS redelivers nothing after `max_deliver` and publishes `MAX_DELIVERIES`; the message stays on some streams only |
 | An unrecoverable failure | 1 run, a TERM, one failure-transport copy | 1 run, a TERM, one failure-transport copy | 1 run, a TERM (5.10.0; up to `max_deliver` runs before) |
-| A message that cannot be decoded | Symfony's retry strategy and failure transport on Messenger 8.1 and later; before, a TERM and an error logged | the same | a TERM |
+| A message that cannot be decoded | Symfony's retry strategy and failure transport on Messenger 8.1 and later; before, a TERM, and the decode error stops the worker | the same | a TERM; before Messenger 8.1 the decode error also stops the worker |
 | Failure transport | keeps what Symfony gives up on | keeps what Symfony gives up on | not for this mode |
 | Other consumers on the subject | handle each retry copy as well | see nothing extra | see nothing extra |
 | While a retry waits | holds nothing | holds one of the consumer's `max_ack_pending` slots | holds a slot for `nak_delay` |
@@ -1964,10 +1965,10 @@ composer test:mutation:check-log  # no mutant may be killed by the test harness 
 ```
 
 Configuration lives in `infection.json5`. It enforces a minimum MSI of 90% and a minimum covered MSI of
-95%; the suite scores 98.6% (1768 of 1793 mutants killed, with 100% mutation code coverage).
-[docs/TESTS.md](docs/TESTS.md#surviving-mutants) lists the 25 mutants that survive, with the reason for each:
-20 are equivalent, two make no difference with the real client, and three are caught by tests in a child process,
-which a mutant does not reach. CI runs all three commands on the PHP 8.5 job and
+95%. [docs/TESTS.md](docs/TESTS.md#mutation-testing) gives the score of the run it names, and lists the mutants
+that survive with the reason for each: most are equivalent, the others make no difference with the real client or
+are caught by tests in a child process, which a mutant does not reach.
+CI runs all three commands on the PHP 8.5 job and
 every day. Scores published before, 100% among them, were not
 real: in Infection's mutant processes the client's final classes could not be doubled, so every mutant their
 tests covered counted as killed.
@@ -2503,7 +2504,7 @@ Contributions are welcome! Please ensure:
 - Functional tests pass: `composer test:functional` (if applicable)
 - `docs/TESTS.md` is kept up to date when tests are added, removed, or renamed
 - Each release has an entry in `docs/CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format
-- When a PR is merged or its features are adapted, a description is added to `docs/PRs/`
+- When a contributor's PR is merged or its features are adapted, a description is added to `docs/PRs/`
 
 ### Quick Development Workflow
 

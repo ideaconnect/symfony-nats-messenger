@@ -323,7 +323,7 @@ apply only with the option on.
    own `vendor/` and client requirement; its autoloader reads transport code directly from `../../src/`.
 5. `TransportOption` defines keys; every case needs a builder default. Prefer `TypeCoercion` and
    sensitive DSN/credential parameters. Update README examples and `docs/TESTS.md` with test changes,
-   `docs/CHANGELOG.md` under Unreleased, and `docs/PRs/` when a PR is merged or adapted. A change that
+   `docs/CHANGELOG.md` under Unreleased, and `docs/PRs/` when a contributor's PR is merged or adapted. A change that
    alters what the operator of an existing deployment sees (behaviour, an option, a requirement, a log
    line, something to register) gets a bullet in the README's "Upgrading from" section named after the
    latest release, on the branch that makes the change, with its "Tested by" line; #134 and #146 merged

@@ -192,4 +192,4 @@ CI runs again on the head that lands, and the merge waits for it.
 - The serializers of Symfony Messenger 8.1 and later return a message that cannot be decoded as a message of its own,
   so with them it goes through the retry strategy before it is TERMed. Since 5.10.0 the transport makes one of a
   serializer that throws too, as this transport's igbinary serializer does, and before Messenger 8.1 it TERMs the
-  message and logs it instead of stopping the worker.
+  message and throws the decode error, which stops the worker.

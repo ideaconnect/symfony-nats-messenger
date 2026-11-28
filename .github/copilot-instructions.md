@@ -8,4 +8,5 @@
 - Prefer the composer scripts in the root `composer.json` over ad-hoc commands or Makefile targets.
 - Keep `docs/TESTS.md` up to date whenever tests are added, removed, or renamed.
 - Add an entry to `docs/CHANGELOG.md` for each release, following Keep a Changelog format.
-- When a PR is merged or its features are adapted, add a description to `docs/PRs/`.
+- When a contributor's PR is merged or its features are adapted, add a description to `docs/PRs/` (not for the
+  maintainers' own PRs or dependency updates).

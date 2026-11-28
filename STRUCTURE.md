@@ -96,7 +96,7 @@ examples/                                       # Runnable scripts, one per beha
                                                 # failure-transport listeners, and a record of one run
 └── *.php                                       # send-and-consume, duplicate-protection, nats-retry, request-timeout, keepalive,
                                                 # connection-checks, jwt-login, nkey-login, token-login, reconnect, cluster-failover,
-                                                # handler-failing-during-failover, handler-succeeding-during-failover,
+                                                # handler-failing-during-failover, handler-succeeding-during-failover, nats-retry-on-a-cluster,
                                                 # stream-placement, delayed-messages, retry-via-nak, retry-via-nak-edge-cases,
                                                 # retry-via-nak-past-max-deliver, retry-via-nak-server-behaviour,
                                                 # retry-via-nak-across-a-restart, retry-via-copy-or-nak,
@@ -162,6 +162,13 @@ Cross-cutting behavior:
   `request_timeout`, when that is shorter); `keepalive()` skips the check.
 - **Pull consumers, explicit ACK.** Messages are only considered processed once explicitly ACK'd;
   this is what makes `retry_handler` and shared-consumer load balancing work.
+- **`scheduled_messages` on an interest stream.** `setup()`, before it writes the stream, and `get()`, before a
+  worker's first pull, refuse a stream with interest retention where no consumer's filter covers the delayed
+  subjects: NATS would store none of the delayed messages (`assertTheStreamKeepsDelayedMessages()`).
+- **`retry_via: nak` and the consumer's `max_deliver`.** `send()` leaves Symfony's retry copy out, for `ack()` or
+  `reject()` to NAK the delivery, only when the delivery is not the last one the consumer's own `max_deliver`
+  allows; that limit is read from the server at the first retry that needs it and kept for a minute
+  (`consumersMaxDeliver()`), not taken from the option.
 
 ### Options/ - configuration model
 Configuration is resolved once, up front, into an **immutable** object:
