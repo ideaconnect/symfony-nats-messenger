@@ -419,6 +419,27 @@ class MyCustomSerializer extends AbstractEnveloperSerializer
 
 > **Tested by:** `readmeCustomSerializerExample_EncodeDecode_RoundTrips`, `readmeCustomSerializerExample_DecodeInvalidBody_ThrowsException` - the exact code above is compiled and exercised via `ReadmeExampleSerializer` in the unit tests.
 
+**What `decode()` must throw.** What it throws decides what happens to the message: a `MessageDecodingFailedException`
+makes it one that cannot be decoded (see [Retry Handler Behavior](#retry-handler-behavior) below); any other
+exception leaves `get()` as it is thrown. With any other exception, nothing settles the message: `messenger:consume`
+stops with the exception, NATS delivers the message again after `ack_wait` to whichever worker pulls next, and that
+worker stops too, for ever without `max_deliver`. From Symfony Messenger 8.1.12 on, with `batching` above 1, the
+other messages of that pull are not handled either and come back too. Messenger 8.2's `cooldown_strategy` does not
+catch it, since it takes only a `TransportException` of `get()`. This is what Symfony's Doctrine, Redis and AMQP
+transports do: it lets a fault that passes (a schema registry or a key service that is away) leave a good message
+for later. A serializer that extends `AbstractEnveloperSerializer` gets a `MessageDecodingFailedException` for every
+exception `deserialize()` throws, with that exception as its previous one, so a fault that passes is a decode
+failure there too, as it is in Symfony's own serializers. A serializer that has to tell the two apart implements
+Symfony's `SerializerInterface` itself: it throws a `MessageDecodingFailedException` for a payload it cannot read,
+and lets an exception about its own services through. `max_deliver` bounds the redeliveries: after that many
+deliveries NATS stops delivering the message and publishes
+`$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer>`, whose payload names the stream sequence
+(`stream_seq`) and the deliveries. Whether the message stays in the stream depends on the stream (see
+[Retry Handler Behavior](#retry-handler-behavior) below). With `retry_via: nak`, keep `max_deliver` above
+`max_retries + 1` (see [Retry Handler Behavior](#retry-handler-behavior) below).
+
+> **Tested by:** `testAnErrorOfTheSerializerOtherThanADecodingFailurePropagatesWithTheMessageUnsettled`, `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails`, `decode_WhoseDeserializeThrows_ThrowsMessageDecodingFailedWithTheCause`, the Behat scenarios `An exception of the serializer other than a decoding failure leaves the message to come back every ack_wait, and stops a worker each time` and `An exception of the serializer other than a decoding failure stops redelivery at max_deliver` (`nats_term.feature`), the example `serializer-exception.php`.
+
 **Which warnings make a message one that cannot be decoded.** `decode()` turns into a `MessageDecodingFailedException`
 an exception `deserialize()` throws, and a warning or notice the decoder raises itself, whatever the application's
 error handler does with warnings: one the outermost `igbinary_unserialize()` or `unserialize()` call raises (igbinary
@@ -500,6 +521,7 @@ the test server and print `OK` when what they show held:
 | `duplicate-protection.php` | `DeduplicationIdStamp` and `deduplicate: true`: a message sent again is stored once |
 | `nats-retry.php` | `retry_handler: nats` with Symfony's default retry strategy: NATS redelivers a message whose handler failed, and the transport warns that the strategy is on; a message that cannot be decoded is TERMed, and stops a worker only before Symfony Messenger 8.1; an unrecoverable failure runs once |
 | `nats-retry-several-handlers.php` | `retry_handler: nats` with two handlers of one message, one failing for good and the other once: the first delivery is NAKed in either order of the handlers, with `max_retries` 0 and 3, and the second is TERMed once the unrecoverable failure is left alone; two handlers failing for good are TERMed at once |
+| `serializer-exception.php` | a serializer whose `decode()` throws something other than a `MessageDecodingFailedException`: without `max_deliver`, two `get()` calls an `ack_wait` apart both throw it, with the delivery still pending acknowledgement; with `max_deliver: 2`, `get()` throws it twice and then returns nothing, with `MAX_DELIVERIES` published for the delivery and nothing pending |
 | `retry-via-nak.php` | `retry_via: nak`: Symfony's retry strategy decides, and NATS redelivers the failed message after a NAK with Symfony's delay; a message Symfony gives up on is TERMed, with one copy in the failure transport |
 | `retry-via-nak-edge-cases.php` | `retry_via: nak` at its edges: a delivery nobody settled, a message that cannot be decoded, the `reject()` of older Symfony Messenger releases, a message published with a retry count, what the builder refuses, and a consumer whose `max_deliver` the option does not say |
 | `retry-via-nak-past-max-deliver.php` | `retry_via: nak` with a low `max_deliver`: the retry of the last delivery it allows goes out as a copy, so Symfony's strategy runs to its end |
@@ -957,7 +979,9 @@ application's error handler instead, and the message decodes (see
   a serializer whose store or service failed for a moment may decode it then. Up to 5.9.x the transport took any
   exception for a decode failure and TERMed the message. From Symfony Messenger 8.1.12 on, with `batching` above 1,
   the messages of the same pull decoded before the failing one are not handled either, and are left for redelivery
-  the same way (see [Batching Explained](#batching-explained)).
+  the same way (see [Batching Explained](#batching-explained)). What to throw a custom serializer's own exception as,
+  and what it costs until `max_deliver` stops it, is "What `decode()` must throw" under
+  [Creating Custom Serializers](#creating-custom-serializers) above.
 
 In symfony mode, `retry_via` chooses how a retry Symfony decides on reaches NATS: as a copy (the default) or as a
 NAK with Symfony's delay (see [Retrying through a NAK](#retrying-through-a-nak-retry_via-nak)).

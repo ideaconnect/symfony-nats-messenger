@@ -1033,6 +1033,119 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * A serializer whose decode() throws a plain \RuntimeException instead of a MessageDecodingFailedException
+     * (#126): App\Serializer\ErrorSerializer, which encodes through Symfony's PhpSerializer and always throws
+     * from decode(). Routes App\Async\TestMessage so "I send :count messages to the transport" can send through it.
+     */
+    #[Given('I have a messenger transport configured with retry handler :handler, an ack wait of 1 second and a serializer whose decode always fails')]
+    public function iHaveAMessengerTransportConfiguredWithRetryHandlerAnAckWaitOfOneSecondAndASerializerWhoseDecodeAlwaysFails(string $handler): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=%s&ack_wait=1'\n                serializer: 'App\\Serializer\\ErrorSerializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $handler
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * As {@see iHaveAMessengerTransportConfiguredWithRetryHandlerAnAckWaitOfOneSecondAndASerializerWhoseDecodeAlwaysFails()},
+     * with max_deliver added, so NATS stops redelivering the message the serializer cannot decode (#126).
+     */
+    #[Given('I have a messenger transport configured with retry handler :handler, an ack wait of 1 second, max deliver of :maxDeliver and a serializer whose decode always fails')]
+    public function iHaveAMessengerTransportConfiguredWithRetryHandlerAnAckWaitOfOneSecondMaxDeliverAndASerializerWhoseDecodeAlwaysFails(string $handler, int $maxDeliver): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900&retry_handler=%s&ack_wait=1&max_deliver=%d'\n                serializer: 'App\\Serializer\\ErrorSerializer'\n        routing:\n            'App\\Async\\TestMessage': test_transport\n",
+            $this->testStreamName,
+            $this->testSubject,
+            $handler,
+            $maxDeliver
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+
+        $this->resetSymfonyCache();
+    }
+
+    /**
+     * Both consumers {@see twoMessengerConsumersRunOneAfterTheOtherForSecondsEach()} ran stopped on the serializer's
+     * exception (#126): an exit code other than 0, and the exception's message in the error output.
+     */
+    #[Then('both consumers should have stopped on the serializer\'s exception')]
+    public function bothConsumersShouldHaveStoppedOnTheSerializersException(): void
+    {
+        if (count($this->consumerRuns) !== 2) {
+            throw new \RuntimeException(sprintf('Expected two consumer runs, got %d', count($this->consumerRuns)));
+        }
+
+        foreach ($this->consumerRuns as $i => $run) {
+            if ($run['exit code'] === 0 || !str_contains($run['error output'], 'schema registry: connection refused')) {
+                throw new \RuntimeException(sprintf(
+                    'Expected consumer %d to stop on the serializer\'s exception; it exited with %s: %s',
+                    $i + 1,
+                    var_export($run['exit code'], true),
+                    trim($run['error output']),
+                ));
+            }
+        }
+    }
+
+    /**
+     * Only the first of {@see twoMessengerConsumersRunOneAfterTheOtherForSecondsEach()} stopped on the serializer's
+     * exception; the second found nothing to deliver (NATS already stopped redelivering at max_deliver) and ran to
+     * its time limit (#126).
+     */
+    #[Then('the first consumer should have stopped on the serializer\'s exception, and the second should have run to its time limit')]
+    public function theFirstConsumerShouldHaveStoppedOnTheSerializersExceptionAndTheSecondShouldHaveRunToItsTimeLimit(): void
+    {
+        if (count($this->consumerRuns) !== 2) {
+            throw new \RuntimeException(sprintf('Expected two consumer runs, got %d', count($this->consumerRuns)));
+        }
+
+        [$first, $second] = $this->consumerRuns;
+        if ($first['exit code'] === 0 || !str_contains($first['error output'], 'schema registry: connection refused')) {
+            throw new \RuntimeException(sprintf(
+                'Expected the first consumer to stop on the serializer\'s exception; it exited with %s: %s',
+                var_export($first['exit code'], true),
+                trim($first['error output']),
+            ));
+        }
+        if ($second['exit code'] !== 0) {
+            throw new \RuntimeException(sprintf('Expected the second consumer to run to its time limit; it exited with %s: %s', var_export($second['exit code'], true), trim($second['error output'])));
+        }
+    }
+
+    /**
+     * The transport's consumer delivered the message the serializer could not decode twice (the original delivery
+     * and one redelivery after ack_wait), with nothing settled: it still waits for an acknowledgement (#126).
+     */
+    #[Then('the message the serializer could not decode should have been delivered twice, with 1 redelivery and 1 pending acknowledgement')]
+    public function theMessageTheSerializerCouldNotDecodeShouldHaveBeenDeliveredTwiceWithOneRedeliveryAndOnePendingAcknowledgement(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $delivered = is_array($info['delivered'] ?? null) ? ($info['delivered']['consumer_seq'] ?? null) : null;
+        $state = [
+            'deliveries' => $delivered,
+            'redelivered' => $info['num_redelivered'] ?? null,
+            'ack pending' => $info['num_ack_pending'] ?? null,
+        ];
+        if ($state !== ['deliveries' => 2, 'redelivered' => 1, 'ack pending' => 1]) {
+            throw new \RuntimeException('Expected 2 deliveries, 1 redelivered and 1 pending acknowledgement, got ' . json_encode($state));
+        }
+    }
+
+    /**
      * Starts listening for the advisory NATS publishes for each TERM of the transport's consumer, MSG_TERMINATED, which
      * {@see itsOneDeliveryShouldHaveBeenAcknowledgedNotTermed()} counts. An ACK publishes none.
      */

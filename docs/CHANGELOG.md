@@ -117,6 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retries left on only an unrecoverable failure dispatches it, and `retry_via: nak` dispatches it once, at the
   delivery Symfony gives up on; no row leaves a copy in the failure transport). Skipped before Symfony Messenger
   8.2; run against `symfony/messenger` 8.2.0-RC1.
+- **Two Behat scenarios and the example `serializer-exception.php` pin what an exception of the serializer other
+  than a `MessageDecodingFailedException` costs** (#126), through a serializer whose `decode()` always throws a
+  `\RuntimeException`: without `max_deliver`, it comes back every `ack_wait` and stops a worker each time, the
+  same in `retry_handler: symfony` and `nats`; with `max_deliver: 1` and two consumers, the first stops on the
+  exception and the second finds nothing to deliver once its own pull makes NATS publish `MAX_DELIVERIES` for the
+  first delivery. The functional app gains `App\Serializer\ErrorSerializer` (encodes through Symfony's
+  `PhpSerializer`, always throws from `decode()`), registered by its class name like every service under `src/`.
 - **Two new unit tests pin what Symfony Messenger 8.1.12 changed in its `Worker`** (#140):
   `testTheWorkerReadingTheWholePullFirstLeavesNoMessageHandledWhenTheSecondsDecodeFails` (a pull of two messages,
   the second's decode throwing a plain exception: before 8.1.12 the first message is handled and acknowledged
@@ -141,6 +148,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **README, "Any other exception of the serializer"**: from Messenger 8.1.12 on, with `batching` above 1, the
   messages of the same pull decoded before the failing one are not handled either, and are left for redelivery the
   same way (#140).
+- **README, "Creating Custom Serializers"**: a new paragraph, "What `decode()` must throw", on what decides
+  whether a message is one that cannot be decoded or an exception that leaves it for redelivery, what each costs,
+  and how `AbstractEnveloperSerializer` and Symfony's `SerializerInterface` tell the two apart; one sentence added
+  to "Any other exception of the serializer" that links back to it (#126).
 - **README, "Batching Explained"**: one sentence that from Messenger 8.1.12 on the Worker reads the whole pull
   before it handles the first message, linking to the paragraph above (#140).
 - **`docs/TESTS.md` and `docs/PROJECT_MEMORY.md`** updated for the tests and the Worker behavior above (#140).
