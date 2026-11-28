@@ -28,7 +28,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1503 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1505 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -263,8 +263,23 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
   it until Symfony 9, so Symfony's `DebugClassLoader` (the dev environment) no longer reports that `get()` will
   require it. The fetch size (`--fetch-size`, and `--concurrency` on Messenger 8.2) was never read and still is
   not: `batching` decides a pull's size (see [Batching Explained](#batching-explained)); there is nothing to do.
+- **`nonce_signer` is new** (#105): an NKey or JWT login can take its signature from a service of the application, so
+  the seed stays out of PHP (see [External Signer](#external-signer-nonce_signer)). Without the option nothing
+  changes; an entry of your own for `NatsTransportFactory` needs its new argument `$nonceSigners` only for it.
+- **`jwt` or `nkey` without a signer is refused in other words:** "The jwt option needs a signer, from nkey_seed or
+  nonce_signer" and "The nkey option needs a signer, from nkey_seed or nonce_signer", where they said "needs nkey_seed".
+  A log alert or a test that matches the old words needs the new ones.
+- **The bundle autoconfigures the client's `IDCT\NATS\Auth\NonceSignerInterface`** with the tag
+  `idct_nats_messenger.nonce_signer`. An application that autoconfigures the interface itself, in its kernel's
+  `build()`, keeps its own tag, and its signers get the bundle's as well. Another bundle that autoconfigures the
+  interface in its extension makes the container fail to build, as Symfony refuses to merge the autoconfiguration of
+  one interface twice: `"IDCT\NATS\Auth\NonceSignerInterface" has already been autoconfigured and merge() does not
+  support merging autoconfiguration for the same class/interface.` Until that bundle does it in its `build()`, leave
+  this bundle out and register the factory yourself (see [Installation](#installation)).
+- **`composer.json` requires `psr/container`** (`^1.1 || ^2.0`), which an application with Symfony's
+  DependencyInjection has installed already.
 
-> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testGetsFetchSizeParameterSilencesSymfonysDebugClassLoaderDeprecation`, `testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads`
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testGetsFetchSizeParameterSilencesSymfonysDebugClassLoaderDeprecation`, `testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads`; `testBuildPassesTheNonceSignerServiceAndTheConfiguredNkeyToTheClient`, `anAutoconfiguredNonceSignerServiceReachesTheClient`, `theServiceEntriesUsedBeforeTheBundleKeepWorking`, `anApplicationsOwnFactoryEntryWithoutTheNonceSignersRefusesATransportThatNamesOne`, `theReadmesFactoryEntryWithNonceSignersGivesTheClientTheService`, `testBuildRejectsAnNkeyWithoutASigner`, `testBuildRejectsAJwtWithoutASigner`, `anApplicationThatAutoconfiguresTheNonceSignerInterfaceItselfKeepsItsTagAndGetsTheBundles`, `anotherBundlesExtensionThatAutoconfiguresTheNonceSignerInterfaceIsRefusedWhenTheContainerIsBuilt`.
 
 ### Logging
 
@@ -910,7 +925,8 @@ final class KeyServiceNonceSigner implements NonceSignerInterface
 
 - With the bundle, a service that implements the interface gets the tag `idct_nats_messenger.nonce_signer` when it is
   autoconfigured, as the services of `config/services.yaml` are by default, and the transport finds it by its id: for a
-  service registered from `src/`, its class name. Give a service that is not autoconfigured the tag yourself. The name
+  service registered from `src/`, its class name. Give a service that is not autoconfigured the tag yourself. An
+  application that autoconfigures the interface itself, with a tag of its own, keeps it, and the service gets both. The name
   can come from the DSN query (`?nonce_signer=...`) or from `%env()%` too, so each transport can name a signer of its
   own and log in as a user of its own. One signer for a whole factory could not: the second user's key would get
   `Authorization Violation`.
@@ -960,7 +976,7 @@ client 2.28.0):
 - It returns the signature as base64url text, as the client's own seed signer does. Raw bytes fail with an unrelated
   JSON error, `Malformed UTF-8 characters, possibly incorrectly encoded`; the transport does not check what it returns.
 
-> **Tested by:** `testBuildPassesTheNonceSignerServiceAndTheConfiguredNkeyToTheClient`, `testBuildReadsTheNonceSignerFromTheDsnQuery`, `testBuildPassesAJwtWithTheNonceSignerAndNoNkeyToTheClient`, `testBuildPassesAJwtAndAnNkeyWithTheNonceSignerToTheClient`, `testBuildRejectsANonceSignerWithNeitherNkeyNorJwt`, `testBuildRejectsANonceSignerNextToASeedUsernamePasswordOrToken`, `testBuildRejectsAnNkeyNextToANonceSignerThatIsNotAUsersPublicKey`, `testBuildRejectsANonceSignerTheLocatorDoesNotHave`, `testBuildRejectsANonceSignerWithoutNonceSigners`, `testBuildRejectsANonceSignerServiceThatIsNotASigner`, `testTheErrorNamesTheServiceIdOfTheNonceSigner`, `testANonceSignerValueThatIsNotAServiceIdIsNotRepeated`, `testBuildRejectsANonceSignerThatIsNotANonEmptyString`, `testBuildRejectsANonceSignerInTheDsnQueryThatIsNotANonEmptyString`, `testASeedIsTheSignerWhenNoNonceSignerIsNamed`, `testBuildRejectsAnNkeyWithoutASigner`, `testBuildRejectsAJwtWithoutASigner`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect` (the 64 combinations of a user, token, `jwt`, `nkey`, seed and signer), `testANonceSignerOnAServerThatSendsNoNonceCannotLogIn`, `anAutoconfiguredNonceSignerServiceReachesTheClient`, `aNonceSignerServiceTaggedByHandReachesTheClient`, `aNonceSignerServiceWithoutTheTagIsRefused`, `theNonceSignerNamedByAnEnvironmentVariableReachesTheClient`, `theNonceSignerNamedInTheDsnQueryReachesTheClient`, `twoTransportsWithTwoNonceSignerServicesGetEachTheirOwn`, `anApplicationsOwnFactoryEntryWithoutTheNonceSignersRefusesATransportThatNamesOne`, `theReadmesFactoryEntryWithNonceSignersGivesTheClientTheService`, the Behat scenarios of `nats_nkey.feature` and `nats_jwt.feature` with a signing process that holds the seed (real logins on the NKey server and on the server in operator mode, a signing process with another user's seed refused by the server, and the refusals through the console), the example `external-signer.php`. Not in the suite: the timings above, a reconnect and a signer that throws, which were measured by hand.
+> **Tested by:** `testBuildPassesTheNonceSignerServiceAndTheConfiguredNkeyToTheClient`, `testBuildReadsTheNonceSignerFromTheDsnQuery`, `testBuildPassesAJwtWithTheNonceSignerAndNoNkeyToTheClient`, `testBuildPassesAJwtAndAnNkeyWithTheNonceSignerToTheClient`, `testBuildRejectsANonceSignerWithNeitherNkeyNorJwt`, `testBuildRejectsANonceSignerNextToASeedUsernamePasswordOrToken`, `testBuildRejectsAnNkeyNextToANonceSignerThatIsNotAUsersPublicKey`, `testBuildRejectsANonceSignerTheLocatorDoesNotHave`, `testBuildRejectsANonceSignerWithoutNonceSigners`, `testBuildRejectsANonceSignerServiceThatIsNotASigner`, `testTheErrorNamesTheServiceIdOfTheNonceSigner`, `testANonceSignerValueThatIsNotAServiceIdIsNotRepeated`, `testBuildRejectsANonceSignerThatIsNotANonEmptyString`, `testBuildRejectsANonceSignerInTheDsnQueryThatIsNotANonEmptyString`, `testASeedIsTheSignerWhenNoNonceSignerIsNamed`, `testBuildRejectsAnNkeyWithoutASigner`, `testBuildRejectsAJwtWithoutASigner`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect` (the 64 combinations of a user, token, `jwt`, `nkey`, seed and signer), `testANonceSignerOnAServerThatSendsNoNonceCannotLogIn`, `anAutoconfiguredNonceSignerServiceReachesTheClient`, `aNonceSignerServiceTaggedByHandReachesTheClient`, `aNonceSignerServiceWithoutTheTagIsRefused`, `anApplicationThatAutoconfiguresTheNonceSignerInterfaceItselfKeepsItsTagAndGetsTheBundles`, `anotherBundlesExtensionThatAutoconfiguresTheNonceSignerInterfaceIsRefusedWhenTheContainerIsBuilt`, `theNonceSignerNamedByAnEnvironmentVariableReachesTheClient`, `theNonceSignerNamedInTheDsnQueryReachesTheClient`, `twoTransportsWithTwoNonceSignerServicesGetEachTheirOwn`, `anApplicationsOwnFactoryEntryWithoutTheNonceSignersRefusesATransportThatNamesOne`, `theReadmesFactoryEntryWithNonceSignersGivesTheClientTheService`, the Behat scenarios of `nats_nkey.feature` and `nats_jwt.feature` with a signing process that holds the seed (real logins on the NKey server and on the server in operator mode, a signing process with another user's seed refused by the server, and the refusals through the console), the example `external-signer.php`. Not in the suite: the timings above, a reconnect and a signer that throws, which were measured by hand.
 
 ### Retry Handler Behavior
 
