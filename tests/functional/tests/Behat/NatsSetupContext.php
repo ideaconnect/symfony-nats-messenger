@@ -60,6 +60,9 @@ class NatsSetupContext implements Context
     /** The token of the server in tests/nats/nats-token.conf, for the tests only. */
     private const TEST_TOKEN = 'test-only-token';
 
+    /** The functional app's signer that asks the scenario's signing service, by the id nonce_signer names it with. */
+    private const SIGNING_SERVICE_SIGNER = 'App\Auth\SigningServiceNonceSigner';
+
     private ?Process $natsProcess = null;
     private ?Process $setupProcess = null;
     private ?Process $consumerProcess = null;
@@ -82,6 +85,8 @@ class NatsSetupContext implements Context
     /** @var list<string> The variables of the commands' environment this scenario set. */
     private array $commandEnvironment = [];
     private ?string $seedFile = null;
+    /** The process that holds a seed and signs nonces for SigningServiceNonceSigner, while a scenario runs one. */
+    private ?Process $signingService = null;
     /** The connection that listens for the MSG_TERMINATED advisories of the transport's consumer, while it does. */
     private ?NatsClient $advisoryClient = null;
     private ?SubscriptionQueue $terminations = null;
@@ -2062,6 +2067,71 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * A second process that holds the seed of a user of the test credentials and signs the nonces it is sent
+     * (examples/_signing-service.php). The commands of the scenario find it through NATS_TEST_SIGNING_SERVICE, and the
+     * functional app's SigningServiceNonceSigner asks it, so that they never have the seed.
+     */
+    #[Given('a signing service holds the seed of :user')]
+    public function aSigningServiceHoldsTheSeedOf(string $user): void
+    {
+        $process = new Process([PHP_BINARY, __DIR__ . '/../../../../examples/_signing-service.php']);
+        $process->setInput($this->credentials()[$user]['seed']);
+        $process->setTimeout(null);
+        $process->start();
+
+        $port = null;
+        $process->waitUntil(static function (string $type, string $output) use (&$port): bool {
+            if (preg_match('/listening on (\d+)/', $output, $match) === 1) {
+                $port = $match[1];
+
+                return true;
+            }
+
+            return false;
+        });
+        if ($port === null) {
+            throw new \RuntimeException('The signing service did not start: ' . $process->getErrorOutput());
+        }
+
+        $this->signingService = $process;
+        $this->setCommandEnvironment('NATS_TEST_SIGNING_SERVICE', 'tcp://127.0.0.1:' . $port);
+    }
+
+    /**
+     * No seed anywhere in the configuration: nonce_signer names the functional app's signer, which asks the signing
+     * service, and nkey names the user the server checks its signature against.
+     */
+    #[Given('I have a messenger transport configured with the signing service and the public key of :user')]
+    public function iHaveAMessengerTransportConfiguredWithTheSigningServiceAndThePublicKeyOf(string $user): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nonce_signer' => self::SIGNING_SERVICE_SIGNER, 'nkey' => $this->credentials()[$user]['public']]);
+    }
+
+    #[Given('I have a messenger transport configured with the signing service and no NKey or JWT')]
+    public function iHaveAMessengerTransportConfiguredWithTheSigningServiceAndNoNkeyOrJwt(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, ['nonce_signer' => self::SIGNING_SERVICE_SIGNER]);
+    }
+
+    #[Given('I have a messenger transport configured with the signing service next to a password')]
+    public function iHaveAMessengerTransportConfiguredWithTheSigningServiceNextToAPassword(): void
+    {
+        $this->writeTransportThatLogsInWith(4222, [
+            'nonce_signer' => self::SIGNING_SERVICE_SIGNER,
+            'nkey' => $this->credentials()['nkey_user']['public'],
+            'username' => 'admin',
+            'password' => 'password',
+        ]);
+    }
+
+    #[Given('I have a messenger transport configured with the signing service next to an NKey seed')]
+    public function iHaveAMessengerTransportConfiguredWithTheSigningServiceNextToAnNkeySeed(): void
+    {
+        $user = $this->credentials()['nkey_user'];
+        $this->writeTransportThatLogsInWith(4222, ['nonce_signer' => self::SIGNING_SERVICE_SIGNER, 'nkey' => $user['public'], 'nkey_seed' => $user['seed']]);
+    }
+
+    /**
      * Whatever the command printed, no seed of the test credentials may be in it. A mistyped seed shares its start with
      * the real one, and the console wraps a long line at any character, so this looks for that start without whitespace.
      */
@@ -2513,6 +2583,15 @@ class NatsSetupContext implements Context
     {
         $user = $this->credentials()['jwt_user'];
         $this->writeTransportThatLogsInWith(4229, ['jwt' => $user['jwt'], 'nkey_seed' => $user['seed']]);
+    }
+
+    /**
+     * The JWT and a signer, with no seed and no nkey: the signing service signs the nonce with the JWT's user's seed.
+     */
+    #[Given('I have a messenger transport on that server with the user\'s JWT and the signing service')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersJwtAndTheSigningService(): void
+    {
+        $this->writeTransportThatLogsInWith(4229, ['jwt' => $this->credentials()['jwt_user']['jwt'], 'nonce_signer' => self::SIGNING_SERVICE_SIGNER]);
     }
 
     /**
@@ -2992,6 +3071,11 @@ class NatsSetupContext implements Context
         if ($this->seedFile !== null) {
             unlink($this->seedFile);
             $this->seedFile = null;
+        }
+
+        if ($this->signingService !== null) {
+            $this->signingService->stop(0);
+            $this->signingService = null;
         }
 
         // Remove temporary config file and clear cache

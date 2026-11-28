@@ -8,12 +8,15 @@ use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Exception\NatsException;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use IDCT\NatsMessenger\Tests\Support\RecordingNonceSigner;
 use IDCT\NatsMessenger\Tests\Support\SubscriptionLimitNatsServer;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
+use Psr\Container\ContainerInterface;
+use Symfony\Component\DependencyInjection\ServiceLocator;
 
 /**
  * Whatever credentials a transport is given, either it refuses them when it is built, or the real client takes them and
@@ -33,11 +36,13 @@ final class LoginCombinationsTest extends TestCase
     private const TOKEN = 'a-token';
     private const USERNAME = 'admin';
     private const PASSWORD = 'a-password';
+    private const SIGNER = 'app.nonce_signer';
 
     /**
-     * Every combination of the five ways to give credentials, the 32 of them, with what should become of it.
+     * Every combination of the six ways to give credentials, the 64 of them, with what should become of it. The signer is
+     * a service nonce_signer names, which signs with the seed's user, as a signer that keeps the seed elsewhere does.
      *
-     * @return iterable<string, array{bool, bool, bool, bool, bool}>
+     * @return iterable<string, array{bool, bool, bool, bool, bool, bool}>
      */
     public static function everyCombination(): iterable
     {
@@ -46,9 +51,11 @@ final class LoginCombinationsTest extends TestCase
                 foreach ([false, true] as $jwt) {
                     foreach ([false, true] as $nkey) {
                         foreach ([false, true] as $seed) {
-                            $names = array_keys(array_filter(['user in the DSN' => $userInTheDsn, 'token' => $token, 'jwt' => $jwt, 'nkey' => $nkey, 'seed' => $seed]));
+                            foreach ([false, true] as $signer) {
+                                $names = array_keys(array_filter(['user in the DSN' => $userInTheDsn, 'token' => $token, 'jwt' => $jwt, 'nkey' => $nkey, 'seed' => $seed, 'signer' => $signer]));
 
-                            yield $names === [] ? 'no credentials' : implode(', ', $names) => [$userInTheDsn, $token, $jwt, $nkey, $seed];
+                                yield $names === [] ? 'no credentials' : implode(', ', $names) => [$userInTheDsn, $token, $jwt, $nkey, $seed, $signer];
+                            }
                         }
                     }
                 }
@@ -57,7 +64,7 @@ final class LoginCombinationsTest extends TestCase
     }
 
     #[DataProvider('everyCombination')]
-    public function testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect(bool $userInTheDsn, bool $token, bool $jwt, bool $nkey, bool $seed): void
+    public function testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect(bool $userInTheDsn, bool $token, bool $jwt, bool $nkey, bool $seed, bool $signer): void
     {
         $dsn = sprintf('nats://%slocalhost:4222/test-stream/test-topic', $userInTheDsn ? self::USERNAME . ':' . self::PASSWORD . '@' : '');
         $options = array_filter([
@@ -65,26 +72,38 @@ final class LoginCombinationsTest extends TestCase
             'jwt' => $jwt ? self::JWT : null,
             'nkey' => $nkey ? TestNkeys::publicKey() : null,
             'nkey_seed' => $seed ? TestNkeys::seed() : null,
+            'nonce_signer' => $signer ? self::SIGNER : null,
         ]);
+        $service = new RecordingNonceSigner();
+        $nonceSigners = new ServiceLocator([self::SIGNER => static fn (): RecordingNonceSigner => $service]);
 
-        $needsASeed = $jwt || $nkey;
-        $excludesASeed = $userInTheDsn || $token;
-        if ($seed ? $excludesASeed : $needsASeed) {
-            $this->expectException(InvalidArgumentException::class);
-            (new NatsTransportConfigurationBuilder())->build($dsn, $options);
+        $signs = $seed || $signer;
+        $refused = ($seed && $signer)
+            || ($signs && ($userInTheDsn || $token))
+            || (!$signs && ($jwt || $nkey))
+            || ($signer && !$jwt && !$nkey);
+        if ($refused) {
+            try {
+                (new NatsTransportConfigurationBuilder())->build($dsn, $options, null, $nonceSigners);
+                self::fail('The credentials were accepted when the transport was built.');
+            } catch (InvalidArgumentException) {
+                self::assertSame([], $service->nonces, 'The signer signed before a connection.');
+            }
 
             return;
         }
 
-        $connect = $this->connectThatTheClientWrites($dsn, $options);
+        $connect = $this->connectThatTheClientWrites($dsn, $options, $nonceSigners);
 
         self::assertSame($userInTheDsn ? self::USERNAME : null, $connect['user'] ?? null);
         self::assertSame($userInTheDsn ? self::PASSWORD : null, $connect['pass'] ?? null);
         self::assertSame($token ? self::TOKEN : null, $connect['auth_token'] ?? null);
         self::assertSame($jwt ? self::JWT : null, $connect['jwt'] ?? null);
-        self::assertSame($seed ? TestNkeys::publicKey() : null, $connect['nkey'] ?? null);
+        // Derived from a seed; as configured next to a signer, which cannot tell its key.
+        self::assertSame($seed || ($signer && $nkey) ? TestNkeys::publicKey() : null, $connect['nkey'] ?? null);
+        self::assertSame($signer ? [self::NONCE] : [], $service->nonces);
 
-        if (!$seed) {
+        if (!$signs) {
             self::assertArrayNotHasKey('sig', $connect);
 
             return;
@@ -97,7 +116,7 @@ final class LoginCombinationsTest extends TestCase
                 self::NONCE,
                 TestNkeys::rawPublicKey(),
             ),
-            'The signature in the CONNECT does not verify against the public key of the seed.',
+            'The signature in the CONNECT does not verify against the public key of the signer\'s user.',
         );
     }
 
@@ -131,16 +150,39 @@ final class LoginCombinationsTest extends TestCase
     }
 
     /**
+     * The same holds for a signer nonce_signer names, which the client never asks then.
+     */
+    public function testANonceSignerOnAServerThatSendsNoNonceCannotLogIn(): void
+    {
+        $server = new SubscriptionLimitNatsServer('test-stream', 'test-topic', 'client');
+        $service = new RecordingNonceSigner();
+
+        try {
+            $this->clientFor(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['nonce_signer' => self::SIGNER, 'nkey' => TestNkeys::publicKey()],
+                $server,
+                new ServiceLocator([self::SIGNER => static fn (): RecordingNonceSigner => $service]),
+            )->connect()->await();
+            self::fail('The client logged in without a nonce to sign.');
+        } catch (NatsException $refused) {
+            self::assertStringContainsString('NKey authentication requires server nonce from INFO', $refused->getMessage());
+        }
+
+        self::assertSame([], $service->nonces);
+    }
+
+    /**
      * @param array<string, string> $options
      *
      * @return array<string, mixed>
      */
-    private function connectThatTheClientWrites(string $dsn, array $options): array
+    private function connectThatTheClientWrites(string $dsn, array $options, ?ContainerInterface $nonceSigners = null): array
     {
         $server = new SubscriptionLimitNatsServer('test-stream', 'test-topic', 'client');
         $server->nonce = self::NONCE;
 
-        $client = $this->clientFor($dsn, $options, $server);
+        $client = $this->clientFor($dsn, $options, $server, $nonceSigners);
         $client->connect()->await();
         $client->disconnect()->await();
 
@@ -154,9 +196,9 @@ final class LoginCombinationsTest extends TestCase
      *
      * @param array<string, string> $options
      */
-    private function clientFor(string $dsn, array $options, SubscriptionLimitNatsServer $server): NatsClient
+    private function clientFor(string $dsn, array $options, SubscriptionLimitNatsServer $server, ?ContainerInterface $nonceSigners = null): NatsClient
     {
-        $built = (new NatsTransportConfigurationBuilder())->build($dsn, $options)->client;
+        $built = (new NatsTransportConfigurationBuilder())->build($dsn, $options, null, $nonceSigners)->client;
         $connection = (new \ReflectionProperty($built, 'connection'))->getValue($built);
         self::assertIsObject($connection);
         $natsOptions = (new \ReflectionProperty($connection, 'options'))->getValue($connection);

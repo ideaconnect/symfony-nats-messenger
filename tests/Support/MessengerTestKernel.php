@@ -38,11 +38,14 @@ final class MessengerTestKernel extends Kernel
      * @param array<string, mixed>  $messenger The `framework.messenger` configuration
      * @param list<string>          $files     YAML configuration files, as the application's own config directory
      *                                         would hold them, imported in order
+     * @param (\Closure(ContainerBuilder): void)|null $build What the application's own kernel does in its build(),
+     *                                         after every bundle's build() and before the extensions are loaded
      */
     public function __construct(
         private readonly array $extraBundles,
         private readonly array $messenger,
         private readonly array $files = [],
+        private readonly ?\Closure $build = null,
     ) {
         $this->directory = sys_get_temp_dir() . '/nats-messenger-kernel-' . bin2hex(random_bytes(8));
 
@@ -141,6 +144,10 @@ final class MessengerTestKernel extends Kernel
                 $container->setParameter(MessengerTestKernel::TRANSPORT_FACTORIES, $factories);
             }
         }, PassConfig::TYPE_BEFORE_REMOVING);
+
+        if ($this->build !== null) {
+            ($this->build)($container);
+        }
     }
 
     /** PHP 8.5 has get_error_handler(); setting a handler and putting the old one back works on 8.2 too. */

@@ -10,11 +10,15 @@ use IDCT\NatsMessenger\NatsTransport;
 use Psr\Log\LoggerInterface;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
+use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NATS\Auth\NkeySeedSigner;
+use IDCT\NATS\Auth\NonceSignerInterface;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NatsMessenger\NatsTransportFactory;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Tests\Support\MessengerTestKernel;
+use IDCT\NatsMessenger\Tests\Support\NonceSignerAutoconfiguringBundle;
+use IDCT\NatsMessenger\Tests\Support\RecordingNonceSigner;
 use IDCT\NatsMessenger\Tests\Support\SignedMessage;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use IDCT\NatsMessenger\Tests\Support\TransportFactoryUser;
@@ -25,6 +29,8 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use ReflectionObject;
 use ReflectionProperty;
+use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
+use Symfony\Component\DependencyInjection\Compiler\PassConfig;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\HttpKernel\Bundle\BundleInterface;
@@ -53,6 +59,9 @@ final class IDCTNatsMessengerBundleTest extends TestCase
 
     /** The environment variable the test of the README's jwt form sets. */
     private const JWT_VARIABLE = 'NATS_MESSENGER_TEST_USER_JWT';
+
+    /** The environment variable the test of a nonce_signer read from the environment sets. */
+    private const NONCE_SIGNER_VARIABLE = 'NATS_MESSENGER_TEST_NONCE_SIGNER';
 
     /** Makes SignedMessage a message type Messenger signs, as `sign: true` on a handler does. */
     private const SIGNED_MESSAGE_HANDLER = <<<'YAML'
@@ -494,6 +503,246 @@ final class IDCTNatsMessengerBundleTest extends TestCase
     }
 
     /**
+     * A service of the application that signs the nonce, defined as services.yaml defines one, with the configuration
+     * lines given (autoconfigure, tags).
+     */
+    private static function nonceSignerService(string $id, string $configuration = "        autoconfigure: true\n"): string
+    {
+        return "services:\n    " . $id . ":\n        class: " . RecordingNonceSigner::class . "\n        public: true\n" . $configuration;
+    }
+
+    /**
+     * A transport whose nonce_signer names the given service, next to the public key of the signer's user.
+     *
+     * @return array<string, mixed>
+     */
+    private static function transportWithTheNonceSigner(string $nonceSigner, string $dsn = self::NATS_DSN): array
+    {
+        return ['dsn' => $dsn, 'options' => ['nonce_signer' => $nonceSigner, 'nkey' => TestNkeys::publicKey()]];
+    }
+
+    /**
+     * With the bundle, a service that implements NonceSignerInterface is tagged by autoconfiguration, and the factory's
+     * locator finds it by its id: the client gets the container's own service, and the configured nkey.
+     */
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function anAutoconfiguredNonceSignerServiceReachesTheClient(): void
+    {
+        $container = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => self::transportWithTheNonceSigner('app.nonce_signer')]],
+            [self::nonceSignerService('app.nonce_signer')],
+        )->testContainer();
+
+        $options = self::clientOptionsOf($container->get('messenger.transport.nats'));
+        $this->assertSame($container->get('app.nonce_signer'), $options->nonceSigner);
+        $this->assertSame(TestNkeys::publicKey(), $options->nkey);
+    }
+
+    /**
+     * A service that is not autoconfigured gets the tag by hand.
+     */
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function aNonceSignerServiceTaggedByHandReachesTheClient(): void
+    {
+        $container = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => self::transportWithTheNonceSigner('app.nonce_signer')]],
+            [self::nonceSignerService('app.nonce_signer', "        autoconfigure: false\n        tags: [idct_nats_messenger.nonce_signer]\n")],
+        )->testContainer();
+
+        $this->assertSame($container->get('app.nonce_signer'), self::clientOptionsOf($container->get('messenger.transport.nats'))->nonceSigner);
+    }
+
+    /**
+     * Without the tag the locator does not have the service, however it is named.
+     */
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function aNonceSignerServiceWithoutTheTagIsRefused(): void
+    {
+        $container = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => self::transportWithTheNonceSigner('app.nonce_signer')]],
+            [self::nonceSignerService('app.nonce_signer', "        autoconfigure: false\n")],
+        )->testContainer();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('The nonce_signer option names the service \'app.nonce_signer\', which is not one of the services tagged idct_nats_messenger.nonce_signer.');
+
+        $container->get('messenger.transport.nats');
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function theNonceSignerNamedByAnEnvironmentVariableReachesTheClient(): void
+    {
+        $kernel = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => self::transportWithTheNonceSigner('%env(' . self::NONCE_SIGNER_VARIABLE . ')%')]],
+            [self::nonceSignerService('app.nonce_signer')],
+        );
+
+        $_ENV[self::NONCE_SIGNER_VARIABLE] = 'app.nonce_signer';
+
+        try {
+            $container = $kernel->testContainer();
+            $options = self::clientOptionsOf($container->get('messenger.transport.nats'));
+        } finally {
+            unset($_ENV[self::NONCE_SIGNER_VARIABLE]);
+        }
+
+        $this->assertSame($container->get('app.nonce_signer'), $options->nonceSigner);
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function theNonceSignerNamedInTheDsnQueryReachesTheClient(): void
+    {
+        $container = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => self::NATS_DSN . '?nonce_signer=app.nonce_signer&nkey=' . TestNkeys::publicKey()]],
+            [self::nonceSignerService('app.nonce_signer')],
+        )->testContainer();
+
+        $options = self::clientOptionsOf($container->get('messenger.transport.nats'));
+        $this->assertSame($container->get('app.nonce_signer'), $options->nonceSigner);
+        $this->assertSame(TestNkeys::publicKey(), $options->nkey);
+    }
+
+    /**
+     * Each transport names its own signer, so two transports can log in as two users. One signer for the whole factory
+     * could not: the second user's key would get Authorization Violation.
+     */
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function twoTransportsWithTwoNonceSignerServicesGetEachTheirOwn(): void
+    {
+        $container = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => [
+                'orders' => self::transportWithTheNonceSigner('app.orders_signer', self::NATS_DSN . '_orders'),
+                'invoices' => self::transportWithTheNonceSigner('app.invoices_signer', self::NATS_DSN . '_invoices'),
+            ]],
+            [self::nonceSignerService('app.orders_signer'), self::nonceSignerService('app.invoices_signer')],
+        )->testContainer();
+
+        $orders = self::clientOptionsOf($container->get('messenger.transport.orders'))->nonceSigner;
+        $invoices = self::clientOptionsOf($container->get('messenger.transport.invoices'))->nonceSigner;
+        $this->assertSame($container->get('app.orders_signer'), $orders);
+        $this->assertSame($container->get('app.invoices_signer'), $invoices);
+        $this->assertNotSame($orders, $invoices);
+    }
+
+    /**
+     * An application's own factory entry replaces the bundle's, and the one it needed before the bundle has no signers:
+     * a transport that names one is refused with what to add.
+     */
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function anApplicationsOwnFactoryEntryWithoutTheNonceSignersRefusesATransportThatNamesOne(): void
+    {
+        $container = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => self::transportWithTheNonceSigner('app.nonce_signer')]],
+            [self::FACTORY_ENTRY_BEFORE_THE_BUNDLE, self::nonceSignerService('app.nonce_signer')],
+        )->testContainer();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'but the transport was built without the services tagged idct_nats_messenger.nonce_signer to find it in. The bundle '
+            . 'hands them to the transport factory. An application\'s own entry for the factory needs the argument '
+            . '$nonceSigners: !tagged_locator idct_nats_messenger.nonce_signer'
+        );
+
+        $container->get('messenger.transport.nats');
+    }
+
+    /**
+     * The README's own factory entry with the signers' locator, next to the bundle and without it, where the service is
+     * tagged by hand, as nothing autoconfigures it there.
+     *
+     * @param list<BundleInterface> $bundles
+     */
+    #[Test]
+    #[DataProvider('withAndWithoutTheBundle')]
+    #[RequiresPhpExtension('sodium')]
+    public function theReadmesFactoryEntryWithNonceSignersGivesTheClientTheService(array $bundles): void
+    {
+        $files = self::readmeYamlBlocksStartingWith('# config/services.yaml (your own factory entry, with nonce signers)');
+        $files[] = self::nonceSignerService('app.nonce_signer', "        tags: [idct_nats_messenger.nonce_signer]\n");
+
+        $container = $this->kernel($bundles, ['transports' => ['nats' => self::transportWithTheNonceSigner('app.nonce_signer')]], $files)
+            ->testContainer();
+
+        $this->assertSame($container->get('app.nonce_signer'), self::clientOptionsOf($container->get('messenger.transport.nats'))->nonceSigner);
+    }
+
+    /**
+     * An application that autoconfigures the client's NonceSignerInterface itself in its kernel's build(), with a tag of
+     * its own, for a client it uses beside the transport. Symfony runs every bundle's build(), then the kernel's, and
+     * loads the extensions after both, merging each into the application's container, where merge() refuses an
+     * interface that is autoconfigured already. The bundle registers the interface in its build(), so the kernel's call
+     * returns the same definition and the service gets both tags.
+     */
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function anApplicationThatAutoconfiguresTheNonceSignerInterfaceItselfKeepsItsTagAndGetsTheBundles(): void
+    {
+        $tags = new class () implements CompilerPassInterface {
+            /** @var array<string, list<string>> The ids of the services with each tag, by tag */
+            public array $tagged = [];
+
+            public function process(ContainerBuilder $container): void
+            {
+                foreach (['app.nonce_signer', NatsTransportConfigurationBuilder::NONCE_SIGNER_TAG] as $tag) {
+                    $this->tagged[$tag] = array_keys($container->findTaggedServiceIds($tag));
+                }
+            }
+        };
+
+        $container = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => self::transportWithTheNonceSigner('app.nonce_signer')]],
+            [self::nonceSignerService('app.nonce_signer')],
+            static function (ContainerBuilder $container) use ($tags): void {
+                $container->registerForAutoconfiguration(NonceSignerInterface::class)->addTag('app.nonce_signer');
+                $container->addCompilerPass($tags, PassConfig::TYPE_BEFORE_REMOVING);
+            },
+        )->testContainer();
+
+        $this->assertSame(
+            ['app.nonce_signer' => ['app.nonce_signer'], NatsTransportConfigurationBuilder::NONCE_SIGNER_TAG => ['app.nonce_signer']],
+            $tags->tagged,
+        );
+        $this->assertSame($container->get('app.nonce_signer'), self::clientOptionsOf($container->get('messenger.transport.nats'))->nonceSigner);
+    }
+
+    /**
+     * What is still refused: another bundle that autoconfigures the interface in its extension. Its extension is loaded
+     * into a container of its own and merged into the application's, where this bundle's build() registered the interface
+     * already. Before nonce_signer the bundle did not autoconfigure the interface, and such a bundle worked beside it.
+     */
+    #[Test]
+    public function anotherBundlesExtensionThatAutoconfiguresTheNonceSignerInterfaceIsRefusedWhenTheContainerIsBuilt(): void
+    {
+        $kernel = $this->kernel(
+            [new IDCTNatsMessengerBundle(), new NonceSignerAutoconfiguringBundle()],
+            ['transports' => ['nats' => self::NATS_DSN]],
+        );
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            '"IDCT\NATS\Auth\NonceSignerInterface" has already been autoconfigured and merge() does not support merging '
+            . 'autoconfiguration for the same class/interface.'
+        );
+
+        $kernel->testContainer();
+    }
+
+    /**
      * The factory is tagged for Monolog's `messenger` channel, as Messenger's own services are, so the client's lines
      * land next to the worker's in an application that uses MonologBundle.
      */
@@ -514,10 +763,11 @@ final class IDCTNatsMessengerBundleTest extends TestCase
      * @param list<BundleInterface> $bundles
      * @param array<string, mixed>  $messenger
      * @param list<string>          $files
+     * @param (\Closure(ContainerBuilder): void)|null $build What the application's kernel does in its own build()
      */
-    private function kernel(array $bundles, array $messenger, array $files = []): MessengerTestKernel
+    private function kernel(array $bundles, array $messenger, array $files = [], ?\Closure $build = null): MessengerTestKernel
     {
-        $kernel = new MessengerTestKernel($bundles, $messenger, $files);
+        $kernel = new MessengerTestKernel($bundles, $messenger, $files, $build);
         $this->kernels[] = $kernel;
 
         return $kernel;

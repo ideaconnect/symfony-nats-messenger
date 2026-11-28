@@ -102,7 +102,8 @@ tests/
   before NATS 2.12, at `setup()` and at the send of a delayed message
 - **Option names**: an option that is not a `TransportOption` case (or `transport_name`) is refused, with the closest one
 - **TLS/mTLS**: full TLS config options including client certificates
-- **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`)
+- **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`), and either login with a
+  signer service of the application instead of the seed (`nonce_signer` with `nkey` or `jwt`), which keeps the seed out of PHP
 - **Serialization**: igbinary (default with fallback) or custom via `AbstractEnveloperSerializer`
 - **Publish validation**: JetStream publish responses are parsed and validated
 - **Connection checks**: a lost connection is dialled again; `ping_after_idle` PINGs a connection that sat idle, or that an operation failed on, before reuse, and before the NAK or TERM of a failed delivery

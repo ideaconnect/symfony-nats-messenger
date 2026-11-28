@@ -4,9 +4,10 @@ Feature: NKey authentication
   checks a signature of its nonce. Verification: the stream is set up,
   and messages are sent and consumed over connections authenticated
   that way, in every form the README shows, over TLS and across a server
-  restart. The server refuses a seed it does not know, and credentials
-  that need or exclude a seed fail before any connection, on every command
-  that builds the transport.
+  restart, and with a signer in another process that holds the seed
+  (nonce_signer). The server refuses a seed it does not know, and
+  credentials that need or exclude a signer fail before any connection, on
+  every command that builds the transport.
 
   Background:
     Given NATS server is running
@@ -109,7 +110,27 @@ Feature: NKey authentication
     Then the setup should fail saying "NKey authentication requires server nonce from INFO"
 
   @nkey
-  Scenario Outline: Credentials that need or exclude a seed are refused when the transport is built, on every command
+  Scenario: A worker without the seed logs in with a signer that asks another process holding it
+    Given a signing service holds the seed of "nkey_user"
+    And I have a messenger transport configured with the signing service and the public key of "nkey_user"
+    And the NATS stream is set up
+    And the test files directory is clean
+    When I send 5 messages to the transport
+    Then the messenger stats should show 5 messages waiting
+    When I start a messenger consumer
+    And I wait for messages to be consumed
+    Then all 5 messages should be consumed
+
+  @nkey
+  Scenario: A signer whose process holds another user's seed is refused by the server
+    Given a signing service holds the seed of "unknown_user"
+    And I have a messenger transport configured with the signing service and the public key of "nkey_user"
+    When I run the messenger setup command
+    Then the setup should fail with the server's authorization error
+    And the messenger stats should show exactly 0 messages waiting
+
+  @nkey
+  Scenario Outline: Credentials that need or exclude a signer are refused when the transport is built, on every command
     Given I have a messenger transport configured with <credentials>
     When I run the messenger setup command
     Then the setup should fail saying "<error>"
@@ -117,10 +138,13 @@ Feature: NKey authentication
     And a messenger consumer should fail saying "<error>"
 
     Examples:
-      | credentials                     | error                                        |
-      | a JWT and no NKey seed          | The jwt option needs nkey_seed               |
-      | a public NKey and no seed       | The nkey option needs nkey_seed              |
-      | an NKey seed next to a password | The nkey_seed option cannot be combined with |
+      | credentials                                    | error                                           |
+      | a JWT and no NKey seed                         | The jwt option needs a signer                   |
+      | a public NKey and no seed                      | The nkey option needs a signer                  |
+      | an NKey seed next to a password                | The nkey_seed option cannot be combined with    |
+      | the signing service and no NKey or JWT         | The nonce_signer option needs nkey or jwt       |
+      | the signing service next to a password         | The nonce_signer option cannot be combined with |
+      | the signing service next to an NKey seed       | The nonce_signer option cannot be combined with |
 
   @nkey
   Scenario Outline: A value that cannot log in is refused when the transport is built, and no seed is printed

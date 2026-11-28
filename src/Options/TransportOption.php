@@ -27,7 +27,7 @@ namespace IDCT\NatsMessenger\Options;
  * **Provisioning:** AUTO_SETUP
  * **TLS:** TLS_REQUIRED, TLS_HANDSHAKE_FIRST, TLS_CA_FILE, TLS_CERT_FILE, TLS_KEY_FILE,
  *          TLS_KEY_PASSPHRASE, TLS_PEER_NAME, TLS_VERIFY_PEER
- * **Authentication:** TOKEN, JWT, NKEY, NKEY_SEED, USERNAME, PASSWORD
+ * **Authentication:** TOKEN, JWT, NKEY, NKEY_SEED, USERNAME, PASSWORD, NONCE_SIGNER
  */
 enum TransportOption: string
 {
@@ -88,6 +88,7 @@ enum TransportOption: string
     case NKEY_SEED = 'nkey_seed';
     case USERNAME = 'username';
     case PASSWORD = 'password';
+    case NONCE_SIGNER = 'nonce_signer';
 
     /**
      * Whether the option holds a credential: a value no error repeats, and that an "&" not encoded as "%26" would cut

@@ -16,11 +16,13 @@ use IDCT\NatsMessenger\Options\RetryVia;
 use IDCT\NatsMessenger\Options\StreamCompression;
 use IDCT\NatsMessenger\Options\TransportOption;
 use IDCT\NatsMessenger\Tests\Support\PhpProcess;
+use IDCT\NatsMessenger\Tests\Support\RecordingNonceSigner;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\DependencyInjection\ServiceLocator;
 
 final class NatsTransportConfigurationBuilderTest extends TestCase
 {
@@ -397,7 +399,7 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
     /**
      * @return iterable<string, array{string}>
      */
-    public static function nkeyValuesWithoutASeed(): iterable
+    public static function nkeyValuesWithoutASigner(): iterable
     {
         yield 'the public key' => [TestNkeys::publicKey()];
         yield 'a seed put in the wrong option' => [TestNkeys::seed()];
@@ -405,18 +407,19 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
     /**
      * Without a signer the client throws before it writes the CONNECT, on every server, so nkey alone could never
-     * connect. The error names what to configure, and does not repeat the value, which may be a seed.
+     * connect. The error names both options a signer comes from, and does not repeat the value, which may be a seed.
      */
-    #[DataProvider('nkeyValuesWithoutASeed')]
-    public function testBuildRejectsAnNkeyWithoutASeed(string $nkey): void
+    #[DataProvider('nkeyValuesWithoutASigner')]
+    public function testBuildRejectsAnNkeyWithoutASigner(string $nkey): void
     {
         try {
             (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['nkey' => $nkey]);
-            self::fail('An nkey without a seed was accepted.');
+            self::fail('An nkey without a signer was accepted.');
         } catch (InvalidArgumentException $refused) {
             self::assertSame(
-                'The nkey option needs nkey_seed: the client must sign the server\'s nonce with the seed, so nkey alone can '
-                . 'never connect. Put the seed (SU...) in nkey_seed and leave nkey unset: the public key is derived from it.',
+                'The nkey option needs a signer, from nkey_seed or nonce_signer: the client must sign the server\'s nonce, '
+                . 'so nkey alone can never connect. Put the seed (SU...) in nkey_seed and leave nkey unset, as the public '
+                . 'key is derived from it, or name a service that signs the nonce in nonce_signer.',
                 $refused->getMessage(),
             );
         }
@@ -424,14 +427,15 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
 
     /**
      * Without a signer the client throws before it writes the CONNECT, on every server, so a JWT alone could never
-     * connect. The error names the option to set.
+     * connect. The error names both options a signer comes from.
      */
-    public function testBuildRejectsAJwtWithoutASeed(): void
+    public function testBuildRejectsAJwtWithoutASigner(): void
     {
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage(
-            'The jwt option needs nkey_seed: the client signs the server\'s nonce with the seed of the JWT\'s user and cannot '
-            . 'connect without one. Put that seed (SU...) in nkey_seed; a .creds file holds both values.'
+            'The jwt option needs a signer, from nkey_seed or nonce_signer: the client signs the server\'s nonce with the '
+            . 'key of the JWT\'s user and cannot connect without one. Put that user\'s seed (SU...) in nkey_seed, as a .creds '
+            . 'file holds both values, or name a service that signs the nonce in nonce_signer.'
         );
 
         (new NatsTransportConfigurationBuilder())->build('nats://localhost:4222/test-stream/test-topic', ['jwt' => 'user-jwt']);
@@ -513,6 +517,441 @@ final class NatsTransportConfigurationBuilderTest extends TestCase
         );
 
         self::assertSame('a-1_b.c-2_d.e-3_f', $this->extractNatsOptions($configuration->client)->jwt);
+    }
+
+    /** The id the tests give a signer service in the locator, as an application names its service. */
+    private const NONCE_SIGNER_ID = 'app.nonce_signer';
+
+    /** The refusal of nonce_signer next to a seed, a username, a password or a token. */
+    private const NONCE_SIGNER_STANDS_ALONE = 'The nonce_signer option cannot be combined with nkey_seed, a username, password '
+        . 'or token, from the DSN or the options: nkey_seed would be a second signer, and a server with NKey users would log '
+        . 'the connection in with the NKey and ignore a username, password or token, even wrong ones. Remove them, or remove '
+        . 'nonce_signer.';
+
+    /** The locator the bundle's tagged locator stands for: the signer service under its id. */
+    private static function nonceSigners(object $service, string $id = self::NONCE_SIGNER_ID): ServiceLocator
+    {
+        return new ServiceLocator([$id => static fn (): object => $service]);
+    }
+
+    /**
+     * The service nonce_signer names reaches the client itself, not a wrapper that would look it up at the first connect,
+     * and the CONNECT carries nkey as it is configured: the service cannot tell which key it signs with. Nothing is signed
+     * before a connection.
+     */
+    public function testBuildPassesTheNonceSignerServiceAndTheConfiguredNkeyToTheClient(): void
+    {
+        $signer = new RecordingNonceSigner();
+
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nonce_signer' => self::NONCE_SIGNER_ID, 'nkey' => TestNkeys::publicKey()],
+            null,
+            self::nonceSigners($signer),
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+        self::assertSame($signer, $options->nonceSigner);
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
+        self::assertNull($options->jwt);
+        self::assertNull($options->username);
+        self::assertNull($options->password);
+        self::assertNull($options->token);
+        self::assertSame([], $signer->nonces);
+    }
+
+    public function testBuildReadsTheNonceSignerFromTheDsnQuery(): void
+    {
+        $signer = new RecordingNonceSigner();
+
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?nonce_signer=' . self::NONCE_SIGNER_ID . '&nkey=' . TestNkeys::publicKey(),
+            [],
+            null,
+            self::nonceSigners($signer),
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+        self::assertSame($signer, $options->nonceSigner);
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
+        self::assertSame([], $signer->nonces);
+    }
+
+    /**
+     * A user of a server in operator mode logs in with the JWT and a signature, and the client sends no nkey then.
+     */
+    public function testBuildPassesAJwtWithTheNonceSignerAndNoNkeyToTheClient(): void
+    {
+        $signer = new RecordingNonceSigner();
+
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nonce_signer' => self::NONCE_SIGNER_ID, 'jwt' => 'a.user.jwt'],
+            null,
+            self::nonceSigners($signer),
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+        self::assertSame($signer, $options->nonceSigner);
+        self::assertSame('a.user.jwt', $options->jwt);
+        self::assertNull($options->nkey);
+        self::assertSame([], $signer->nonces);
+    }
+
+    /**
+     * Both keys of a user next to the JWT, as the seed gives them: the CONNECT carries the configured one.
+     */
+    public function testBuildPassesAJwtAndAnNkeyWithTheNonceSignerToTheClient(): void
+    {
+        $signer = new RecordingNonceSigner();
+
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nonce_signer' => self::NONCE_SIGNER_ID, 'jwt' => 'a.user.jwt', 'nkey' => TestNkeys::publicKey()],
+            null,
+            self::nonceSigners($signer),
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+        self::assertSame($signer, $options->nonceSigner);
+        self::assertSame('a.user.jwt', $options->jwt);
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function optionsWithANonceSignerAndNeitherNkeyNorJwt(): iterable
+    {
+        yield 'nothing else' => [[]];
+        yield 'an empty nkey' => [['nkey' => '']];
+        yield 'an nkey of spaces and an empty jwt' => [['nkey' => '  ', 'jwt' => '']];
+    }
+
+    /**
+     * The client signs the nonce only for an NKey or a JWT login: with neither it sends no credentials at all, and the
+     * connection logs in as the server's no_auth_user or anonymously.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('optionsWithANonceSignerAndNeitherNkeyNorJwt')]
+    public function testBuildRejectsANonceSignerWithNeitherNkeyNorJwt(array $options): void
+    {
+        $signer = new RecordingNonceSigner();
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                $options + ['nonce_signer' => self::NONCE_SIGNER_ID],
+                null,
+                self::nonceSigners($signer),
+            );
+            self::fail('A nonce_signer with neither nkey nor jwt was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The nonce_signer option needs nkey or jwt: the client signs the server\'s nonce only for an NKey or a JWT '
+                . 'login, so with neither it would send no credentials, and the connection would log in as the server\'s '
+                . 'no_auth_user or anonymously. Put the public key of the signer\'s user (U...) in nkey, or the user\'s JWT in jwt.',
+                $refused->getMessage(),
+            );
+        }
+
+        self::assertSame([], $signer->nonces);
+    }
+
+    /**
+     * @return iterable<string, array{string, array<string, mixed>}>
+     */
+    public static function credentialsNextToANonceSigner(): iterable
+    {
+        $dsn = 'nats://localhost:4222/test-stream/test-topic';
+
+        yield 'a seed option' => [$dsn, ['nkey_seed' => TestNkeys::seed()]];
+        yield 'a seed in the DSN query' => [$dsn . '?nkey_seed=' . TestNkeys::seed(), []];
+        yield 'an empty seed, which is not no seed' => [$dsn, ['nkey_seed' => '']];
+        yield 'username and password in the DSN' => ['nats://admin:***@localhost:4222/test-stream/test-topic', []];
+        yield 'username alone in the DSN' => ['nats://admin@localhost:4222/test-stream/test-topic', []];
+        yield 'password alone in the DSN' => ['nats://:***@localhost:4222/test-stream/test-topic', []];
+        yield 'username option' => [$dsn, ['username' => 'admin']];
+        yield 'password option' => [$dsn, ['password' => 'some-password']];
+        yield 'token option' => [$dsn, ['token' => 'some-token']];
+        yield 'token option, next to a jwt' => [$dsn, ['token' => 'some-token', 'jwt' => 'a.user.jwt']];
+    }
+
+    /**
+     * A seed would be a second signer, and a server with NKey users logs the connection in with the NKey and ignores a
+     * username, password or token, as it does next to a seed. The error names nonce_signer and repeats none of the values.
+     *
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('credentialsNextToANonceSigner')]
+    public function testBuildRejectsANonceSignerNextToASeedUsernamePasswordOrToken(string $dsn, array $options): void
+    {
+        $signer = new RecordingNonceSigner();
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                $dsn,
+                $options + ['nonce_signer' => self::NONCE_SIGNER_ID, 'nkey' => TestNkeys::publicKey()],
+                null,
+                self::nonceSigners($signer),
+            );
+            self::fail('A nonce_signer next to another credential was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(self::NONCE_SIGNER_STANDS_ALONE, $refused->getMessage());
+        }
+
+        self::assertSame([], $signer->nonces);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function nkeyValuesThatAreNotAUsersPublicKey(): iterable
+    {
+        $key = TestNkeys::publicKey();
+
+        yield 'the seed, as when both read one variable' => [TestNkeys::seed()];
+        yield 'the public key of an account' => [TestNkeys::publicKey('an-account', TestNkeys::ACCOUNT)];
+        yield 'a key a character short' => [substr($key, 0, -1)];
+        yield 'a key with a character more' => [$key . 'A'];
+        yield 'something before the key' => ['A' . $key];
+        yield 'a key in small letters' => [strtolower($key)];
+        yield 'a key with a digit base32 does not have' => [substr($key, 0, 10) . '1' . substr($key, 11)];
+        yield 'a key with a space inside' => [substr($key, 0, 10) . ' ' . substr($key, 11)];
+    }
+
+    /**
+     * The CONNECT carries nkey as it is next to nonce_signer, in clear on a connection without TLS, and a tracing server
+     * logs it. So only a user's public key passes, and the error never repeats the value, which may be a seed.
+     */
+    #[DataProvider('nkeyValuesThatAreNotAUsersPublicKey')]
+    public function testBuildRejectsAnNkeyNextToANonceSignerThatIsNotAUsersPublicKey(string $nkey): void
+    {
+        $signer = new RecordingNonceSigner();
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['nonce_signer' => self::NONCE_SIGNER_ID, 'nkey' => $nkey],
+                null,
+                self::nonceSigners($signer),
+            );
+            self::fail('An nkey that is not a user\'s public key was accepted next to a nonce_signer.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The nkey option is not the public key of a user, a U followed by 55 capital letters and digits from 2 to '
+                . '7. Next to nonce_signer it names the key the signer signs with: a seed (SU...) stays with the signer, '
+                . 'and the key of an account (A...) does not log a user in.',
+                $refused->getMessage(),
+            );
+            self::assertStringNotContainsString($nkey, $refused->getMessage());
+        }
+
+        self::assertSame([], $signer->nonces);
+    }
+
+    /**
+     * A name the transport cannot turn into a signer fails when the transport is built, not at its first connect.
+     */
+    public function testBuildRejectsANonceSignerTheLocatorDoesNotHave(): void
+    {
+        $signer = new RecordingNonceSigner();
+
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['nonce_signer' => 'app.another_signer', 'nkey' => TestNkeys::publicKey()],
+                null,
+                self::nonceSigners($signer),
+            );
+            self::fail('A nonce_signer the locator does not have was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertSame(
+                'The nonce_signer option names the service \'app.another_signer\', which is not one of the services tagged '
+                . 'idct_nats_messenger.nonce_signer. A service that implements IDCT\NATS\Auth\NonceSignerInterface gets the '
+                . 'tag when it is autoconfigured; give it the tag by hand otherwise.',
+                $refused->getMessage(),
+            );
+        }
+
+        self::assertSame([], $signer->nonces);
+    }
+
+    /**
+     * An application's own factory entry without the argument, or a transport constructed directly without its fifth.
+     */
+    public function testBuildRejectsANonceSignerWithoutNonceSigners(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'The nonce_signer option names the service \'app.nonce_signer\', but the transport was built without the services '
+            . 'tagged idct_nats_messenger.nonce_signer to find it in. The bundle hands them to the transport factory. An '
+            . 'application\'s own entry for the factory needs the argument $nonceSigners: !tagged_locator '
+            . 'idct_nats_messenger.nonce_signer, and a transport constructed directly takes them as its fifth argument.'
+        );
+
+        (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nonce_signer' => self::NONCE_SIGNER_ID, 'nkey' => TestNkeys::publicKey()],
+        );
+    }
+
+    public function testBuildRejectsANonceSignerServiceThatIsNotASigner(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'The nonce_signer option names the service \'app.nonce_signer\', which does not implement '
+            . 'IDCT\NATS\Auth\NonceSignerInterface, so it cannot sign the server\'s nonce.'
+        );
+
+        (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nonce_signer' => self::NONCE_SIGNER_ID, 'nkey' => TestNkeys::publicKey()],
+            null,
+            self::nonceSigners(new \stdClass()),
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function serviceIdsTheErrorRepeats(): iterable
+    {
+        yield 'a class name, as an autoconfigured service has' => [RecordingNonceSigner::class];
+        yield 'an id ending in a digit' => ['app.signer_2'];
+    }
+
+    /**
+     * The id is no credential, so the error names it, as an autoconfigured service's class name too.
+     */
+    #[DataProvider('serviceIdsTheErrorRepeats')]
+    public function testTheErrorNamesTheServiceIdOfTheNonceSigner(string $id): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The nonce_signer option names the service \'' . $id . '\', which is not one of the services');
+
+        (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nonce_signer' => $id, 'nkey' => TestNkeys::publicKey()],
+            null,
+            self::nonceSigners(new RecordingNonceSigner()),
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function nonceSignerValuesThatAreNotRepeated(): iterable
+    {
+        yield 'a seed put in the option by mistake' => [TestNkeys::seed()];
+        yield 'a public key put in the option by mistake' => [TestNkeys::publicKey()];
+        yield 'a value with a character of a query' => ['app.signer;token=a-token'];
+        yield 'a value with a space' => ['app signer'];
+        yield 'a value longer than an id' => [str_repeat('app.signer.', 10)];
+    }
+
+    /**
+     * The id is no credential, but a value that does not look like one may be a credential put in the option by mistake.
+     */
+    #[DataProvider('nonceSignerValuesThatAreNotRepeated')]
+    public function testANonceSignerValueThatIsNotAServiceIdIsNotRepeated(string $value): void
+    {
+        try {
+            (new NatsTransportConfigurationBuilder())->build(
+                'nats://localhost:4222/test-stream/test-topic',
+                ['nonce_signer' => $value, 'nkey' => TestNkeys::publicKey()],
+                null,
+                self::nonceSigners(new RecordingNonceSigner()),
+            );
+            self::fail('A nonce_signer the locator does not have was accepted.');
+        } catch (InvalidArgumentException $refused) {
+            self::assertStringStartsWith(
+                'The nonce_signer option names the service, which is not one of the services tagged',
+                $refused->getMessage(),
+            );
+            self::assertStringNotContainsString($value, $refused->getMessage());
+        }
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function nonceSignersThatAreNotANonEmptyString(): iterable
+    {
+        yield 'an empty string' => [''];
+        yield 'spaces' => ['   '];
+        yield 'a newline' => ["\n"];
+        yield 'false' => [false];
+        yield 'true' => [true];
+        yield 'an integer' => [0];
+        yield 'a float' => [1.5];
+        yield 'an empty list' => [[]];
+        yield 'a list holding the id' => [[self::NONCE_SIGNER_ID]];
+        yield 'the service itself' => [new RecordingNonceSigner()];
+    }
+
+    /**
+     * Only null means "no signer": read as none, an empty variable would leave nkey or jwt without a signer, or connect
+     * with the other credentials there are.
+     */
+    #[DataProvider('nonceSignersThatAreNotANonEmptyString')]
+    public function testBuildRejectsANonceSignerThatIsNotANonEmptyString(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'The nonce_signer option must be the id of a service, a non-empty string, or null for no signer. For an optional '
+            . 'signer from an environment variable use the default processor, as in %env(default::NATS_NONCE_SIGNER)%.'
+        );
+
+        (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nonce_signer' => $value, 'nkey' => TestNkeys::publicKey()],
+            null,
+            self::nonceSigners(new RecordingNonceSigner()),
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function dsnQueriesWhoseNonceSignerIsNotANonEmptyString(): iterable
+    {
+        yield 'empty' => ['nonce_signer='];
+        yield 'an encoded space' => ['nonce_signer=%20'];
+        yield 'a list holding the id' => ['nonce_signer[]=' . self::NONCE_SIGNER_ID];
+    }
+
+    #[DataProvider('dsnQueriesWhoseNonceSignerIsNotANonEmptyString')]
+    public function testBuildRejectsANonceSignerInTheDsnQueryThatIsNotANonEmptyString(string $query): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The nonce_signer option must be the id of a service, a non-empty string');
+
+        (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic?' . $query . '&nkey=' . TestNkeys::publicKey(),
+            [],
+            null,
+            self::nonceSigners(new RecordingNonceSigner()),
+        );
+    }
+
+    /**
+     * A seed signs as it did before, with the locator there: nonce_signer unset leaves it the one signer.
+     */
+    #[RequiresPhpExtension('sodium')]
+    public function testASeedIsTheSignerWhenNoNonceSignerIsNamed(): void
+    {
+        $configuration = (new NatsTransportConfigurationBuilder())->build(
+            'nats://localhost:4222/test-stream/test-topic',
+            ['nkey_seed' => TestNkeys::seed()],
+            null,
+            self::nonceSigners(new RecordingNonceSigner()),
+        );
+
+        $options = $this->extractNatsOptions($configuration->client);
+        self::assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+        self::assertSame(TestNkeys::publicKey(), $options->nkey);
     }
 
     /**

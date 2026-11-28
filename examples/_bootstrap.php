@@ -24,6 +24,7 @@ use IDCT\NATS\JetStream\Configuration\StreamConfiguration;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use Psr\Container\ContainerInterface;
 use Psr\Log\AbstractLogger;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
@@ -393,14 +394,15 @@ function requireLoginServer(string $example, int $port): void
 
 /**
  * What a sender and a worker do, over connections that log in with $options: setup(), a send, the queue depth, a get
- * and an ack. Fails unless the message made the whole trip, and removes the stream again.
+ * and an ack. Fails unless the message made the whole trip, and removes the stream again. $nonceSigners holds the
+ * services nonce_signer can name, as the transport's fifth argument.
  *
  * @param array<string, mixed> $options
  */
-function assertLoginWorks(int $port, string $stream, array $options): void
+function assertLoginWorks(int $port, string $stream, array $options, ?ContainerInterface $nonceSigners = null): void
 {
     $dsn = loginDsn($port, $stream);
-    $transport = new NatsTransport($dsn, $options, new PhpSerializer());
+    $transport = new NatsTransport($dsn, $options, new PhpSerializer(), null, $nonceSigners);
     $transport->setup();
 
     try {
@@ -419,7 +421,7 @@ function assertLoginWorks(int $port, string $stream, array $options): void
     } finally {
         $transport->close();
 
-        $client = (new NatsTransportConfigurationBuilder())->build($dsn, $options)->client;
+        $client = (new NatsTransportConfigurationBuilder())->build($dsn, $options, null, $nonceSigners)->client;
         $client->connect()->await();
         $client->jetStream()->deleteStream($stream)->await();
         $client->disconnect()->await();
@@ -432,9 +434,9 @@ function assertLoginWorks(int $port, string $stream, array $options): void
  *
  * @param array<string, mixed> $options
  */
-function assertLoginIsRefused(int $port, array $options): void
+function assertLoginIsRefused(int $port, array $options, ?ContainerInterface $nonceSigners = null): void
 {
-    $transport = new NatsTransport(loginDsn($port, exampleStream('refused')), $options, new PhpSerializer());
+    $transport = new NatsTransport(loginDsn($port, exampleStream('refused')), $options, new PhpSerializer(), null, $nonceSigners);
 
     try {
         $transport->setup();
@@ -457,10 +459,10 @@ function assertLoginIsRefused(int $port, array $options): void
  *
  * @param array<string, mixed> $options
  */
-function assertRefusedWhenBuilt(int $port, array $options, string $expected): void
+function assertRefusedWhenBuilt(int $port, array $options, string $expected, ?ContainerInterface $nonceSigners = null): void
 {
     try {
-        new NatsTransport(loginDsn($port, exampleStream('refused')), $options, new PhpSerializer());
+        new NatsTransport(loginDsn($port, exampleStream('refused')), $options, new PhpSerializer(), null, $nonceSigners);
     } catch (\InvalidArgumentException $refused) {
         if (str_contains($refused->getMessage(), $expected)) {
             return;
