@@ -1,7 +1,8 @@
 <?php
 
 /**
- * Shared by the retry_via examples: Symfony's own Worker with its retry and failure-transport listeners, as
+ * Shared by the examples that wire Symfony's retry listener: Symfony's own Worker with its retry and
+ * failure-transport listeners, as
  * `messenger:consume` wires them, a record of what one run of it did, and a few ways to look at the stream's
  * consumer. Not an example itself (the runner skips files starting with "_").
  */

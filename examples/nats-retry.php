@@ -31,13 +31,12 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/_bootstrap.php';
+require __DIR__ . '/_retry_via.php';
 
 use Composer\InstalledVersions;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
-use Psr\Container\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
@@ -64,23 +63,6 @@ $transport = new NatsTransport(
     $logger,
 );
 
-/** The service locators the retry listener takes, holding the one transport and the one strategy. */
-$locator = static fn (object $service): ContainerInterface => new class ($service) implements ContainerInterface {
-    public function __construct(private readonly object $service)
-    {
-    }
-
-    public function get(string $id): object
-    {
-        return $this->service;
-    }
-
-    public function has(string $id): bool
-    {
-        return true;
-    }
-};
-
 try {
     $transport->setup();
     $transport->send(new Envelope(new ExampleMessage('invoice 7')));
@@ -99,7 +81,7 @@ try {
     // What `messenger:consume` wires up: FrameworkBundle's default retry strategy (3 retries, 1 s, x2) for the
     // transport, and a worker that stops once the message was handled (or after 20 s).
     $dispatcher = new EventDispatcher();
-    $dispatcher->addSubscriber(new SendFailedMessageForRetryListener($locator($transport), $locator(new MultiplierRetryStrategy(3, 1000, 2))));
+    $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(locatorOf($transport), locatorOf(new MultiplierRetryStrategy(3, 1000, 2))));
     $dispatcher->addSubscriber(new StopWorkerOnTimeLimitListener(20));
     $dispatcher->addListener(WorkerRunningEvent::class, static function (WorkerRunningEvent $event) use (&$attempts): void {
         if (count($attempts) >= 2) {
@@ -164,11 +146,11 @@ try {
             $middleware = [new HandleMessageMiddleware(new HandlersLocator([]))];
             if (class_exists(DecodeFailedMessageMiddleware::class)) {
                 // FrameworkBundle 8.1 puts it in every bus: it decodes the message once more, which throws again.
-                array_unshift($middleware, new DecodeFailedMessageMiddleware($locator(new IgbinarySerializer())));
+                array_unshift($middleware, new DecodeFailedMessageMiddleware(locatorOf(new IgbinarySerializer())));
             }
             $dispatcher = new EventDispatcher();
             $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
-            $dispatcher->addSubscriber(new SendFailedMessageForRetryListener($locator($worker), $locator(new MultiplierRetryStrategy(0))));
+            $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(locatorOf($worker), locatorOf(new MultiplierRetryStrategy(0))));
             $dispatcher->addSubscriber(new StopWorkerOnTimeLimitListener(2));
             $dispatcher->addListener(WorkerMessageFailedEvent::class, static function (WorkerMessageFailedEvent $event) use (&$failedWith): void {
                 $failedWith[] = $event->getThrowable()::class;
@@ -227,34 +209,7 @@ try {
     ]))]);
     $dispatcher = new EventDispatcher();
     $dispatcher->addSubscriber(new Symfony\Component\Messenger\EventListener\AddErrorDetailsStampListener());
-    $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(
-        new class ($transport) implements ContainerInterface {
-            public function __construct(private NatsTransport $transport)
-            {
-            }
-
-            public function get(string $id): mixed
-            {
-                return $this->transport;
-            }
-
-            public function has(string $id): bool
-            {
-                return true;
-            }
-        },
-        new class () implements ContainerInterface {
-            public function get(string $id): mixed
-            {
-                return new MultiplierRetryStrategy(0);
-            }
-
-            public function has(string $id): bool
-            {
-                return true;
-            }
-        },
-    ));
+    $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(locatorOf($transport), locatorOf(new MultiplierRetryStrategy(0))));
     $dispatcher->addSubscriber(new StopWorkerOnTimeLimitListener(3));
     (new Worker(['async' => $transport], $bus, $dispatcher))->run(['sleep' => 0]);
 
