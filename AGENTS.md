@@ -149,8 +149,10 @@ composer nats:stop               # Stop NATS
   recovery until the test releases it rather than for a time, and keep a bound on a duration far from what it normally
   takes. `composer test:unit:paused`, in CI, fails a test that breaks this.
 - A pull's 503 has two causes: a missing consumer, and a server that is going away, which answers 503 for a consumer it has
-  already stopped: in the last moments of a graceful stop (NATS 2.15 takes about 10 ms for each durable consumer on a file
-  stream) and for the whole grace period of lame duck mode. After a 503 the transport asks the client why
+  already stopped, when it was released before nats-server 2.14.10 and 2.15.3: in the last moments of a graceful stop
+  (NATS 2.15 takes about 10 ms for each durable consumer on a file stream) and for the whole grace period of lame duck
+  mode. 2.14.10 and 2.15.3 close the client connections before they stop JetStream and give no such 503. After a 503
+  the transport asks the client why
   (`pullMetAServerGoingAway()`, the client's `diagnoseNoResponders()`, `^2.29`, #106): any answer keeps the 503's reading
   as a missing consumer, and `ServerGoingAway` (no answer, with the connection closed, being recovered or replaced, or in
   lame duck mode) is an empty batch. The server refuses the question of a user who may not ask for consumer info at once,
