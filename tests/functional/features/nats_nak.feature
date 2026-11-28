@@ -124,3 +124,25 @@ Feature: NATS-native retry via NAK
     And I wait for the consumer to finish or timeout
     Then the transport's consumer should have published "MSG_TERMINATED" for stream sequence 1
     And both handlers should have run 1 time
+
+  # nats mode NAKs a failed delivery, with nak_delay when it is set. NATS adds backoff[n] - backoff[0] to a NAK that
+  # carries a delay, where n counts the earlier deliveries, so with nak_delay 0.5 s and backoff 1 and 2 s the
+  # redeliveries come 0.5 and 1.5 s after the failures; a plain NAK is redelivered at once, whatever the backoff says
+  # (docs/symfony_retry_via.md, README "Retry Handler Behavior").
+  @nak
+  Scenario Outline: A backoff spaces out the redeliveries of nats mode when the NAKs carry nak_delay <nak_delay>
+    Given NATS server is running
+    And I have a messenger transport configured with "stream_max_age=900&retry_handler=nats&nak_delay=<nak_delay>&max_deliver=3&backoff[]=1&backoff[]=2" and the retry strategy "{ max_retries: 0 }"
+    And the NATS stream is set up
+    And the retry state directory is clean
+    And the test files directory is clean
+    When I send 1 always-failing message
+    And I start a messenger consumer that stops after 3 deliveries
+    And I wait for the consumer to finish or timeout
+    Then the always-failing message should have been attempted 3 times
+    And the retries of the failing message should have waited at least "<waits>" ms, and less than <slack> s more
+
+    Examples:
+      | nak_delay | waits        | slack |
+      | 0.5       | 500 and 1500 | 3     |
+      | 0         | 0 and 0      | 1     |

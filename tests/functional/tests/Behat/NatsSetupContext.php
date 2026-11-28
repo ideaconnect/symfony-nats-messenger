@@ -4187,4 +4187,54 @@ class NatsSetupContext implements Context
             $this->testSubject,
         ));
     }
+
+    /**
+     * What the stream holds of a message NATS stopped at max_deliver, once later messages were acknowledged and the main
+     * test server, a standalone one, restarted: the measured table of docs/symfony_retry_via.md. A work-queue stream on
+     * one server keeps it on every version measured (2.10.29 to 2.15.2); an interest stream deletes it at the restart
+     * before 2.12.9 and on 2.14.0, and keeps it from 2.12.9 and 2.14.1 on. The later messages were acknowledged, so
+     * neither stream holds them. The server's version is read here, from the connection.
+     */
+    #[Then('the NATS stream should hold the message stopped at max_deliver exactly when the server keeps it on a :retention stream')]
+    public function theNatsStreamShouldHoldTheMessageStoppedAtMaxDeliverExactlyWhenTheServerKeepsIt(string $retention): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $version = (string) $client->serverInfo()?->version;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $release = preg_replace('/^v?(\d+\.\d+\.\d+).*$/', '$1', $version) ?? '';
+        $kept = match ($retention) {
+            'workqueue' => true,
+            'interest' => !(version_compare($release, '2.12.9', '<') || (version_compare($release, '2.14.0', '>=') && version_compare($release, '2.14.1', '<'))),
+            default => throw new \InvalidArgumentException(sprintf('No measured rule for a %s stream', $retention)),
+        };
+
+        // The server deletes the message when it recovers the stream; give it a moment, and longer to delete it.
+        $expected = $kept ? 1 : 0;
+        $deadline = microtime(true) + ($kept ? 2.0 : 10.0);
+        do {
+            usleep(250000);
+            $client = $this->createAppropriateNatsClient();
+            try {
+                $state = $client->jetStream()->getStream($this->testStreamName)->await()->raw['state'] ?? [];
+            } finally {
+                $client->disconnect()->await();
+            }
+            $held = is_array($state) ? (int) ($state['messages'] ?? 0) : 0;
+        } while (($kept || $held !== $expected) && microtime(true) < $deadline);
+
+        if ($held !== $expected) {
+            throw new \RuntimeException(sprintf(
+                'Expected a %s stream on NATS %s to %s the message stopped at max_deliver (%d message), it holds %d',
+                $retention,
+                $version,
+                $kept ? 'keep' : 'delete',
+                $expected,
+                $held,
+            ));
+        }
+    }
 }
