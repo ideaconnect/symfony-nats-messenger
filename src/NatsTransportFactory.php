@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger;
 
+use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
+use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 use Symfony\Component\Messenger\Transport\TransportFactoryInterface;
@@ -35,8 +37,13 @@ class NatsTransportFactory implements TransportFactoryInterface
      *                                     The transport also warns through it, once, when Symfony's retry strategy is
      *                                     on in nats mode (max_retries > 0 with retry_handler=nats).
      *                                     The bundle passes the application's `logger` service when there is one.
+     * @param ContainerInterface|null $nonceSigners Handed to every transport this factory creates: the services the
+     *                                     nonce_signer option can name, by their ids, each a signer of the server's
+     *                                     nonce that keeps the seed out of this process. The bundle passes a locator
+     *                                     of the services tagged
+     *                                     {@see NatsTransportConfigurationBuilder::NONCE_SIGNER_TAG}.
      */
-    public function __construct(private readonly ?LoggerInterface $logger = null)
+    public function __construct(private readonly ?LoggerInterface $logger = null, private readonly ?ContainerInterface $nonceSigners = null)
     {
     }
 
@@ -62,7 +69,7 @@ class NatsTransportFactory implements TransportFactoryInterface
      */
     public function createTransport(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options, SerializerInterface $serializer): TransportInterface
     {
-        return new NatsTransport($dsn, $options, $serializer, $this->logger);
+        return new NatsTransport($dsn, $options, $serializer, $this->logger, $this->nonceSigners);
     }
 
     /**

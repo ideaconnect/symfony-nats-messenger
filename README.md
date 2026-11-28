@@ -17,7 +17,8 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
 - 📦 **Symfony Integration** - Implements Messenger's `TransportInterface`, `MessageCountAwareInterface`, `SetupableTransportInterface`, `KeepaliveReceiverInterface`, and `CloseableTransportInterface`
 - ⚙️ **Configurable Consumers** - Support for multiple consumer strategies
 - 🔄 **Flexible Batching** - Adjustable message batch sizes and timeouts
-- 🔐 **Authentication Support** - User and password, token, NKey and JWT logins (see [NKey Authentication](#nkey-authentication))
+- 🔐 **Authentication Support** - User and password, token, NKey and JWT logins (see [NKey Authentication](#nkey-authentication)),
+  also with a signer that keeps the seed out of PHP (see [External Signer](#external-signer-nonce_signer))
 - 📊 **Stream Configuration** - Configurable retention policies and replication
 - 📍 **Stream Placement** - Pin a stream to a JetStream cluster and to tagged servers; an option you set
   changes only its own half of an existing placement (see [Stream Placement](#stream-placement))
@@ -27,7 +28,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1409 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1501 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -73,6 +74,9 @@ services:
     IDCT\NatsMessenger\NatsTransportFactory:
         tags: [messenger.transport_factory]
 ```
+
+A transport that names a signer in `nonce_signer` needs the factory's second argument as well, and an entry of your own
+replaces the bundle's, so it needs it next to the bundle too: see [External Signer](#external-signer-nonce_signer).
 
 > **Tested by:** `transportFactoryIsRegisteredAndTaggedForMessengerDiscovery`, `withoutTheBundleNoTransportFactorySupportsANatsDsn`, `theReadmesIgbinaryExampleGivesTheTransportTheIgbinarySerializer`, `theReadmesSetupWithoutTheBundleGivesAWorkingTransport` - the functional Behat suite also runs entirely on the bundle's service registration.
 
@@ -161,7 +165,7 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
   went away before it answered is sent again on the recovered connection (see
   [Automatic Reconnect](#automatic-reconnect)).
 
-> **Tested by:** `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testTheAckOfAHandledMessageReachesTheServerOnTheRecoveredConnectionWithNoCheckFirst`, `testSymfonysRetryCopyAfterTheServerClosedTheConnectionDuringTheHandlerGoesOutOnTheRecoveredConnection`, `testBuildWithResendOnReconnectPropagatesToNatsOptions`, the examples `nats-retry.php`, `handler-failing-during-failover.php` and `handler-succeeding-during-failover.php`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAMaxReconnectAttemptsThatDoesNotSurviveTheCastToAnInt`, `testBuildRejectsAMaxReconnectAttemptsInTheDsnThatDoesNotSurviveTheCastToAnInt`, `testBuildPassesALargeMaxReconnectAttemptsToTheClient`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, Behat scenario `Credentials that need or exclude a seed are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). `messenger:stats` naming a transport, and a worker on several transports, were measured by hand.
+> **Tested by:** `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testAckNaksADeliveryWhoseRetryCopyNatsModeLeftOut`, `testSettlingAFailedDeliveryChecksTheConnectionFirst`, `testSetupAsksForTheConsumerAgainWhileTheClusterIsTemporarilyUnavailable`, `testTheAckOfAHandledMessageReachesTheServerOnTheRecoveredConnectionWithNoCheckFirst`, `testSymfonysRetryCopyAfterTheServerClosedTheConnectionDuringTheHandlerGoesOutOnTheRecoveredConnection`, `testBuildWithResendOnReconnectPropagatesToNatsOptions`, the examples `nats-retry.php`, `handler-failing-during-failover.php` and `handler-succeeding-during-failover.php`, `testBuildRejectsAnNkeyWithoutASigner`, `testBuildRejectsAJwtWithoutASigner`, `testBuildRejectsAMaxReconnectAttemptsThatDoesNotSurviveTheCastToAnInt`, `testBuildRejectsAMaxReconnectAttemptsInTheDsnThatDoesNotSurviveTheCastToAnInt`, `testBuildPassesALargeMaxReconnectAttemptsToTheClient`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, Behat scenario `Credentials that need or exclude a signer are refused when the transport is built, on every command` (`messenger:setup-transports`, `messenger:stats` and a worker on that transport alone). `messenger:stats` naming a transport, and a worker on several transports, were measured by hand.
 
 ### Upgrading from 5.8.0
 
@@ -286,7 +290,8 @@ With the bundle, the application's `logger` service is handed to the factory, ta
 `messenger` channel, so the client's lines land next to the worker's. Without that service, or without the
 bundle, the client gets no logger, as before 5.7.0. To wire one yourself, give it to the factory, which hands
 it to every transport it creates, or to a transport constructed directly, as the fourth constructor
-argument: `new NatsTransport($dsn, $options, $serializer, $logger)`.
+argument: `new NatsTransport($dsn, $options, $serializer, $logger)`. The fifth is the services `nonce_signer` can
+name (see [External Signer](#external-signer-nonce_signer)).
 
 ```yaml
 # config/services.yaml (without the bundle, with a logger)
@@ -295,6 +300,8 @@ services:
         arguments: ['@?logger']
         tags: [messenger.transport_factory]
 ```
+
+With signers as well, name the arguments, as the entry in [External Signer](#external-signer-nonce_signer) does.
 
 > **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, the examples `reconnect.php` and `cluster-failover.php`
 
@@ -512,6 +519,7 @@ the test server and print `OK` when what they show held:
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
 | `jwt-login.php` | `jwt` with `nkey_seed`: a user of a server in operator mode logs in; its JWT with another user's seed and an expired JWT are refused by the server, and the JWT alone when the transport is built |
 | `nkey-login.php` | `nkey_seed`: a user the server knows by its public key logs in; a seed it does not know is refused by the server, and the public key alone or a seed next to a password when the transport is built |
+| `external-signer.php` | `nonce_signer` with `nkey`: a signer that asks another process, which holds the seed, logs in; a signing process with another user's seed is refused by the server, and a signer with neither `nkey` nor `jwt` or next to a seed when the transport is built |
 | `token-login.php` | `token`: a client logs in with the server's token, and a wrong one is refused |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, and `auto_setup` recreates the memory stream the restart lost |
 | `cluster-failover.php` | `reconnect: true` on a cluster: a worker carries on through another server when the one it is connected to stops |
@@ -724,9 +732,12 @@ framework:
           token: null                       # NATS token authentication
           username: null                    # Overrides DSN username if provided
           password: null                    # Overrides DSN password if provided
-          jwt: null                         # User JWT; needs nkey_seed, see NKey Authentication
-          nkey: null                        # Leave unset: the public key is derived from nkey_seed
+          jwt: null                         # User JWT; needs a signer: nkey_seed or nonce_signer
+          nkey: null                        # Leave unset next to nkey_seed: the public key is derived from it.
+                                            # Next to nonce_signer, the user's public key (U...)
           nkey_seed: null                   # NKey seed (SU...) that signs the server's nonce; see NKey Authentication
+          nonce_signer: null                # Id of a service that signs the nonce, the seed kept elsewhere;
+                                            # see External Signer
 ```
 
 **An option the transport does not know is refused** (5.10.0), in the `options` and in the DSN query, with the
@@ -786,8 +797,9 @@ authorization {
   the login, as there is nothing to sign, though the password alone would have worked.
 - For a user the server knows by its NKey, the seed is all the transport needs: the public key it sends is derived from
   it, so leave the `nkey` option unset. It may repeat the derived key, but a different one is refused when the transport
-  is built, not on its first connect. So is `nkey` without a seed, which could never log in: the client needs a signer
-  for the nonce, and the seed is where the transport gets one.
+  is built, not on its first connect. So is `nkey` without a signer, which could never log in: the client needs one
+  for the nonce, and the transport gets it from the seed or from `nonce_signer` (see
+  [External Signer](#external-signer-nonce_signer)).
 - A seed needs a server that has NKey users or runs in operator mode, and in a cluster every server must list the user,
   as the client can fail over to any of them. A server with NKey users refuses a seed it does not list with a bare
   `Authorization Violation`. Any other server, a password, token or open one, sends no nonce, so the client refuses the
@@ -810,7 +822,7 @@ authorization {
   A credential typed after a second `?` or a `;` in the query is refused when the transport is built, without repeating
   it, as it would be read as a part of the option before it: separate the options with `&`.
 
-> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt`, `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError`, `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASeed`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testBuildSaysWhatASeedLooksLikeForAValueThatIsNotOne`, `testAMistypedSeedStaysOutOfTheFailure`, `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure`, `testNoFrameOfAFailedBuildHoldsASecret`, `testNoFrameOfAFailedTransportCreationHoldsASecret`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive`, `testASeedTypedIntoTheDsnPathStaysOutOfTheError`, `testTheConfigurationDoesNotKeepTheTextOfTheSeed`, `testBuildRejectsASeedThatIsNotAUserSeed`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesSeedFileFormGivesASignerWhenTheFileHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, `testASeedTypedIntoAnOptionsValueStaysOutOfTheError`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, `testTheReadmeNamesNoUsableNkey`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, `testASeedOnAServerThatSendsNoNonceCannotLogIn`, the Behat scenarios of `nats_nkey.feature` (real logins, in each form of the configuration above, also over TLS and mTLS and across a server restart, and the refusals through the console), the example `nkey-login.php`. Not in the suite: a cluster failover with a seed, and the 43 seconds on a server that sends no nonce, which were measured by hand.
+> **Tested by:** `testBuildWithNkeySeedPassesASignerAndTheSeedsPublicKey`, `testBuildReadsTheNkeySeedFromTheDsnQuery`, `testWithoutTheSodiumExtensionASeedIsRefusedWhenTheTransportIsBuilt`, `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError`, `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike`, `testBuildAcceptsAnNkeyThatIsTheSeedsPublicKey`, `testBuildRejectsAnNkeyThatIsNotTheSeedsPublicKey`, `testBuildRejectsAnNkeyWithoutASigner`, `testBuildRejectsASeedNextToAUsernamePasswordOrToken`, `testTheNkeyOptionIsNotDeprecated`, `testBuildRejectsAnInvalidNkeySeedWithoutRepeatingIt`, `testBuildSaysWhatASeedLooksLikeForAValueThatIsNotOne`, `testAMistypedSeedStaysOutOfTheFailure`, `testAContradictingNkeyLeavesTheSeedAndTheSignerOutOfTheFailure`, `testNoFrameOfAFailedBuildHoldsASecret`, `testNoFrameOfAFailedTransportCreationHoldsASecret`, `testEveryParameterThatCanHoldASecretIsMarkedSensitive`, `testASeedTypedIntoTheDsnPathStaysOutOfTheError`, `testTheConfigurationDoesNotKeepTheTextOfTheSeed`, `testBuildRejectsASeedThatIsNotAUserSeed`, `testBuildRejectsAnNkeySeedThatIsNotANonEmptyString`, `testBuildRejectsANkeySeedInTheDsnQueryThatIsNotANonEmptyString`, `testBuildWithANullNkeySeedHasNoSigner`, `testAnExplicitNullNkeySeedOptionHidesASeedInTheDsnQuery`, `theReadmesOptionalSeedFormMeansNoSeedForAnUnsetOrEmptyVariable`, `theReadmesOptionalSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesRequiredSeedFormGivesASignerWhenTheVariableHasASeed`, `theReadmesSeedFileFormGivesASignerWhenTheFileHasASeed`, `theReadmesRequiredSeedFormIsRefusedForAnEmptyVariable`, `theReadmesSeedFileFormIsRefusedForAnEmptyFile`, `testASeedTypedIntoAnOptionsValueStaysOutOfTheError`, `testACredentialTypedAfterASecondQuestionMarkOrASemicolonIsRefusedWithoutRepeatingIt`, `testAValueThatOnlyLooksLikeACredentialInAQueryIsAccepted`, `testTheReadmeNamesNoUsableNkey`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, `testASeedOnAServerThatSendsNoNonceCannotLogIn`, the Behat scenarios of `nats_nkey.feature` (real logins, in each form of the configuration above, also over TLS and mTLS and across a server restart, and the refusals through the console), the example `nkey-login.php`. Not in the suite: a cluster failover with a seed, and the 43 seconds on a server that sends no nonce, which were measured by hand.
 
 #### JWT Users (Operator Mode)
 
@@ -834,8 +846,8 @@ framework:
                     nkey_seed: '%env(NATS_NKEY_SEED)%'
 ```
 
-- `jwt` without `nkey_seed` is refused when the transport is built: the client needs a signer for the server's nonce and
-  cannot connect without one, and the seed is where the transport gets one. For a bearer JWT (`nsc add user --bearer`) the server does not check that
+- `jwt` without a signer is refused when the transport is built: the client needs one for the server's nonce and
+  cannot connect without it, and the transport gets it from the seed or from `nonce_signer`. For a bearer JWT (`nsc add user --bearer`) the server does not check that
   signature, so there the seed is only what the client asks for, but it is required all the same.
 - `jwt` must be the JWT alone, which has three parts separated by dots. A seed or the whole text of a `.creds` file there
   is refused when the transport is built, without repeating it, as the CONNECT would carry it to the server, in clear
@@ -854,7 +866,101 @@ framework:
   each new connection with the same JWT is refused with `Authorization Violation`, which does not mention the expiry.
   A new JWT needs a new transport, so restart the workers with the new value.
 
-> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `theReadmesJwtFormGivesTheClientTheJwtAndASigner`, `testBuildRejectsAJwtWithoutASeed`, `testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt`, `testBuildAcceptsAJwtWithSpaceAroundItAndBase64UrlCharacters`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the Behat scenarios of `nats_jwt.feature` (real logins on a server in operator mode, with a user's JWT and seed as in the configuration above and with a bearer JWT, across a server restart, and what is refused: a value that is not a JWT when the transport is built, and by the server another user's seed, a seed with no JWT, an expired JWT, an account without JetStream), the example `jwt-login.php`. Not in the suite: a JWT that expires under a running worker, which was measured by hand on NATS 2.9.25 and 2.15.1.
+> **Tested by:** `testBuildPassesAJwtWithItsSeedToTheClient`, `theReadmesJwtFormGivesTheClientTheJwtAndASigner`, `testBuildRejectsAJwtWithoutASigner`, `testBuildRejectsAJwtOptionThatIsNotAJwtWithoutRepeatingIt`, `testBuildAcceptsAJwtWithSpaceAroundItAndBase64UrlCharacters`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect`, the Behat scenarios of `nats_jwt.feature` (real logins on a server in operator mode, with a user's JWT and seed as in the configuration above and with a bearer JWT, across a server restart, and what is refused: a value that is not a JWT when the transport is built, and by the server another user's seed, a seed with no JWT, an expired JWT, an account without JetStream), the example `jwt-login.php`. Not in the suite: a JWT that expires under a running worker, which was measured by hand on NATS 2.9.25 and 2.15.1.
+
+#### External Signer (`nonce_signer`)
+
+An NKey or JWT login needs a signature of the server's nonce. With `nkey_seed` the transport makes it itself, so the
+seed sits in the PHP process, in its environment and usually in a file. To keep the seed in a KMS, an HSM, Vault or a
+sidecar, give the transport a signer instead: a service of your application that implements the client's
+`IDCT\NATS\Auth\NonceSignerInterface`, named by its service id in `nonce_signer`, next to `nkey`, the user's public key,
+or `jwt`, the user's JWT:
+
+```yaml
+framework:
+    messenger:
+        transports:
+            orders:
+                dsn: 'nats-jetstream://nats.example.com:4222/orders/orders.created'
+                options:
+                    nonce_signer: App\Nats\KeyServiceNonceSigner
+                    nkey: '%env(NATS_NKEY)%'   # the user's public key, U...
+                    # on a server in operator mode, the user's JWT, with or without nkey:
+                    # jwt: '%env(NATS_USER_JWT)%'
+```
+
+```php
+namespace App\Nats;
+
+use IDCT\NATS\Auth\NonceSignerInterface;
+
+final class KeyServiceNonceSigner implements NonceSignerInterface
+{
+    public function __construct(private readonly KeyService $keys)
+    {
+    }
+
+    public function sign(string $nonce): string
+    {
+        // The Ed25519 signature of the nonce, made where the user's key is kept, as base64url text.
+        return rtrim(strtr(base64_encode($this->keys->sign('nats-orders-user', $nonce)), '+/', '-_'), '=');
+    }
+}
+```
+
+- With the bundle, a service that implements the interface gets the tag `idct_nats_messenger.nonce_signer` when it is
+  autoconfigured, as the services of `config/services.yaml` are by default, and the transport finds it by its id: for a
+  service registered from `src/`, its class name. Give a service that is not autoconfigured the tag yourself. The name
+  can come from the DSN query (`?nonce_signer=...`) or from `%env()%` too, so each transport can name a signer of its
+  own and log in as a user of its own. One signer for a whole factory could not: the second user's key would get
+  `Authorization Violation`.
+- The name is looked up when the transport is built, and the client gets the service itself. A name no tagged service
+  has, a service that does not implement the interface, and a transport built without the services (an entry of your
+  own for the factory without its second argument, below) are refused then, with the id and the tag or the interface
+  in the message. A value that may be more than an id, such as a seed put there by mistake, is not repeated.
+- `nkey` is the public key of the user whose key signs (`U...`). The signer cannot tell the transport which key it
+  holds, so the CONNECT carries `nkey` as it is: any other value, a seed or the key of an account included, is refused
+  when the transport is built, without repeating it. On a server in operator mode the `jwt` is what counts, and `nkey`
+  may be left out.
+- A signer with neither `nkey` nor `jwt` is refused when the transport is built: the client signs only for one of those
+  two logins, so it would send no credentials, and the connection would log in as the server's `no_auth_user` or
+  anonymously.
+- A signer next to `nkey_seed`, a username, a password or a token, from the DSN or the options, is refused when the
+  transport is built, as a seed next to them is. Only null, or leaving the option out, means no signer: an empty value is
+  refused, so for an optional one use `%env(default::NATS_NONCE_SIGNER)%`.
+- An entry of your own for the factory replaces the bundle's, next to the bundle as without it, so give it the signers
+  too. Without the bundle nothing gives a signer the tag, so tag it by hand:
+
+```yaml
+# config/services.yaml (your own factory entry, with nonce signers)
+services:
+    IDCT\NatsMessenger\NatsTransportFactory:
+        arguments:
+            $logger: '@?logger'
+            $nonceSigners: !tagged_locator idct_nats_messenger.nonce_signer
+        tags: [messenger.transport_factory]
+```
+
+Outside the framework a transport takes the signers as its fifth argument, a PSR-11 container keyed by the name
+`nonce_signer` holds, such as `new ServiceLocator(['app.signer' => fn () => $signer])`: `examples/external-signer.php`
+does that, with the seed in a second process.
+
+What a signer has to live with (measured with client 2.35.0 on NATS 2.10 and 2.15, the TLS figures and the reconnect with
+client 2.28.0):
+
+- It must answer within the server's authorization timeout, 2 seconds by default (`authorization { timeout }` in the
+  server's configuration), and a TLS connection leaves it a little more. A signer that took 1.5 seconds passed and one that
+  took 2.5 seconds failed the login, with an error from the client that does not mention the timeout.
+- `connection_timeout` does not limit `sign()`, and a `sign()` that blocks holds up the whole process while it waits,
+  other connections included.
+- It is called once for each connection, when the server's `INFO` arrives, and again on every reconnect: a setup, a
+  send, a get and an ack on one connection made one call.
+- What it throws ends the login with its own message, as in `Failed to setup NATS stream '...': the signing service is
+  down`, and with `reconnect: true` the client tries again until `Reconnect attempts exhausted`.
+- It returns the signature as base64url text, as the client's own seed signer does. Raw bytes fail with an unrelated
+  JSON error, `Malformed UTF-8 characters, possibly incorrectly encoded`; the transport does not check what it returns.
+
+> **Tested by:** `testBuildPassesTheNonceSignerServiceAndTheConfiguredNkeyToTheClient`, `testBuildReadsTheNonceSignerFromTheDsnQuery`, `testBuildPassesAJwtWithTheNonceSignerAndNoNkeyToTheClient`, `testBuildPassesAJwtAndAnNkeyWithTheNonceSignerToTheClient`, `testBuildRejectsANonceSignerWithNeitherNkeyNorJwt`, `testBuildRejectsANonceSignerNextToASeedUsernamePasswordOrToken`, `testBuildRejectsAnNkeyNextToANonceSignerThatIsNotAUsersPublicKey`, `testBuildRejectsANonceSignerTheLocatorDoesNotHave`, `testBuildRejectsANonceSignerWithoutNonceSigners`, `testBuildRejectsANonceSignerServiceThatIsNotASigner`, `testTheErrorNamesTheServiceIdOfTheNonceSigner`, `testANonceSignerValueThatIsNotAServiceIdIsNotRepeated`, `testBuildRejectsANonceSignerThatIsNotANonEmptyString`, `testBuildRejectsANonceSignerInTheDsnQueryThatIsNotANonEmptyString`, `testASeedIsTheSignerWhenNoNonceSignerIsNamed`, `testBuildRejectsAnNkeyWithoutASigner`, `testBuildRejectsAJwtWithoutASigner`, `testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect` (the 64 combinations of a user, token, `jwt`, `nkey`, seed and signer), `testANonceSignerOnAServerThatSendsNoNonceCannotLogIn`, `anAutoconfiguredNonceSignerServiceReachesTheClient`, `aNonceSignerServiceTaggedByHandReachesTheClient`, `aNonceSignerServiceWithoutTheTagIsRefused`, `theNonceSignerNamedByAnEnvironmentVariableReachesTheClient`, `theNonceSignerNamedInTheDsnQueryReachesTheClient`, `twoTransportsWithTwoNonceSignerServicesGetEachTheirOwn`, `anApplicationsOwnFactoryEntryWithoutTheNonceSignersRefusesATransportThatNamesOne`, `theReadmesFactoryEntryWithNonceSignersGivesTheClientTheService`, the Behat scenarios of `nats_nkey.feature` and `nats_jwt.feature` with a signing process that holds the seed (real logins on the NKey server and on the server in operator mode, a signing process with another user's seed refused by the server, and the refusals through the console), the example `external-signer.php`. Not in the suite: the timings above, a reconnect and a signer that throws, which were measured by hand.
 
 ### Retry Handler Behavior
 

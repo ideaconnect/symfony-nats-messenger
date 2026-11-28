@@ -246,7 +246,7 @@ apply only with the option on.
 - **NKey and JWT (#89):** `nkey_seed` builds the client's `NkeySeedSigner`, and the public key sent is derived from
   it. Only null means no seed. A blank or non-string value, an invalid seed and a seed that is not a user key are refused
   at build, as are a username, password or token next to it (a server with both kinds of users ignores them without a
-  word) and `jwt` or `nkey` without it (the client throws before the CONNECT without a signer, on every server, and for
+  word) and `jwt` or `nkey` without a signer (the client throws before the CONNECT without one, on every server, and for
   a bearer JWT too, though the server would not check the signature). So are a `jwt` without a JWT's three parts, which the
   CONNECT would carry to the server, and a credential after a second `?` or a `;` in the DSN query, which `parse_str()`
   leaves in the value of the option before it. `nkey` stays as an optional check: it must equal
@@ -257,7 +257,7 @@ apply only with the option on.
   dump and its first 32 bytes are the seed; its frames and `encodeConnect`'s are unmarked; the wording of a seed on a
   server with no nonce, which `reconnect: true` retries for about 43 s. Real logins run in the functional suite and
   the examples: NKey on `nats`, `nats-tls` and `nats-mtls`, JWT on `nats-jwt`, token on `nats-token`, also across a restart
-  for NKey and JWT. On every `composer test` the 32 combinations in `LoginCombinationsTest` are refused when built, or go
+  for NKey and JWT. On every `composer test` the 64 combinations in `LoginCombinationsTest` are refused when built, or go
   through the real client as a CONNECT that carries them. Measured by hand, not in the suite: cluster failover with a seed, a JWT that expires under a worker.
   A scenario that restarts a server must wait for the worker's connection first, as `I start a messenger consumer expecting
   :count messages` does: on CI's runners the console boots after the restart begins, so without the wait nothing reconnects
@@ -267,6 +267,16 @@ apply only with the option on.
   run into that moment as a worker would.
   Docker's CLI takes about 180 ms to reach the server here, through this machine's long PATH, and about 20 ms on
   CI, which hides this: to rehearse, call Docker's API directly and boot the worker at a random phase of the step's poll.
+- **External signer (#105):** `nonce_signer` names a service of the application that implements the client's
+  `NonceSignerInterface`, so the seed stays out of PHP. The bundle autoconfigures the interface with the tag
+  `idct_nats_messenger.nonce_signer` and gives the factory a `tagged_locator` of it (`$nonceSigners`, also the 5th argument
+  of the transport and the 4th of `build()`); the id is looked up when the transport is built and the client gets the
+  service itself. The interface has only `sign()`, so next to it `nkey` names the user's public key and is passed on as
+  it is (a user's key only), or is left out next to a `jwt`. Refused at build: no `nkey` and no `jwt`, a seed, user,
+  password or token next to it, an unknown id, no locator, a service that is not a signer. An application's own factory
+  entry replaces the bundle's and must pass the locator itself. Measured for the README with client 2.35.0: a signer has
+  the server's authorization timeout (2 s by default) to answer, and a slower one fails with a client error that does not
+  name it. Not in the suite: the timings, a reconnect, a signer that throws.
 - **Stats:** consumer `num_pending + num_ack_pending`, falling back to stream messages and then 0.
   Stream count can include already acknowledged messages; outage and empty queue both read as 0.
   A failed initial connection gets one dial attempt, not a second for the fallback (#54).

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace IDCT\NatsMessenger\Options;
 
 use IDCT\NATS\Auth\NkeySeedSigner;
+use IDCT\NATS\Auth\NonceSignerInterface;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Exception\NatsException;
@@ -14,6 +15,7 @@ use IDCT\NATS\JetStream\Enum\RetentionPolicy;
 use IDCT\NATS\JetStream\Enum\StorageBackend;
 use IDCT\NatsMessenger\TypeCoercion;
 use InvalidArgumentException;
+use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -38,6 +40,18 @@ final class NatsTransportConfigurationBuilder
 
     /** Added by Symfony's FrameworkBundle to the options of every transport it creates. */
     private const TRANSPORT_NAME_OPTION = 'transport_name';
+
+    /**
+     * The tag of the services the nonce_signer option can name. The bundle gives it to every service that implements
+     * {@see NonceSignerInterface} and hands the transport factory a locator of the services that have it.
+     */
+    public const NONCE_SIGNER_TAG = 'idct_nats_messenger.nonce_signer';
+
+    /** The refusal of a signer from nonce_signer next to a seed, a username, a password or a token. */
+    private const NONCE_SIGNER_STANDS_ALONE = 'The nonce_signer option cannot be combined with nkey_seed, a username, password '
+        . 'or token, from the DSN or the options: nkey_seed would be a second signer, and a server with NKey users would log '
+        . 'the connection in with the NKey and ignore a username, password or token, even wrong ones. Remove them, or remove '
+        . 'nonce_signer.';
 
     /**
      * Default option values.
@@ -105,6 +119,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::NKEY_SEED->value => null,
         TransportOption::USERNAME->value => null,
         TransportOption::PASSWORD->value => null,
+        TransportOption::NONCE_SIGNER->value => null,
     ];
 
     /**
@@ -116,9 +131,13 @@ final class NatsTransportConfigurationBuilder
      * error level, among them the report of acknowledgements buffered during an outage that a reconnect which gave
      * up discarded. Without one those go nowhere.
      *
+     * The nonce signers, when given, are the services the nonce_signer option can name, by their ids: the bundle hands
+     * the factory a locator of the services tagged {@see self::NONCE_SIGNER_TAG}. Without them a transport that names
+     * one is refused.
+     *
      * @param array<string, mixed> $options
      */
-    public function build(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options = [], ?LoggerInterface $logger = null): NatsTransportConfiguration
+    public function build(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options = [], ?LoggerInterface $logger = null, ?ContainerInterface $nonceSigners = null): NatsTransportConfiguration
     {
         $components = $this->parseDsn($dsn);
         $configuration = $this->buildConfiguration($components, $options);
@@ -144,7 +163,7 @@ final class NatsTransportConfigurationBuilder
             $reconnectArguments['maxReconnectAttempts'] = TypeCoercion::intValue($maxReconnectAttempts);
         }
 
-        $nkeySigner = $this->resolveNkeySigner($configuration);
+        $nkeySigner = $this->resolveNonceSigner($configuration, $nonceSigners) ?? $this->resolveNkeySigner($configuration);
         // Nothing reads the seed after this, and the option map stays with the transport for its lifetime, where a dump would
         // print it as text.
         unset($configuration[TransportOption::NKEY_SEED->value]);
@@ -1059,6 +1078,96 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
+     * The signer the nonce_signer option names: a service of the application that signs the server's nonce, so that the
+     * seed can stay out of this process, in a KMS, an HSM, Vault or a sidecar. The option holds the service's id, and the
+     * service comes from the nonce signers the transport was built with, the locator of the services tagged
+     * {@see self::NONCE_SIGNER_TAG} that the bundle hands the factory. It is looked up here, when the transport is built,
+     * so a name that leads to no signer fails before any connection, and the client gets the service itself.
+     *
+     * Only null means "no signer", as for nkey_seed. A signer needs nkey or jwt: the client signs the nonce only for one of
+     * those two logins, and with neither it would send no credentials at all, so the connection would log in as the
+     * server's no_auth_user or anonymously. A seed next to it would be a second signer, which is refused here, as only one
+     * of them reaches the checks after this.
+     *
+     * @param array<string, mixed> $configuration Merged option map
+     *
+     * @throws InvalidArgumentException When the option is not a non-empty string, comes with nkey_seed or with neither nkey
+     *                                  nor jwt, or names no service that implements NonceSignerInterface.
+     */
+    private function resolveNonceSigner(#[\SensitiveParameter] array $configuration, ?ContainerInterface $nonceSigners): ?NonceSignerInterface
+    {
+        $id = $configuration[TransportOption::NONCE_SIGNER->value];
+        if ($id === null) {
+            return null;
+        }
+
+        if (!is_string($id) || trim($id) === '') {
+            throw new InvalidArgumentException(
+                'The nonce_signer option must be the id of a service, a non-empty string, or null for no signer. For an '
+                . 'optional signer from an environment variable use the default processor, as in %env(default::NATS_NONCE_SIGNER)%.'
+            );
+        }
+
+        if ($configuration[TransportOption::NKEY_SEED->value] !== null) {
+            throw new InvalidArgumentException(self::NONCE_SIGNER_STANDS_ALONE);
+        }
+
+        if ($this->toNullableString($configuration[TransportOption::NKEY->value]) === null
+            && $this->toNullableString($configuration[TransportOption::JWT->value]) === null
+        ) {
+            throw new InvalidArgumentException(
+                'The nonce_signer option needs nkey or jwt: the client signs the server\'s nonce only for an NKey or a JWT '
+                . 'login, so with neither it would send no credentials, and the connection would log in as the server\'s '
+                . 'no_auth_user or anonymously. Put the public key of the signer\'s user (U...) in nkey, or the user\'s JWT in jwt.'
+            );
+        }
+
+        $named = 'The nonce_signer option names the service' . $this->quotedServiceId($id);
+        if ($nonceSigners === null) {
+            throw new InvalidArgumentException(sprintf(
+                '%s, but the transport was built without the services tagged %s to find it in. The bundle hands them to the '
+                . 'transport factory. An application\'s own entry for the factory needs the argument $nonceSigners: '
+                . '!tagged_locator %s, and a transport constructed directly takes them as its fifth argument.',
+                $named,
+                self::NONCE_SIGNER_TAG,
+                self::NONCE_SIGNER_TAG,
+            ));
+        }
+
+        if (!$nonceSigners->has($id)) {
+            throw new InvalidArgumentException(sprintf(
+                '%s, which is not one of the services tagged %s. A service that implements %s gets the tag when it is '
+                . 'autoconfigured; give it the tag by hand otherwise.',
+                $named,
+                self::NONCE_SIGNER_TAG,
+                NonceSignerInterface::class,
+            ));
+        }
+
+        $signer = $nonceSigners->get($id);
+        if (!$signer instanceof NonceSignerInterface) {
+            throw new InvalidArgumentException(sprintf(
+                '%s, which does not implement %s, so it cannot sign the server\'s nonce.',
+                $named,
+                NonceSignerInterface::class,
+            ));
+        }
+
+        return $signer;
+    }
+
+    /**
+     * A service id for an error message, in quotes and with a space before it, or nothing when it may be more than an id: up
+     * to 100 word characters, dots, hyphens and backslashes, which a class name used as an id has, and not only the capital
+     * letters and digits an NKey is made of, so that a seed or a public key put in the option by mistake is not repeated. A
+     * value with other characters may be another credential, or the part of a DSN query after it.
+     */
+    private function quotedServiceId(#[\SensitiveParameter] string $id): string
+    {
+        return preg_match('/^[\w.\\\\-]{1,100}$/', $id) === 1 && preg_match('/^[A-Z2-7]+$/', $id) !== 1 ? " '" . $id . "'" : '';
+    }
+
+    /**
      * Builds the signer that answers the server's nonce challenge from the nkey_seed option.
      *
      * Only null means "no seed". Any other value that is not a seed is refused, an empty one included: reading it as no
@@ -1116,53 +1225,72 @@ final class NatsTransportConfigurationBuilder
     }
 
     /**
-     * Refuses a seed next to a username, password or token, from the DSN or the options.
+     * Refuses a signer next to a username, password or token, from the DSN or the options.
      *
      * The CONNECT would carry both, and a server with both kinds of users logs the connection in with the NKey and ignores
      * the rest, even a wrong password: the DSN says one user and the connection is another, in another account if the
      * server has more than one. On a server that sends no nonce the client refuses the login outright, though the password
-     * alone would have worked, and a server in operator mode refuses it. A jwt stays allowed: it goes with the seed.
+     * alone would have worked, and a server in operator mode refuses it. A jwt stays allowed: it goes with the signer.
      *
-     * @throws InvalidArgumentException When a seed comes with a username, password or token.
+     * The message names the option the signer came from: nkey_seed for the seed's, nonce_signer for any other.
+     *
+     * @throws InvalidArgumentException When a signer comes with a username, password or token.
      */
     private function assertSeedStandsAlone(
-        #[\SensitiveParameter] ?NkeySeedSigner $signer,
+        #[\SensitiveParameter] ?NonceSignerInterface $signer,
         #[\SensitiveParameter] ?string $username,
         #[\SensitiveParameter] ?string $password,
         #[\SensitiveParameter] ?string $token,
     ): void {
         if ($signer !== null && ($username !== null || $password !== null || $token !== null)) {
-            throw new InvalidArgumentException(
-                'The nkey_seed option cannot be combined with a username, password or token, from the DSN or the options: a '
-                . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and on '
-                . 'a server that sends no nonce the client would refuse the login, as there is nothing to sign. Remove them, '
-                . 'or remove the seed.'
-            );
+            throw new InvalidArgumentException($signer instanceof NkeySeedSigner
+                ? 'The nkey_seed option cannot be combined with a username, password or token, from the DSN or the options: a '
+                    . 'server with NKey users would log the connection in with the NKey and ignore them, even wrong ones, and on '
+                    . 'a server that sends no nonce the client would refuse the login, as there is nothing to sign. Remove them, '
+                    . 'or remove the seed.'
+                : self::NONCE_SIGNER_STANDS_ALONE);
         }
     }
 
     /**
      * The public NKey the CONNECT carries next to the signature. With a seed it is the seed's own, derived from it, which
-     * the nkey option may repeat but not contradict. Without a signer nkey is refused: the client throws before it writes
-     * the CONNECT when it has none, on every server, so that configuration can never connect, and with reconnect: true it
-     * took 43 seconds to say so. The seed is the one source of a signer here.
+     * the nkey option may repeat but not contradict. Another signer, from nonce_signer, cannot tell which key it signs
+     * with, so there it is the nkey option as it is: a user's public key, or nothing next to a jwt. Without a signer nkey
+     * is refused: the client throws before it writes the CONNECT when it has none, on every server, so that configuration
+     * can never connect, and with reconnect: true it took 43 seconds to say so.
      *
      * @param array<string, mixed> $configuration Merged option map
      *
-     * @throws InvalidArgumentException When nkey is set without a seed, or is not the public key of the seed.
+     * @throws InvalidArgumentException When nkey is set without a signer, is not the public key of the seed, or is not a
+     *                                  user's public key next to another signer.
      */
-    private function resolveNkey(#[\SensitiveParameter] array $configuration, #[\SensitiveParameter] ?NkeySeedSigner $signer): ?string
+    private function resolveNkey(#[\SensitiveParameter] array $configuration, #[\SensitiveParameter] ?NonceSignerInterface $signer): ?string
     {
         $configured = $this->toNullableString($configuration[TransportOption::NKEY->value]);
         if ($signer === null) {
             if ($configured !== null) {
                 throw new InvalidArgumentException(
-                    'The nkey option needs nkey_seed: the client must sign the server\'s nonce with the seed, so nkey alone can '
-                    . 'never connect. Put the seed (SU...) in nkey_seed and leave nkey unset: the public key is derived from it.'
+                    'The nkey option needs a signer, from nkey_seed or nonce_signer: the client must sign the server\'s nonce, '
+                    . 'so nkey alone can never connect. Put the seed (SU...) in nkey_seed and leave nkey unset, as the public '
+                    . 'key is derived from it, or name a service that signs the nonce in nonce_signer.'
                 );
             }
 
             return null;
+        }
+
+        if (!$signer instanceof NkeySeedSigner) {
+            // The CONNECT carries the value as it is, and a tracing server logs it, so a seed put here by mistake stops
+            // here. The value is not repeated.
+            if ($configured !== null && preg_match('/^U[A-Z2-7]{55}$/', $configured) !== 1) {
+                throw new InvalidArgumentException(
+                    'The nkey option is not the public key of a user, a U followed by 55 capital letters and digits from 2 to '
+                    . '7. Next to nonce_signer it names the key the signer signs with: a seed (SU...) stays with the signer, '
+                    . 'and the key of an account (A...) does not log a user in.'
+                );
+            }
+
+            return $configured;
         }
 
         $derived = $signer->publicKey();
@@ -1181,24 +1309,25 @@ final class NatsTransportConfigurationBuilder
 
     /**
      * The user JWT the CONNECT carries. It needs a signer: the client signs the server's nonce with it and throws before
-     * it writes the CONNECT when it has none, on every server, so a JWT alone can never connect. The seed is the one
-     * source of a signer here. For a bearer JWT the server does not check that signature, but the client asks for the
-     * signer all the same.
+     * it writes the CONNECT when it has none, on every server, so a JWT alone can never connect. The signer is the seed's
+     * or the service nonce_signer names. For a bearer JWT the server does not check that signature, but the client asks
+     * for the signer all the same.
      *
      * The CONNECT carries the value as it is, and a tracing server logs it, so one that cannot be a JWT stops here: a .creds
      * file holds a JWT and a seed, which makes the seed, or the whole file, an easy mistake. The value is not repeated.
      *
      * @param array<string, mixed> $configuration Merged option map
      *
-     * @throws InvalidArgumentException When jwt is set without a seed, or does not have the three parts of a JWT.
+     * @throws InvalidArgumentException When jwt is set without a signer, or does not have the three parts of a JWT.
      */
-    private function resolveJwt(#[\SensitiveParameter] array $configuration, #[\SensitiveParameter] ?NkeySeedSigner $signer): ?string
+    private function resolveJwt(#[\SensitiveParameter] array $configuration, #[\SensitiveParameter] ?NonceSignerInterface $signer): ?string
     {
         $jwt = $this->toNullableString($configuration[TransportOption::JWT->value]);
         if ($jwt !== null && $signer === null) {
             throw new InvalidArgumentException(
-                'The jwt option needs nkey_seed: the client signs the server\'s nonce with the seed of the JWT\'s user and cannot '
-                . 'connect without one. Put that seed (SU...) in nkey_seed; a .creds file holds both values.'
+                'The jwt option needs a signer, from nkey_seed or nonce_signer: the client signs the server\'s nonce with the '
+                . 'key of the JWT\'s user and cannot connect without one. Put that user\'s seed (SU...) in nkey_seed, as a .creds '
+                . 'file holds both values, or name a service that signs the nonce in nonce_signer.'
             );
         }
 

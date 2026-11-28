@@ -109,14 +109,24 @@ composer nats:stop               # stop NATS
   Nats-Msg-Id written again on the recovered connection); the builder requires `reconnect: true` with it and a
   configured `stream_duplicate_window` longer than `request_timeout`.
 - **Logins with a signature.** `jwt` and `nkey` need a signer: the client throws before it writes the CONNECT without one, on
-  every server. The transport's one source of a signer is `nkey_seed`, so the builder refuses `jwt` or `nkey` without it, a
-  seed next to a username, password or token (a server with both kinds of users ignores them without a word), a blank or
-  non-string seed, a seed that is not a user's, a `jwt` that does not have a JWT's three parts, and a credential after a second
-  `?` or a `;` in the DSN query. `nkey` stays as an optional check of the seed's key, and an external signer would need it.
-  Word such a rule as "no signer", not "no seed". On each `composer test` `LoginCombinationsTest` refuses the 32 combinations
-  of a user, token, `jwt`, `nkey` and seed when built, or sends them through the real client as a CONNECT; the other refusals
-  are in the builder's tests and `SecretsInExceptionsTest`, and the real logins are in `nats_nkey.feature`,
-  `nats_jwt.feature`, `nats_token.feature` and the examples. Test keys are never committed (#9): the unit tests build theirs
+  every server. The transport has two sources of a signer: `nkey_seed`, and `nonce_signer`, the id of a service of the
+  application that implements the client's `NonceSignerInterface` (#105), which keeps the seed out of PHP (a KMS, an HSM,
+  Vault, a sidecar). The bundle tags such a service `idct_nats_messenger.nonce_signer` by autoconfiguration and hands the
+  factory a `tagged_locator` of that tag as its second argument (`$nonceSigners`); a transport constructed directly takes
+  it as its fifth. The id is looked up when the transport is built, and the client gets the service itself, never a
+  wrapper that looks it up at the first `sign()`. So the builder refuses `jwt` or `nkey` without a signer, a signer next
+  to a username, password or token (a server with both kinds of users ignores them without a word), a seed next to
+  `nonce_signer`, `nonce_signer` with neither `nkey` nor `jwt` (the client then signs nothing and sends no credentials),
+  an id the locator does not have, no locator, a service that is not a signer, a blank or non-string seed or id, a seed
+  that is not a user's, a `jwt` that does not have a JWT's three parts, and a credential after a second `?` or a `;` in
+  the DSN query. With a seed `nkey` stays as an optional check of the seed's key; next to `nonce_signer` it names the key
+  the signer signs with, as `NonceSignerInterface` has only `sign()`, so it must be a user's public key (`U` and 55 of
+  `A-Z2-7`) and is passed on as it is. Word such a rule as "no signer", not "no seed". On each `composer test`
+  `LoginCombinationsTest` refuses the 64 combinations of a user, token, `jwt`, `nkey`, seed and signer when built, or
+  sends them through the real client as a CONNECT; the other refusals are in the builder's tests and
+  `SecretsInExceptionsTest`, the container's part in `IDCTNatsMessengerBundleTest`, and the real logins are in
+  `nats_nkey.feature`, `nats_jwt.feature` (a second process holds the seed for the signer, `examples/_signing-service.php`),
+  `nats_token.feature` and the examples. Test keys are never committed (#9): the unit tests build theirs
   with `TestNkeys`, and `tests/nats/auth/generate.sh` makes the servers' at `composer nats:start`. An option stored in
   `NatsOptions` proves nothing about a login, which is how `jwt` and `nkey` shipped unable to log in.
 - **Pull consumers + explicit ACK.** A message is only "processed" once ACK'd. This underpins

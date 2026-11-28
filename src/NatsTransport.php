@@ -36,6 +36,7 @@ use IDCT\NatsMessenger\Stamp\DeduplicationIdStamp;
 use IDCT\NatsMessenger\Stamp\ReceivedInNatsModeStamp;
 use IDCT\NatsMessenger\Stamp\UnrecoverableFailureStamp;
 use LogicException;
+use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
 use Symfony\Component\Messenger\Envelope;
@@ -238,8 +239,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *                                           keeps it as well, for a warning in nats mode when Symfony's retry
      *                                           strategy is on ({@see warnThatSymfonysRetryStrategyIsOn()}). The
      *                                           bundle hands the application's logger to {@see NatsTransportFactory}.
+     * @param ContainerInterface|null $nonceSigners The services the nonce_signer option can name, by their ids: a
+     *                                           signer of the server's nonce that keeps the seed out of this process.
+     *                                           The bundle hands the factory a locator of the services tagged
+     *                                           {@see NatsTransportConfigurationBuilder::NONCE_SIGNER_TAG}. Without
+     *                                           it a transport that names a signer is refused when it is built.
      */
-    public function __construct(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options, ?SerializerInterface $serializer = null, ?LoggerInterface $logger = null)
+    public function __construct(#[\SensitiveParameter] string $dsn, #[\SensitiveParameter] array $options, ?SerializerInterface $serializer = null, ?LoggerInterface $logger = null, ?ContainerInterface $nonceSigners = null)
     {
         $this->logger = $logger;
 
@@ -258,7 +264,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             $this->serializer = new PhpSerializer();
         }
 
-        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options, $logger);
+        $configuration = (new NatsTransportConfigurationBuilder())->build($dsn, $options, $logger, $nonceSigners);
         $this->configuration = $configuration;
         $this->topic = $configuration->topic;
         $this->streamName = $configuration->streamName;

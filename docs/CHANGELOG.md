@@ -47,6 +47,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`nonce_signer`**, a login with an NKey or a JWT whose seed stays out of the PHP process (#105). The option holds the
+  id of a service of the application that implements the client's `IDCT\NATS\Auth\NonceSignerInterface` and signs the
+  server's nonce, for example by asking a KMS, an HSM, Vault or a sidecar; it can come from the options, the DSN query or
+  `%env()%`, so each transport can log in as a user of its own. Next to it `nkey` is the user's public key, which the
+  CONNECT carries as it is (the interface cannot tell which key it signs with), or `jwt` the user's JWT. The bundle
+  autoconfigures the interface with the tag `idct_nats_messenger.nonce_signer` and hands `NatsTransportFactory` a
+  `tagged_locator` of that tag, a new optional second constructor argument `$nonceSigners`, which reaches the transport
+  as its new optional fifth argument and `NatsTransportConfigurationBuilder::build()` as its fourth. The id is looked up
+  when the transport is built, and the client gets the service itself. Refused then: `nonce_signer` with neither `nkey`
+  nor `jwt` (the client would send no credentials and log in as the server's `no_auth_user` or anonymously), next to
+  `nkey_seed`, a username, a password or a token, a blank or non-string value, an id the locator does not have, a
+  transport built without the locator, a service that does not implement the interface, and next to it an `nkey` that is
+  not a user's public key. The message names the id when it looks like one and never repeats a value that may be a
+  credential. An application's own entry for the factory replaces the bundle's and needs
+  `$nonceSigners: !tagged_locator idct_nats_messenger.nonce_signer` for this. `composer.json` now declares
+  `psr/container` (`^1.1 || ^2.0`), which Symfony's DependencyInjection already installed. The example
+  `external-signer.php` logs in with the seed in a second process; README "External Signer".
+- The refusals of `jwt` and `nkey` without a signer name both sources of one: "The jwt option needs a signer, from
+  nkey_seed or nonce_signer" and "The nkey option needs a signer, from nkey_seed or nonce_signer", where they said
+  "needs nkey_seed".
+
 - **`AddUnrecoverableFailureStampListener`**, a `WorkerMessageFailedEvent` subscriber the bundle registers
   (`kernel.event_subscriber`), for the fix above. For a `HandlerFailedException` it adds an `UnrecoverableFailureStamp`
   (not sendable) saying whether every exception it wraps directly is unrecoverable, and the worker passes that envelope

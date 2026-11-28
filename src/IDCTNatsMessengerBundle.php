@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace IDCT\NatsMessenger;
 
+use IDCT\NATS\Auth\NonceSignerInterface;
 use IDCT\NatsMessenger\EventListener\AddUnrecoverableFailureStampListener;
+use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
 use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
 
 use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
+use function Symfony\Component\DependencyInjection\Loader\Configurator\tagged_locator;
 
 /**
  * Symfony bundle for the NATS JetStream transport
@@ -21,7 +24,9 @@ use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
  * {@see IgbinarySerializer}, which a transport uses only when its `serializer:` key names it. Registering the
  * serializer does not select it. The factory gets the application's `logger` service when there is one, so the
  * NATS client's lifecycle and errors, and the transport's own warning about Symfony's retry strategy in nats mode,
- * reach the application's log under Messenger's channel. It also registers
+ * reach the application's log under Messenger's channel. A service that implements the client's
+ * `NonceSignerInterface` is tagged `idct_nats_messenger.nonce_signer` when it is autoconfigured, and the factory gets
+ * a locator of the services with that tag, which a transport's `nonce_signer` option names one of. It also registers
  * {@see AddUnrecoverableFailureStampListener}, tagged `kernel.event_subscriber`, which tells a transport in nats mode
  * whether every handler of a failed message failed for good.
  *
@@ -44,11 +49,20 @@ final class IDCTNatsMessengerBundle extends AbstractBundle
     {
         $services = $configurator->services();
 
+        // A service of the application that signs the server's nonce, so that the seed stays out of this process, gets
+        // the tag the factory's locator collects, and a transport names it by its id in nonce_signer.
+        $container->registerForAutoconfiguration(NonceSignerInterface::class)
+            ->addTag(NatsTransportConfigurationBuilder::NONCE_SIGNER_TAG);
+
         // The application's logger, when it has one, goes to the NATS client of every transport, under Messenger's
         // channel: the connection's lifecycle at info level, its errors at error level. The transport warns through
-        // it too, once, when Symfony's retry strategy is on in nats mode.
+        // it too, once, when Symfony's retry strategy is on in nats mode. The nonce signers are looked up by the
+        // service id a transport's nonce_signer option holds.
         $services->set(NatsTransportFactory::class)
-            ->args([service('logger')->nullOnInvalid()])
+            ->args([
+                service('logger')->nullOnInvalid(),
+                tagged_locator(NatsTransportConfigurationBuilder::NONCE_SIGNER_TAG),
+            ])
             ->tag('messenger.transport_factory')
             ->tag('monolog.logger', ['channel' => 'messenger']);
 
