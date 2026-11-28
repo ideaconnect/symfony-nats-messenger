@@ -3696,7 +3696,7 @@ class NatsSetupContext implements Context
 
         $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
         $pattern = sprintf(
-            '/%s\(.+?\), so the max_deliver option \(%d\) tells which delivery is the last one\.%s/',
+            '/%s\(.+\), so the max_deliver option \(%d\) tells which delivery is the last one\.%s/',
             preg_quote(sprintf('retry_via=nak on stream "%s": consumer "client" could not be read for its max_deliver ', $this->testStreamName), '/'),
             $this->consumerInfoOptions['maxDeliver'],
             preg_quote($ending, '/'),
