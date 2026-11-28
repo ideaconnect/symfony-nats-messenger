@@ -3134,6 +3134,53 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * The three rows of {@see sendsThatKeepTheirDelayOrHaveNone()} that carry a delay without scheduled_messages:
+     * none of them is a genuine retry, so none of them must spend the one warning a genuine retry gets.
+     *
+     * @return iterable<string, array{array<string, mixed>, list<StampInterface>}>
+     */
+    public static function delayedSendsThatAreNoRetry(): iterable
+    {
+        $rows = iterator_to_array(self::sendsThatKeepTheirDelayOrHaveNone());
+
+        foreach ([
+            'an application\'s own delayed message',
+            'a received message sent again with a delay and no retry count',
+            'a delayed message with a retry count, not received here',
+        ] as $key) {
+            yield $key => $rows[$key];
+        }
+    }
+
+    /**
+     * A send that carries a delay without scheduled_messages but is no genuine retry - an application's own delayed
+     * message, a received message with no retry count, or a delayed message not received here - still reaches
+     * {@see warnIfARetryLosesItsDelay()}, but must not spend its one warning: the first genuine retry sent after it
+     * still gets the delay warning.
+     *
+     * @param array<string, mixed> $options
+     * @param list<StampInterface> $stamps
+     */
+    #[DataProvider('delayedSendsThatAreNoRetry')]
+    public function testASendThatIsNoRetryLeavesTheDelayWarningForTheFirstRetry(array $options, array $stamps): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('publish')->with('test-topic')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, $options, $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        $transport->send(new Envelope(new \stdClass(), $stamps));
+        $transport->send(new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('delivery-1'), new DelayStamp(1000), new RedeliveryStamp(1)]));
+
+        self::assertSame([
+            'retry_via=copy on stream "test-stream", subject "test-topic": Symfony\'s retry was published at once, without'
+            . ' its delay of 1000 ms: a copy waits only with scheduled_messages. Set retry_via: nak to have NATS wait, or'
+            . ' scheduled_messages: true (NATS 2.12+, not on an interest stream).',
+        ], $logger->messagesAt('warning'));
+    }
+
+    /**
      * @return iterable<string, array{array<string, mixed>, list<StampInterface>}>
      */
     public static function sendsThatLeaveOutNoRetryCopy(): iterable
@@ -3169,6 +3216,7 @@ final class NatsTransportTest extends TestCase
 
         $first->send($retry);
         $second->send($retry->with(new TransportMessageIdStamp('delivery-1')));
+        self::assertCount(2, $logger->messagesAt('warning'));
         $first->send($retry->with(new TransportMessageIdStamp('delivery-2')));
         $second->send($retry->with(new RedeliveryStamp(2)));
 
@@ -10509,6 +10557,70 @@ final class NatsTransportTest extends TestCase
         self::assertStringContainsString('consumer "client" has max_deliver 3 and the max_deliver option is unset (no limit)', $warnings[0]);
         self::assertStringContainsString('could not be read for its max_deliver (refused), so the value read before (3) tells', $warnings[1]);
         self::assertSame(self::lastDeliveryCopyWithoutItsDelay(1000), $warnings[2]);
+    }
+
+    /**
+     * The consumer unreadable for two different reasons across two retries is still logged once, with the first
+     * failure's message: the warning is keyed by name, not by the failure it carries.
+     */
+    public function testAConsumerUnreadableForTwoReasonsIsLoggedOnce(): void
+    {
+        $failures = [
+            Future::error(new JetStreamException('consumer not found', 404)),
+            Future::error(new JetStreamException('stream not found', 404)),
+        ];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static function () use (&$failures): Future {
+            return array_shift($failures) ?? self::fail('the consumer was asked more than twice');
+        });
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturn(Future::complete());
+        $jetStream->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['max_deliver' => 2, 'ping_after_idle' => 0], $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        foreach ([1, 2] as $retry) {
+            $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.2.1.2.0.0')]);
+            $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
+        }
+
+        self::assertSame([
+            'retry_via=nak on stream "test-stream": consumer "client" could not be read for its max_deliver (consumer not'
+            . ' found), so the max_deliver option (2) tells which delivery is the last one. It is asked again at the next'
+            . ' retry.',
+        ], array_values(array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'could not be read'))));
+    }
+
+    /**
+     * The consumer's limit changing between two retries, from 4 to 6, both above the max_deliver option of 5, is
+     * still logged once: the warning is keyed by name, not by the values it carries.
+     */
+    public function testAConsumersLimitThatChangesIsLoggedOnce(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnOnConsecutiveCalls(
+            Future::complete(self::consumerLimitedTo(4)),
+            Future::complete(self::consumerLimitedTo(6)),
+        );
+        $jetStream->expects(self::exactly(2))->method('nakWithDelay')->willReturn(Future::complete());
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new PausingNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['max_deliver' => 5], $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        foreach ([1000.0, 1060.0] as $delivery => $now) {
+            $transport->now = $now;
+            $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp(sprintf('$JS.ACK.test-stream.client.%d.1.%d.0.0', $delivery + 1, $delivery + 1))]);
+            $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp($delivery + 1)));
+            $transport->ack($failed);
+        }
+
+        self::assertSame([
+            'retry_via=nak on stream "test-stream": consumer "client" has max_deliver 4 and the max_deliver option is 5.'
+            . ' The transport follows the consumer, whose limit NATS applies. Run messenger:setup-transports to give the'
+            . ' consumer the option\'s value.',
+        ], $logger->messagesAt('warning'));
     }
 
     /**

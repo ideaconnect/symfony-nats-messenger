@@ -23,12 +23,11 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/_bootstrap.php';
+require __DIR__ . '/_retry_via.php';
 
 use Composer\InstalledVersions;
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NatsMessenger\NatsTransport;
-use Psr\Container\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\WorkerRunningEvent;
@@ -45,23 +44,6 @@ requireTestCluster('handler-failing-during-failover');
 foreach (array_keys(EXAMPLE_CLUSTER) as $server) {
     requireDockerFor('handler-failing-during-failover', $server);
 }
-
-/** The service locators the retry listener takes, holding the one transport and the one strategy. */
-$locator = static fn (object $service): ContainerInterface => new class ($service) implements ContainerInterface {
-    public function __construct(private readonly object $service)
-    {
-    }
-
-    public function get(string $id): object
-    {
-        return $this->service;
-    }
-
-    public function has(string $id): bool
-    {
-        return true;
-    }
-};
 
 $results = [];
 foreach (['symfony', 'nats'] as $retryHandler) {
@@ -106,7 +88,7 @@ foreach (['symfony', 'nats'] as $retryHandler) {
 
         // What `messenger:consume` wires up, with a worker that stops once the message was handled, or after 15 s.
         $dispatcher = new EventDispatcher();
-        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener($locator($worker), $locator(new MultiplierRetryStrategy(3, 1000, 2))));
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(locatorOf($worker), locatorOf(new MultiplierRetryStrategy(3, 1000, 2))));
         $dispatcher->addSubscriber(new StopWorkerOnTimeLimitListener(15));
         $dispatcher->addListener(WorkerRunningEvent::class, static function (WorkerRunningEvent $event) use (&$attempts): void {
             if (count($attempts) >= 2) {

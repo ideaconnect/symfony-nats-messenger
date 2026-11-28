@@ -29,13 +29,12 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/_bootstrap.php';
+require __DIR__ . '/_retry_via.php';
 
 use IDCT\NATS\JetStream\JetStreamContext;
 use IDCT\NatsMessenger\EventListener\AddUnrecoverableFailureStampListener;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
-use Psr\Container\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
@@ -52,23 +51,6 @@ use Symfony\Component\Messenger\Retry\MultiplierRetryStrategy;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Symfony\Component\Messenger\Worker;
 
-/** The service locators the retry listener takes, holding the one transport and the one strategy. */
-$locator = static fn (object $service): ContainerInterface => new class ($service) implements ContainerInterface {
-    public function __construct(private readonly object $service)
-    {
-    }
-
-    public function get(string $id): object
-    {
-        return $this->service;
-    }
-
-    public function has(string $id): bool
-    {
-        return true;
-    }
-};
-
 /**
  * One run: a message with two handlers, failing as $failures says ('for good' or 'once', in the order they run),
  * through Symfony's Worker in nats mode with max_deliver 3 and the given max_retries, until $deliveries deliveries
@@ -79,7 +61,7 @@ $locator = static fn (object $service): ContainerInterface => new class ($servic
  * @param list<string> $failures
  * @return array{runs: list<int>, willRetry: list<bool>, advisories: list<string>, ackPending: mixed, pending: mixed}
  */
-$run = static function (array $failures, int $maxRetries, int $deliveries) use ($locator): array {
+$run = static function (array $failures, int $maxRetries, int $deliveries): array {
     $stream = exampleStream('nats_retry_several_handlers');
     $transport = new NatsTransport(exampleDsn($stream, 'retry_handler=nats&max_deliver=3'), ['max_batch_timeout' => 0.2], new PhpSerializer());
     $listener = (new NatsTransportConfigurationBuilder())->build(exampleDsn($stream))->client;
@@ -109,7 +91,7 @@ $run = static function (array $failures, int $maxRetries, int $deliveries) use (
         // What messenger:consume wires up, and the listener the bundle registers, which a worker built by hand adds.
         $dispatcher = new EventDispatcher();
         $dispatcher->addSubscriber(new AddErrorDetailsStampListener());
-        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener($locator($transport), $locator(new MultiplierRetryStrategy($maxRetries))));
+        $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(locatorOf($transport), locatorOf(new MultiplierRetryStrategy($maxRetries))));
         $dispatcher->addSubscriber(new AddUnrecoverableFailureStampListener());
         // What Symfony decided for each failed delivery: at priority 0, after its retry listener (100).
         $willRetry = [];
