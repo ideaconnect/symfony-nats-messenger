@@ -132,6 +132,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `workerAcknowledgesAMessageItSentForRetry()`. Run against Messenger 8.1.12 (the default), and against 8.1.11 and
   7.4.24 in a separate `composer update --with symfony/messenger:<version>` copy of the tree; also checked against
   7.4.0.
+- **Three new unit tests pin "each warning once per transport object" (README, "Logging") for the warnings a
+  consumer read that fails twice for different reasons and a consumer limit that changes produce, and for a send
+  that is no genuine retry but still carries a delay**: `testAConsumerUnreadableForTwoReasonsIsLoggedOnce` (two
+  retries unreadable for two different messages still log one warning, with the first), `testAConsumersLimitThatChangesIsLoggedOnce`
+  (the consumer's limit read as 4 and then, a minute later, as 6, both above the option, still log one warning, with
+  the first value), `testASendThatIsNoRetryLeavesTheDelayWarningForTheFirstRetry` (data provider: an application's
+  own delayed message, a received message with no retry count, and a delayed message not received here, each
+  followed by a genuine retry, which still gets the delay warning).
 
 ### Documentation
 

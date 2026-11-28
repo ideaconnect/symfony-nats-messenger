@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1409 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1414 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -296,7 +296,7 @@ services:
         tags: [messenger.transport_factory]
 ```
 
-> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, the examples `reconnect.php` and `cluster-failover.php`
+> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testASendThatIsNoRetryLeavesTheDelayWarningForTheFirstRetry`, `testAConsumerUnreadableForTwoReasonsIsLoggedOnce`, `testAConsumersLimitThatChangesIsLoggedOnce`, the examples `reconnect.php` and `cluster-failover.php`
 
 ### Development Setup
 
