@@ -117,6 +117,8 @@ tests/
 composer test                    # PHPStan (level max) + fast unit tests
 ```
 
+A change to a retry path comes with a Behat scenario on a real server and an example.
+
 ### Unit tests with coverage
 ```bash
 composer test:unit               # Coverage report → clover.xml + coverage/
