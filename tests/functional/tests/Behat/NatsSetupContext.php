@@ -1452,7 +1452,9 @@ class NatsSetupContext implements Context
         $statsProcess = new Process($command, __DIR__ . '/../..');
         $statsProcess->run();
 
-        $output = $statsProcess->getErrorOutput() ?: $statsProcess->getOutput();
+        // The table is on stdout (Symfony Messenger 7.4 and later; 6.4 wrote it to stderr), and stderr also carries
+        // what the transports logged, such as the permission error of a user who may not ask for consumer info (#127).
+        $output = $statsProcess->getOutput() . $statsProcess->getErrorOutput();
 
         if (!preg_match('/failed_transport\s+(\d+)/', $output, $matches)) {
             throw new \RuntimeException(
