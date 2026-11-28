@@ -3894,4 +3894,193 @@ class NatsSetupContext implements Context
             ));
         }
     }
+
+    /**
+     * The test transport, on the main test server, with the given DSN query and Symfony's retry strategy, given as a
+     * YAML mapping (`{ max_retries: 1, delay: 100, multiplier: 1, jitter: 0 }`), and no failure transport: Symfony
+     * gives up on a message by rejecting it, which in symfony mode TERMs it. The failing and the test messages are
+     * routed to it.
+     */
+    #[Given('I have a messenger transport configured with :query and the retry strategy :strategy')]
+    public function iHaveAMessengerTransportConfiguredWithTheRetryStrategy(string $query, string $strategy): void
+    {
+        $this->writeRetryTransportConfiguration($query, $strategy, false, 'messenger.transport.native_php_serializer');
+    }
+
+    /** As above, with the failure transport on a stream of its own, which keeps a copy of what Symfony gives up on. */
+    #[Given('I have a messenger transport configured with :query, the retry strategy :strategy and a failure transport')]
+    public function iHaveAMessengerTransportConfiguredWithTheRetryStrategyAndAFailureTransport(string $query, string $strategy): void
+    {
+        $this->writeRetryTransportConfiguration($query, $strategy, true, 'messenger.transport.native_php_serializer');
+    }
+
+    private function writeRetryTransportConfiguration(string $query, string $strategy, bool $failureTransport, string $serializer, string $host = 'localhost:4222'): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n%s        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@%s/%s/%s?%s'\n                serializer: '%s'\n                retry_strategy: %s\n%s        routing:\n            'App\\Async\\FailingMessage': test_transport\n            'App\\Async\\TestMessage': test_transport\n",
+            $failureTransport ? "        failure_transport: failed_transport\n" : '',
+            $host,
+            $this->testStreamName,
+            $this->testSubject,
+            $query,
+            $serializer,
+            $strategy,
+            $failureTransport
+                ? sprintf(
+                    "            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n",
+                    $this->failedStreamName,
+                    $this->failedSubject,
+                    $serializer,
+                )
+                : '',
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    #[When('I send :count message that fails with a RecoverableMessageHandlingException on its first :failures runs')]
+    #[When('I send :count messages that fail with a RecoverableMessageHandlingException on their first :failures runs')]
+    public function iSendMessagesThatFailWithARecoverableException(int $count, int $failures): void
+    {
+        $this->sendFailingMessages($count, ['--recoverable-failures=' . $failures]);
+    }
+
+    /** @param list<string> $options What app:send-failing-messages takes after the count. */
+    private function sendFailingMessages(int $count, array $options): void
+    {
+        $this->messagesSent = $count;
+
+        $sendProcess = new Process(array_merge(['php', 'bin/console', 'app:send-failing-messages', (string) $count], $options, ['--env=test']), __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(sprintf('Failed to send failing messages. Exit code: %d. Output: %s. Error: %s', $sendProcess->getExitCode(), $sendProcess->getOutput(), $sendProcess->getErrorOutput()));
+        }
+    }
+
+    /** The failing message ran this many times, and the last run succeeded. */
+    #[Then('the failing message should have been handled on its run :run')]
+    public function theFailingMessageShouldHaveBeenHandledOnItsRun(int $run): void
+    {
+        $attemptFile = $this->retryStateDir . '/message_1.attempt';
+        $successFile = $this->testFilesDir . '/failing_message_1.txt';
+        $attempts = file_exists($attemptFile) ? (int) file_get_contents($attemptFile) : 0;
+        $succeededOn = file_exists($successFile) && preg_match('/^Attempt: (\d+)$/m', (string) file_get_contents($successFile), $match) === 1 ? (int) $match[1] : null;
+
+        if ($attempts !== $run || $succeededOn !== $run) {
+            throw new \RuntimeException(sprintf(
+                "Expected the failing message to run %d times and succeed on the last run; it ran %d times and succeeded on %s.\nConsumer output: %s",
+                $run,
+                $attempts,
+                $succeededOn === null ? 'none' : 'run ' . $succeededOn,
+                $this->consumerProcess?->getOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /**
+     * How long each retry of the failing message waited: the time from the start of each run to the start of the next,
+     * as its handler recorded them, is at least each of the given delays and less than the given slack more. A run that
+     * came too early shows a delay that was dropped; one that came much later one that was lost and came back only after
+     * `ack_wait`.
+     */
+    #[Then('the retries of the failing message should have waited at least :delays ms, and less than :slack s more')]
+    public function theRetriesOfTheFailingMessageShouldHaveWaitedAtLeast(string $delays, int $slack): void
+    {
+        preg_match_all('/\d+/', $delays, $matches);
+        $expected = array_map('intval', $matches[0]);
+        $runs = $this->runsOfTheFailingMessage();
+        $gaps = [];
+        for ($i = 1; $i < count($runs); $i++) {
+            $gaps[] = (int) round(($runs[$i] - $runs[$i - 1]) * 1000);
+        }
+
+        $fits = count($gaps) === count($expected);
+        foreach ($expected as $i => $delay) {
+            $fits = $fits && $gaps[$i] >= $delay && $gaps[$i] < $delay + $slack * 1000;
+        }
+        if (!$fits) {
+            throw new \RuntimeException(sprintf(
+                "Expected the retries to wait at least %s ms and less than %d s more, they waited %s ms.\nConsumer output: %s",
+                json_encode($expected),
+                $slack,
+                json_encode($gaps),
+                $this->consumerProcess?->getOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /** @return list<float> When each run of the failing message started, as its handler recorded it. */
+    private function runsOfTheFailingMessage(): array
+    {
+        $file = $this->retryStateDir . '/message_1.runs';
+        $lines = file_exists($file) ? file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
+
+        return array_map('floatval', $lines === false ? [] : $lines);
+    }
+
+    /**
+     * The NAK, TERM and MAX_DELIVERIES advisories of the transport's consumer for one stream sequence, in the order the
+     * server published them, whatever it published for the other messages: in copy mode the first delivery of a message
+     * Symfony retried is TERMed by a worker that rejects it and acknowledged by one that acknowledges it, and the
+     * scenarios pass on both.
+     */
+    #[Then('the transport\'s consumer should have published :advisories for stream sequence :sequence, whatever it published for the others')]
+    public function theTransportsConsumerShouldHavePublishedForStreamSequenceWhateverItPublishedForTheOthers(string $advisories, int $sequence): void
+    {
+        if ($this->advisoryClient === null || $this->consumerAdvisories === null) {
+            throw new \RuntimeException('Nothing listened for the advisories of the consumer');
+        }
+
+        $published = [];
+        $forTheSequence = [];
+        try {
+            $this->consumerAdvisories->setTimeout(0.5);
+            while (($advisory = $this->consumerAdvisories->next()) !== null) {
+                $kind = explode('.', $advisory->subject)[4] ?? '';
+                if (!in_array($kind, ['MSG_NAKED', 'MSG_TERMINATED', 'MAX_DELIVERIES'], true)) {
+                    continue;
+                }
+                $payload = json_decode($advisory->payload, true);
+                $streamSequence = is_array($payload) ? ($payload['stream_seq'] ?? null) : null;
+                $published[] = sprintf('%s of %s', $kind, json_encode($streamSequence));
+                if ($streamSequence === $sequence) {
+                    $forTheSequence[] = $kind;
+                }
+            }
+        } finally {
+            $this->advisoryClient->disconnect()->await();
+            $this->advisoryClient = null;
+            $this->consumerAdvisories = null;
+        }
+
+        $expected = $advisories === '' ? [] : array_map('trim', explode(',', $advisories));
+        if ($forTheSequence !== $expected) {
+            throw new \RuntimeException(sprintf(
+                "Expected the advisories %s for stream sequence %d, got %s; all of them: %s.\nConsumer output: %s\nConsumer error: %s",
+                json_encode($expected),
+                $sequence,
+                json_encode($forTheSequence),
+                json_encode($published),
+                $this->consumerProcess?->getOutput() ?? 'N/A',
+                $this->consumerProcess?->getErrorOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /** With scheduled_messages a retry copy waits for its delay, so the transport has nothing to warn about. */
+    #[Then('the consumer should not have warned that Symfony\'s retry was published without its delay')]
+    public function theConsumerShouldNotHaveWarnedThatSymfonysRetryWasPublishedWithoutItsDelay(): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        if (str_contains($output, 'without its delay of')) {
+            throw new \RuntimeException("Expected no warning that a retry lost its delay.\nConsumer output: " . $output);
+        }
+    }
 }
