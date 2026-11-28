@@ -4083,4 +4083,108 @@ class NatsSetupContext implements Context
             throw new \RuntimeException("Expected no warning that a retry lost its delay.\nConsumer output: " . $output);
         }
     }
+
+    /** As the copy-mode steps, with the igbinary serializer on both transports, the one the README recommends. */
+    #[Given('I have a messenger transport configured with :query, the retry strategy :strategy and a failure transport, both with the igbinary serializer')]
+    public function iHaveAMessengerTransportConfiguredWithTheRetryStrategyAndAFailureTransportWithTheIgbinarySerializer(string $query, string $strategy): void
+    {
+        $this->writeRetryTransportConfiguration($query, $strategy, true, self::IGBINARY_SERIALIZER);
+    }
+
+    /**
+     * A consumer that stops after the given number of deliveries, or after the given time when fewer come: for a
+     * scenario where a retry must not come within that time.
+     */
+    #[When('I start a messenger consumer that stops after :count delivery or :seconds seconds')]
+    #[When('I start a messenger consumer that stops after :count deliveries or :seconds seconds')]
+    public function iStartAMessengerConsumerThatStopsAfterDeliveriesOrSeconds(int $count, int $seconds): void
+    {
+        $this->consumerProcess = new Process(
+            ['php', 'bin/console', 'messenger:consume', 'test_transport', '--limit=' . $count, '--time-limit=' . $seconds, '--sleep=0.1', '--env=test', '-vv'],
+            __DIR__ . '/../..'
+        );
+        $this->consumerProcess->setTimeout($seconds + 40);
+        $this->consumerProcess->start();
+    }
+
+    /** The handler ends the worker's process on the message's first run: the delivery is never settled. */
+    #[When('I send :count always-failing message that crashes the worker on its first run')]
+    #[When('I send :count always-failing messages that crash the worker on their first run')]
+    public function iSendAlwaysFailingMessagesThatCrashTheWorkerOnTheirFirstRun(int $count): void
+    {
+        $this->sendFailingMessages($count, ['--crash-on-first-run']);
+    }
+
+    /**
+     * How many deliveries of the transport's consumer wait for an acknowledgement: a NAK retry that waits for its delay
+     * is one, and so is a delivery nobody settled yet.
+     */
+    #[Then('the transport\'s consumer should have :count delivery waiting for an acknowledgement')]
+    #[Then('the transport\'s consumer should have :count deliveries waiting for an acknowledgement')]
+    public function theTransportsConsumerShouldHaveDeliveriesWaitingForAnAcknowledgement(int $count): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        if (($info['num_ack_pending'] ?? null) !== $count) {
+            throw new \RuntimeException(sprintf(
+                "Expected %d delivery(ies) waiting for an acknowledgement, got %s (pending %s, redelivered %s).\nConsumer output: %s",
+                $count,
+                json_encode($info['num_ack_pending'] ?? null),
+                json_encode($info['num_pending'] ?? null),
+                json_encode($info['num_redelivered'] ?? null),
+                $this->consumerProcess?->getOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /**
+     * Gives the transport's durable consumer a backoff behind the transport's back, as the setup of another
+     * configuration without retry_via=nak does, after "the NATS stream is set up" wrote it without one: the builder
+     * refuses backoff with retry_via=nak. max_deliver 6 leaves room for it, as NATS asks, and for the scenario's runs.
+     */
+    #[Given('the transport\'s consumer has the backoff :backoff seconds, which the options do not say')]
+    public function theTransportsConsumerHasTheBackoffWhichTheOptionsDoNotSay(string $backoff): void
+    {
+        preg_match_all('/\d+/', $backoff, $matches);
+        $backoffMs = array_map(static fn (string $seconds): int => (int) $seconds * 1000, $matches[0]);
+
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $jetStream = $client->jetStream();
+            $jetStream->addConsumer($this->testStreamName, ConsumerConfiguration::create()
+                ->durable('client')
+                ->filterSubject($this->testSubject)
+                ->ackPolicy(AckPolicy::Explicit)
+                ->deliverPolicy(DeliverPolicy::All)
+                ->maxDeliver(6)
+                ->backoff($backoffMs))->await();
+
+            $config = $jetStream->getConsumer($this->testStreamName, 'client')->await()->raw['config'] ?? [];
+            $expected = array_map(static fn (int $ms): int => $ms * 1_000_000, $backoffMs);
+            if (!is_array($config) || ($config['backoff'] ?? null) !== $expected) {
+                throw new \RuntimeException(sprintf('The consumer did not take the backoff %s: %s', json_encode($backoffMs), json_encode($config)));
+            }
+        } finally {
+            $client->disconnect()->await();
+        }
+    }
+
+    /**
+     * With retry_via=nak the retry of the last delivery the consumer's max_deliver allows goes out as a copy, at once
+     * without scheduled_messages; the transport logs that once per consumer process, with the delay the copy lost.
+     */
+    #[Then('the consumer should have warned once that the retry of the consumer\'s last delivery was published as a copy without its delay')]
+    public function theConsumerShouldHaveWarnedOnceThatTheRetryOfTheConsumersLastDeliveryWasPublishedAsACopy(): void
+    {
+        $this->assertConsumerLoggedOnce(sprintf(
+            'retry_via=nak on stream "%s", subject "%s": the retry of the last delivery the consumer allows was published as a copy at once, without its delay of',
+            $this->testStreamName,
+            $this->testSubject,
+        ));
+    }
 }
