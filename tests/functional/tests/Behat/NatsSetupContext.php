@@ -82,6 +82,8 @@ class NatsSetupContext implements Context
     /** @var list<string> The variables of the commands' environment this scenario set. */
     private array $commandEnvironment = [];
     private ?string $seedFile = null;
+    /** The .creds file the scenario's transport reads (creds_file): a copy of one generate.sh wrote, which the scenario replaces. */
+    private ?string $credsFile = null;
     /** The connection that listens for the MSG_TERMINATED advisories of the transport's consumer, while it does. */
     private ?NatsClient $advisoryClient = null;
     private ?SubscriptionQueue $terminations = null;
@@ -2601,6 +2603,129 @@ class NatsSetupContext implements Context
     }
 
     /**
+     * The README's creds_file form, with a copy of the user's file that generate.sh wrote (nsc's own output), which the
+     * scenario may replace as a rotation does.
+     */
+    #[Given('I have a messenger transport on that server with the user\'s .creds file')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersCredsFile(): void
+    {
+        $this->writeTransportThatLogsInWith(4229, ['creds_file' => $this->credsFileOf('test-user')]);
+    }
+
+    #[Given('I have a messenger transport on that server with the user\'s .creds file and reconnect enabled')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersCredsFileAndReconnectEnabled(): void
+    {
+        $this->writeTransportThatLogsInWith(
+            4229,
+            ['creds_file' => $this->credsFileOf('test-user'), 'reconnect' => 'true', 'max_reconnect_attempts' => '30']
+        );
+    }
+
+    /**
+     * The file holds the whole login, so a jwt next to it is refused when the transport is built.
+     */
+    #[Given('I have a messenger transport on that server with the user\'s .creds file and its JWT in the jwt option')]
+    public function iHaveAMessengerTransportOnThatServerWithTheUsersCredsFileAndItsJwtInTheJwtOption(): void
+    {
+        $this->writeTransportThatLogsInWith(4229, ['creds_file' => $this->credsFileOf('test-user'), 'jwt' => $this->credentials()['jwt_user']['jwt']]);
+    }
+
+    #[Given('I have a messenger transport on that server with a .creds file that does not exist')]
+    public function iHaveAMessengerTransportOnThatServerWithACredsFileThatDoesNotExist(): void
+    {
+        $this->credsFile = sys_get_temp_dir() . '/nats-messenger-missing-' . bin2hex(random_bytes(4)) . '.creds';
+        $this->writeTransportThatLogsInWith(4229, ['creds_file' => $this->credsFile]);
+    }
+
+    /**
+     * Stops the server in operator mode, replaces the transport's .creds file while the server is down, as a rotation
+     * would, and starts the server again. A worker that runs through this keeps one process across two connections, so
+     * its second login shows that the transport reads the file on every connect and not once when it was built.
+     */
+    #[When('I restart the NATS server, replacing the .creds file with the bearer user\'s while it is down')]
+    public function iRestartTheNatsServerReplacingTheCredsFileWithTheBearerUsersWhileItIsDown(): void
+    {
+        $this->restartTheServerInOperatorModeReplacingTheCredsFileWith('bearer-user');
+    }
+
+    #[When('I restart the NATS server, replacing the .creds file with the expired user\'s while it is down')]
+    public function iRestartTheNatsServerReplacingTheCredsFileWithTheExpiredUsersWhileItIsDown(): void
+    {
+        $this->restartTheServerInOperatorModeReplacingTheCredsFileWith('expired-user');
+    }
+
+    private function restartTheServerInOperatorModeReplacingTheCredsFileWith(string $user): void
+    {
+        if ($this->credsFile === null) {
+            throw new \RuntimeException('The transport has no .creds file');
+        }
+
+        $this->runDocker(['docker', 'stop', 'nats_test_jwt']);
+        $next = $this->credsFile . '.next';
+        if (!copy($this->generatedCredsFile($user), $next) || !rename($next, $this->credsFile)) {
+            throw new \RuntimeException('Cannot replace ' . $this->credsFile);
+        }
+        $this->runDocker(['docker', 'start', 'nats_test_jwt']);
+
+        $this->waitUntilTheNatsServerAnswersAgain();
+    }
+
+    /**
+     * The worker started earlier stops on its own, and says what the server refused: the file it read for its new
+     * connection holds a JWT that has expired.
+     */
+    #[Then('the consumer should stop with the server\'s authorization error')]
+    public function theConsumerShouldStopWithTheServersAuthorizationError(): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $deadline = microtime(true) + 90;
+        while ($this->consumerProcess->isRunning()) {
+            if (microtime(true) > $deadline) {
+                $this->consumerProcess->stop(5);
+                throw new \RuntimeException("The consumer did not stop.\nError output: " . $this->consumerProcess->getErrorOutput());
+            }
+            usleep(200000);
+        }
+
+        $this->assertCommandFailedSaying($this->consumerProcess, 'Authorization Violation');
+    }
+
+    /** A copy of the .creds file of $user that generate.sh wrote, for this scenario's transport to read. */
+    private function credsFileOf(string $user): string
+    {
+        $this->credsFile = (string) tempnam(sys_get_temp_dir(), 'nats-messenger-creds-');
+        if (!copy($this->generatedCredsFile($user), $this->credsFile)) {
+            throw new \RuntimeException('Cannot copy the .creds file of ' . $user);
+        }
+
+        return $this->credsFile;
+    }
+
+    private function generatedCredsFile(string $user): string
+    {
+        $file = __DIR__ . '/../../../nats/auth/' . $user . '.creds';
+        if (!is_file($file)) {
+            throw new \RuntimeException('No .creds file of ' . $user . ': run composer nats:start, which generates it (tests/nats/auth/README.md)');
+        }
+
+        return $file;
+    }
+
+    /** @param list<string> $command */
+    private function runDocker(array $command): void
+    {
+        $process = new Process($command);
+        $process->setTimeout(90);
+        $process->run();
+        if (!$process->isSuccessful()) {
+            throw new \RuntimeException(sprintf('%s failed: %s', implode(' ', $command), $process->getErrorOutput()));
+        }
+    }
+
+    /**
      * The test server whose clients log in with a token (tests/nats/nats-token.conf), on port 4230.
      */
     #[Given('the NATS server that logs clients in with a token is running')]
@@ -2992,6 +3117,11 @@ class NatsSetupContext implements Context
         if ($this->seedFile !== null) {
             unlink($this->seedFile);
             $this->seedFile = null;
+        }
+
+        if ($this->credsFile !== null) {
+            @unlink($this->credsFile);
+            $this->credsFile = null;
         }
 
         // Remove temporary config file and clear cache

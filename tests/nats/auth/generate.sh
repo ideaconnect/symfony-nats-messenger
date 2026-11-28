@@ -16,7 +16,8 @@ set -euo pipefail
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$dir"
 
-if [ "${1:-}" != "--force" ] && [ -s nkey-user.conf ] && [ -s resolver.conf ] && [ -s credentials.json ]; then
+if [ "${1:-}" != "--force" ] && [ -s nkey-user.conf ] && [ -s resolver.conf ] && [ -s test-user.creds ] && [ -s bearer-user.creds ] \
+  && [ -s expired-user.creds ] && [ -s credentials.json ]; then
   exit 0
 fi
 
@@ -77,14 +78,22 @@ jq -e 'all(.[]; all(.[]; . != ""))' /tmp/credentials.json >/dev/null \
 
 nsc_step generate config --mem-resolver --config-file /tmp/resolver.conf --force
 
+# The .creds files of three users, as nsc writes them, for the creds_file option: the transport reads what nsc writes.
+for user in test-user bearer-user expired-user; do
+  nsc generate creds --account test-account --name "$user" > "/tmp/$user.creds"
+  [ -s "/tmp/$user.creds" ] || { echo "nsc wrote no .creds file for $user" >&2; exit 1; }
+done
+
 # A set is complete once the last file exists, so that one goes first when a set is replaced. The servers' half, which
 # holds no private key, comes next, and then the clients' half.
 rm -f /out/credentials.json
 printf '# Written by auth/generate.sh, for the tests only.\nNKEY_TEST_USER: "%s"\n' \
   "$(printf '%s' "$nkey_user" | jq -r .public)" > /out/nkey-user.conf
 cp /tmp/resolver.conf /out/resolver.conf
+cp /tmp/test-user.creds /tmp/bearer-user.creds /tmp/expired-user.creds /out/
 cp /tmp/credentials.json /out/credentials.json
-chmod 644 /out/nkey-user.conf /out/resolver.conf /out/credentials.json
+chmod 644 /out/nkey-user.conf /out/resolver.conf /out/test-user.creds /out/bearer-user.creds /out/expired-user.creds \
+  /out/credentials.json
 NSC
 
 echo "Generated the test NKey and JWT credentials in $dir"
