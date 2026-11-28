@@ -26,5 +26,10 @@ bash tests/nats/auth/generate.sh --force  # replaces it; restart the servers to 
 | `expired_user` | `jwt` and `seed` of a user whose JWT expired in 2020 |
 | `no_jetstream_user` | `jwt` and `seed` of a user in `no-jetstream-account` |
 
+- `test-user.creds`, `bearer-user.creds` and `expired-user.creds` - the `.creds` files of those three users of
+  `test-account`, as `nsc generate creds` writes them, for the `creds_file` option: the Behat context and
+  `examples/creds-login.php` copy them to a file of their own and replace that one, as a rotation does. They hold the
+  same JWT and seed as `jwt_user`, `bearer_user` and `expired_user`.
+
 The seeds of the operator and of the accounts the server knows stay in the container that made them, so nothing can sign
 another user. Apart from the expired one, the JWTs have no expiry. **Do not use any of this outside the test suite.**

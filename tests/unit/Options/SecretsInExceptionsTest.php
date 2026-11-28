@@ -6,6 +6,7 @@ use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NatsMessenger\NatsTransport;
 use IDCT\NatsMessenger\NatsTransportFactory;
+use IDCT\NatsMessenger\Options\CredentialsFile;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Options\TransportOption;
@@ -120,6 +121,7 @@ final class SecretsInExceptionsTest extends TestCase
         $methods = [
             ...(new \ReflectionClass(NatsTransportConfigurationBuilder::class))->getMethods(),
             ...(new \ReflectionClass(NatsTransportFactory::class))->getMethods(),
+            ...(new \ReflectionClass(CredentialsFile::class))->getMethods(),
             new \ReflectionMethod(NatsTransport::class, '__construct'),
         ];
 

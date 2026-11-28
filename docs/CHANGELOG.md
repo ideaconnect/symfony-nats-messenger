@@ -47,6 +47,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`creds_file`: a JWT login from a user's `.creds` file, read on every connect, and a worker that goes on through the
+  expiry of its JWT** (#104). The option takes the path of the file `nsc generate creds` writes, in the options, the DSN
+  query or `%env()%`. The client asks the file for the JWT on every connect and reconnect (its `jwtProvider`) and signs
+  the server's nonce with the seed of that same read (the file is its nonce signer), so a file replaced while the
+  process runs, as a rotation writes it, gives the next connection its new JWT. A file that is missing or cannot be used
+  at a connect fails that connection; nothing of an earlier read is kept. At the build the file is checked as a connect
+  reads it, and refused when it is not a readable file with a JWT and a user's seed, as are an empty, blank or
+  non-string value and `creds_file` next to `jwt`, `nkey`, `nkey_seed`, a username, a password or a token. No error
+  repeats the file's text or chains the client parser's exception, whose frames hold the seed. With `creds_file`, `get()`
+  reads the server's `User Authentication Expired`, on the exception or a previous one, as an empty pull while the JWT
+  the file holds now has not expired, and the next operation checks the connection first; a file still holding the
+  expired JWT, `Account Authentication Expired` and a transport without `creds_file` stop the worker as before.
+  `Options\CredentialsFile`, `NatsTransportConfiguration::credentialsFile()`, `pullEndedByAnExpiryTheFileRenewed()`.
+  `tests/nats/auth/generate.sh` writes nsc's `.creds` files of three test users, which `.gitignore` keeps out of the
+  repository, the operator-mode scenarios log in from them, and `examples/creds-login.php` shows the rotation.
+
 - **`AddUnrecoverableFailureStampListener`**, a `WorkerMessageFailedEvent` subscriber the bundle registers
   (`kernel.event_subscriber`), for the fix above. For a `HandlerFailedException` it adds an `UnrecoverableFailureStamp`
   (not sendable) saying whether every exception it wraps directly is unrecoverable, and the worker passes that envelope

@@ -102,7 +102,7 @@ tests/
   before NATS 2.12, at `setup()` and at the send of a delayed message
 - **Option names**: an option that is not a `TransportOption` case (or `transport_name`) is refused, with the closest one
 - **TLS/mTLS**: full TLS config options including client certificates
-- **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`)
+- **Authentication**: username/password, token, NKey (`nkey_seed`), JWT (`jwt` with `nkey_seed`, or `creds_file`: a `.creds` file read on every connect, so a rotated JWT is picked up without a restart)
 - **Serialization**: igbinary (default with fallback) or custom via `AbstractEnveloperSerializer`
 - **Publish validation**: JetStream publish responses are parsed and validated
 - **Connection checks**: a lost connection is dialled again; `ping_after_idle` PINGs a connection that sat idle, or that an operation failed on, before reuse, and before the NAK or TERM of a failed delivery

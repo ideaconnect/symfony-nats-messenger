@@ -6,7 +6,10 @@ Feature: JWT authentication
   with the values read from the environment too, with a bearer JWT and across
   a server restart. The server refuses a JWT with a seed that is not its
   user's, a seed with no JWT and an expired JWT, and an account without
-  JetStream gets the server's own error from setup.
+  JetStream gets the server's own error from setup. A user also logs in from
+  a .creds file (creds_file), which a worker reads again for each new
+  connection: across a server restart it logs in with the file that replaced
+  the first, and stops when that one holds an expired JWT.
 
   Background:
     Given the NATS server in operator mode is running
@@ -92,3 +95,47 @@ Feature: JWT authentication
     Given I have a messenger transport on that server with the JWT and seed of an account without JetStream
     When I run the messenger setup command
     Then the setup should fail saying "JetStream not enabled for account"
+
+  @jwt @creds
+  Scenario: Messages are sent and consumed by a user that logs in from a .creds file
+    Given I have a messenger transport on that server with the user's .creds file
+    And the NATS stream is set up
+    And the test files directory is clean
+    When I send 5 messages to the transport
+    Then the messenger stats should show 5 messages waiting
+    When I start a messenger consumer
+    And I wait for messages to be consumed
+    Then all 5 messages should be consumed
+
+  @jwt @creds @reconnect
+  Scenario: A worker that logs in from a .creds file keeps consuming across a server restart with another user's file
+    Given the test files directory is clean
+    And I have a messenger transport on that server with the user's .creds file and reconnect enabled
+    And the NATS stream is set up
+    When I start a messenger consumer expecting 5 messages
+    And I restart the NATS server, replacing the .creds file with the bearer user's while it is down
+    And I send 5 messages to the transport
+    And I wait for messages to be consumed
+    Then all 5 messages should be consumed
+    And the consumer should have reconnected
+
+  @jwt @creds @reconnect
+  Scenario: A worker whose .creds file was replaced by an expired user's stops at its next login
+    Given the test files directory is clean
+    And I have a messenger transport on that server with the user's .creds file and reconnect enabled
+    And the NATS stream is set up
+    When I start a messenger consumer expecting 5 messages
+    And I restart the NATS server, replacing the .creds file with the expired user's while it is down
+    Then the consumer should stop with the server's authorization error
+
+  @jwt @creds
+  Scenario Outline: A .creds file that cannot be used is refused when the transport is built, and no seed is printed
+    Given I have a messenger transport on that server with <configuration>
+    When I run the messenger setup command
+    Then the setup should fail saying "<message>"
+    And the setup output should show no seed
+
+    Examples:
+      | configuration                                        | message                                                     |
+      | the user's .creds file and its JWT in the jwt option | The creds_file option cannot be combined with jwt           |
+      | a .creds file that does not exist                    | The creds_file option names no file                         |
