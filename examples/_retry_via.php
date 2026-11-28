@@ -125,12 +125,14 @@ final class WorkerRun
 
 /**
  * Runs Symfony's Worker over the transport with its retry listener and failure-transport listener, until $done
- * says so, and then for $quiet seconds more, to see whether anything else arrives. Gives up after $seconds.
+ * says so, and then for $quiet seconds more, to see whether anything else arrives. Gives up after $seconds. Without
+ * $failureTransport the worker runs as one with no failure transport configured: a message Symfony gives up on is
+ * rejected and nothing keeps a copy.
  *
  * @param \Closure(ExampleMessage, WorkerRun): void $handler Throws to fail the message
  * @param \Closure(WorkerRun): bool                 $done
  */
-function runWorker(NatsTransport $transport, RetryStrategyInterface $strategy, \Closure $handler, \Closure $done, float $quiet = 0.0, float $seconds = 20.0): WorkerRun
+function runWorker(NatsTransport $transport, RetryStrategyInterface $strategy, \Closure $handler, \Closure $done, float $quiet = 0.0, float $seconds = 20.0, bool $failureTransport = true): WorkerRun
 {
     $run = new WorkerRun();
     $middleware = [new HandleMessageMiddleware(new HandlersLocator([
@@ -148,7 +150,9 @@ function runWorker(NatsTransport $transport, RetryStrategyInterface $strategy, \
 
     $dispatcher = new EventDispatcher();
     $dispatcher->addSubscriber(new SendFailedMessageForRetryListener(locatorOf($transport), locatorOf($strategy)));
-    $dispatcher->addSubscriber(new SendFailedMessageToFailureTransportListener(locatorOf($run->failureTransport)));
+    if ($failureTransport) {
+        $dispatcher->addSubscriber(new SendFailedMessageToFailureTransportListener(locatorOf($run->failureTransport)));
+    }
     $dispatcher->addListener(WorkerMessageReceivedEvent::class, static function (WorkerMessageReceivedEvent $event) use ($run): void {
         $message = $event->getEnvelope()->getMessage();
         $run->received[] = [

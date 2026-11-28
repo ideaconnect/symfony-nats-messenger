@@ -238,7 +238,9 @@ jobs:
   # excluded here rather than failing for a documented reason.
   functional-oldest-nats:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The functional suite took 800 s and the examples 102 s of a 952 s job before the retry scenarios of #123,
+    # which add about three minutes; 20 minutes left too little for a slow runner.
+    timeout-minutes: 25
 
     # Job-level, not step-level: the Behat context starts NATS itself with a plain
     # `docker compose up -d` whenever it finds port 4222 closed. Without NATS_IMAGE in the

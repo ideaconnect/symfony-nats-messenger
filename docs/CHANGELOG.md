@@ -144,6 +144,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `workerAcknowledgesAMessageItSentForRetry()`. Run against Messenger 8.1.12 (the default), and against 8.1.11 and
   7.4.24 in a separate `composer update --with symfony/messenger:<version>` copy of the tree; also checked against
   7.4.0.
+- **Every retry scenario has a Behat scenario on a real server and an example** (#123, the rule set during the review
+  of #119, now in CLAUDE.md and AGENTS.md). `nats_retry_copy.feature` (new) covers `retry_via: copy`: a message that
+  fails once, one given up on without a failure transport on a limits, a work-queue and an interest stream (with `nak`
+  too), an unrecoverable failure, a recoverable one past `max_retries`, and a copy that waits with
+  `scheduled_messages` (`@delayed`). `nats_retry_via.feature` gains the retry of the consumer's last delivery with
+  `max_deliver` in the options, a recoverable failure past `max_retries` and `max_deliver`, Symfony's delays, a NAK
+  retry across a restart of the server, a delivery nobody settled, the server's limits (a delay too long, a retry
+  longer than `stream_max_age`, a consumer's `backoff`) and a message that cannot be decoded. `nats_max_deliver.feature`
+  checks the advisories of a poison message (`MSG_NAKED` three times, then `MAX_DELIVERIES`), what a limits stream
+  keeps, and, as an outline that reads the server's version, what a work-queue and an interest stream keep of a
+  message stopped at `max_deliver` across a restart. `nats_nak.feature` gains a `backoff` in nats mode, with and
+  without `nak_delay`, and a handler failing while its server goes away on the test cluster, in both modes
+  (`@cluster`). `nats_term.feature`'s failure-copy scenario also counts the runs. New examples `retry-via-copy.php`
+  and `nats-retry-backoff.php`. The functional app's failing message can fail recoverably, end its worker without
+  settling, or hold its first run, and records when each run started; the scenarios assert no settle call of a
+  delivery Symfony retried, which depends on the Symfony Messenger release. Each new or extended scenario was turned
+  red once by a change to `src/` or to its options. No change under `src/`.
 
 ### Documentation
 

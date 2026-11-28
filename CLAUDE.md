@@ -49,6 +49,7 @@ composer nats:stop               # stop NATS
 3. If transport wiring / Docker / NATS scenarios changed, run the functional suite
    (`composer nats:start` → `composer test:functional` → `composer nats:stop`).
 4. Docs updated (see below).
+5. A change to a retry path comes with a Behat scenario on a real server and an example.
 
 ## Conventions
 

@@ -14,6 +14,8 @@ Feature: Symfony failure transport via TERM
     And I start a messenger consumer with high limit
     And I wait for the consumer to finish or timeout
     Then the failure transport should contain 1 message
+    And the always-failing message should have been attempted 2 times
+    And the NATS stream should hold 2 messages
     And the consumer should have warned once that Symfony's retry was published without its delay
 
   # The README's recommended IgbinarySerializer on both transports. A worker adds a stamp holding a closure

@@ -3390,6 +3390,9 @@ class NatsSetupContext implements Context
      */
     private function createAppropriateNatsClient(): NatsClient
     {
+        if ($this->clusterServer !== null) {
+            return $this->createNatsClusterClient();
+        }
         if ($this->useStaleServer) {
             return $this->createNatsStaleClient();
         }
@@ -3892,6 +3895,576 @@ class NatsSetupContext implements Context
                 json_encode($succeeded),
                 $this->consumerProcess?->getOutput() ?? 'N/A'
             ));
+        }
+    }
+
+    /**
+     * The test transport, on the main test server, with the given DSN query and Symfony's retry strategy, given as a
+     * YAML mapping (`{ max_retries: 1, delay: 100, multiplier: 1, jitter: 0 }`), and no failure transport: Symfony
+     * gives up on a message by rejecting it, which in symfony mode TERMs it. The failing and the test messages are
+     * routed to it.
+     */
+    #[Given('I have a messenger transport configured with :query and the retry strategy :strategy')]
+    public function iHaveAMessengerTransportConfiguredWithTheRetryStrategy(string $query, string $strategy): void
+    {
+        $this->writeRetryTransportConfiguration($query, $strategy, false, 'messenger.transport.native_php_serializer');
+    }
+
+    /** As above, with the failure transport on a stream of its own, which keeps a copy of what Symfony gives up on. */
+    #[Given('I have a messenger transport configured with :query, the retry strategy :strategy and a failure transport')]
+    public function iHaveAMessengerTransportConfiguredWithTheRetryStrategyAndAFailureTransport(string $query, string $strategy): void
+    {
+        $this->writeRetryTransportConfiguration($query, $strategy, true, 'messenger.transport.native_php_serializer');
+    }
+
+    private function writeRetryTransportConfiguration(string $query, string $strategy, bool $failureTransport, string $serializer, string $host = 'localhost:4222'): void
+    {
+        $configContent = sprintf(
+            "framework:\n    messenger:\n%s        transports:\n            test_transport:\n                dsn: 'nats-jetstream://admin:password@%s/%s/%s?%s'\n                serializer: '%s'\n                retry_strategy: %s\n%s        routing:\n            'App\\Async\\FailingMessage': test_transport\n            'App\\Async\\TestMessage': test_transport\n",
+            $failureTransport ? "        failure_transport: failed_transport\n" : '',
+            $host,
+            $this->testStreamName,
+            $this->testSubject,
+            $query,
+            $serializer,
+            $strategy,
+            $failureTransport
+                ? sprintf(
+                    "            failed_transport:\n                dsn: 'nats-jetstream://admin:password@localhost:4222/%s/%s?stream_max_age=900'\n                serializer: '%s'\n",
+                    $this->failedStreamName,
+                    $this->failedSubject,
+                    $serializer,
+                )
+                : '',
+        );
+
+        file_put_contents(__DIR__ . '/../../config/packages/test_messenger.yaml', $configContent);
+        $this->resetSymfonyCache();
+    }
+
+    #[When('I send :count message that fails with a RecoverableMessageHandlingException on its first :failures runs')]
+    #[When('I send :count messages that fail with a RecoverableMessageHandlingException on their first :failures runs')]
+    public function iSendMessagesThatFailWithARecoverableException(int $count, int $failures): void
+    {
+        $this->sendFailingMessages($count, ['--recoverable-failures=' . $failures]);
+    }
+
+    /** @param list<string> $options What app:send-failing-messages takes after the count. */
+    private function sendFailingMessages(int $count, array $options): void
+    {
+        $this->messagesSent = $count;
+
+        $sendProcess = new Process(array_merge(['php', 'bin/console', 'app:send-failing-messages', (string) $count], $options, ['--env=test']), __DIR__ . '/../..');
+        $sendProcess->setTimeout(60);
+        $sendProcess->run();
+
+        if (!$sendProcess->isSuccessful()) {
+            throw new \RuntimeException(sprintf('Failed to send failing messages. Exit code: %d. Output: %s. Error: %s', $sendProcess->getExitCode(), $sendProcess->getOutput(), $sendProcess->getErrorOutput()));
+        }
+    }
+
+    /** The failing message ran this many times, and the last run succeeded. */
+    #[Then('the failing message should have been handled on its run :run')]
+    public function theFailingMessageShouldHaveBeenHandledOnItsRun(int $run): void
+    {
+        $attemptFile = $this->retryStateDir . '/message_1.attempt';
+        $successFile = $this->testFilesDir . '/failing_message_1.txt';
+        $attempts = file_exists($attemptFile) ? (int) file_get_contents($attemptFile) : 0;
+        $succeededOn = file_exists($successFile) && preg_match('/^Attempt: (\d+)$/m', (string) file_get_contents($successFile), $match) === 1 ? (int) $match[1] : null;
+
+        if ($attempts !== $run || $succeededOn !== $run) {
+            throw new \RuntimeException(sprintf(
+                "Expected the failing message to run %d times and succeed on the last run; it ran %d times and succeeded on %s.\nConsumer output: %s",
+                $run,
+                $attempts,
+                $succeededOn === null ? 'none' : 'run ' . $succeededOn,
+                $this->consumerProcess?->getOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /**
+     * How long each retry of the failing message waited: the time from the start of each run to the start of the next,
+     * as its handler recorded them, is at least each of the given delays and less than the given slack more. A run that
+     * came too early shows a delay that was dropped; one that came much later one that was lost and came back only after
+     * `ack_wait`.
+     */
+    #[Then('the retries of the failing message should have waited at least :delays ms, and less than :slack s more')]
+    public function theRetriesOfTheFailingMessageShouldHaveWaitedAtLeast(string $delays, int $slack): void
+    {
+        preg_match_all('/\d+/', $delays, $matches);
+        $expected = array_map('intval', $matches[0]);
+        $runs = $this->runsOfTheFailingMessage();
+        $gaps = [];
+        for ($i = 1; $i < count($runs); $i++) {
+            $gaps[] = (int) round(($runs[$i] - $runs[$i - 1]) * 1000);
+        }
+
+        $fits = count($gaps) === count($expected);
+        foreach ($expected as $i => $delay) {
+            $fits = $fits && $gaps[$i] >= $delay && $gaps[$i] < $delay + $slack * 1000;
+        }
+        if (!$fits) {
+            throw new \RuntimeException(sprintf(
+                "Expected the retries to wait at least %s ms and less than %d s more, they waited %s ms.\nConsumer output: %s",
+                json_encode($expected),
+                $slack,
+                json_encode($gaps),
+                $this->consumerProcess?->getOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /** @return list<float> When each run of the failing message started, as its handler recorded it. */
+    private function runsOfTheFailingMessage(): array
+    {
+        $file = $this->retryStateDir . '/message_1.runs';
+        $lines = file_exists($file) ? file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
+
+        return array_map('floatval', $lines === false ? [] : $lines);
+    }
+
+    /**
+     * The NAK, TERM and MAX_DELIVERIES advisories of the transport's consumer for one stream sequence, in the order the
+     * server published them, whatever it published for the other messages: in copy mode the first delivery of a message
+     * Symfony retried is TERMed by a worker that rejects it and acknowledged by one that acknowledges it, and the
+     * scenarios pass on both.
+     */
+    #[Then('the transport\'s consumer should have published :advisories for stream sequence :sequence, whatever it published for the others')]
+    public function theTransportsConsumerShouldHavePublishedForStreamSequenceWhateverItPublishedForTheOthers(string $advisories, int $sequence): void
+    {
+        if ($this->advisoryClient === null || $this->consumerAdvisories === null) {
+            throw new \RuntimeException('Nothing listened for the advisories of the consumer');
+        }
+
+        $published = [];
+        $forTheSequence = [];
+        try {
+            $this->consumerAdvisories->setTimeout(0.5);
+            while (($advisory = $this->consumerAdvisories->next()) !== null) {
+                $kind = explode('.', $advisory->subject)[4] ?? '';
+                if (!in_array($kind, ['MSG_NAKED', 'MSG_TERMINATED', 'MAX_DELIVERIES'], true)) {
+                    continue;
+                }
+                $payload = json_decode($advisory->payload, true);
+                $streamSequence = is_array($payload) ? ($payload['stream_seq'] ?? null) : null;
+                $published[] = sprintf('%s of %s', $kind, json_encode($streamSequence));
+                if ($streamSequence === $sequence) {
+                    $forTheSequence[] = $kind;
+                }
+            }
+        } finally {
+            $this->advisoryClient->disconnect()->await();
+            $this->advisoryClient = null;
+            $this->consumerAdvisories = null;
+        }
+
+        $expected = $advisories === '' ? [] : array_map('trim', explode(',', $advisories));
+        if ($forTheSequence !== $expected) {
+            throw new \RuntimeException(sprintf(
+                "Expected the advisories %s for stream sequence %d, got %s; all of them: %s.\nConsumer output: %s\nConsumer error: %s",
+                json_encode($expected),
+                $sequence,
+                json_encode($forTheSequence),
+                json_encode($published),
+                $this->consumerProcess?->getOutput() ?? 'N/A',
+                $this->consumerProcess?->getErrorOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /** With scheduled_messages a retry copy waits for its delay, so the transport has nothing to warn about. */
+    #[Then('the consumer should not have warned that Symfony\'s retry was published without its delay')]
+    public function theConsumerShouldNotHaveWarnedThatSymfonysRetryWasPublishedWithoutItsDelay(): void
+    {
+        if (!$this->consumerProcess) {
+            throw new \RuntimeException('Consumer process not started');
+        }
+
+        $output = $this->consumerProcess->getOutput() . $this->consumerProcess->getErrorOutput();
+        if (str_contains($output, 'without its delay of')) {
+            throw new \RuntimeException("Expected no warning that a retry lost its delay.\nConsumer output: " . $output);
+        }
+    }
+
+    /** As the copy-mode steps, with the igbinary serializer on both transports, the one the README recommends. */
+    #[Given('I have a messenger transport configured with :query, the retry strategy :strategy and a failure transport, both with the igbinary serializer')]
+    public function iHaveAMessengerTransportConfiguredWithTheRetryStrategyAndAFailureTransportWithTheIgbinarySerializer(string $query, string $strategy): void
+    {
+        $this->writeRetryTransportConfiguration($query, $strategy, true, self::IGBINARY_SERIALIZER);
+    }
+
+    /**
+     * A consumer that stops after the given number of deliveries, or after the given time when fewer come: for a
+     * scenario where a retry must not come within that time.
+     */
+    #[When('I start a messenger consumer that stops after :count delivery or :seconds seconds')]
+    #[When('I start a messenger consumer that stops after :count deliveries or :seconds seconds')]
+    public function iStartAMessengerConsumerThatStopsAfterDeliveriesOrSeconds(int $count, int $seconds): void
+    {
+        $this->consumerProcess = new Process(
+            ['php', 'bin/console', 'messenger:consume', 'test_transport', '--limit=' . $count, '--time-limit=' . $seconds, '--sleep=0.1', '--env=test', '-vv'],
+            __DIR__ . '/../..'
+        );
+        $this->consumerProcess->setTimeout($seconds + 40);
+        $this->consumerProcess->start();
+    }
+
+    /** The handler ends the worker's process on the message's first run: the delivery is never settled. */
+    #[When('I send :count always-failing message that crashes the worker on its first run')]
+    #[When('I send :count always-failing messages that crash the worker on their first run')]
+    public function iSendAlwaysFailingMessagesThatCrashTheWorkerOnTheirFirstRun(int $count): void
+    {
+        $this->sendFailingMessages($count, ['--crash-on-first-run']);
+    }
+
+    /**
+     * How many deliveries of the transport's consumer wait for an acknowledgement: a NAK retry that waits for its delay
+     * is one, and so is a delivery nobody settled yet.
+     */
+    #[Then('the transport\'s consumer should have :count delivery waiting for an acknowledgement')]
+    #[Then('the transport\'s consumer should have :count deliveries waiting for an acknowledgement')]
+    public function theTransportsConsumerShouldHaveDeliveriesWaitingForAnAcknowledgement(int $count): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        if (($info['num_ack_pending'] ?? null) !== $count) {
+            throw new \RuntimeException(sprintf(
+                "Expected %d delivery(ies) waiting for an acknowledgement, got %s (pending %s, redelivered %s).\nConsumer output: %s",
+                $count,
+                json_encode($info['num_ack_pending'] ?? null),
+                json_encode($info['num_pending'] ?? null),
+                json_encode($info['num_redelivered'] ?? null),
+                $this->consumerProcess?->getOutput() ?? 'N/A'
+            ));
+        }
+    }
+
+    /**
+     * Gives the transport's durable consumer a backoff behind the transport's back, as the setup of another
+     * configuration without retry_via=nak does, after "the NATS stream is set up" wrote it without one: the builder
+     * refuses backoff with retry_via=nak. max_deliver 6 leaves room for it, as NATS asks, and for the scenario's runs.
+     */
+    #[Given('the transport\'s consumer has the backoff :backoff seconds, which the options do not say')]
+    public function theTransportsConsumerHasTheBackoffWhichTheOptionsDoNotSay(string $backoff): void
+    {
+        preg_match_all('/\d+/', $backoff, $matches);
+        $backoffMs = array_map(static fn (string $seconds): int => (int) $seconds * 1000, $matches[0]);
+
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $jetStream = $client->jetStream();
+            $jetStream->addConsumer($this->testStreamName, ConsumerConfiguration::create()
+                ->durable('client')
+                ->filterSubject($this->testSubject)
+                ->ackPolicy(AckPolicy::Explicit)
+                ->deliverPolicy(DeliverPolicy::All)
+                ->maxDeliver(6)
+                ->backoff($backoffMs))->await();
+
+            $config = $jetStream->getConsumer($this->testStreamName, 'client')->await()->raw['config'] ?? [];
+            $expected = array_map(static fn (int $ms): int => $ms * 1_000_000, $backoffMs);
+            if (!is_array($config) || ($config['backoff'] ?? null) !== $expected) {
+                throw new \RuntimeException(sprintf('The consumer did not take the backoff %s: %s', json_encode($backoffMs), json_encode($config)));
+            }
+        } finally {
+            $client->disconnect()->await();
+        }
+    }
+
+    /**
+     * With retry_via=nak the retry of the last delivery the consumer's max_deliver allows goes out as a copy, at once
+     * without scheduled_messages; the transport logs that once per consumer process, with the delay the copy lost.
+     */
+    #[Then('the consumer should have warned once that the retry of the consumer\'s last delivery was published as a copy without its delay')]
+    public function theConsumerShouldHaveWarnedOnceThatTheRetryOfTheConsumersLastDeliveryWasPublishedAsACopy(): void
+    {
+        $this->assertConsumerLoggedOnce(sprintf(
+            'retry_via=nak on stream "%s", subject "%s": the retry of the last delivery the consumer allows was published as a copy at once, without its delay of',
+            $this->testStreamName,
+            $this->testSubject,
+        ));
+    }
+
+    /**
+     * What the stream holds of a message NATS stopped at max_deliver, once later messages were acknowledged and the main
+     * test server, a standalone one, restarted: the measured table of docs/symfony_retry_via.md. A work-queue stream on
+     * one server keeps it on every version measured (2.10.29 to 2.15.2); an interest stream deletes it at the restart
+     * before 2.12.9 and on 2.14.0, and keeps it from 2.12.9 and 2.14.1 on. The later messages were acknowledged, so
+     * neither stream holds them. The server's version is read here, from the connection.
+     */
+    #[Then('the NATS stream should hold the message stopped at max_deliver exactly when the server keeps it on a :retention stream')]
+    public function theNatsStreamShouldHoldTheMessageStoppedAtMaxDeliverExactlyWhenTheServerKeepsIt(string $retention): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $version = (string) $client->serverInfo()?->version;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $release = preg_replace('/^v?(\d+\.\d+\.\d+).*$/', '$1', $version) ?? '';
+        $kept = match ($retention) {
+            'workqueue' => true,
+            'interest' => !(version_compare($release, '2.12.9', '<') || (version_compare($release, '2.14.0', '>=') && version_compare($release, '2.14.1', '<'))),
+            default => throw new \InvalidArgumentException(sprintf('No measured rule for a %s stream', $retention)),
+        };
+
+        // The server deletes the message when it recovers the stream; give it a moment, and longer to delete it.
+        $expected = $kept ? 1 : 0;
+        $deadline = microtime(true) + ($kept ? 2.0 : 10.0);
+        do {
+            usleep(250000);
+            $client = $this->createAppropriateNatsClient();
+            try {
+                $state = $client->jetStream()->getStream($this->testStreamName)->await()->raw['state'] ?? [];
+            } finally {
+                $client->disconnect()->await();
+            }
+            $held = is_array($state) ? (int) ($state['messages'] ?? 0) : 0;
+        } while (($kept || $held !== $expected) && microtime(true) < $deadline);
+
+        if ($held !== $expected) {
+            throw new \RuntimeException(sprintf(
+                'Expected a %s stream on NATS %s to %s the message stopped at max_deliver (%d message), it holds %d',
+                $retention,
+                $version,
+                $kept ? 'keep' : 'delete',
+                $expected,
+                $held,
+            ));
+        }
+    }
+
+    /** The servers of the test cluster ("east", tests/nats/nats-cluster*.conf), by container, and their client ports. */
+    private const CLUSTER = ['nats_cluster_1' => 4226, 'nats_cluster_2' => 4227, 'nats_cluster_3' => 4228];
+
+    /** The server of the test cluster the transport connects to, while a scenario runs on the cluster. */
+    private ?string $clusterServer = null;
+
+    /** The server of the test cluster a scenario stopped, which {@see restoreTheTestCluster()} starts again. */
+    private ?string $stoppedClusterServer = null;
+
+    /** @var array{query: string, strategy: string}|null The cluster transport's options, to write it again for another server. */
+    private ?array $clusterTransport = null;
+
+    /** When the test released the failing message's held first run, which then failed. */
+    private ?float $heldRunReleasedAt = null;
+
+    /**
+     * Waits until each server of the test cluster takes part in placing a stream with three replicas, as after a
+     * scenario or an example that stopped one of them.
+     */
+    #[Given('the test cluster is running')]
+    public function theTestClusterIsRunning(): void
+    {
+        $this->shouldNatsBeRunning = true;
+        $this->waitUntilTheTestClusterPlacesThreeReplicas();
+    }
+
+    /**
+     * The test transport on the test cluster, through its first server, with the given DSN query and retry strategy, no
+     * failure transport, and the failing and the test messages routed to it.
+     */
+    #[Given('I have a messenger transport on the test cluster configured with :query and the retry strategy :strategy')]
+    public function iHaveAMessengerTransportOnTheTestClusterConfiguredWithTheRetryStrategy(string $query, string $strategy): void
+    {
+        $this->clusterServer = array_key_first(self::CLUSTER);
+        $this->clusterTransport = ['query' => $query, 'strategy' => $strategy];
+        $this->writeRetryTransportConfiguration($query, $strategy, false, 'messenger.transport.native_php_serializer', '127.0.0.1:' . self::CLUSTER[$this->clusterServer]);
+    }
+
+    /** Points the transport at the server that leads its stream, which a scenario then stops: the hardest case. */
+    #[Given('the transport connects to the server that leads its stream')]
+    public function theTransportConnectsToTheServerThatLeadsItsStream(): void
+    {
+        if ($this->clusterTransport === null) {
+            throw new \RuntimeException('No transport on the test cluster');
+        }
+
+        $client = $this->createNatsClusterClient();
+        try {
+            $info = $client->jetStream()->getStream($this->testStreamName)->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $leader = is_array($info['cluster'] ?? null) ? ($info['cluster']['leader'] ?? null) : null;
+        if (!is_string($leader) || !isset(self::CLUSTER[$leader])) {
+            throw new \RuntimeException('The stream has no leader on the test cluster: ' . json_encode($info['cluster'] ?? null));
+        }
+
+        $this->clusterServer = $leader;
+        $this->writeRetryTransportConfiguration($this->clusterTransport['query'], $this->clusterTransport['strategy'], false, 'messenger.transport.native_php_serializer', '127.0.0.1:' . self::CLUSTER[$leader]);
+    }
+
+    #[When('I send :count retryable failing message whose first run is held')]
+    #[When('I send :count retryable failing messages whose first run is held')]
+    public function iSendRetryableFailingMessagesWhoseFirstRunIsHeld(int $count): void
+    {
+        $this->sendFailingMessages($count, ['--retryable', '--hold-first-run']);
+    }
+
+    /**
+     * Once the handler holds the message's first run, stops the server the consumer is connected to with `docker stop`,
+     * as a deploy or a rolling restart does, and then releases the run, which fails. The server closes the connection on
+     * its way out, and the client, which reads the socket only while an operation waits for a reply, has not read that
+     * close when the handler returns.
+     */
+    #[When('the server the consumer is connected to stops while the handler holds the message\'s first run')]
+    public function theServerTheConsumerIsConnectedToStopsWhileTheHandlerHoldsTheMessagesFirstRun(): void
+    {
+        if ($this->clusterServer === null) {
+            throw new \RuntimeException('No transport on the test cluster');
+        }
+
+        $deadline = microtime(true) + 30;
+        while (!file_exists($this->retryStateDir . '/message_1.held')) {
+            if (microtime(true) > $deadline || !$this->consumerProcess?->isRunning()) {
+                throw new \RuntimeException(sprintf("The handler did not hold the message's first run.\nConsumer output: %s\nConsumer error: %s", $this->consumerProcess?->getOutput() ?? 'N/A', $this->consumerProcess?->getErrorOutput() ?? 'N/A'));
+            }
+            usleep(50000);
+        }
+
+        $server = $this->clusterServer;
+        $this->stoppedClusterServer = $server;
+        $stop = new Process(['docker', 'stop', $server]);
+        $stop->setTimeout(60);
+        $stop->run();
+        if (!$stop->isSuccessful()) {
+            throw new \RuntimeException(sprintf('docker stop %s failed: %s', $server, $stop->getErrorOutput()));
+        }
+
+        touch($this->retryStateDir . '/message_1.release');
+        $this->heldRunReleasedAt = microtime(true);
+    }
+
+    /**
+     * How long after the release of its held first run, which then failed, the failing message ran again: its retry
+     * reached the cluster through another server rather than coming back after ack_wait.
+     */
+    #[Then('the failing message should have run again at least :ms ms and less than :seconds s after its held run failed')]
+    public function theFailingMessageShouldHaveRunAgainAfterItsHeldRunFailed(int $ms, int $seconds): void
+    {
+        $runs = $this->runsOfTheFailingMessage();
+        if ($this->heldRunReleasedAt === null || count($runs) < 2) {
+            throw new \RuntimeException(sprintf("Expected a second run after the held one, got %d run(s).\nConsumer output: %s\nConsumer error: %s", count($runs), $this->consumerProcess?->getOutput() ?? 'N/A', $this->consumerProcess?->getErrorOutput() ?? 'N/A'));
+        }
+
+        $waited = (int) round(($runs[1] - $this->heldRunReleasedAt) * 1000);
+        if ($waited < $ms || $waited >= $seconds * 1000) {
+            throw new \RuntimeException(sprintf("Expected the second run at least %d ms and less than %d s after the held run failed, it came %d ms after.\nConsumer error: %s", $ms, $seconds, $waited, $this->consumerProcess?->getErrorOutput() ?? 'N/A'));
+        }
+    }
+
+    /** The transport's consumer has delivered everything and waits for no acknowledgement. */
+    #[Then('the transport\'s consumer should have nothing left to deliver or to wait for')]
+    public function theTransportsConsumerShouldHaveNothingLeftToDeliverOrToWaitFor(): void
+    {
+        $client = $this->createAppropriateNatsClient();
+        try {
+            $info = $client->jetStream()->getConsumer($this->testStreamName, 'client')->await()->raw;
+        } finally {
+            $client->disconnect()->await();
+        }
+
+        $state = ['ack pending' => $info['num_ack_pending'] ?? null, 'pending' => $info['num_pending'] ?? null];
+        if ($state !== ['ack pending' => 0, 'pending' => 0]) {
+            throw new \RuntimeException('Expected nothing left, got ' . json_encode($state));
+        }
+    }
+
+    /**
+     * Starts the server of the test cluster a scenario stopped and waits until the cluster places three replicas again,
+     * so that the next scenario and the examples find the cluster as it was; deletes the scenario's stream there.
+     */
+    #[AfterScenario]
+    public function restoreTheTestCluster(): void
+    {
+        if ($this->clusterServer === null && $this->stoppedClusterServer === null) {
+            return;
+        }
+
+        try {
+            if ($this->stoppedClusterServer !== null) {
+                (new Process(['docker', 'start', $this->stoppedClusterServer]))->setTimeout(60)->run();
+            }
+            $client = $this->createNatsClusterClient();
+            try {
+                $client->jetStream()->deleteStream($this->testStreamName)->await();
+            } catch (\Throwable) {
+                // Gone already, with the cleanup above.
+            } finally {
+                $client->disconnect()->await();
+            }
+            $this->stoppedClusterServer = null;
+            $this->waitUntilTheTestClusterPlacesThreeReplicas();
+        } finally {
+            $this->clusterServer = null;
+            $this->stoppedClusterServer = null;
+            $this->clusterTransport = null;
+            $this->heldRunReleasedAt = null;
+        }
+    }
+
+    /** A client on a server of the test cluster that is running: the transport's own, unless a scenario stopped it. */
+    private function createNatsClusterClient(): NatsClient
+    {
+        $servers = array_keys(self::CLUSTER);
+        if ($this->clusterServer !== null && $this->clusterServer !== $this->stoppedClusterServer) {
+            array_unshift($servers, $this->clusterServer);
+        }
+
+        $failure = null;
+        foreach (array_unique($servers) as $server) {
+            if ($server === $this->stoppedClusterServer) {
+                continue;
+            }
+            $client = new NatsClient(new NatsOptions(
+                servers: ['nats://127.0.0.1:' . self::CLUSTER[$server]],
+                username: 'admin',
+                password: 'password',
+                connectTimeoutMs: 5000,
+            ));
+            try {
+                $client->connect()->await();
+
+                return $client;
+            } catch (\Throwable $e) {
+                $failure = $e;
+            }
+        }
+
+        throw new \RuntimeException('No server of the test cluster answers: ' . $failure?->getMessage());
+    }
+
+    private function waitUntilTheTestClusterPlacesThreeReplicas(): void
+    {
+        $probe = 'cluster_probe';
+        $deadline = microtime(true) + 60;
+        while (true) {
+            try {
+                $client = $this->createNatsClusterClient();
+                try {
+                    $jetStream = $client->jetStream();
+                    $jetStream->addStream((new StreamConfiguration($probe))->subjects($probe . '.messages')->replicas(3))->await();
+                    $jetStream->deleteStream($probe)->await();
+                } finally {
+                    $client->disconnect()->await();
+                }
+
+                return;
+            } catch (\Throwable $e) {
+                if (microtime(true) > $deadline) {
+                    throw new \RuntimeException('The test cluster did not place a stream with three replicas within 60 s: ' . $e->getMessage());
+                }
+                usleep(500000);
+            }
         }
     }
 }

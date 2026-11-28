@@ -28,7 +28,10 @@ class SendFailingMessagesCommand extends Command
         $this
             ->addArgument('count', InputArgument::REQUIRED, 'Number of messages to send')
             ->addOption('retryable', null, InputOption::VALUE_NONE, 'Messages should eventually succeed on retry')
-            ->addOption('unrecoverable', null, InputOption::VALUE_NONE, 'Messages fail with an exception Symfony never retries');
+            ->addOption('unrecoverable', null, InputOption::VALUE_NONE, 'Messages fail with an exception Symfony never retries')
+            ->addOption('recoverable-failures', null, InputOption::VALUE_REQUIRED, 'Messages fail with a RecoverableMessageHandlingException on this many runs, then succeed', '0')
+            ->addOption('crash-on-first-run', null, InputOption::VALUE_NONE, 'The handler ends the worker on the first run of each message, without settling it')
+            ->addOption('hold-first-run', null, InputOption::VALUE_NONE, 'The handler holds the first run of each message until the test releases it, then fails it');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -46,6 +49,9 @@ class SendFailingMessagesCommand extends Command
                 messageId: $i,
                 shouldEventuallySucceed: $retryable,
                 unrecoverable: (bool) $input->getOption('unrecoverable'),
+                recoverableFailures: (int) $input->getOption('recoverable-failures'),
+                crashesTheWorkerOnItsFirstRun: (bool) $input->getOption('crash-on-first-run'),
+                heldOnItsFirstRun: (bool) $input->getOption('hold-first-run'),
             );
 
             $this->messageBus->dispatch($message);
