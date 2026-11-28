@@ -10259,36 +10259,114 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * A read of the consumer that fails on the connection, as a dial during a server restart, propagates from the send
-     * of the retry: the retry of what may be the last delivery is not decided on a guess, and the delivery comes back
-     * after ack_wait. The consumer is asked again at the next retry, which reads its limit. The first form of 5.9.1 took
-     * any failure for a user who may not ask, and never asked again on a connection that was fine: three retries of
-     * last deliveries were NAKed and lost after a server restart, in review.
+     * A read of the consumer that fails on the connection, as a dial during a server restart, and one that gets no
+     * answer within request_timeout.
+     *
+     * @return iterable<string, array{\Throwable}>
      */
-    public function testAConsumerReadThatFailsOnTheConnectionPropagatesAndIsAskedAgain(): void
+    public static function unansweredConsumerReads(): iterable
     {
-        $answers = [Future::error(new ConnectionException('Connection refused')), Future::complete(self::consumerLimitedTo(2))];
+        yield 'no answer within request_timeout' => [new TimeoutException('Request timed out')];
+        yield 'a failure of the connection' => [new ConnectionException('Connection refused')];
+    }
+
+    /**
+     * A read of the consumer that fails on the connection or gets no answer leaves the max_deliver option to decide
+     * that retry, when nothing was read before, with one warning, and the next retry asks again: here both retries of
+     * the last delivery the option allows go out as copies, the second after a read that gives the consumer's limit.
+     * Up to 5.10.1 the read's exception left the send of the retry and stopped the worker, and NATS redelivers nothing
+     * after that last delivery, so the message was lost. The first form of 5.9.1 never asked again on that connection.
+     */
+    #[DataProvider('unansweredConsumerReads')]
+    public function testAConsumerReadThatFailsOnTheConnectionOrTimesOutLeavesTheOptionForThisRetryAndIsAskedAgain(\Throwable $unanswered): void
+    {
+        $answers = [Future::error($unanswered), Future::complete(self::consumerLimitedTo(2))];
         $jetStream = $this->createMock(JetStreamContext::class);
         $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static function () use (&$answers): Future {
             return array_shift($answers) ?? self::fail('the consumer was asked more than twice');
         });
+        $jetStream->expects(self::exactly(2))->method('publish')->willReturn(Future::complete());
+        $jetStream->expects(self::never())->method('nakWithDelay');
+        $jetStream->method('ack')->willReturn(Future::complete());
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['max_deliver' => 2], $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.2.1.2.0.0')]);
+
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
+        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
+
+        self::assertSame([
+            sprintf(
+                'retry_via=nak on stream "test-stream": consumer "client" could not be read for its max_deliver (%s), so the'
+                . ' max_deliver option (2) tells which delivery is the last one. It is asked again at the next retry.',
+                $unanswered->getMessage(),
+            ),
+        ], array_values(array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'could not be read'))));
+    }
+
+    /**
+     * A read that fails on the connection or gets no answer after one that succeeded leaves the value read before to
+     * decide, not the option: with the option unset, the consumer limited to 3 is read at the retry of the first
+     * delivery, a NAK, and a minute later the read at the retry of the third delivery fails, which still goes out as a
+     * copy of that last delivery.
+     */
+    #[DataProvider('unansweredConsumerReads')]
+    public function testAConsumerReadThatFailsOnTheConnectionOrTimesOutLaterLeavesTheValueReadBefore(\Throwable $unanswered): void
+    {
+        $answers = [Future::complete(self::consumerLimitedTo(3)), Future::error($unanswered)];
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::exactly(2))->method('getConsumer')->willReturnCallback(static function () use (&$answers): Future {
+            return array_shift($answers) ?? self::fail('the consumer was asked more than twice');
+        });
+        $jetStream->expects(self::once())->method('nakWithDelay')->willReturn(Future::complete());
         $jetStream->expects(self::once())->method('publish')->willReturn(Future::complete());
         $jetStream->method('ack')->willReturn(Future::complete());
         $logger = new RecordingLogger();
 
-        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['ping_after_idle' => 0], $this->encodingSerializer(), $logger);
+        $transport = new PausingNatsTransport(self::VALID_DSN, self::NAK_RETRIES, $this->encodingSerializer(), $logger);
+        $transport->setJetStreamContext($jetStream);
+        foreach ([1, 3] as $delivery) {
+            $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp(sprintf('$JS.ACK.test-stream.client.%d.1.%d.0.0', $delivery, $delivery))]);
+            $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp($delivery)));
+            $transport->ack($failed);
+            $transport->now += 61;
+        }
+
+        self::assertSame([
+            sprintf(
+                'retry_via=nak on stream "test-stream": consumer "client" could not be read for its max_deliver (%s), so the'
+                . ' value read before (3) tells which delivery is the last one. It is asked again at the next retry.',
+                $unanswered->getMessage(),
+            ),
+        ], array_values(array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'could not be read'))));
+    }
+
+    /**
+     * Only the client's failures of the connection and its timeouts join the JetStream errors that leave the option to
+     * decide: any other exception of the read, here a LogicException, still leaves the send of the retry, and nothing
+     * is published.
+     */
+    public function testAConsumerReadThatFailsOtherwisePropagatesFromTheSendOfTheRetry(): void
+    {
+        $jetStream = $this->createMock(JetStreamContext::class);
+        $jetStream->expects(self::once())->method('getConsumer')->willReturnCallback(static fn (): Future => Future::error(new \LogicException('not a failure of the read')));
+        $jetStream->expects(self::never())->method('publish');
+        $jetStream->expects(self::never())->method('nakWithDelay');
+        $logger = new RecordingLogger();
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, self::NAK_RETRIES + ['max_deliver' => 2], $this->encodingSerializer(), $logger);
         $transport->setJetStreamContext($jetStream);
         $failed = new Envelope(new \stdClass(), [new ReceivedStamp('async'), new TransportMessageIdStamp('$JS.ACK.test-stream.client.2.1.2.0.0')]);
 
         try {
             $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
             self::fail('the send of the retry should have failed with the read of the consumer');
-        } catch (\Throwable $thrown) {
-            self::assertStringContainsString('Connection refused', $thrown->getMessage());
+        } catch (\LogicException $thrown) {
+            self::assertSame('not a failure of the read', $thrown->getMessage());
         }
 
-        // The next retry asks again, reads the limit of 2, and publishes the retry of that last delivery as a copy.
-        $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
         self::assertSame([], array_values(array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'could not be read'))));
     }
 

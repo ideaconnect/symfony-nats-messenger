@@ -635,11 +635,22 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * A user who may not ask for consumer info gets the request refused at once (client 2.30.0): the last value read,
      * or the option when there is none, decides, the refusal is logged once, and the consumer is not asked again until
      * the connection is replaced or closed, as the permission is the user's. A JetStream error, such as a consumer
-     * that does not exist, leaves the same value to decide for this retry only, and the next one asks again. A failure
-     * of the connection, or a request that timed out, propagates: the decision would be a guess, which could NAK the
-     * retry of a last delivery, a message lost, and the delivery comes back after ack_wait instead. The first form of
-     * 5.9.1 took any failure for the refusal, a failed dial during a server restart included, and stopped asking on a
-     * connection that was fine.
+     * that does not exist, a read that fails on the connection, as during a server restart, and one that gets no answer
+     * within request_timeout leave the same value to decide for this retry only, with the same single warning, and the
+     * next retry asks again.
+     *
+     * Up to 5.10.1 a read that failed on the connection or timed out made the send of the retry fail, which stopped
+     * the worker, so that no retry was decided on a guess. That lost the very delivery it was meant to protect: the
+     * read decides only the retry of what may be the last delivery max_deliver allows, and NATS redelivers nothing
+     * after that one, ack_wait or not, so a stopped worker lost it with no failure-transport copy, and with batching
+     * above 1 each stop also cost the messages behind it in the batch a delivery without a handler run (measured on
+     * nats-server 2.15.3 and 2.10.29). A fallback loses that delivery only when the value it falls back on is wrong,
+     * and when the connection really is gone, the NAK or the copy that follows fails and stops the worker as before.
+     *
+     * The first form of 5.9.1 took any failure for the refusal, a failed dial during a server restart included, and
+     * stopped asking on a connection that was fine: after a restart the option decided later retries of last
+     * deliveries, and with an option that was not the consumer's limit they were NAKed and lost. So only a refusal
+     * stops the asking, and any other exception, such as a protocol error or one that is not the client's, propagates.
      */
     private function consumersMaxDeliver(): ?int
     {
@@ -655,6 +666,8 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
                 $this->consumerUnreadableOnThisConnection = true;
                 $this->warnThatTheConsumerCouldNotBeRead($refused, $known);
             } catch (JetStreamException $unanswered) {
+                $this->warnThatTheConsumerCouldNotBeRead($unanswered, $known);
+            } catch (ConnectionException|TimeoutException $unanswered) {
                 $this->warnThatTheConsumerCouldNotBeRead($unanswered, $known);
             }
         }
