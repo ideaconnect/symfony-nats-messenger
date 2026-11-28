@@ -67,8 +67,10 @@ Runs the real client against an in-memory server that answers the handshake and 
 ### A Pull During a Graceful Stop (`tests/unit/GracefulStopPullTest.php`)
 
 nats-server answers a pull with 503 for a consumer that does not exist and, while it is going away, for one it has
-already stopped: in the last moments of a graceful stop (NATS 2.15 takes about 10 ms for each durable consumer on a file
-stream) and for the whole grace period of lame duck mode (#106). After a 503 the transport asks the client why
+already stopped, when it was released before 2.14.10 and 2.15.3: in the last moments of a graceful stop (NATS 2.15 takes
+about 10 ms for each durable consumer on a file stream) and for the whole grace period of lame duck mode (#106). 2.14.10
+and 2.15.3 close the client connections before they stop JetStream and give no such 503; the scripted server below
+plays the older order. After a 503 the transport asks the client why
 (`pullMetAServerGoingAway()`, `JetStreamContext::diagnoseNoResponders()` of client 2.29, whose own tests cover how it
 watches the connection). The first tests double the client and its JetStream context, to drive each cause and each state
 of the connection; the others run the real client over the scripted server of
@@ -599,8 +601,8 @@ does not survive it.
 
 | Feature | Scenarios |
 |---------|-----------|
-| **A worker polls through a server restart without exiting** | A worker keeps consuming across a server restart (the consumer holds a connection before the restart, reconnects, and consumes the five messages sent after it; the step no longer pauses after the connection, so on CI's fast docker the worker's pull can land in the last moments of a graceful stop on NATS 2.15, whose 503 the transport reads as an empty batch since #106) |
-| **A worker polls through a server that leaves in lame duck mode** | A worker keeps consuming across a server that leaves in lame duck mode (SIGUSR2 sent from inside the container, as `docker kill` would mark it stopped by hand and keep docker from starting it again; the server stops JetStream, keeps the connections for its 10 s grace period, during which every pull gets 503, closes them and exits, and docker starts it again; request_timeout is 3 s, below the grace period, so that a transport waiting out a question about the 503 would end the worker first. Fails with `JetStream pull request ended with status 503` on the transport that asked CONSUMER.INFO itself with client 2.28, #106) |
+| **A worker polls through a server restart without exiting** | A worker keeps consuming across a server restart (the consumer holds a connection before the restart, reconnects, and consumes the five messages sent after it; the step no longer pauses after the connection, so on CI's fast docker the worker's pull can land in the last moments of a graceful stop on a server released before nats-server 2.14.10 and 2.15.3, whose 503 the transport reads as an empty batch since #106; 2.14.10 and 2.15.3 close the connection first) |
+| **A worker polls through a server that leaves in lame duck mode** | A worker keeps consuming across a server that leaves in lame duck mode (SIGUSR2 sent from inside the container, as `docker kill` would mark it stopped by hand and keep docker from starting it again; a server released before nats-server 2.14.10 and 2.15.3 stops JetStream, keeps the connections for its 10 s grace period, during which every pull gets 503, closes them and exits, and docker starts it again; 2.14.10 and 2.15.3 keep JetStream running until they close the connections, so on them the pulls are answered as usual and the scenario checks the reconnect alone, and in CI the pulls that get the 503 are those of the job on the oldest supported server (2.10.29), not of the PHP jobs on `nats:alpine` (2.15.3 in the run of 2026-11-27); request_timeout is 3 s, below the grace period, so that a transport waiting out a question about the 503 would end the worker first. Fails with `JetStream pull request ended with status 503` on the transport that asked CONSUMER.INFO itself with client 2.28, #106) |
 | **The client's own reconnect is used by the next send, and auto_setup recreates the memory stream the restart lost** | A message sent after a server restart goes out on the reconnected connection and the memory stream is recreated (`ping_after_idle` 2 s, so the send after the quiet period checks the connection first and finds the client recovering it; the stats show the one message the recreated stream holds) |
 
 ### Stream Placement (`tests/functional/features/nats_stream_placement.feature`)

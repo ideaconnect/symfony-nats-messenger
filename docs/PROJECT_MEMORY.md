@@ -262,9 +262,10 @@ apply only with the option on.
   A scenario that restarts a server must wait for the worker's connection first, as `I start a messenger consumer expecting
   :count messages` does: on CI's runners the console boots after the restart begins, so without the wait nothing reconnects
   and the scenario proves nothing, while a local run looks fine. That step used to pause 300 ms after the connection, to
-  stay out of the 503 of a graceful stop of NATS 2.15 (a worker whose pull ended less than `--sleep` into its iteration
-  waits right into it); since #106 the transport reads that 503 as an empty batch and the pause is gone, so the scenarios
-  run into that moment as a worker would.
+  stay out of the 503 of a graceful stop of NATS 2.15 before 2.15.3 (a worker whose pull ended less than `--sleep` into
+  its iteration waits right into it); since #106 the transport reads that 503 as an empty batch and the pause is gone,
+  so the scenarios run into that moment as a worker would, on a server released before 2.14.10 and 2.15.3 (those two
+  close the client connections first and leave no such moment).
   Docker's CLI takes about 180 ms to reach the server here, through this machine's long PATH, and about 20 ms on
   CI, which hides this: to rehearse, call Docker's API directly and boot the worker at a random phase of the step's poll.
 - **Stats:** consumer `num_pending + num_ack_pending`, falling back to stream messages and then 0.
@@ -606,6 +607,17 @@ These are posted recommendations; the tests and proposed issue-summary edits are
   that changes the iterator's default behaviour and is the maintainer's call.
 - **Not measured:** a cluster (another server may answer CONSUMER.INFO for an R3 consumer while the local one stops, and
   the 503 then keeps its old reading).
+- **nats-server 2.14.10 and 2.15.3 changed the order (both 2026-11-11; read and measured 2026-11-28, #157).**
+  `Shutdown()` now closes the client connections before `shutdownEventing()` and `shutdownJetStream()`, and
+  `runLameDuckMode()` no longer stops JetStream, which runs until `Shutdown()` (nats-io/nats-server@9cf1ba64d92c, also
+  in 2.14.11-RC.1 and 2.15.4-RC.1). Measured with the raw protocol and 48 consumers on a file stream: after SIGTERM the
+  connection closed within 0.5 ms in 11 of 12 rounds and at 50 ms in one, with no 503; after SIGUSR2 the `ldm` INFO
+  came within 1 ms, and every pull and CONSUMER.INFO was answered for the 1.5 s watched. 2.10.29, 2.11.17, 2.12.15,
+  2.14.9 and 2.15.0 to 2.15.2 keep the order above (read in the source). So in CI only `functional-oldest-nats`
+  (2.10.29) can meet the 503 on a real server; on the PHP jobs' `nats:alpine` (2.15.3 in the run of 2026-11-27) the
+  restart and lame duck scenarios check the reconnect alone, and the diagnosis rests on `GracefulStopPullTest`'s
+  scripted server there. `nats:2.10-alpine` is a moving tag: a 2.10 release with the new order would take that last
+  real-server 503 away without a word.
 
 ## Dated snapshot: 2026-11-17
 

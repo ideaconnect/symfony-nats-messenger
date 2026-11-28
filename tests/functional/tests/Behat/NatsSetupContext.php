@@ -2699,7 +2699,9 @@ class NatsSetupContext implements Context
      * As above, with request_timeout at the given number of seconds. The lame duck scenario sets it below the 10 s for
      * which the main test server keeps its connections in lame duck mode (lame_duck_grace_period in nats.conf): a
      * question about a pull's 503 that the transport waited out would then end before the server closes the connection,
-     * and the worker with it, so the scenario fails on a transport that does not know lame duck mode (#106).
+     * and the worker with it, so the scenario fails on a transport that does not know lame duck mode (#106). Only a
+     * server released before nats-server 2.14.10 and 2.15.3 gives that 503: those two keep JetStream running in lame
+     * duck mode until they close the connections.
      */
     #[Given('I have a messenger transport configured with reconnect enabled and a request timeout of :seconds seconds')]
     public function iHaveAMessengerTransportConfiguredWithReconnectEnabledAndARequestTimeout(int $seconds): void
@@ -2742,12 +2744,13 @@ class NatsSetupContext implements Context
      * the console command takes longer to boot than the restart takes to begin, which is what CI's logs showed.
      *
      * It no longer pauses after the connection (#106). With the one consumer these scenarios have, a graceful stop of
-     * NATS 2.15 leaves about 10 ms, some 50 ms after the signal, in which the server has stopped the consumer and the
-     * connection is still open, and a pull written then gets 503. A worker whose pull ended less than --sleep before the
-     * signal waits out the rest and can pull right then, which CI's docker is fast enough for. That 503 used to read as
-     * a missing consumer and end the worker, and a pause of 300 ms kept these scenarios out of it; the transport now asks
-     * for the consumer after a 503 and reads the pull as empty when the server going away leaves the question unanswered,
-     * so the scenarios run into it as a worker would.
+     * NATS 2.15 before 2.15.3 leaves about 10 ms, some 50 ms after the signal, in which the server has stopped the
+     * consumer and the connection is still open, and a pull written then gets 503. A worker whose pull ended less than
+     * --sleep before the signal waits out the rest and can pull right then, which CI's docker is fast enough for. That
+     * 503 used to read as a missing consumer and end the worker, and a pause of 300 ms kept these scenarios out of it;
+     * the transport now asks for the consumer after a 503 and reads the pull as empty when the server going away leaves
+     * the question unanswered, so the scenarios run into it as a worker would. nats-server 2.14.10 and 2.15.3 close the
+     * client connections before they stop JetStream and leave no such moment.
      */
     #[When('I start a messenger consumer expecting :count messages')]
     public function iStartAMessengerConsumerExpectingMessages(int $count): void
@@ -2802,11 +2805,12 @@ class NatsSetupContext implements Context
 
     /**
      * Puts the main test server into lame duck mode (SIGUSR2) and returns once it is back. In lame duck mode nats-server
-     * stops JetStream at once, keeps the client connections for its grace period (10 s in nats.conf), closes them over
-     * the rest of its lame_duck_duration (30 s, the least it accepts) and exits; docker starts it again (restart:
-     * always), which raises the container's restart count. A pull written meanwhile gets 503 on a connection that stays
-     * open (#106). The signal goes to the server from inside the container: `docker kill`, whatever the signal, marks
-     * the container as stopped by hand, and docker then leaves it stopped once it exits.
+     * keeps the client connections for its grace period (10 s in nats.conf), closes them over the rest of its
+     * lame_duck_duration (30 s, the least it accepts) and exits; docker starts it again (restart: always), which raises
+     * the container's restart count. A server released before 2.14.10 and 2.15.3 stops JetStream at once, so a pull
+     * written meanwhile gets 503 on a connection that stays open (#106); 2.14.10 and 2.15.3 keep JetStream running
+     * until they close the connections. The signal goes to the server from inside the container: `docker kill`,
+     * whatever the signal, marks the container as stopped by hand, and docker then leaves it stopped once it exits.
      */
     #[When('the NATS server leaves in lame duck mode and starts again')]
     public function theNatsServerLeavesInLameDuckModeAndStartsAgain(): void

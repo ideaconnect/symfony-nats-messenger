@@ -28,8 +28,10 @@ use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
  *
  * nats-server answers a pull with 503 (no responders) whenever nothing is subscribed to the consumer's pull subject: for
  * a consumer that does not exist, and also while a server that is going away has stopped the consumer and not yet closed
- * the connection. A graceful stop of NATS 2.15 takes about 10 ms for each durable consumer on a file stream; lame duck
- * mode stops JetStream at once and keeps the connections for its grace period (10 s by default). A worker whose pull
+ * the connection, on a server released before nats-server 2.14.10 and 2.15.3, whose order the scripted server here plays
+ * (those two close the client connections before they stop JetStream). A graceful stop of NATS 2.15 takes about 10 ms
+ * for each durable consumer on a file stream; lame duck mode on such a server stops JetStream at once and keeps the
+ * connections for its grace period (10 s by default). A worker whose pull
  * landed there read the 503 as a missing consumer and ended, with or without `reconnect: true`. After a 503 the transport
  * asks the client why (JetStreamContext::diagnoseNoResponders(), client 2.29): ServerGoingAway is an empty batch, any
  * other cause keeps the 503's reading.

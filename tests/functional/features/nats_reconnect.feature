@@ -19,10 +19,12 @@ Feature: Automatic reconnect (reconnect: true)
     Then all 5 messages should be consumed
     And the consumer should have reconnected
 
-  # In lame duck mode the server stops JetStream at once and keeps its connections for its grace period (10 s in
-  # nats.conf) before it closes them and exits, so every pull meanwhile gets 503 on a connection that stays open (#106).
-  # request_timeout is 3 s, below that grace period: a transport that waited out a question about the 503 would end
-  # the worker before the server closed the connection.
+  # In lame duck mode a server released before nats-server 2.14.10 and 2.15.3 stops JetStream at once and keeps its
+  # connections for its grace period (10 s in nats.conf) before it closes them and exits, so every pull meanwhile gets
+  # 503 on a connection that stays open (#106). request_timeout is 3 s, below that grace period: a transport that waited
+  # out a question about the 503 would end the worker before the server closed the connection. 2.14.10 and 2.15.3 keep
+  # JetStream running until they close the connections, so on them the pulls are answered as usual and the scenario
+  # checks the reconnect alone: in CI the pulls that get the 503 are those of the job on the oldest supported server.
   @reconnect
   Scenario: A worker keeps consuming across a server that leaves in lame duck mode
     Given I have a messenger transport configured with reconnect enabled and a request timeout of 3 seconds

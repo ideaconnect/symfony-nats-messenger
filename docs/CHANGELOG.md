@@ -144,6 +144,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **README, "Batching Explained"**: one sentence that from Messenger 8.1.12 on the Worker reads the whole pull
   before it handles the first message, linking to the paragraph above (#140).
 - **`docs/TESTS.md` and `docs/PROJECT_MEMORY.md`** updated for the tests and the Worker behavior above (#140).
+- **README, "Upgrading from 5.8.0", "Automatic Reconnect" and "Note on a server that stops"**: a stopping server
+  gives a pull 503 only on nats-server releases before 2.14.10 and 2.15.3. Those two (both 2026-11-11) close the
+  client connections before they stop JetStream, and keep JetStream running in lame duck mode until they close the
+  connections, so a worker on them sees its connection close, or goes on pulling through the grace period, and gets
+  no 503 from the stop. Nothing changes in the transport. `AGENTS.md`, `CLAUDE.md`, `docs/TESTS.md`,
+  `docs/PROJECT_MEMORY.md` and the comments of `pullMetAServerGoingAway()` and of the tests say the same (#157).
 - **README, "Retry Handler Behavior"**: one paragraph on what a `DispatchOnFailureStamp` (Symfony Messenger 8.2)
   does in nats mode and with `retry_via: nak`, and the sentence in `docs/symfony_retry_via.md` that the stamp's
   failure message is dispatched on each run Symfony gives up on (#154).

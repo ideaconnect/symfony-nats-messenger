@@ -1566,9 +1566,11 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      *
      * nats-server answers a pull with 503 (no responders) whenever nothing is subscribed to the consumer's pull subject:
      * when the consumer does not exist, and also while a server that is going away has stopped the consumer and not yet
-     * closed the connection. In a graceful stop that moment lasts about 10 ms for each durable consumer on a file stream
-     * on NATS 2.15; in lame duck mode it lasts the whole grace period (10 s by default, on every version), since the
-     * server stops JetStream at once and keeps the connections open. The pull alone cannot tell them apart. The
+     * closed the connection, on a server released before nats-server 2.14.10 and 2.15.3 (those two close the client
+     * connections before they stop JetStream, and give no 503 from a stop). In a graceful stop that moment lasts about
+     * 10 ms for each durable consumer on a file stream on NATS 2.15; in lame duck mode it lasts the whole grace period
+     * (10 s by default), since such a server stops JetStream at once and keeps the connections open. The pull alone
+     * cannot tell them apart. The
      * client's diagnoseNoResponders() (client 2.29) does: it asks for the consumer while it watches the connection. A
      * server that stays answers; one that is going away answers nothing, and closes the connection or announces lame
      * duck mode, which ends the wait without request_timeout, also when the client keeps the question across its
