@@ -160,6 +160,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **README, "Batching Explained"**: one sentence that from Messenger 8.1.12 on the Worker reads the whole pull
   before it handles the first message, linking to the paragraph above (#140).
 - **`docs/TESTS.md` and `docs/PROJECT_MEMORY.md`** updated for the tests and the Worker behavior above (#140).
+- **Docs brought in line with 5.9.1 and 5.10.0** (#124): the README's retry table and the record of #113 say that
+  before Messenger 8.1 a message that cannot be decoded stops the worker; `docs/TESTS.md` keeps the mutation score
+  with the run it comes from, and the README and `infection.json5` point to it; the README names the examples that
+  need the test cluster without counting them, and STRUCTURE.md lists `nats-retry-on-a-cluster`; `docs/TESTS.md`
+  names the 19 unit tests it lacked; CLAUDE.md, AGENTS.md and STRUCTURE.md describe the refusal of
+  `scheduled_messages` on an interest stream nothing has interest in, and the consumer's own `max_deliver` that
+  `retry_via: nak` follows; AGENTS.md names the `### Testing & CI` and `### Documentation` categories this
+  changelog uses, and the guides ask for a `docs/PRs/` file for a contributor's pull request only.
 - **README, "Retry Handler Behavior"**: one paragraph on what a `DispatchOnFailureStamp` (Symfony Messenger 8.2)
   does in nats mode and with `retry_via: nak`, and the sentence in `docs/symfony_retry_via.md` that the stamp's
   failure message is dispatched on each run Symfony gives up on (#154).

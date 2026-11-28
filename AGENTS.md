@@ -98,6 +98,12 @@ tests/
   or a message that cannot be decoded is TERMed); a message that cannot be decoded is handled as Symfony's own transports handle it; in symfony mode,
   `retry_via: nak` NAKs with Symfony's retry delay instead of publishing the retry copy
   (see [docs/symfony_retry_via.md](docs/symfony_retry_via.md))
+- **`retry_via: nak` and `max_deliver`**: the last delivery is the last one the consumer's own `max_deliver` allows,
+  as the server reports it, not the option's; it is read at the first retry that needs it and kept for a minute
+  (`consumersMaxDeliver()`)
+- **Delayed messages on an interest stream**: `setup()` and a worker's first pull refuse `scheduled_messages` on a
+  stream with interest retention where no consumer's filter covers the delayed subjects, since NATS would store none
+  of the delayed messages (`assertTheStreamKeepsDelayedMessages()`)
 - **Scheduled messages**: `scheduled_messages` flag, `DelayStamp` → NATS schedule headers; refused on a server
   before NATS 2.12, at `setup()` and at the send of a delayed message
 - **Option names**: an option that is not a `TransportOption` case (or `transport_name`) is refused, with the closest one
@@ -181,7 +187,8 @@ composer nats:stop               # Stop NATS
 - Every release must have an entry in `docs/CHANGELOG.md`.
 - Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 - Add new items under `## [Unreleased]` as work progresses; move them to a versioned heading at release time.
-- Categorize changes as Added, Changed, Fixed, Deprecated, Removed, or Security.
+- Categorize changes as Added, Changed, Fixed, Deprecated, Removed, or Security. Changes to the tests or CI alone go
+  under `### Testing & CI`, and changes to the documentation alone under `### Documentation`, after the others.
 
 ### Feature Reference (`docs/symfony_retry_via.md`)
 - The reference for `retry_via`: the terms, the three retry setups delivery by delivery, what the server does with a
@@ -189,7 +196,9 @@ composer nats:stop               # Stop NATS
 - Update it when a retry path changes, or when a measurement of the server's behaviour does.
 
 ### PR Merge Documentation (`docs/PRs/`)
-- When a PR is merged or its features are adapted, add a file to `docs/PRs/` named `PR-NNN-short-description.md`.
+- When a contributor's PR is merged or its features are adapted, add a file to `docs/PRs/` named
+  `PR-NNN-short-description.md`. The maintainers' own PRs and dependency updates need none: their issue, their
+  description and the changelog entry hold what such a file would.
 - Include: what the PR proposed, how the features were implemented, and which tests cover them.
 - Land a PR with a merge commit, never a squash or a rebase: one commit per item stays readable and revertable, and a
   contributor's commits keep their ids, which is what marks their PR as merged when the work lands through another branch

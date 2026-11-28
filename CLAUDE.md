@@ -162,6 +162,13 @@ composer nats:stop               # stop NATS
   adds `numDelivered - 1` to the retry count a message carries. With `nak` the builder refuses a positive
   `nak_delay` and `backoff`, and in nats mode it refuses any `retry_via`. See
   [docs/symfony_retry_via.md](docs/symfony_retry_via.md).
+- **`retry_via: nak` follows the consumer's own `max_deliver` (5.9.1).** The last delivery, whose retry goes out as a
+  copy, is the last one the limit the server enforces allows, not the option's: another configuration's `setup()`, or
+  an option raised without one, leaves the two apart. `consumersMaxDeliver()` asks for the consumer at the first retry
+  that needs it and again once the answer is a minute old (`CONSUMER_MAX_DELIVER_TTL`), follows a limit that is not
+  the option's and logs that once. For a user who may not ask for consumer info the last value read, or the option,
+  decides, logged once, and the consumer is not asked again on that connection. What any other failure of the read
+  does is in the method's docblock.
 - **A message that cannot be decoded is handled as Symfony's own transports handle it** (Doctrine, Redis, AMQP):
   only a `MessageDecodingFailedException` counts. From Symfony Messenger 8.1 on it becomes a
   `MessageDecodingFailedException` message (`decodingFailure()`, made through reflection so that PHPStan passes
@@ -180,6 +187,12 @@ composer nats:stop               # stop NATS
   failure-transport copy. JetStream deduplicates per stream, whatever the subject.
 - **Serializers strip non-sendable stamps** (`NonSendableStampInterface`, such as the worker's `AckStamp`,
   which holds a closure) before encoding, as Symfony's own serializers do.
+- **`scheduled_messages` on a stream with interest retention (5.9.1).** NATS stores nothing published to a subject no
+  consumer's filter matches on such a stream, so every delayed message, Symfony's delayed retries included, would be
+  lost with its publish acknowledged. `setup()`, before it writes the stream, and a worker, before its first pull,
+  refuse the option there unless a consumer's filter covers `{topic}.delayed.<uuid>`
+  (`assertTheStreamKeepsDelayedMessages()`); a process that only publishes is not checked, and a stream or consumer
+  list the user may not read is logged once and let through.
 - **Scheduled messages:** only when `scheduled_messages=true` does a `DelayStamp` route to
   `{topic}.delayed.{uuid}` with `Nats-Schedule` headers; otherwise the delay is ignored. A server before 2.12
   ignores the stream setting without rejecting it, so `setup()` and the send of a delayed message read the
@@ -197,7 +210,8 @@ composer nats:stop               # stop NATS
 
 - `docs/TESTS.md` - update whenever tests are added, removed, or renamed (feature → test map).
 - `docs/CHANGELOG.md` - Keep a Changelog format; add items under `## [Unreleased]` as you go.
-- `docs/PRs/` - when a PR is merged or adapted, add `PR-NNN-short-description.md`.
+- `docs/PRs/` - when a contributor's PR is merged or adapted, add `PR-NNN-short-description.md` (not for the
+  maintainers' own PRs or dependency updates).
 - `docs/symfony_retry_via.md` - the reference for `retry_via`: update it when a retry path changes, or when a
   measurement of the server's behaviour does.
 - Keep README "Tested by:" references pointing at real test method names.
