@@ -67,8 +67,10 @@ $results = [];
 foreach (['symfony', 'nats'] as $retryHandler) {
     $stream = exampleStream('handler_failover_' . $retryHandler);
     // ack_wait 30 s: a NAK or retry copy lost on the way would bring the message back only after it, past the
-    // worker's time limit.
-    $query = 'stream_replicas=3&retry_handler=' . $retryHandler . '&nak_delay=1&ack_wait=30';
+    // worker's time limit. nak_delay is in nats mode only: with retry_handler: symfony it has no effect, and now
+    // logs a warning (#117).
+    $nakDelay = $retryHandler === 'nats' ? '&nak_delay=1' : '';
+    $query = 'stream_replicas=3&retry_handler=' . $retryHandler . $nakDelay . '&ack_wait=30';
 
     // messenger:setup-transports, through any server of the cluster.
     $setup = new NatsTransport(clusterDsn('nats_cluster_1', $stream, $query), [], new PhpSerializer());
