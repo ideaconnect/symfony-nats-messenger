@@ -1470,6 +1470,128 @@ final class NatsTransportTest extends TestCase
         $transport->keepalive(new Envelope(new \stdClass()));
     }
 
+    /**
+     * Pins what Symfony's Worker asks this transport to keep alive, release by release, so this test fails
+     * together with the README's "Long-Running Handlers" sentence when a later Messenger changes what a
+     * keepalive covers. From Messenger 8.1.12 on (8.2 included) the Worker reads the whole pull before it
+     * handles the first message, so a keepalive sent while the first of two messages is handled also covers
+     * the second, which still waits for its turn; before 8.1.12, it covers only the message being handled. A
+     * keepalive sent while the second message is handled covers that message alone on every release, since by
+     * then the first has already been acknowledged and dropped from the Worker's own bookkeeping. Through
+     * Symfony's Worker, with `batching: 2`, a pull of two (any later pull returns none), and a handler that
+     * calls `$worker->keepalive(null)` once per run.
+     */
+    public function testKeepaliveThroughTheWorkerCoversTheWholePullFromMessenger8112On(): void
+    {
+        $firstDelivery = '$JS.ACK.test-stream.client.1.1.1.0.0';
+        $secondDelivery = '$JS.ACK.test-stream.client.2.1.2.0.0';
+
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $pulled = false;
+        $jetStream->method('fetchBatch')->willReturnCallback(static function () use (&$pulled, $firstDelivery, $secondDelivery): Future {
+            if ($pulled) {
+                return Future::complete([]);
+            }
+            $pulled = true;
+
+            return Future::complete([
+                new NatsMessage(subject: 'test-topic', sid: 1, replyTo: $firstDelivery, payload: 'p'),
+                new NatsMessage(subject: 'test-topic', sid: 2, replyTo: $secondDelivery, payload: 'p'),
+            ]);
+        });
+
+        $handlerRun = 0;
+        $inProgressByRun = [];
+        $jetStream->method('inProgress')->willReturnCallback(static function (NatsMessage $message) use (&$inProgressByRun, &$handlerRun): Future {
+            $inProgressByRun[$handlerRun][] = $message->replyTo;
+
+            return Future::complete();
+        });
+
+        $settled = [];
+        foreach (['ack', 'ackSync', 'nak', 'nakWithDelay', 'term'] as $method) {
+            $jetStream->method($method)->willReturnCallback(static function (NatsMessage $message) use (&$settled, $method): Future {
+                $settled[] = [$method, $message->replyTo];
+
+                return Future::complete();
+            });
+        }
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['batching' => 2], $this->decodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+
+        $worker = null;
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function () use (&$worker, &$handlerRun): void {
+                ++$handlerRun;
+                $worker->keepalive(null);
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(2));
+
+        $worker = new Worker(['async' => $transport], $bus, $dispatcher);
+        $worker->run(['sleep' => 0]);
+
+        self::assertSame([
+            1 => self::workerReadsTheWholePullFirst() ? [$firstDelivery, $secondDelivery] : [$firstDelivery],
+            2 => [$secondDelivery],
+        ], $inProgressByRun);
+        self::assertSame([
+            ['ack', $firstDelivery],
+            ['ack', $secondDelivery],
+        ], $settled);
+    }
+
+    /**
+     * A worker that stops while messages of a pull still wait handles and settles only the one it has: NATS
+     * redelivers the rest after their own ack_wait runs out, counted against max_deliver, and neither the
+     * transport's keepalive nor any other settlement touches them, even once the Worker itself is asked to
+     * keep its messages alive after run() has already returned. Through Symfony's Worker, with `batching: 3`,
+     * a pull of three, `StopWorkerOnMessageLimitListener(1)`, and a handler that only counts its own runs.
+     */
+    public function testTheWorkerStoppingInsideAPullSettlesNothingForTheRestOfIt(): void
+    {
+        $firstDelivery = '$JS.ACK.test-stream.client.1.1.1.0.0';
+        $secondDelivery = '$JS.ACK.test-stream.client.2.1.2.0.0';
+        $thirdDelivery = '$JS.ACK.test-stream.client.3.1.3.0.0';
+
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([
+            new NatsMessage(subject: 'test-topic', sid: 1, replyTo: $firstDelivery, payload: 'p'),
+            new NatsMessage(subject: 'test-topic', sid: 2, replyTo: $secondDelivery, payload: 'p'),
+            new NatsMessage(subject: 'test-topic', sid: 3, replyTo: $thirdDelivery, payload: 'p'),
+        ]));
+
+        $calls = [];
+        foreach (['inProgress', 'ack', 'ackSync', 'nak', 'nakWithDelay', 'term'] as $method) {
+            $jetStream->method($method)->willReturnCallback(static function (NatsMessage $message) use (&$calls, $method): Future {
+                $calls[] = [$method, $message->replyTo];
+
+                return Future::complete();
+            });
+        }
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['batching' => 3], $this->decodingSerializer());
+        $transport->setJetStreamContext($jetStream);
+
+        $handlerRuns = 0;
+        $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
+            \stdClass::class => [static function () use (&$handlerRuns): void {
+                ++$handlerRuns;
+            }],
+        ]))]);
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new StopWorkerOnMessageLimitListener(1));
+
+        $worker = new Worker(['async' => $transport], $bus, $dispatcher);
+        $worker->run(['sleep' => 0]);
+        $worker->keepalive(null);
+
+        self::assertSame(1, $handlerRuns);
+        self::assertSame([['ack', $firstDelivery]], $calls);
+    }
+
     public function testAckUsesAckSyncWhenEnabled(): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
