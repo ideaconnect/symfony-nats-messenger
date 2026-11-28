@@ -3216,6 +3216,7 @@ final class NatsTransportTest extends TestCase
 
         $first->send($retry);
         $second->send($retry->with(new TransportMessageIdStamp('delivery-1')));
+        self::assertCount(2, $logger->messagesAt('warning'));
         $first->send($retry->with(new TransportMessageIdStamp('delivery-2')));
         $second->send($retry->with(new RedeliveryStamp(2)));
 
