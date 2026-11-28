@@ -137,6 +137,9 @@ final class SubscriptionLimitNatsServer implements TransportInterface
     /** The needle of the write the server answers with the limit -ERR before it closes the connection. */
     private ?string $closeOn = null;
 
+    /** The -ERR that write is answered with. */
+    private string $closeOnError = self::LIMIT_ERR;
+
     /** @var DeferredFuture<null>|null Completed once the server closed the connection behind the -ERR. */
     private ?DeferredFuture $serverClose = null;
 
@@ -188,7 +191,7 @@ final class SubscriptionLimitNatsServer implements TransportInterface
             foreach ($frames as $frame) {
                 $this->record($frame['op'], $frame['args'][0] ?? '');
             }
-            $this->send(self::LIMIT_ERR);
+            $this->send($this->closeOnError);
             $serverClose = $this->serverClose;
             EventLoop::delay(0.02, function () use ($serverClose): void {
                 $this->endSession();
@@ -313,7 +316,17 @@ final class SubscriptionLimitNatsServer implements TransportInterface
      */
     public function limitErrorAndCloseOnNextWriteContaining(string $needle): void
     {
+        $this->errorAndCloseOnNextWriteContaining($needle, self::LIMIT_ERR);
+    }
+
+    /**
+     * The same with another -ERR, such as "-ERR 'User Authentication Expired'", which nats-server sends at the expiry of
+     * the JWT a connection logged in with before it closes the connection. One-shot.
+     */
+    public function errorAndCloseOnNextWriteContaining(string $needle, string $error): void
+    {
         $this->closeOn = $needle;
+        $this->closeOnError = $error;
         $this->serverClose = new DeferredFuture();
     }
 

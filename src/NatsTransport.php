@@ -800,6 +800,9 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * instead, in either mode ({@see pullEndedByTheServer()}). So is a 503 from a server that is going
      * away, in a graceful stop or lame duck mode, which the client's diagnosis of the 503 tells from a
      * missing consumer ({@see pullMetAServerGoingAway()}, #106).
+     * With creds_file, a pull the server ended at the expiry of the JWT the connection logged in with
+     * (`User Authentication Expired`) is an empty batch too while the file holds a JWT that has not expired, which the
+     * next connection logs in with ({@see pullEndedByAnExpiryTheFileRenewed()}).
      *
      * A pull the server refuses because the connection is at its subscription limit fails with a
      * TransportException that names the stream, the consumer and the limit ({@see fetchBatchMessages()}).
@@ -832,6 +835,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
             if ($messages === null) {
                 return [];
             }
+        } catch (ConnectionException $exception) {
+            if (!$this->pullEndedByAnExpiryTheFileRenewed($exception)) {
+                throw $exception;
+            }
+
+            return [];
         }
 
         foreach ($messages as $message) {
@@ -1599,6 +1608,41 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
         }
 
         return $cause === NoRespondersCause::ServerGoingAway;
+    }
+
+    /**
+     * Whether a pull failed because the server ended the connection at the expiry of the JWT it logged in with, while the
+     * creds_file holds a JWT that has not expired.
+     *
+     * At the expiry of a user's JWT nats-server sends `-ERR 'User Authentication Expired'` and closes the connection. The
+     * pull in flight fails with that frame's error, or with reconnect off as `Reconnect is disabled` with the frame's
+     * error as its previous one, and a running worker stops on it, though the next connection reads the file again and
+     * logs in with the JWT it holds now ({@see Options\CredentialsFile}). So while that JWT has not expired the pull is an
+     * empty batch. The next operation checks the connection first, as the failed pull armed that check
+     * ({@see awaitOnConnection()}): without reconnect the client is closed and the transport dials again, with it the
+     * client has recovered or is recovering on its own.
+     *
+     * Only with creds_file: a jwt option is fixed for the life of the transport, and stopping with the server's error
+     * is the clearer outcome there. Only for the user's JWT: a new user JWT cannot cure `Account Authentication Expired`.
+     * And only while the file's JWT has not expired, so that a file nobody renewed stops the worker with the server's
+     * reason rather than with a bare `Authorization Violation` at the next connect. A connection lost without that
+     * frame, such as `Reconnect is disabled` over a broken pipe, stays a lost connection. The text is matched, as
+     * {@see pullEndedByTheServer()} matches it: the client's own classifier is internal.
+     */
+    private function pullEndedByAnExpiryTheFileRenewed(ConnectionException $exception): bool
+    {
+        $credentialsFile = $this->configuration->credentialsFile();
+        if ($credentialsFile === null) {
+            return false;
+        }
+
+        for ($cause = $exception; $cause !== null; $cause = $cause->getPrevious()) {
+            if (stripos($cause->getMessage(), 'User Authentication Expired') !== false) {
+                return $credentialsFile->holdsAnUnexpiredJwt();
+            }
+        }
+
+        return false;
     }
 
     /**

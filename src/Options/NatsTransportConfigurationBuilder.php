@@ -103,6 +103,7 @@ final class NatsTransportConfigurationBuilder
         TransportOption::JWT->value => null,
         TransportOption::NKEY->value => null,
         TransportOption::NKEY_SEED->value => null,
+        TransportOption::CREDS_FILE->value => null,
         TransportOption::USERNAME->value => null,
         TransportOption::PASSWORD->value => null,
     ];
@@ -152,6 +153,7 @@ final class NatsTransportConfigurationBuilder
         $username = $this->resolveCredential($components, $configuration, TransportOption::USERNAME, 'user');
         $password = $this->resolveCredential($components, $configuration, TransportOption::PASSWORD, 'pass');
         $this->assertSeedStandsAlone($nkeySigner, $username, $password, $token);
+        $credentialsFile = $this->resolveCredentialsFile($configuration, $nkeySigner, $username, $password, $token);
 
         $client = new NatsClient(new NatsOptions(
             ...$reconnectArguments,
@@ -177,7 +179,9 @@ final class NatsTransportConfigurationBuilder
             password: $password,
             jwt: $this->resolveJwt($configuration, $nkeySigner),
             nkey: $this->resolveNkey($configuration, $nkeySigner),
-            nonceSigner: $nkeySigner,
+            // With creds_file the client asks the file for the JWT on every connect, and signs with the seed of that read.
+            nonceSigner: $credentialsFile ?? $nkeySigner,
+            jwtProvider: $credentialsFile === null ? null : $credentialsFile->jwt(...),
             logger: $logger,
         ));
 
@@ -191,6 +195,7 @@ final class NatsTransportConfigurationBuilder
             ackSyncEnabled: $this->toBool($configuration[TransportOption::ACK_SYNC->value]),
             deduplicationEnabled: $this->toBool($configuration[TransportOption::DEDUPLICATE->value]),
             autoSetupEnabled: $this->toBool($configuration[TransportOption::AUTO_SETUP->value]),
+            credentialsFile: $credentialsFile,
         );
     }
 
@@ -1139,6 +1144,56 @@ final class NatsTransportConfigurationBuilder
                 . 'or remove the seed.'
             );
         }
+    }
+
+    /**
+     * The .creds file the creds_file option names, read on every connect for the JWT and the seed that signs the server's
+     * nonce ({@see CredentialsFile}).
+     *
+     * Only null means no file. Any other value that is not a path is refused, an empty one included, as for nkey_seed:
+     * %env(default::NATS_CREDS_FILE)% gives null for an optional file. The file is checked as a connect reads it, so that
+     * a path that can never log in fails when the transport is built, and nothing of what was read is kept. A file
+     * replaced later is read again at the next connect.
+     *
+     * The file holds the whole login, so no other credential may come with it, from the DSN or the options: a jwt, nkey
+     * or nkey_seed would contradict it, and a username, password or token would go to the server next to the JWT.
+     *
+     * @param array<string, mixed> $configuration Merged option map
+     *
+     * @throws InvalidArgumentException When the value is not a path, comes with another credential, or the file cannot be
+     *                                  used.
+     */
+    private function resolveCredentialsFile(
+        #[\SensitiveParameter] array $configuration,
+        #[\SensitiveParameter] ?NkeySeedSigner $signer,
+        #[\SensitiveParameter] ?string $username,
+        #[\SensitiveParameter] ?string $password,
+        #[\SensitiveParameter] ?string $token,
+    ): ?CredentialsFile {
+        $path = $configuration[TransportOption::CREDS_FILE->value];
+        if ($path === null) {
+            return null;
+        }
+
+        if (!is_string($path) || trim($path) === '') {
+            throw new InvalidArgumentException(
+                'The creds_file option must be the path of a .creds file, or null for no file. For an optional file from an '
+                . 'environment variable use the default processor, as in %env(default::NATS_CREDS_FILE)%.'
+            );
+        }
+
+        $others = $signer !== null || $username !== null || $password !== null || $token !== null
+            || $this->toNullableString($configuration[TransportOption::JWT->value]) !== null
+            || $this->toNullableString($configuration[TransportOption::NKEY->value]) !== null;
+        if ($others) {
+            throw new InvalidArgumentException(
+                'The creds_file option cannot be combined with jwt, nkey, nkey_seed, a username, a password or a token, from '
+                . 'the DSN or the options: the file holds the user\'s JWT and seed, and the transport logs in with those '
+                . 'alone. Remove the others, or remove creds_file.'
+            );
+        }
+
+        return CredentialsFile::checkedAt($path);
     }
 
     /**

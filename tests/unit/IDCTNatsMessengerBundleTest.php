@@ -10,12 +10,14 @@ use IDCT\NatsMessenger\NatsTransport;
 use Psr\Log\LoggerInterface;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
+use IDCT\NatsMessenger\Options\CredentialsFile;
 use IDCT\NATS\Auth\NkeySeedSigner;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NatsMessenger\NatsTransportFactory;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Tests\Support\MessengerTestKernel;
 use IDCT\NatsMessenger\Tests\Support\SignedMessage;
+use IDCT\NatsMessenger\Tests\Support\TestCredsFiles;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use IDCT\NatsMessenger\Tests\Support\TransportFactoryUser;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -53,6 +55,9 @@ final class IDCTNatsMessengerBundleTest extends TestCase
 
     /** The environment variable the test of the README's jwt form sets. */
     private const JWT_VARIABLE = 'NATS_MESSENGER_TEST_USER_JWT';
+
+    /** The environment variable the test of the README's creds_file form sets. */
+    private const CREDS_FILE_VARIABLE = 'NATS_MESSENGER_TEST_CREDS_FILE';
 
     /** Makes SignedMessage a message type Messenger signs, as `sign: true` on a handler does. */
     private const SIGNED_MESSAGE_HANDLER = <<<'YAML'
@@ -443,6 +448,35 @@ final class IDCTNatsMessengerBundleTest extends TestCase
 
         $this->assertSame('a.user.jwt', $options->jwt);
         $this->assertInstanceOf(NkeySeedSigner::class, $options->nonceSigner);
+    }
+
+    /**
+     * The README's form for a .creds file: a path from a variable. The client gets a provider that reads the JWT from the
+     * file on every connect, and the file as its signer, and no static JWT.
+     */
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function theReadmesCredsFileFormGivesTheClientAProviderAndASignerAndNoStaticJwt(): void
+    {
+        $kernel = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => ['dsn' => self::NATS_DSN, 'options' => ['creds_file' => '%env(' . self::CREDS_FILE_VARIABLE . ')%']]]],
+        );
+
+        $files = new TestCredsFiles();
+        $_ENV[self::CREDS_FILE_VARIABLE] = $files->write();
+
+        try {
+            $options = self::clientOptionsOf($kernel->testContainer()->get('messenger.transport.nats'));
+            $this->assertNotNull($options->jwtProvider);
+            $this->assertSame(TestCredsFiles::jwt(), ($options->jwtProvider)());
+        } finally {
+            unset($_ENV[self::CREDS_FILE_VARIABLE]);
+            $files->remove();
+        }
+
+        $this->assertNull($options->jwt);
+        $this->assertInstanceOf(CredentialsFile::class, $options->nonceSigner);
     }
 
     /**

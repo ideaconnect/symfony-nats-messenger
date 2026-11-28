@@ -33,6 +33,7 @@ final readonly class NatsTransportConfiguration
      * @param bool                 $ackSyncEnabled          True when acknowledgements should wait for server confirmation (double-ack)
      * @param bool                 $autoSetupEnabled        True when the transport should provision the stream/consumer on first use
      * @param bool                 $deduplicationEnabled    True when every published message gets an id JetStream deduplicates it by
+     * @param CredentialsFile|null $credentialsFile         The .creds file the client reads the JWT and the seed from on every connect, or null
      */
     public function __construct(
         public string $topic,
@@ -44,7 +45,19 @@ final readonly class NatsTransportConfiguration
         private bool $ackSyncEnabled = false,
         private bool $autoSetupEnabled = false,
         private bool $deduplicationEnabled = false,
+        private ?CredentialsFile $credentialsFile = null,
     ) {
+    }
+
+    /**
+     * Returns the .creds file of the creds_file option, which the client reads on every connect, or null without one.
+     *
+     * {@see \IDCT\NatsMessenger\NatsTransport::get()} asks it whether the JWT the file holds now has not expired, when the
+     * server ended a connection at the expiry of the JWT it logged in with.
+     */
+    public function credentialsFile(): ?CredentialsFile
+    {
+        return $this->credentialsFile;
     }
 
     /**

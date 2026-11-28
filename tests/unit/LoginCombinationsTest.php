@@ -9,6 +9,7 @@ use IDCT\NATS\Core\NatsClient;
 use IDCT\NATS\Exception\NatsException;
 use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NatsMessenger\Tests\Support\SubscriptionLimitNatsServer;
+use IDCT\NatsMessenger\Tests\Support\TestCredsFiles;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -34,10 +35,13 @@ final class LoginCombinationsTest extends TestCase
     private const USERNAME = 'admin';
     private const PASSWORD = 'a-password';
 
+    /** The user of the .creds file, whose key is not the one of the nkey_seed option. */
+    private const CREDS_FILE_USER = 'creds-file-user';
+
     /**
-     * Every combination of the five ways to give credentials, the 32 of them, with what should become of it.
+     * Every combination of the six ways to give credentials, the 64 of them, with what should become of it.
      *
-     * @return iterable<string, array{bool, bool, bool, bool, bool}>
+     * @return iterable<string, array{bool, bool, bool, bool, bool, bool}>
      */
     public static function everyCombination(): iterable
     {
@@ -46,9 +50,11 @@ final class LoginCombinationsTest extends TestCase
                 foreach ([false, true] as $jwt) {
                     foreach ([false, true] as $nkey) {
                         foreach ([false, true] as $seed) {
-                            $names = array_keys(array_filter(['user in the DSN' => $userInTheDsn, 'token' => $token, 'jwt' => $jwt, 'nkey' => $nkey, 'seed' => $seed]));
+                            foreach ([false, true] as $credsFile) {
+                                $names = array_keys(array_filter(['user in the DSN' => $userInTheDsn, 'token' => $token, 'jwt' => $jwt, 'nkey' => $nkey, 'seed' => $seed, 'creds_file' => $credsFile]));
 
-                            yield $names === [] ? 'no credentials' : implode(', ', $names) => [$userInTheDsn, $token, $jwt, $nkey, $seed];
+                                yield $names === [] ? 'no credentials' : implode(', ', $names) => [$userInTheDsn, $token, $jwt, $nkey, $seed, $credsFile];
+                            }
                         }
                     }
                 }
@@ -56,8 +62,22 @@ final class LoginCombinationsTest extends TestCase
         }
     }
 
+    /**
+     * The .creds file is written for each test, of a user of its own, so that its JWT and key cannot be mistaken for
+     * the jwt and nkey_seed options.
+     */
     #[DataProvider('everyCombination')]
-    public function testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect(bool $userInTheDsn, bool $token, bool $jwt, bool $nkey, bool $seed): void
+    public function testCredentialsAreRefusedWhenBuiltOrReachTheServerInTheConnect(bool $userInTheDsn, bool $token, bool $jwt, bool $nkey, bool $seed, bool $credsFile): void
+    {
+        $files = new TestCredsFiles();
+        try {
+            $this->assertRefusedWhenBuiltOrSentInTheConnect($userInTheDsn, $token, $jwt, $nkey, $seed, $credsFile ? $files->write('user.creds', self::CREDS_FILE_USER) : null);
+        } finally {
+            $files->remove();
+        }
+    }
+
+    private function assertRefusedWhenBuiltOrSentInTheConnect(bool $userInTheDsn, bool $token, bool $jwt, bool $nkey, bool $seed, ?string $credsFile): void
     {
         $dsn = sprintf('nats://%slocalhost:4222/test-stream/test-topic', $userInTheDsn ? self::USERNAME . ':' . self::PASSWORD . '@' : '');
         $options = array_filter([
@@ -65,11 +85,15 @@ final class LoginCombinationsTest extends TestCase
             'jwt' => $jwt ? self::JWT : null,
             'nkey' => $nkey ? TestNkeys::publicKey() : null,
             'nkey_seed' => $seed ? TestNkeys::seed() : null,
+            'creds_file' => $credsFile,
         ]);
 
         $needsASeed = $jwt || $nkey;
         $excludesASeed = $userInTheDsn || $token;
-        if ($seed ? $excludesASeed : $needsASeed) {
+        $refused = $credsFile !== null
+            ? $userInTheDsn || $token || $jwt || $nkey || $seed
+            : ($seed ? $excludesASeed : $needsASeed);
+        if ($refused) {
             $this->expectException(InvalidArgumentException::class);
             (new NatsTransportConfigurationBuilder())->build($dsn, $options);
 
@@ -81,10 +105,10 @@ final class LoginCombinationsTest extends TestCase
         self::assertSame($userInTheDsn ? self::USERNAME : null, $connect['user'] ?? null);
         self::assertSame($userInTheDsn ? self::PASSWORD : null, $connect['pass'] ?? null);
         self::assertSame($token ? self::TOKEN : null, $connect['auth_token'] ?? null);
-        self::assertSame($jwt ? self::JWT : null, $connect['jwt'] ?? null);
+        self::assertSame($credsFile !== null ? TestCredsFiles::jwt(self::CREDS_FILE_USER) : ($jwt ? self::JWT : null), $connect['jwt'] ?? null);
         self::assertSame($seed ? TestNkeys::publicKey() : null, $connect['nkey'] ?? null);
 
-        if (!$seed) {
+        if (!$seed && $credsFile === null) {
             self::assertArrayNotHasKey('sig', $connect);
 
             return;
@@ -95,7 +119,7 @@ final class LoginCombinationsTest extends TestCase
             sodium_crypto_sign_verify_detached(
                 sodium_base642bin($connect['sig'], SODIUM_BASE64_VARIANT_URLSAFE_NO_PADDING),
                 self::NONCE,
-                TestNkeys::rawPublicKey(),
+                TestNkeys::rawPublicKey($credsFile !== null ? self::CREDS_FILE_USER : 'test-user'),
             ),
             'The signature in the CONNECT does not verify against the public key of the seed.',
         );
