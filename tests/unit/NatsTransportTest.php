@@ -14,6 +14,7 @@ use IDCT\NATS\Exception\AuthenticationException;
 use IDCT\NATS\Exception\ConnectionException;
 use IDCT\NATS\Exception\JetStreamException;
 use IDCT\NATS\Exception\PermissionViolationException;
+use IDCT\NATS\Exception\ProtocolException;
 use IDCT\NATS\Exception\SubscriptionLimitException;
 use IDCT\NATS\Exception\TimeoutException;
 use IDCT\NATS\Exception\UnsupportedFeatureException;
@@ -10344,14 +10345,27 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
-     * Only the client's failures of the connection and its timeouts join the JetStream errors that leave the option to
-     * decide: any other exception of the read, here a LogicException, still leaves the send of the retry, and nothing
-     * is published.
+     * A read of the consumer that fails neither on the connection nor by a timeout: an exception that is not the
+     * client's, and the client's own protocol error, which a catch of NatsException or NatsThrowable would take.
+     *
+     * @return iterable<string, array{\Throwable}>
      */
-    public function testAConsumerReadThatFailsOtherwisePropagatesFromTheSendOfTheRetry(): void
+    public static function consumerReadsThatFailOtherwise(): iterable
+    {
+        yield 'an exception that is not the client\'s' => [new \LogicException('not a failure of the read')];
+        yield 'the client\'s protocol error' => [new ProtocolException('unexpected frame')];
+    }
+
+    /**
+     * Only the client's failures of the connection and its timeouts join the JetStream errors that leave the option to
+     * decide: any other exception of the read, here a LogicException or the client's ProtocolException, still leaves
+     * the send of the retry, and nothing is published.
+     */
+    #[DataProvider('consumerReadsThatFailOtherwise')]
+    public function testAConsumerReadThatFailsOtherwisePropagatesFromTheSendOfTheRetry(\Throwable $other): void
     {
         $jetStream = $this->createMock(JetStreamContext::class);
-        $jetStream->expects(self::once())->method('getConsumer')->willReturnCallback(static fn (): Future => Future::error(new \LogicException('not a failure of the read')));
+        $jetStream->expects(self::once())->method('getConsumer')->willReturnCallback(static fn (): Future => Future::error($other));
         $jetStream->expects(self::never())->method('publish');
         $jetStream->expects(self::never())->method('nakWithDelay');
         $logger = new RecordingLogger();
@@ -10363,8 +10377,8 @@ final class NatsTransportTest extends TestCase
         try {
             $transport->send($failed->with(new DelayStamp(1000), new RedeliveryStamp(2)));
             self::fail('the send of the retry should have failed with the read of the consumer');
-        } catch (\LogicException $thrown) {
-            self::assertSame('not a failure of the read', $thrown->getMessage());
+        } catch (\LogicException|ProtocolException $thrown) {
+            self::assertSame($other, $thrown);
         }
 
         self::assertSame([], array_values(array_filter($logger->messagesAt('warning'), static fn (string $message): bool => str_contains($message, 'could not be read'))));

@@ -118,14 +118,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The tests of #127, and row 23 of #123**: `testAConsumerReadThatFailsOnTheConnectionOrTimesOutLeavesTheOptionForThisRetryAndIsAskedAgain`
   and `testAConsumerReadThatFailsOnTheConnectionOrTimesOutLaterLeavesTheValueReadBefore` (data provider: a
   `TimeoutException`, a `ConnectionException`) replace `testAConsumerReadThatFailsOnTheConnectionPropagatesAndIsAskedAgain`,
-  and `testAConsumerReadThatFailsOtherwisePropagatesFromTheSendOfTheRetry` keeps a `LogicException` of the read
-  propagating. Each wrong shape of the fix turns one of them red, with the rest of the suite green: 5.10.1 itself and
-  the issue's option 3 (a stop unless a value read before equals the option) the first two, its option 2 (a stop
-  unless a value was read before) and a fallback that also stops asking on that connection the first, a fallback to
-  the option over the value read the second, and a catch of `\Throwable` the third. The Behat feature
-  `nats_retry_via_consumer_info.feature` runs the worker behind `tests/nats/consumer-info-proxy.php`, a PHP script
-  without a Composer package that forwards a connection byte for byte and drops only a client's `PUB` or `HPUB` to
-  `$JS.API.CONSUMER.INFO.`, and as a user of `tests/nats/nats.conf` who may not ask for consumer info
+  and `testAConsumerReadThatFailsOtherwisePropagatesFromTheSendOfTheRetry` (data provider: a `LogicException`, the
+  client's `ProtocolException`) keeps any other exception of the read propagating. Each wrong shape of the fix turns
+  one of them red, with the rest of the suite green: 5.10.1 itself and the issue's option 3 (a stop unless a value read
+  before equals the option) the first two, its option 2 (a stop unless a value was read before) and a fallback that
+  also stops asking on that connection the first, a fallback to the option over the value read the second, a catch of
+  `\Throwable` the third, and a catch of `NatsException` or `NatsThrowable` the third's `ProtocolException` row. The
+  Behat feature `nats_retry_via_consumer_info.feature` runs the worker behind `tests/nats/consumer-info-proxy.php`, a
+  PHP script without a Composer package that forwards a connection byte for byte and drops only a client's `PUB` or
+  `HPUB` to `$JS.API.CONSUMER.INFO.`, and as a user of `tests/nats/nats.conf` who may not ask for consumer info
   (`no_consumer_info`): 4 handler runs, 1 failure-transport copy and one warning in each, and the consumer exits with
   code 0. On 5.10.1 the first scenario fails: the consumer stops on a `TimeoutException` after the first run. The
   example `retry-via-nak-consumer-info.php` shows both, and the batch whose two messages behind the failing one are
