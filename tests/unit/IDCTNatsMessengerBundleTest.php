@@ -10,11 +10,14 @@ use IDCT\NatsMessenger\NatsTransport;
 use Psr\Log\LoggerInterface;
 use IDCT\NatsMessenger\Tests\Support\RecordingLogger;
 use IDCT\NatsMessenger\Options\NatsTransportConfiguration;
+use IDCT\NatsMessenger\Options\NatsTransportConfigurationBuilder;
 use IDCT\NATS\Auth\NkeySeedSigner;
+use IDCT\NATS\Auth\NonceSignerInterface;
 use IDCT\NATS\Connection\NatsOptions;
 use IDCT\NatsMessenger\NatsTransportFactory;
 use IDCT\NatsMessenger\Serializer\IgbinarySerializer;
 use IDCT\NatsMessenger\Tests\Support\MessengerTestKernel;
+use IDCT\NatsMessenger\Tests\Support\NonceSignerAutoconfiguringBundle;
 use IDCT\NatsMessenger\Tests\Support\RecordingNonceSigner;
 use IDCT\NatsMessenger\Tests\Support\SignedMessage;
 use IDCT\NatsMessenger\Tests\Support\TestNkeys;
@@ -26,6 +29,8 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use ReflectionObject;
 use ReflectionProperty;
+use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
+use Symfony\Component\DependencyInjection\Compiler\PassConfig;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\HttpKernel\Bundle\BundleInterface;
@@ -676,6 +681,68 @@ final class IDCTNatsMessengerBundleTest extends TestCase
     }
 
     /**
+     * An application that autoconfigures the client's NonceSignerInterface itself in its kernel's build(), with a tag of
+     * its own, for a client it uses beside the transport. Symfony runs every bundle's build(), then the kernel's, and
+     * loads the extensions after both, merging each into the application's container, where merge() refuses an
+     * interface that is autoconfigured already. The bundle registers the interface in its build(), so the kernel's call
+     * returns the same definition and the service gets both tags.
+     */
+    #[Test]
+    #[RequiresPhpExtension('sodium')]
+    public function anApplicationThatAutoconfiguresTheNonceSignerInterfaceItselfKeepsItsTagAndGetsTheBundles(): void
+    {
+        $tags = new class () implements CompilerPassInterface {
+            /** @var array<string, list<string>> The ids of the services with each tag, by tag */
+            public array $tagged = [];
+
+            public function process(ContainerBuilder $container): void
+            {
+                foreach (['app.nonce_signer', NatsTransportConfigurationBuilder::NONCE_SIGNER_TAG] as $tag) {
+                    $this->tagged[$tag] = array_keys($container->findTaggedServiceIds($tag));
+                }
+            }
+        };
+
+        $container = $this->kernel(
+            [new IDCTNatsMessengerBundle()],
+            ['transports' => ['nats' => self::transportWithTheNonceSigner('app.nonce_signer')]],
+            [self::nonceSignerService('app.nonce_signer')],
+            static function (ContainerBuilder $container) use ($tags): void {
+                $container->registerForAutoconfiguration(NonceSignerInterface::class)->addTag('app.nonce_signer');
+                $container->addCompilerPass($tags, PassConfig::TYPE_BEFORE_REMOVING);
+            },
+        )->testContainer();
+
+        $this->assertSame(
+            ['app.nonce_signer' => ['app.nonce_signer'], NatsTransportConfigurationBuilder::NONCE_SIGNER_TAG => ['app.nonce_signer']],
+            $tags->tagged,
+        );
+        $this->assertSame($container->get('app.nonce_signer'), self::clientOptionsOf($container->get('messenger.transport.nats'))->nonceSigner);
+    }
+
+    /**
+     * What is still refused: another bundle that autoconfigures the interface in its extension. Its extension is loaded
+     * into a container of its own and merged into the application's, where this bundle's build() registered the interface
+     * already. Before nonce_signer the bundle did not autoconfigure the interface, and such a bundle worked beside it.
+     */
+    #[Test]
+    public function anotherBundlesExtensionThatAutoconfiguresTheNonceSignerInterfaceIsRefusedWhenTheContainerIsBuilt(): void
+    {
+        $kernel = $this->kernel(
+            [new IDCTNatsMessengerBundle(), new NonceSignerAutoconfiguringBundle()],
+            ['transports' => ['nats' => self::NATS_DSN]],
+        );
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            '"IDCT\NATS\Auth\NonceSignerInterface" has already been autoconfigured and merge() does not support merging '
+            . 'autoconfiguration for the same class/interface.'
+        );
+
+        $kernel->testContainer();
+    }
+
+    /**
      * The factory is tagged for Monolog's `messenger` channel, as Messenger's own services are, so the client's lines
      * land next to the worker's in an application that uses MonologBundle.
      */
@@ -696,10 +763,11 @@ final class IDCTNatsMessengerBundleTest extends TestCase
      * @param list<BundleInterface> $bundles
      * @param array<string, mixed>  $messenger
      * @param list<string>          $files
+     * @param (\Closure(ContainerBuilder): void)|null $build What the application's kernel does in its own build()
      */
-    private function kernel(array $bundles, array $messenger, array $files = []): MessengerTestKernel
+    private function kernel(array $bundles, array $messenger, array $files = [], ?\Closure $build = null): MessengerTestKernel
     {
-        $kernel = new MessengerTestKernel($bundles, $messenger, $files);
+        $kernel = new MessengerTestKernel($bundles, $messenger, $files, $build);
         $this->kernels[] = $kernel;
 
         return $kernel;

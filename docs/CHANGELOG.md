@@ -61,7 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transport built without the locator, a service that does not implement the interface, and next to it an `nkey` that is
   not a user's public key. The message names the id when it looks like one and never repeats a value that may be a
   credential. An application's own entry for the factory replaces the bundle's and needs
-  `$nonceSigners: !tagged_locator idct_nats_messenger.nonce_signer` for this. `composer.json` now declares
+  `$nonceSigners: !tagged_locator idct_nats_messenger.nonce_signer` for this. The bundle registers the interface for
+  autoconfiguration in its `build()`, so an application that autoconfigures it in its kernel's `build()` keeps its own
+  tag next to the bundle's; another bundle that autoconfigures it in its extension makes the container fail to build, as
+  Symfony's `merge()` refuses an interface autoconfigured twice. `composer.json` now declares
   `psr/container` (`^1.1 || ^2.0`), which Symfony's DependencyInjection already installed. The example
   `external-signer.php` logs in with the seed in a second process; README "External Signer".
 - The refusals of `jwt` and `nkey` without a signer name both sources of one: "The jwt option needs a signer, from

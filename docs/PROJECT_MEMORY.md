@@ -276,7 +276,11 @@ apply only with the option on.
   `NonceSignerInterface`, so the seed stays out of PHP. The bundle autoconfigures the interface with the tag
   `idct_nats_messenger.nonce_signer` and gives the factory a `tagged_locator` of it (`$nonceSigners`, also the 5th argument
   of the transport and the 4th of `build()`); the id is looked up when the transport is built and the client gets the
-  service itself. The interface has only `sign()`, so next to it `nkey` names the user's public key and is passed on as
+  service itself. The autoconfiguration is registered in the bundle's `build()`, not in `loadExtension()`: an extension's
+  container is merged into the application's after the kernel's own `build()`, and `merge()` refuses an interface that is
+  autoconfigured on both sides, so in `loadExtension()` it broke an application that autoconfigures the interface itself.
+  Another bundle that does it in its extension is still refused there (`IDCTNatsMessengerBundleTest`). The interface
+  has only `sign()`, so next to it `nkey` names the user's public key and is passed on as
   it is (a user's key only), or is left out next to a `jwt`. Refused at build: no `nkey` and no `jwt`, a seed, user,
   password or token next to it, an unknown id, no locator, a service that is not a signer. An application's own factory
   entry replaces the bundle's and must pass the locator itself. Measured for the README with client 2.35.0: a signer has

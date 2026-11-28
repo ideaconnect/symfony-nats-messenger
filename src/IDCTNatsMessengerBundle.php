@@ -43,16 +43,27 @@ use function Symfony\Component\DependencyInjection\Loader\Configurator\tagged_lo
 final class IDCTNatsMessengerBundle extends AbstractBundle
 {
     /**
-     * @param array<array-key, mixed> $config
+     * Symfony runs every bundle's build(), then the kernel's, and loads the extensions after both, each into a
+     * container of its own that it then merges into the application's. merge() refuses an interface that is
+     * autoconfigured on both sides, so the bundle registers the signers' interface here, in the application's
+     * container: an application that autoconfigures it in its own build() gets the same definition, with both tags.
      */
-    public function loadExtension(array $config, ContainerConfigurator $configurator, ContainerBuilder $container): void
+    public function build(ContainerBuilder $container): void
     {
-        $services = $configurator->services();
+        parent::build($container);
 
         // A service of the application that signs the server's nonce, so that the seed stays out of this process, gets
         // the tag the factory's locator collects, and a transport names it by its id in nonce_signer.
         $container->registerForAutoconfiguration(NonceSignerInterface::class)
             ->addTag(NatsTransportConfigurationBuilder::NONCE_SIGNER_TAG);
+    }
+
+    /**
+     * @param array<array-key, mixed> $config
+     */
+    public function loadExtension(array $config, ContainerConfigurator $configurator, ContainerBuilder $container): void
+    {
+        $services = $configurator->services();
 
         // The application's logger, when it has one, goes to the NATS client of every transport, under Messenger's
         // channel: the connection's lifecycle at info level, its errors at error level. The transport warns through
