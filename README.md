@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1409 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1413 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -252,6 +252,12 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
   once every handler that failed has failed for good. An application without the bundle, or a worker built by
   hand, registers `AddUnrecoverableFailureStampListener` itself (see
   [Retry Handler Behavior](#retry-handler-behavior)). With the bundle there is nothing to do.
+- **With `retry_via: nak`, a read of the consumer that fails on the connection or gets no answer within
+  `request_timeout` no longer stops the worker** (#127): the value read before, or the `max_deliver` option, decides
+  that retry with one warning, as for a JetStream error, and the next retry asks again. Up to 5.10.1 the read's
+  exception left the send of the retry and stopped `messenger:consume`, which lost the last delivery `max_deliver`
+  allows. An alert that watches for a stopped worker sees that warning instead; there is nothing else to do (see
+  [Retrying through a NAK](#retrying-through-a-nak-retry_via-nak)).
 - **`setup()` keeps the metadata and the description of a durable consumer that exists** (#145): up to 5.10.1
   every `setup()` cleared both fields; there is nothing to do (see
   [Note on the consumer's metadata and description](#provisioning-the-stream--consumer)).
@@ -260,7 +266,7 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
   require it. The fetch size (`--fetch-size`, and `--concurrency` on Messenger 8.2) was never read and still is
   not: `batching` decides a pull's size (see [Batching Explained](#batching-explained)); there is nothing to do.
 
-> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testGetsFetchSizeParameterSilencesSymfonysDebugClassLoaderDeprecation`, `testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads`
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testGetsFetchSizeParameterSilencesSymfonysDebugClassLoaderDeprecation`, `testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads`, `testAConsumerReadThatFailsOnTheConnectionOrTimesOutLeavesTheOptionForThisRetryAndIsAskedAgain`, `testAConsumerReadThatFailsOnTheConnectionOrTimesOutLaterLeavesTheValueReadBefore`, `testAConsumerReadThatFailsOtherwisePropagatesFromTheSendOfTheRetry`, the Behat feature `nats_retry_via_consumer_info.feature`, the example `retry-via-nak-consumer-info.php`
 
 ### Logging
 
@@ -503,6 +509,7 @@ the test server and print `OK` when what they show held:
 | `retry-via-nak.php` | `retry_via: nak`: Symfony's retry strategy decides, and NATS redelivers the failed message after a NAK with Symfony's delay; a message Symfony gives up on is TERMed, with one copy in the failure transport |
 | `retry-via-nak-edge-cases.php` | `retry_via: nak` at its edges: a delivery nobody settled, a message that cannot be decoded, the `reject()` of older Symfony Messenger releases, a message published with a retry count, what the builder refuses, and a consumer whose `max_deliver` the option does not say |
 | `retry-via-nak-past-max-deliver.php` | `retry_via: nak` with a low `max_deliver`: the retry of the last delivery it allows goes out as a copy, so Symfony's strategy runs to its end |
+| `retry-via-nak-consumer-info.php` | `retry_via: nak` with a consumer that cannot be read: a read of its `max_deliver` that gets no answer, or that the server refuses, leaves the option to decide with one warning, and the worker carries on, a batch included |
 | `retry-via-nak-server-behaviour.php` | what the server does with a NAK retry it holds: a delay too long for it, a retry longer than `stream_max_age`, and a consumer with a `backoff` |
 | `retry-via-nak-across-a-restart.php` | a NAK retry that waits while the server restarts is still redelivered, once |
 | `retry-via-copy-or-nak.php` | the same failure under `retry_via: copy` and `nak`: a second consumer on the subject, `max_ack_pending: 1`, and a 0.3 s retry |
@@ -1140,8 +1147,12 @@ it below `stream_max_age`: a message that expires while it waits leaves the stre
   is unset, is followed and logged once as a warning. A user who may not ask for consumer info
   (`$JS.API.CONSUMER.INFO.<stream>.<consumer>`), whom the server refuses at once, leaves the option to decide, as up
   to 5.9.0, with one warning, and is not asked again on that connection. A JetStream error, such as a consumer that
-  does not exist, leaves the option to decide for that retry only. A read that fails on the connection, as during a
-  server restart, makes the send of the retry fail: the delivery comes back after `ack_wait` instead of a guess.
+  does not exist, a read that fails on the connection, as during a server restart, and one that gets no answer within
+  `request_timeout` leave the value read before, or the option when nothing was read, to decide for that retry only,
+  with one warning, and the next retry asks again. Up to 5.10.1 a read that failed on the connection or timed out made
+  the send of the retry fail and stopped the worker: NATS redelivers nothing after the last delivery `max_deliver`
+  allows, so that delivery was lost with no failure-transport copy, and with `batching` above 1 each stop also cost
+  the messages behind it in the batch a delivery without a handler run (measured on nats-server 2.15.3 and 2.10.29).
   Up to 5.9.0 the option always decided, and such a consumer lost the retry of its last delivery: with the option
   unset or at 5 on a consumer limited to 3, the message ran 3 times and was gone, with no failure-transport copy.
 - The builder refuses `retry_via` with `retry_handler: nats`, and with `nak` a positive `nak_delay` (the NAK
@@ -1163,7 +1174,7 @@ it below `stream_max_age`: a message that expires while it waits leaves the stre
 [docs/symfony_retry_via.md](docs/symfony_retry_via.md) is the reference: the terms, the three setups delivery by
 delivery, what the server does with a NAK, and what was measured.
 
-> **Tested by:** `testRetryViaIsCopyUnlessSetToNak`, `testBuildWithInvalidRetryViaThrowsException`, `testBuildRefusesRetryViaInNatsMode`, `testBuildRefusesAPositiveNakDelayWithNakRetries`, `testBuildRefusesBackoffWithNakRetries`, `testRetryViaCopyStillAcceptsNakDelayAndBackoff`, `testNakRetryNaksWithTheDelaySymfonyComputed`, `testNakRetryNaksPlainlyForADelayOfZero`, `testNakRetryNaksWithTheDelayOfARecoverableException`, `testNakRetryCutsADelayThatWouldOverflow`, `testNakRetryFollowsSymfonysRetryStrategyThroughTheWorker`, `testNakRetryTermsADeliverySymfonyDoesNotRetry`, `testNakRetryTermsAnUnrecoverableFailure`, `testFromMessenger81TheDecodingFailureOfARedeliveryCarriesItsRetryCount`, `testNakRetryPublishesTheCopyOfTheLastDeliveryMaxDeliverAllows`, `testNakRetryNaksADeliveryThatIsNotKnownToBeTheLast`, `testNakRetryRunsSymfonysStrategyToItsEndPastMaxDeliver`, `testNakRetryPublishesTheCopyOfTheConsumersLastDeliveryWhateverTheOptionSays`, `testNakRetryNaksADeliveryTheConsumerStillRedelivers`, `testTheConsumersMaxDeliverIsReadAgainOnceItIsAMinuteOld`, `testAConsumerThatCannotBeReadLeavesTheOptionAndIsNotAskedAgainOnThatConnection`, `testAConsumerUnreadableLaterLeavesTheValueReadBefore`, `testARetryAfterSetupAsksForTheConsumersLimitAgain`, `testGetGivesARedeliveredMessageItsEarlierDeliveriesAsRetryCount`, `testGetAddsTheEarlierDeliveriesToTheRetryCountTheMessageCarries`, the Behat feature `nats_retry_via.feature`, and the examples `retry-via-nak.php`, `retry-via-nak-edge-cases.php`, `retry-via-nak-past-max-deliver.php`, `retry-via-nak-server-behaviour.php`, `retry-via-nak-across-a-restart.php` and `retry-via-copy-or-nak.php`. CI's lowest leg runs them on a Symfony Messenger that rejects a retried message (7.4.0 in the unit tests, 7.4.21 in the functional test app), the PHP 8.5 leg on one that acknowledges it.
+> **Tested by:** `testRetryViaIsCopyUnlessSetToNak`, `testBuildWithInvalidRetryViaThrowsException`, `testBuildRefusesRetryViaInNatsMode`, `testBuildRefusesAPositiveNakDelayWithNakRetries`, `testBuildRefusesBackoffWithNakRetries`, `testRetryViaCopyStillAcceptsNakDelayAndBackoff`, `testNakRetryNaksWithTheDelaySymfonyComputed`, `testNakRetryNaksPlainlyForADelayOfZero`, `testNakRetryNaksWithTheDelayOfARecoverableException`, `testNakRetryCutsADelayThatWouldOverflow`, `testNakRetryFollowsSymfonysRetryStrategyThroughTheWorker`, `testNakRetryTermsADeliverySymfonyDoesNotRetry`, `testNakRetryTermsAnUnrecoverableFailure`, `testFromMessenger81TheDecodingFailureOfARedeliveryCarriesItsRetryCount`, `testNakRetryPublishesTheCopyOfTheLastDeliveryMaxDeliverAllows`, `testNakRetryNaksADeliveryThatIsNotKnownToBeTheLast`, `testNakRetryRunsSymfonysStrategyToItsEndPastMaxDeliver`, `testNakRetryPublishesTheCopyOfTheConsumersLastDeliveryWhateverTheOptionSays`, `testNakRetryNaksADeliveryTheConsumerStillRedelivers`, `testTheConsumersMaxDeliverIsReadAgainOnceItIsAMinuteOld`, `testAConsumerThatCannotBeReadLeavesTheOptionAndIsNotAskedAgainOnThatConnection`, `testAConsumerUnreadableLaterLeavesTheValueReadBefore`, `testARetryAfterSetupAsksForTheConsumersLimitAgain`, `testAConsumerReadThatFailsOnTheConnectionOrTimesOutLeavesTheOptionForThisRetryAndIsAskedAgain`, `testAConsumerReadThatFailsOnTheConnectionOrTimesOutLaterLeavesTheValueReadBefore`, `testAConsumerReadThatFailsOtherwisePropagatesFromTheSendOfTheRetry`, `testGetGivesARedeliveredMessageItsEarlierDeliveriesAsRetryCount`, `testGetAddsTheEarlierDeliveriesToTheRetryCountTheMessageCarries`, the Behat features `nats_retry_via.feature` and `nats_retry_via_consumer_info.feature`, and the examples `retry-via-nak.php`, `retry-via-nak-edge-cases.php`, `retry-via-nak-past-max-deliver.php`, `retry-via-nak-consumer-info.php`, `retry-via-nak-server-behaviour.php`, `retry-via-nak-across-a-restart.php` and `retry-via-copy-or-nak.php`. CI's lowest leg runs them on a Symfony Messenger that rejects a retried message (7.4.0 in the unit tests, 7.4.21 in the functional test app), the PHP 8.5 leg on one that acknowledges it.
 
 ### Long-Running Handlers (`--keepalive`)
 
