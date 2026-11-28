@@ -34,7 +34,7 @@ assertLoginWorks(NKEY_SERVER_PORT, exampleStream('nkey_login'), ['nkey_seed' => 
 // A valid seed, of a user this server does not list.
 assertLoginIsRefused(NKEY_SERVER_PORT, ['nkey_seed' => $credentials['unknown_user']['seed']]);
 
-assertRefusedWhenBuilt(NKEY_SERVER_PORT, ['nkey' => $user['public']], 'The nkey option needs nkey_seed');
+assertRefusedWhenBuilt(NKEY_SERVER_PORT, ['nkey' => $user['public']], 'The nkey option needs a signer');
 assertRefusedWhenBuilt(
     NKEY_SERVER_PORT,
     ['nkey_seed' => $user['seed'], 'username' => 'admin', 'password' => 'password'],

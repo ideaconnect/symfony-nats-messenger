@@ -22,6 +22,7 @@ behaviour still works. In an application the same DSN and options go under `fram
 | `connection-checks.php` | `ping_after_idle`, and a new dial once the connection is gone |
 | `jwt-login.php` | `jwt` with `nkey_seed` logs in as a user of a server in operator mode, for `setup()`, sending and receiving; the JWT with another user's seed and an expired JWT are refused by the server, and the JWT alone or a seed in the `jwt` option when the transport is built |
 | `nkey-login.php` | `nkey_seed` alone logs in as a user the server knows by its public key, for `setup()`, sending and receiving; a seed the server does not know is refused by the server, and the public key alone or a seed next to a password when the transport is built |
+| `external-signer.php` | `nonce_signer` with `nkey`: a signer that asks another process, which holds the seed, logs in as a user the server knows by its public key, for `setup()`, sending and receiving; a signing process with another user's seed is refused by the server, and a signer with neither `nkey` nor `jwt` or next to a seed when the transport is built |
 | `token-login.php` | `token` logs in to a server whose clients share one token, for `setup()`, sending and receiving; a wrong token is refused |
 | `reconnect.php` | `reconnect: true`: a worker polls through a restart of its server, the pull in flight ends empty (`409 Server Shutdown`), `auto_setup` recreates the memory stream the restart lost, and the client logs through the transport's logger (needs docker) |
 | `cluster-failover.php` | `reconnect: true` on a cluster: the server a worker is connected to stops, the client fails over to a server it learned from the cluster, and the worker receives everything (needs the cluster and docker) |
@@ -39,7 +40,8 @@ php examples/keepalive.php          # or one at a time
 `NATS_DSN` points the single-server examples at another server, as `nats-jetstream://[user:password@]host:port`.
 Each example works on a stream of its own and deletes it when done. `_bootstrap.php` holds what they share, and
 `_retry_via.php` what the `retry-via-*` examples share (Symfony's Worker with its retry and failure-transport
-listeners); neither is an example.
+listeners), and `_signing-service.php` is the process that holds the seed for `external-signer.php`; none is an
+example.
 
 ## The login examples
 
@@ -48,11 +50,13 @@ A login example needs a server that knows the credentials it shows, so `NATS_DSN
 | Example | Test server (and container) | Port |
 |---|---|---|
 | `nkey-login.php` | `nats_test` (`tests/nats/nats.conf`) | 4222 |
+| `external-signer.php` | `nats_test` (`tests/nats/nats.conf`) | 4222 |
 | `jwt-login.php` | `nats_test_jwt` (`tests/nats/nats-jwt.conf`, in operator mode) | 4229 |
 | `token-login.php` | `nats_test_token` (`tests/nats/nats-token.conf`) | 4230 |
 
-Each prints `SKIP` when its server is not running. `nkey-login.php` also prints `SKIP` when `NATS_DSN` is set, since it
-shares port 4222 with the server `NATS_DSN` replaces. `jwt-login.php` and `nkey-login.php` print `SKIP` as well when the
+Each prints `SKIP` when its server is not running. `nkey-login.php` and `external-signer.php` also print `SKIP` when
+`NATS_DSN` is set, since they share port 4222 with the server `NATS_DSN` replaces. `jwt-login.php`, `nkey-login.php`
+and `external-signer.php` print `SKIP` as well when the
 credentials are missing, which `composer nats:start` generates (`tests/nats/auth/README.md`). `EXAMPLES_STRICT=1` fails
 the run on any of these skips, as it does for the others.
 

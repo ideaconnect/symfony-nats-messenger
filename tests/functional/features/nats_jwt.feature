@@ -3,7 +3,8 @@ Feature: JWT authentication
   in operator mode, which has no list of users. It trusts an operator, and
   with it the accounts the operator signed. Verification: the stream is set
   up, and messages are sent and consumed over connections logged in that way,
-  with the values read from the environment too, with a bearer JWT and across
+  with the values read from the environment too, with a bearer JWT, with a
+  signer in another process that holds the seed (nonce_signer), and across
   a server restart. The server refuses a JWT with a seed that is not its
   user's, a seed with no JWT and an expired JWT, and an account without
   JetStream gets the server's own error from setup.
@@ -14,6 +15,18 @@ Feature: JWT authentication
   @jwt
   Scenario: Messages are sent and consumed by a user that logs in with a JWT and its seed
     Given I have a messenger transport on that server with the user's JWT and seed
+    And the NATS stream is set up
+    And the test files directory is clean
+    When I send 5 messages to the transport
+    Then the messenger stats should show 5 messages waiting
+    When I start a messenger consumer
+    And I wait for messages to be consumed
+    Then all 5 messages should be consumed
+
+  @jwt
+  Scenario: A worker without the seed logs in with its JWT and a signer that asks another process holding the seed
+    Given a signing service holds the seed of "jwt_user"
+    And I have a messenger transport on that server with the user's JWT and the signing service
     And the NATS stream is set up
     And the test files directory is clean
     When I send 5 messages to the transport
