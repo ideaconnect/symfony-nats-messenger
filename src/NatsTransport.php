@@ -1435,9 +1435,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface, S
      * done-flag is set only after {@see setup()} succeeds, so a transient provisioning failure is
      * retried on the next call rather than silently skipped.
      *
-     * A setup for a send does not warn about a nats-mode stream that loses what max_deliver stops: that warning is
-     * for the operator, who runs `messenger:setup-transports` or a worker, and a process that only sends sets the
-     * stream up once per transport object, which is once per request under PHP-FPM.
+     * A setup for a send does not warn about a nats-mode stream that loses what max_deliver stops, nor about a
+     * nak_delay without effect: those warnings are for the operator, who runs `messenger:setup-transports` or a
+     * worker, and a process that only sends sets the stream up once per transport object, which is once per request
+     * under PHP-FPM.
      */
     private function autoSetupIfEnabled(bool $toSend = false): void
     {

@@ -27,7 +27,7 @@ A Symfony Messenger transport integration for [NATS JetStream](https://docs.nats
   and TLS on a cluster (see [Using a NATS Cluster](#using-a-nats-cluster))
 - ↩️ **Retries by Symfony or by NATS** - Symfony's retry strategy carried out as a new message or as a NAK with
   Symfony's delay (`retry_via`), or NATS's own redelivery (see [Retry Handler Behavior](#retry-handler-behavior))
-- 🧪 **Thoroughly Tested** - 1423 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
+- 🧪 **Thoroughly Tested** - 1424 unit tests, ~99.8% coverage, mutation-tested (98.6% MSI)
 
 ## 🚀 This project looks for funding. Love my work? Support it! 💖
 
@@ -264,7 +264,7 @@ Nothing to change in the configuration unless a transport has `nkey` or `jwt` se
   transport TERMs a failed message while Symfony's own retry strategy times the retry, so it had no effect there.
   Nothing else changes: remove `nak_delay`, or use `retry_handler: nats`.
 
-> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testGetsFetchSizeParameterSilencesSymfonysDebugClassLoaderDeprecation`, `testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads`, `testGetWarnsOnceAboutANakDelayThatHasNoEffect`, `testSetupAloneWarnsOnceAboutANakDelayThatHasNoEffect`, `testSendNeverWarnsAboutANakDelayThatHasNoEffect`, `testNoNakDelayWarningFromGetSetupOrSend`
+> **Tested by:** `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker`, `theListenerOfHandlerFailuresIsRegisteredOnceAfterSymfonysCopies`, the Behat scenario `With two handlers, a mix of an unrecoverable failure and an ordinary one is NAKed in either order, and TERMed once the unrecoverable one is left` (`nats_nak.feature`), the example `nats-retry-several-handlers.php`, `testSetupSendsTheLiveConsumerMetadataBackWithTheServersEntries`, `testSetupSendsTheLiveConsumerDescriptionBack`, the Behat scenario `Setup again keeps the consumer metadata and the consumer description another client wrote` (`nats_consumer.feature`), `testGetsFetchSizeParameterSilencesSymfonysDebugClassLoaderDeprecation`, `testGetDeclaresNoRealParameterSoASubclassThatOverridesItStillLoads`, `testGetWarnsOnceAboutANakDelayThatHasNoEffect`, `testSetupAloneWarnsOnceAboutANakDelayThatHasNoEffect`, `testSendNeverWarnsAboutANakDelayThatHasNoEffect`, `testNoNakDelayWarningFromGetSetupOrSend`, `testNakDelayWarningGoesNowhereWithoutALoggerAndGetSetupAndSendStillRun`
 
 ### Logging
 
@@ -304,7 +304,7 @@ services:
         tags: [messenger.transport_factory]
 ```
 
-> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testGetWarnsOnceAboutANakDelayThatHasNoEffect`, `testSetupAloneWarnsOnceAboutANakDelayThatHasNoEffect`, `testSendNeverWarnsAboutANakDelayThatHasNoEffect`, `testNoNakDelayWarningFromGetSetupOrSend`, the examples `reconnect.php` and `cluster-failover.php`
+> **Tested by:** `testBuildPassesTheLoggerToTheClientAndNoneByDefault`, `createTransport_HandsTheFactorysLoggerToTheClient`, `theBundleHandsTheApplicationsLoggerToTheFactory`, `theFactoryIsTaggedForMonologsMessengerChannel`, `testAReconnectThatGivesUpWithABufferedAcknowledgementIsReportedToTheLoggerAndTheNextOperationFails`, `testNatsModeWarnsOnceThatSymfonysRetryStrategyIsOn`, `testGetWarnsOnceAboutANakDelayThatHasNoEffect`, `testSetupAloneWarnsOnceAboutANakDelayThatHasNoEffect`, `testSendNeverWarnsAboutANakDelayThatHasNoEffect`, `testNoNakDelayWarningFromGetSetupOrSend`, `testNakDelayWarningGoesNowhereWithoutALoggerAndGetSetupAndSendStillRun`, the examples `reconnect.php` and `cluster-failover.php`
 
 ### Development Setup
 

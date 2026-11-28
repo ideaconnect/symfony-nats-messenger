@@ -3305,6 +3305,31 @@ final class NatsTransportTest extends TestCase
     }
 
     /**
+     * Without a logger the warning goes nowhere, and get(), setup() and send() all still run (#117): like
+     * {@see testSetupInNatsModeWithoutALoggerStillSetsUpAStreamThatLosesWhatMaxDeliverStops()}, this is what a
+     * transport has without the bundle or without a logger service (README, "Logging").
+     */
+    public function testNakDelayWarningGoesNowhereWithoutALoggerAndGetSetupAndSendStillRun(): void
+    {
+        $jetStream = $this->createStub(JetStreamContext::class);
+        $jetStream->method('addStream')->willReturn(Future::complete(StreamInfo::fromArray(['config' => ['name' => 'test-stream', 'subjects' => ['test-topic']]])));
+        $jetStream->method('addConsumer')->willReturn(Future::complete($this->consumerInfo()));
+        $jetStream->method('publish')->willReturn(Future::complete());
+        $jetStream->method('fetchBatch')->willReturn(Future::complete([]));
+        $client = $this->createStub(NatsClient::class);
+        $client->method('state')->willReturn(ConnectionState::Open);
+        $client->method('serverInfo')->willReturn(new ServerInfo('S', 'n', '2.15.2', true, 1_048_576, true));
+
+        $transport = new RuntimeTestableNatsTransport(self::VALID_DSN, ['nak_delay' => 10, 'ping_after_idle' => 0], $this->encodingSerializer());
+        $transport->setClient($client);
+        $transport->setJetStreamContext($jetStream);
+
+        self::assertSame([], iterator_to_array($transport->get(), false));
+        $transport->setup();
+        $transport->send(new Envelope(new \stdClass()));
+    }
+
+    /**
      * The warnings logged about nak_delay specifically, filtering out any other warning the doubles might cause.
      *
      * @return list<string>
