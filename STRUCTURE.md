@@ -100,7 +100,7 @@ examples/                                       # Runnable scripts, one per beha
                                                 # stream-placement, delayed-messages, retry-via-nak, retry-via-nak-edge-cases,
                                                 # retry-via-nak-past-max-deliver, retry-via-nak-server-behaviour,
                                                 # retry-via-nak-across-a-restart, retry-via-copy-or-nak,
-                                                # nats-retry-several-handlers
+                                                # nats-retry-several-handlers, serializer-exception
 
 scripts/
 ├── run-examples.sh                             # runs examples/*.php, strict mode for CI
