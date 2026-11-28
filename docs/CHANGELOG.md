@@ -71,6 +71,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing & CI
 
+- **Two new unit tests pin what `--keepalive` and a stop inside a pull settle, through Symfony's Worker**
+  (#141): `testKeepaliveThroughTheWorkerCoversTheWholePullFromMessenger8112On` (`batching: 2`, a pull of two,
+  `StopWorkerOnMessageLimitListener(2)`, a handler that calls `$worker->keepalive(null)` once per run: from
+  Messenger 8.1.12 on, the first handler run's keepalive covers both deliveries, since the Worker reads the
+  whole pull first; before, it covers the one being handled. The second run's keepalive covers the second
+  delivery alone on every release) and `testTheWorkerStoppingInsideAPullSettlesNothingForTheRestOfIt`
+  (`batching: 3`, a pull of three, `StopWorkerOnMessageLimitListener(1)`: the first delivery is handled and
+  acknowledged, and the other two are neither acknowledged, rejected nor kept alive, even after one more
+  `$worker->keepalive(null)` once `run()` has returned, on every release). Run against Messenger 8.2.0 (the
+  default), and against 8.1.11 and 7.4.24 in a separate `composer update --with symfony/messenger:<version>`
+  copy of the tree; 7.4.24 is the one release where the two version helpers disagree, and no CI unit leg runs
+  it.
 - **Two handlers through Symfony's Worker** with its error-details and retry listeners and `max_retries: 0`:
   `testNatsModeSettlesAFailureOfTwoHandlersByEveryExceptionThroughTheWorker` NAKs the mix in both orders and TERMs two
   unrecoverable failures, and without the listener still TERMs the mix whose first exception is unrecoverable. The mix
@@ -143,6 +155,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- **README, "Long-Running Handlers" and "Batching Explained"**: from Messenger 8.1.12 on (8.2 included), a
+  keepalive covers the message being handled and the messages of the same pull that still wait for their
+  turn; before, the message being handled only. What `ack_wait` and `batching` must cover without
+  `--keepalive`, and what a worker that stops inside a pull leaves unsettled for NATS to redeliver (#141).
 - **README, "Losing the Connection"**: who calls `close()` (Symfony's Worker, each time it stops, at a normal stop
   and when an exception ends it, from Messenger 7.4.24 and 8.1.12 on; nothing in Symfony called it before those
   releases), and what an operator sees (the client's `info` line `NATS connection Closed`) (#140).
