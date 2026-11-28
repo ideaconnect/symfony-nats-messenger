@@ -653,9 +653,9 @@ mutation step fails.
 
 ### Surviving mutants
 
-Of the 25 mutants that survive:
+Of the 26 mutants that survive:
 
-- **20 are equivalent**: no input makes them behave differently.
+- **21 are equivalent**: no input makes them behave differently.
 - **2 make no difference with the real client**: its acknowledgement calls do not read the `sid` of the
   message `buildAckMessage()` gives them. A test could kill them only by asserting on the `sid` its client
   double receives, which would pin a detail rather than behaviour.
@@ -680,6 +680,7 @@ Of the 25 mutants that survive:
 | `requiredString()`: `&&` instead of `\|\|` | `parseDsn()` already requires a host, and `parse_url()` never gives an empty one |
 | `resolveNkeySigner()`: `\Error` removed from the catch, and `\|\|` for either `&&` of the condition on the seed advice (3 mutants) | Between them `testADisabledSodiumFunctionIsRefusedWhenTheTransportIsBuiltWithoutChainingTheError` and `testAFailureInsideSodiumIsRefusedWithoutSayingWhatASeedLooksLike` fail on each, but they run in a child process, which the mutant does not reach |
 | `raisedByTheDecoder()`: the walk out of the call stack stopped by the `deserializeOrFail()` of any serializer, not only this one's | The nearest `deserializeOrFail()` is that of the decode whose handler PHP calls. The handler of a decode further out runs only when that one hands it an error, and then the frame running is the other serializer's handler, which neither form takes for this serializer's code, while a parser call on the stack lies at the same depth or deeper, which neither takes for the decoder |
+| `IDCTNatsMessengerBundle::build()`: `parent::build()` removed | The `build()` of Symfony's `AbstractBundle` is empty, in HttpKernel 7.4 and in DependencyInjection 8.2; the call keeps whatever a later release adds there |
 
 Before PR #98 dealt with them, 32 survived. Two of those, the round-up of a delayed message's delivery time
 compared with -1 or without its cast, are killed now: `send()` takes the delivery time from `deliveryTime()`, which
